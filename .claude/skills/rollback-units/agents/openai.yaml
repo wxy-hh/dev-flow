@@ -1,0 +1,4 @@
+interface:
+  display_name: "Rollback Units"
+  short_description: "生成和审计最小回撤单元"
+  default_prompt: "Use $rollback-units to design task-level rollback boundaries for this plan."

@@ -1,0 +1,20 @@
+.DS_Store
+
+# Claude local/runtime state
+.claude/runtime/
+.claude/settings.local.json
+
+# Environment and secrets
+.env
+.env.*
+!.env.example
+
+# Dependencies and build output
+node_modules/
+dist/
+build/
+coverage/
+
+# Temporary files
+*.log
+*.tmp

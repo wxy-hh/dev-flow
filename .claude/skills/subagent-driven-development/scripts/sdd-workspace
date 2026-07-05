@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+# 解析并确保 SDD 的临时产物目录存在：任务简报、实现报告、
+# 审查包和进度台账都会放在这里。输出该目录的绝对路径。
+#
+# 目录放在工作树里（不放进 .git/），避免宿主环境阻止子代理写报告。
+# 自忽略的 .gitignore 能让这些临时产物不进入 `git status`，
+# 也不会意外进入提交。
+#
+# 这里是工作区位置的唯一来源，避免 task-brief 和 review-package 漂移到不同目录。
+#
+# 用法：sdd-workspace
+set -euo pipefail
+
+root=$(git rev-parse --show-toplevel)
+dir="$root/.claude/runtime/sdd"
+mkdir -p "$dir"
+printf '*\n' > "$dir/.gitignore"
+cd "$dir" && pwd
