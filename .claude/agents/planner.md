@@ -10,7 +10,7 @@ model: opus
 
 ## 当前项目约束
 
-先读取 `.claude/rules/project-workflow.md` 和 `CLAUDE.md`。下面的 Stripe/Next.js 示例只是计划详细程度示例，不是当前项目模板；为当前项目规划时必须使用 Vue 3、Vite、Pinia、Vue Router、Element Plus 和当前 API/路由结构。
+先读取 `.claude/rules/project-workflow.md` 和 `CLAUDE.md`。如果项目适配层或 `CLAUDE.md` 引用了额外 stack rule（例如 `.claude/rules/vue3.md`、React/Next/Node 规则），再读取相应规则。下面的 Stripe/Next.js 示例只展示计划详细程度，不是当前项目模板；不要把示例技术栈、目录、API 或测试命令当作当前项目事实。
 
 ## 你的职责 (Your Role)
 

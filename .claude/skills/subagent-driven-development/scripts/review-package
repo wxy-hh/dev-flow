@@ -4,7 +4,7 @@
 # 使用记录的任务 BASE（而不是 HEAD~1）可以保留多提交任务的完整差异。
 #
 # 用法：review-package BASE HEAD [OUTFILE]
-# 默认 OUTFILE：<repo-root>/.claude/runtime/sdd/review-<base7>..<head7>.diff
+# 默认 OUTFILE：项目适配层配置的 SDD workspace，或 <repo-root>/.claude/runtime/sdd/review-<base7>..<head7>.diff
 # 按提交范围命名，修复后复审会生成新的文件。
 set -euo pipefail
 

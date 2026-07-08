@@ -8,7 +8,7 @@ rules/
 ├── git-workflow.md        # Git 工作流（始终加载）
 ├── project-workflow.md    # 当前项目的 Claude 工作流适配层
 ├── project-workflow.template.md # 迁移到新项目时使用的适配模板
-├── security.md            # 安全指南（src/**/*.ts, src/**/*.vue）
+├── security.md            # 安全指南（常见源码和配置文件）
 └── vue3.md                # Vue 3 规范（src/**/*.vue）
 ```
 

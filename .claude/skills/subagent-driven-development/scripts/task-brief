@@ -3,7 +3,7 @@
 # 这样控制者不需要把整段任务文本粘贴进上下文。
 #
 # 用法：task-brief PLAN_FILE TASK_NUMBER [OUTFILE]
-# 默认 OUTFILE：<repo-root>/.claude/runtime/sdd/task-<N>-brief.md
+# 默认 OUTFILE：项目适配层配置的 SDD workspace，或 <repo-root>/.claude/runtime/sdd/task-<N>-brief.md
 # 同一个 worktree 内的并发运行共享该目录。
 set -euo pipefail
 

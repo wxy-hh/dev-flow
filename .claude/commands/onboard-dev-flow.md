@@ -26,14 +26,15 @@
    - 是否存在 OpenSpec、Playwright/Cypress、Vitest/Jest、代码映射或文档生成流程。
    - git 是否可用，`.claude/` 和 `CLAUDE.md` 是否被忽略。
    - 项目类型：Vue、React、Next、Node backend、monorepo 或其它。
-3. 根据检测结果生成或更新 `.claude/rules/project-workflow.md`。
+3. 根据检测结果生成或更新 `.claude/rules/project-workflow.md`，并填充 frontmatter 中的 `dev_flow` 结构化配置。
 4. 输出适配摘要：
    - 验证命令矩阵。
    - test strategy。
    - OpenSpec 策略。
    - 启用 / 禁用 agents。
    - 版本管理边界。
-5. 如果用户传入 `--smoke-test`，按 `docs/claude-dev-flow-smoke-test.md` 跑迁移后 smoke test。
+5. 运行 `.claude/skills/dev-flow/scripts/dev-flow-doctor` 做静态自检。
+6. 如果用户传入 `--smoke-test`，按 `docs/claude-dev-flow-smoke-test.md` 跑迁移后 smoke test。
 
 ## 输出要求
 
@@ -41,6 +42,7 @@
 - 不自动提交。
 - 不复用旧项目的 `project-workflow.md` 事实。
 - 发现无法判断的命令或能力时，写成 `none` 或 `needs-confirmation`，不要猜。
+- `project-workflow.md` 必须保留 `dev_flow` 配置块，且配置值要与 Markdown 表格一致。
 - 生成后运行项目适配层中的文档/技能自检命令。
 
 ## 完成格式
@@ -58,5 +60,6 @@
 - version boundary:
 
 验证：
+- dev-flow doctor：通过/失败
 - <check>：通过/失败
 ```

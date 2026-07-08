@@ -5,6 +5,34 @@ paths:
   - "<feature-root>/**"
   - "<review-root>/**"
   - "<plan-root>/**"
+dev_flow:
+  version: "0.1.0"
+  project_kind: "<detect>"
+  package_manager: "<detect>"
+  paths:
+    workflow_root: ".claude"
+    runtime_root: "<detect-runtime-root>"
+    feature_root: "<detect-feature-root>"
+    review_root: "<detect-review-root>"
+    plan_root: "<detect-plan-root>"
+    sdd_progress: "<detect-sdd-progress-path>"
+  verification:
+    install: "<detect-or-none>"
+    dev: "<detect-or-none>"
+    build: "<detect-or-none>"
+    build_only: "<detect-or-none>"
+    type_check: "<detect-or-none>"
+    lint: "<detect-or-none>"
+    format: "<detect-or-none>"
+    test: "<detect-or-none>"
+    automated_tests: "<none|present>"
+    runtime_verification: "<required-for-L-behavior|optional|custom>"
+    webapp_testing: "<disabled|enabled>"
+    codemaps: "<disabled|enabled>"
+  openspec:
+    living_baseline: "<false|true>"
+  git:
+    mode: "<local-config|repo-governed>"
 ---
 
 # Claude 项目工作流适配模板
@@ -16,6 +44,17 @@ paths:
 - 流程层可复制：`.claude/skills/`、`.claude/commands/`、`.claude/agents/`、通用 rules。
 - 项目适配层必须重新检测生成：包管理器、验证命令、测试策略、OpenSpec 策略、路径和版本边界都按新项目填写。
 - 生成后删除或保留本模板均可；实际工作流只读取 `.claude/rules/project-workflow.md`。
+
+## 结构化配置
+
+`project-workflow.md` 必须保留 frontmatter 中的 `dev_flow` 配置块，并把所有 `<detect...>`、`<none|present>`、`<false|true>` 之类占位符替换成当前项目真实值。Markdown 表格是给人读的说明；`dev_flow` 是给 doctor、onboarding 和后续脚本读取的机器可读锚点。
+
+规则：
+
+- `dev_flow.paths.*` 必须与下方「路径别名」表一致。
+- `dev_flow.verification.*` 必须与下方「项目能力」和「验证配置」一致。
+- 不确定的能力写 `none` 或 `needs-confirmation`，不要猜测。
+- 任何脚本或 doctor 只依赖 `dev_flow` 的稳定字段，不解析长段自然语言。
 
 ## 版本管理边界
 
@@ -95,6 +134,13 @@ YYYY-MM-DD-<short-kebab-name>
 - Auto-continue:
 - Assets:
 - Last updated:
+- Base SHA:
+- Head SHA:
+- Working tree dirty:
+- Diff stat hash:
+- Last validation at:
+- Last validation commands:
+- Accepted risks:
 ```
 
 恢复中断流程时，先读 `status.md`，再读其中列出的资产；`[HANDOFF]` 只作为最近一次对话的辅助线索。
@@ -106,8 +152,10 @@ YYYY-MM-DD-<short-kebab-name>
 - 保留已有 `Completed gates`，只追加新完成的 gate，不删除历史 gate。
 - `Assets` 只追加已经存在或本次明确生成的路径。
 - 每次更新必须设置 `Current gate`、`Next action`、`Auto-continue` 和 `Last updated`。
+- 如果 git 可用，每次更新同时记录 `Base SHA`、`Head SHA`、`Working tree dirty` 和 `Diff stat hash`；没有 git 时写 `unknown` 并说明原因。
+- 验证门禁完成后必须记录 `Last validation at` 和 `Last validation commands`。验证后如果 `Head SHA`、`Working tree dirty` 或 `Diff stat hash` 发生变化，已有验证证据视为过期，完成前必须重新验证。
 - 如果任务包含风险门禁，维护一个 `Risk Gates` 表，列出每个 gate 的 `none` / `light` / `full` 形态和证据路径。
-- 如果验证失败或用户接受风险，在 `Next action` 中写清阻塞点或接受风险依据。
+- 如果验证失败或用户接受风险，在 `Next action` 和 `Accepted risks` 中写清阻塞点或接受风险依据。
 
 ## 项目能力
 
@@ -177,6 +225,7 @@ YYYY-MM-DD-<short-kebab-name>
 文档和技能改动的基础检查：
 
 ```bash
+.claude/skills/dev-flow/scripts/dev-flow-doctor
 CLAUDE_CHECK_TARGETS=(.claude/skills .claude/commands .claude/agents .claude/rules CLAUDE.md)
 rg -u -n "TBD|TODO|implement later|fill in details|稍后实现|适当处理" <changed-files>
 rg -u -n "project-config|\\.agents/runtime|1-2 个文件|~/.claude/settings|AGENTS.md" "${CLAUDE_CHECK_TARGETS[@]}" --glob '!project-workflow.md' --glob '!project-workflow.template.md'

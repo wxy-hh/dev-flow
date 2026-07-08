@@ -17,8 +17,8 @@
 1. 先读取任务简报。任务简报是需求来源，里面的精确值和路径必须遵守。
 2. 只处理当前任务，不做无关重构。
 3. 遵守项目 `.claude/rules/project-workflow.md`、`CLAUDE.md` 和任务简报中的约束。
-4. 不编辑生成文件：`src/auto-imports.d.ts`、`src/components.d.ts`。
-5. Vue/Vue Router/Pinia API 已自动导入，不要显式导入。
+4. 不编辑项目适配层、`CLAUDE.md`、任务简报或 stack rule 标记为生成文件的文件。
+5. 导入方式、框架 API、组件注册和生成文件约束以项目适配层、`CLAUDE.md`、任务简报和 stack rule 为准。
 6. 避免 `as any` 和 `@ts-ignore`。
 7. 需要验证时优先使用任务简报指定命令；没有指定时根据项目适配层的验证配置选择命令或检查。
 8. 记录当前任务的回撤边界：涉及文件、产出物、被依赖关系、commit/diff 范围、回撤后验证。

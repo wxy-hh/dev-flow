@@ -121,8 +121,15 @@ YYYY-MM-DD-dev-flow-smoke-test
 
 ## 自检命令
 
-使用 `.claude/rules/project-workflow.md` 中的文档和技能检查命令。至少确认：
+先运行轻量 doctor：
 
+```bash
+.claude/skills/dev-flow/scripts/dev-flow-doctor
+```
+
+再使用 `.claude/rules/project-workflow.md` 中的文档和技能检查命令。至少确认：
+
+- `project-workflow.md` 包含已填充的 `dev_flow` 配置。
 - 没有旧项目路径或命令残留。
 - 没有 `.agents/runtime` 之类跨智能体路径漂移。
 - 没有直接依赖旧项目的包管理器、测试命令或目录结构。
@@ -146,6 +153,7 @@ YYYY-MM-DD-dev-flow-smoke-test
 - webapp-testing:
 - living-baseline:
 - version boundary:
+- doctor:
 
 ## 分级验证
 | Level | Scenario | Expected path | Result | Issues |
@@ -168,3 +176,5 @@ YYYY-MM-DD-dev-flow-smoke-test
 ## 通过后的下一步
 
 smoke test 通过后，用一个真实 M 级任务试跑；再用一个轻量 L 或标准 L 任务验证安全审查、行为验证和回撤证据。不要在 smoke test 失败时直接开始真实高风险任务。
+
+通过后按 [迁移后使用说明](./claude-dev-flow-post-migration-usage.md) 进入日常开发流程。

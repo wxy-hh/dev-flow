@@ -1,0 +1,179 @@
+#!/usr/bin/env bash
+# 静态检查 dev-flow 迁移包或已 onboarding 项目的关键约束。
+# 不修改业务代码，不运行项目测试，不生成流程产物。
+set -uo pipefail
+
+failures=0
+warnings=0
+passes=0
+
+root=$(git rev-parse --show-toplevel 2>/dev/null || pwd)
+cd "$root" || exit 2
+
+pass() {
+  printf 'PASS %s\n' "$1"
+  passes=$((passes + 1))
+}
+
+warn() {
+  printf 'WARN %s\n' "$1"
+  warnings=$((warnings + 1))
+}
+
+fail() {
+  printf 'FAIL %s\n' "$1"
+  failures=$((failures + 1))
+}
+
+need_cmd() {
+  if command -v "$1" >/dev/null 2>&1; then
+    pass "command available: $1"
+  else
+    fail "missing required command: $1"
+  fi
+}
+
+check_file() {
+  if [ -f "$1" ]; then
+    pass "file exists: $1"
+  else
+    fail "missing file: $1"
+  fi
+}
+
+require_pattern() {
+  local file=$1
+  local pattern=$2
+  local message=$3
+
+  if [ ! -f "$file" ]; then
+    fail "$message (file missing: $file)"
+    return
+  fi
+
+  if rg -q -- "$pattern" "$file"; then
+    pass "$message"
+  else
+    fail "$message"
+  fi
+}
+
+forbid_pattern() {
+  local pattern=$1
+  local message=$2
+  shift 2
+
+  local output
+  output=$(rg -n -- "$pattern" "$@" 2>/dev/null)
+  local status=$?
+  if [ "$status" -eq 0 ]; then
+    fail "$message"
+    printf '%s\n' "$output"
+  elif [ "$status" -eq 1 ]; then
+    pass "$message"
+  else
+    fail "$message (search failed)"
+  fi
+}
+
+printf '# dev-flow doctor\n\n'
+
+need_cmd git
+need_cmd rg
+
+check_file ".claude/rules/project-workflow.template.md"
+check_file ".claude/skills/dev-flow/SKILL.md"
+check_file ".claude/agents/security-reviewer.md"
+check_file ".claude/skills/plan-review/references/review-prompts.md"
+check_file ".claude/skills/subagent-driven-development/scripts/task-brief"
+check_file ".claude/skills/subagent-driven-development/scripts/review-package"
+check_file ".claude/skills/subagent-driven-development/scripts/sdd-workspace"
+
+require_pattern ".claude/rules/project-workflow.template.md" '^dev_flow:' "project-workflow template has dev_flow config"
+for key in version project_kind package_manager verification openspec git; do
+  require_pattern ".claude/rules/project-workflow.template.md" "${key}:" "project-workflow template has dev_flow.${key}"
+done
+require_pattern ".claude/skills/subagent-driven-development/scripts/sdd-workspace" 'sdd_progress' "sdd-workspace reads dev_flow.paths.sdd_progress"
+require_pattern ".claude/skills/subagent-driven-development/scripts/sdd-workspace" 'runtime_root' "sdd-workspace reads dev_flow.paths.runtime_root"
+
+for field in \
+  "Base SHA" \
+  "Head SHA" \
+  "Working tree dirty" \
+  "Diff stat hash" \
+  "Last validation at" \
+  "Last validation commands" \
+  "Accepted risks"; do
+  require_pattern ".claude/rules/project-workflow.template.md" "${field}:" "status.md template has ${field}"
+done
+
+if [ -f ".claude/rules/project-workflow.md" ]; then
+  require_pattern ".claude/rules/project-workflow.md" '^dev_flow:' "project-workflow.md has dev_flow config"
+  forbid_pattern '<detect|<none\|present>|<false\|true>|<local-config\|repo-governed>|<required-for-L-behavior\|optional\|custom>|<disabled\|enabled>' \
+    "project-workflow.md has no unresolved config placeholders" \
+    ".claude/rules/project-workflow.md"
+
+  if rg -n '\|\s*test\s*\|[^|]*(dev|watch|serve)|test:\s*.*(dev|watch|serve)' ".claude/rules/project-workflow.md" >/dev/null; then
+    warn "project-workflow.md test command looks like a dev/watch command; confirm automated-tests is correct"
+  else
+    pass "project-workflow.md test command does not look like dev/watch"
+  fi
+else
+  warn "missing .claude/rules/project-workflow.md; this is expected in the source migration package, but target projects should run /onboard-dev-flow"
+fi
+
+if rg -n '^tools: .*"(Write|Edit)"' ".claude/agents/security-reviewer.md" >/dev/null; then
+  fail "security-reviewer is not read-only"
+  rg -n '^tools: .*"(Write|Edit)"' ".claude/agents/security-reviewer.md"
+else
+  pass "security-reviewer is read-only"
+fi
+
+forbid_pattern '至少 3 个|找不到就是你失职' \
+  "plan-review prompts do not incentivize fabricated findings" \
+  ".claude/skills/plan-review/references/review-prompts.md"
+
+leak_pattern='为当前项目规划时必须使用 Vue|pnpm dev:mock|Cmp-Menu|Cmp-Portal|src/mock|Vue/Vue Router/Pinia API 已自动导入|是否违反 Vue 3|Vue/TS|Vue/TypeScript|Vue 模板|accountType|request\.ts|Vue 性能|placeAnOrder|getProductList'
+leak_output=$(rg -n --glob '!vue3.md' --glob '!**/scripts/dev-flow-doctor' -- "$leak_pattern" \
+  ".claude/agents" ".claude/commands" ".claude/skills" ".claude/rules" 2>/dev/null)
+leak_status=$?
+if [ "$leak_status" -eq 0 ]; then
+  fail "reusable workflow layer has no known source-project leakage"
+  printf '%s\n' "$leak_output"
+elif [ "$leak_status" -eq 1 ]; then
+  pass "reusable workflow layer has no known source-project leakage"
+else
+  fail "reusable workflow layer has no known source-project leakage (search failed)"
+fi
+
+if git check-ignore -q ".claude/runtime/sdd/.probe" 2>/dev/null; then
+  pass ".claude/runtime is ignored"
+else
+  fail ".claude/runtime is not ignored"
+fi
+
+if git check-ignore -q ".claude/settings.local.json" 2>/dev/null; then
+  pass ".claude/settings.local.json is ignored"
+else
+  fail ".claude/settings.local.json is not ignored"
+fi
+
+script_count=0
+while IFS= read -r script; do
+  script_count=$((script_count + 1))
+  if [ -x "$script" ]; then
+    pass "script is executable: $script"
+  else
+    fail "script is not executable: $script"
+  fi
+done < <(find .claude/skills -path '*/scripts/*' -type f | sort)
+
+if [ "$script_count" -eq 0 ]; then
+  warn "no skill scripts found"
+fi
+
+printf '\nSummary: %s passed, %s warning(s), %s failure(s)\n' "$passes" "$warnings" "$failures"
+
+if [ "$failures" -gt 0 ]; then
+  exit 1
+fi

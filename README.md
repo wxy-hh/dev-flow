@@ -87,6 +87,17 @@ dev-flow 会先判断 XS / S / M / L：
 
 - [迁移使用说明](docs/claude-dev-flow-migration.md)
 - [迁移后烟测说明](docs/claude-dev-flow-smoke-test.md)
+- [迁移后日常使用说明](docs/claude-dev-flow-post-migration-usage.md)
+
+## 静态自检
+
+迁移或修改流程层后，可以先运行轻量 doctor：
+
+```bash
+.claude/skills/dev-flow/scripts/dev-flow-doctor
+```
+
+doctor 只做静态检查：结构化配置、旧项目事实泄漏、审查 prompt 激励、安全审查权限、runtime 忽略规则和脚本可执行性。它不运行业务测试，也不替代 smoke test。
 
 ## 注意
 
