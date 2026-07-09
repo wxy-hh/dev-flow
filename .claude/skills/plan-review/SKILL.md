@@ -7,7 +7,7 @@ description: 多维度独立审查计划，查漏补缺后再执行。已有 req
 
 对一份计划文档进行多维度、多角色、对抗性审查。每个审查 Agent 会同时分析实现计划、需求覆盖结论、需求材料和项目实际代码/规范，从它们之间的差距中发现问题。
 
-先读取项目适配层。Claude 环境默认读取 `.claude/rules/project-workflow.md`，从中获取 `<FEATURE_ROOT>`、`<REVIEW_ROOT>`、验证配置和项目能力边界；写文件前再展开为真实路径。
+先读取项目适配层。Claude 环境默认读取 `.claude/rules/project-workflow.md`，从中获取 `<FEATURE_ROOT>`、`<REVIEW_ROOT>`、`<SCOPED_SPEC_ROOT>`、context manifest、验证配置和项目能力边界；写文件前再展开为真实路径。
 
 ## 核心规则
 
@@ -23,16 +23,17 @@ description: 多维度独立审查计划，查漏补缺后再执行。已有 req
 
 1. 用户当前消息中手动引用的计划、需求、覆盖矩阵或 OpenSpec 路径。
 2. 上一步 `[HANDOFF]` 的 `Next inputs`。
-3. 当前 feature 目录的约定文件：
+3. `<FEATURE_ROOT>/<feature-id>/context/review.jsonl` 中登记的上下文文件。
+4. 当前 feature 目录的约定文件：
    - `<FEATURE_ROOT>/<feature-id>/需求说明书.md`
    - `<FEATURE_ROOT>/<feature-id>/初步实现计划.md`
    - `<FEATURE_ROOT>/<feature-id>/requirements-coverage.md`
-4. 对应 OpenSpec 产物：
+5. 对应 OpenSpec 产物：
    - `openspec/changes/<change-id>/proposal.md`
    - `openspec/changes/<change-id>/design.md`
    - `openspec/changes/<change-id>/tasks.md`
    - `openspec/changes/<change-id>/specs/**/*.md`
-5. 无明确 feature 时，查找最近修改的 `<FEATURE_ROOT>/*/初步实现计划.md`，再读取同目录需求和覆盖矩阵。
+6. 无明确 feature 时，查找最近修改的 `<FEATURE_ROOT>/*/初步实现计划.md`，再读取同目录需求和覆盖矩阵。
 
 如果找不到计划，提示用户提供计划路径或先使用 `writing-plans`。如果找不到覆盖矩阵，标准 M/L 要把“缺少需求覆盖门禁”列为流程风险。
 
@@ -43,7 +44,7 @@ description: 多维度独立审查计划，查漏补缺后再执行。已有 req
 1. **计划和需求材料**：实现计划、需求说明书、OpenSpec proposal/design/tasks/spec delta。
 2. **需求覆盖材料**：`requirements-coverage` 输出的矩阵或结论。
 3. **项目规范文件**：始终读取 `.claude/rules/project-workflow.md` 和 `CLAUDE.md`。
-4. **可选规则文件**：存在才读取，不存在不要报错；优先读取 `.claude/rules/`、`.claude/skills/` 下与当前任务相关的规则。本轮只适配 Claude，除非用户显式提供路径，不读取 Agent 入口说明。
+4. **可选规则文件**：存在才读取，不存在不要报错；优先读取 `.claude/rules/`、`.claude/skills/` 下与当前任务相关的规则，以及 context manifest 中登记的 `<SCOPED_SPEC_ROOT>/<scope>/index.md`。本轮只适配 Claude，除非用户显式提供路径，不读取 Agent 入口说明。
 5. **计划涉及的源文件**：从计划中提取路径后读取相关页面、组件、API、状态、路由、类型、配置和关键依赖文件。
 
 读取到的文件内容作为项目上下文，随计划文本、需求材料和覆盖结论一起传给审查 Agent。
@@ -136,8 +137,9 @@ description: 多维度独立审查计划，查漏补缺后再执行。已有 req
 3. CRITICAL/HIGH 阻塞项摘要。
 4. MEDIUM/LOW 摘要。
 5. 修订建议或已修订摘要。
-6. 更新 `<FEATURE_ROOT>/<feature-id>/status.md`。
-7. `[HANDOFF]` 交接块。
+6. 把报告追加到 `context/review.jsonl`；如果后续验证需要计划审查结论，同时追加到 `context/verify.jsonl`。
+7. 更新 `<FEATURE_ROOT>/<feature-id>/status.md` 和 `dev_flow_status`。
+8. `[HANDOFF]` 交接块。
 
 无 CRITICAL/HIGH 时：
 
@@ -155,6 +157,7 @@ Next inputs:
 - <FEATURE_ROOT>/<feature-id>/初步实现计划.md
 - <FEATURE_ROOT>/<feature-id>/requirements-coverage.md
 - <REVIEW_ROOT>/YYYY-MM-DD-<feature-id>-plan-review.md
+- <FEATURE_ROOT>/<feature-id>/context/review.jsonl
 Auto-continue: yes
 [/HANDOFF]
 ```

@@ -6,7 +6,7 @@ paths:
   - "<review-root>/**"
   - "<plan-root>/**"
 dev_flow:
-  version: "0.1.0"
+  version: "0.2.0"
   project_kind: "<detect>"
   package_manager: "<detect>"
   paths:
@@ -16,6 +16,7 @@ dev_flow:
     review_root: "<detect-review-root>"
     plan_root: "<detect-plan-root>"
     sdd_progress: "<detect-sdd-progress-path>"
+    scoped_spec_root: ".claude/rules/specs"
   verification:
     install: "<detect-or-none>"
     dev: "<detect-or-none>"
@@ -91,6 +92,7 @@ Claude 工作流入口先读取：
 | `<FEATURE_ROOT>` | `<detect-feature-root>` | 需求、计划、覆盖和回撤资产目录 |
 | `<REVIEW_ROOT>` | `<detect-review-root>` | 审查和验证报告目录 |
 | `<PLAN_ROOT>` | `<detect-plan-root>` | 设计和计划类文档目录 |
+| `<SCOPED_SPEC_ROOT>` | `.claude/rules/specs` | 可选的局部工程规范目录 |
 
 ## Feature ID
 
@@ -117,14 +119,73 @@ YYYY-MM-DD-<short-kebab-name>
 | 手动行为验证脚本 | `<REVIEW_ROOT>/YYYY-MM-DD-<feature-id>-manual-test.md` |
 | 安全审查 | `<REVIEW_ROOT>/YYYY-MM-DD-<feature-id>-security-review.md` |
 | 子任务台账 | `<SDD_PROGRESS>` |
+| 实现上下文清单 | `<FEATURE_ROOT>/<feature-id>/context/implement.jsonl` |
+| 审查上下文清单 | `<FEATURE_ROOT>/<feature-id>/context/review.jsonl` |
+| 验证上下文清单 | `<FEATURE_ROOT>/<feature-id>/context/verify.jsonl` |
+
+## 局部规范和上下文清单
+
+局部规范是可选能力，用于把某个包、模块、页面或技术层的工程约定放到 `<SCOPED_SPEC_ROOT>/<scope>/index.md`。每个 `index.md` 必须包含：
+
+- `Pre-Development Checklist`
+- `Quality Check`
+
+读取规则：
+
+- XS/S 不因为局部规范存在而升级，也不为了读取局部规范创建额外产物。
+- M/L 只有在计划、改动路径或用户输入明确命中某个 scope 时才读取对应局部规范。
+- 找不到匹配 scope 时，不报错；继续使用项目适配层和通用 rules。
+
+上下文清单是协作辅助资产，不替代需求、计划、审查报告、验证报告或 `status.md`。JSONL 每行格式：
+
+```json
+{"file":"repo-relative-path","kind":"spec|requirement|plan|research|review|verification","reason":"why this file matters"}
+```
+
+规则：
+
+- 只登记需求、计划、局部规范、研究、审查和验证等上下文文件；不要登记源码文件。
+- 轻量 L 和标准 M/L 必须维护 `context/implement.jsonl`、`context/review.jsonl` 和 `context/verify.jsonl`。
+- 轻量 M 只有已经产生落盘需求、计划、审查或验证资产时才维护上下文清单。
+- XS/S 不维护上下文清单。
 
 ## 状态文件规则
 
 标准 M/L、轻量 L 和任何需要跨技能交接的任务，都维护 `<FEATURE_ROOT>/<feature-id>/status.md`。
 
-状态文件至少包含：
+状态文件至少包含 `dev_flow_status` frontmatter 和人类可读摘要：
 
 ```markdown
+---
+dev_flow_status:
+  schema_version: "1"
+  feature_id: "<feature-id>"
+  level: "<M|L>"
+  current_gate: "<gate-name>"
+  completed_gates: []
+  next_action: "<next-action>"
+  auto_continue: false
+  assets: []
+  context_manifests:
+    implement: "<FEATURE_ROOT>/<feature-id>/context/implement.jsonl"
+    review: "<FEATURE_ROOT>/<feature-id>/context/review.jsonl"
+    verify: "<FEATURE_ROOT>/<feature-id>/context/verify.jsonl"
+  risk_gates:
+    requirements_coverage: "none"
+    plan_review: "none"
+    rollback_units: "none"
+    security_review: "none"
+    behavior_verification: "none"
+  validation:
+    base_sha: "unknown"
+    head_sha: "unknown"
+    working_tree_dirty: "unknown"
+    diff_stat_hash: "unknown"
+    last_validation_at: "none"
+    last_validation_commands: []
+  accepted_risks: []
+---
+
 # <feature-id> 状态
 
 - Level:
@@ -156,6 +217,7 @@ YYYY-MM-DD-<short-kebab-name>
 - 验证门禁完成后必须记录 `Last validation at` 和 `Last validation commands`。验证后如果 `Head SHA`、`Working tree dirty` 或 `Diff stat hash` 发生变化，已有验证证据视为过期，完成前必须重新验证。
 - 如果任务包含风险门禁，维护一个 `Risk Gates` 表，列出每个 gate 的 `none` / `light` / `full` 形态和证据路径。
 - 如果验证失败或用户接受风险，在 `Next action` 和 `Accepted risks` 中写清阻塞点或接受风险依据。
+- 同步维护 frontmatter 中的 `dev_flow_status`；机器可读字段和人类可读摘要不一致时，以最新明确验证证据和已有资产为准并立即修正摘要。
 
 ## 项目能力
 
@@ -208,7 +270,8 @@ YYYY-MM-DD-<short-kebab-name>
 3. 判断 test 是否是真测试运行器，还是仅启动开发/测试模式。
 4. 判断是否存在 OpenSpec、浏览器测试、单元测试、代码映射或文档生成流程。
 5. 判断 git 是否可用，以及 `.claude/` / `CLAUDE.md` 是否被忽略。
-6. 写入项目能力、测试策略、OpenSpec 策略、启用 agents 和路径别名。
+6. 检查是否已有 `<SCOPED_SPEC_ROOT>`；没有也可以保留为空的可选能力。
+7. 写入项目能力、测试策略、OpenSpec 策略、启用 agents、路径别名和三件套路径。
 
 ## 验证配置
 

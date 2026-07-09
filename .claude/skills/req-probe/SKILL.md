@@ -64,7 +64,7 @@ C. <备选方案>
 
 ### 3. 输出需求说明书
 
-完成提问后，输出完整《需求说明书.md》到 `<FEATURE_ROOT>/<feature-id>/需求说明书.md`，并创建或更新 `<FEATURE_ROOT>/<feature-id>/status.md`。
+完成提问后，输出完整《需求说明书.md》到 `<FEATURE_ROOT>/<feature-id>/需求说明书.md`，并创建或更新 `<FEATURE_ROOT>/<feature-id>/status.md`。轻量 L 和标准 M/L 的 `status.md` 必须包含 `dev_flow_status`；context manifest 由后续 `writing-plans` 创建或刷新。
 
 ### 4. 反向确认
 

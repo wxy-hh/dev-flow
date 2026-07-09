@@ -45,7 +45,8 @@
 
 - 分级是否符合团队预期。
 - `project-workflow.md` 的路径、命令和验证矩阵是否准确。
-- `status.md` 能否记录当前 gate、资产和验证新鲜度。
+- `status.md` 能否用 `dev_flow_status` 和摘要记录当前 gate、资产和验证新鲜度。
+- 轻量 L 和标准 M/L 的 context manifest 能否串起需求、计划、审查和验证输入。
 - 代码审查是否只报告真实问题。
 - `/finish` 是否能给出新鲜验证证据。
 
@@ -77,7 +78,7 @@
 
 - 先复述需求边界和不做范围。
 - 实现后做代码审查和完成前验证。
-- 不强制补需求说明书或完整实现计划。
+- 不强制补需求说明书、完整实现计划、`status.md` 或 context manifest。
 
 ### 标准 M
 
@@ -90,6 +91,7 @@
 预期行为：
 
 - 生成需求说明和实现计划。
+- 生成或更新 `status.md` 和 context manifest。
 - 按风险维度触发需求覆盖、计划审查或回撤单元。
 - 实现后执行代码审查和完成前验证。
 
@@ -104,6 +106,7 @@
 预期行为：
 
 - 生成或更新 `status.md`。
+- 维护 context manifest，方便安全审查、代码审查和验证读取同一批证据。
 - 至少保留安全审查、行为验证和回撤证据。
 - 实现前说明风险并等待确认。
 
@@ -119,6 +122,7 @@
 
 - 先固化需求边界。
 - 进入计划、覆盖、审查、安全、回撤和实现前确认。
+- 维护 `status.md`、context manifest 和必要局部规范引用。
 - 完成后必须有代码审查和新鲜验证证据。
 
 ## 产物在哪里
@@ -130,6 +134,9 @@
 | 产物 | 用途 |
 |------|------|
 | `<FEATURE_ROOT>/<feature-id>/status.md` | 当前 gate、完成情况、资产、验证新鲜度和接受风险 |
+| `<FEATURE_ROOT>/<feature-id>/context/implement.jsonl` | 实现阶段要读取的需求、计划、局部规范和研究文件 |
+| `<FEATURE_ROOT>/<feature-id>/context/review.jsonl` | 代码审查要读取的需求、计划、回撤和规范文件 |
+| `<FEATURE_ROOT>/<feature-id>/context/verify.jsonl` | 完成前验证要读取的审查、验证要求和手动测试文件 |
 | `<FEATURE_ROOT>/<feature-id>/需求说明书.md` | 标准 M/L 的需求边界 |
 | `<FEATURE_ROOT>/<feature-id>/初步实现计划.md` | 标准 M/L 的实现计划 |
 | `<FEATURE_ROOT>/<feature-id>/requirements-coverage.md` | 需求到任务和验证的覆盖关系 |
@@ -138,7 +145,7 @@
 | `<REVIEW_ROOT>/YYYY-MM-DD-<feature-id>-verification.md` | 完成前验证证据 |
 | `<REVIEW_ROOT>/YYYY-MM-DD-<feature-id>-manual-test.md` | 手动行为验证脚本和实测结果 |
 
-恢复中断任务时，先读 `status.md`，再读其中列出的资产；`[HANDOFF]` 只作为最近一次对话的辅助线索。
+恢复中断任务时，先读 `status.md` 的 `dev_flow_status` 和摘要，再读其中列出的资产及 context manifest；`[HANDOFF]` 只作为最近一次对话的辅助线索。
 
 ## 验证和新鲜度
 
@@ -154,6 +161,8 @@
 
 如果验证后代码又变了，或者 `Head SHA`、`Working tree dirty`、`Diff stat hash` 与记录不一致，不能复用旧验证结论，必须重新运行相关验证。
 
+context manifest 只解决“该读哪些文件”，不等于验证通过。验证结论仍以最新命令输出、人工测试记录和验证报告为准。
+
 ## 什么时候跑 doctor
 
 运行：
@@ -167,6 +176,7 @@
 - onboarding 后。
 - 修改 `.claude/skills`、`.claude/commands`、`.claude/agents` 或 `.claude/rules` 后。
 - 调整 `project-workflow.md` 的路径、验证命令、测试能力或 Git 边界后。
+- 调整 scoped specs、context manifest 规则或 `status.md` 结构后。
 - smoke test 前。
 - 团队升级 dev-flow 迁移包后。
 
@@ -178,6 +188,8 @@ doctor 只做静态检查，不替代项目测试、浏览器验证或 smoke tes
 - 不要把某个项目的路径、headers、端口、mock 命令或测试命令写进通用 skill、command 或 agent。
 - `project-workflow.md` 的 `dev_flow` 配置和 Markdown 表格要同步更新。
 - 新增脚本优先读取 `dev_flow.paths`，不要硬编码 runtime 目录。
+- `.claude/rules/specs/<scope>/index.md` 只有在有真实局部约定时才创建，并包含 `Pre-Development Checklist` 和 `Quality Check`。
+- context manifest 只登记需求、计划、局部规范、研究、审查和验证等上下文文件，不登记源码文件。
 - 安全审查默认只读；需要修复时，由主流程或用户确认后的任务执行代码修改。
 - `status.md` 是长流程恢复的事实来源，M/L 任务更新资产时要同步更新它。
 

@@ -124,7 +124,7 @@ grillme → writing-plans → requirements-coverage → plan-review → rollback
 
 从 `writing-plans` 起，所有实现层产物都写到 `<FEATURE_ROOT>/<feature-id>/` 或 `<REVIEW_ROOT>/`；OpenSpec 目录只保留需求、设计和 delta spec。
 
-OpenSpec 完成后更新 `<FEATURE_ROOT>/<feature-id>/status.md`；如果目录尚不存在，先创建 feature 目录并记录 OpenSpec 路径。
+OpenSpec 完成后更新 `<FEATURE_ROOT>/<feature-id>/status.md`；如果目录尚不存在，先创建 feature 目录并记录 OpenSpec 路径。轻量 L 和标准 M/L 的 `status.md` 必须包含 `dev_flow_status`；context manifest 由后续 `writing-plans` 创建或刷新，并把 OpenSpec 产物登记为需求或计划上下文。
 
 完成 OpenSpec 变更包后输出 `[HANDOFF]`，并等待用户确认需求边界：
 

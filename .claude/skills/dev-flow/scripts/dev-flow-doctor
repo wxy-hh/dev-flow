@@ -82,6 +82,7 @@ need_cmd git
 need_cmd rg
 
 check_file ".claude/rules/project-workflow.template.md"
+check_file ".claude/rules/specs/README.md"
 check_file ".claude/skills/dev-flow/SKILL.md"
 check_file ".claude/agents/security-reviewer.md"
 check_file ".claude/skills/plan-review/references/review-prompts.md"
@@ -92,6 +93,24 @@ check_file ".claude/skills/subagent-driven-development/scripts/sdd-workspace"
 require_pattern ".claude/rules/project-workflow.template.md" '^dev_flow:' "project-workflow template has dev_flow config"
 for key in version project_kind package_manager verification openspec git; do
   require_pattern ".claude/rules/project-workflow.template.md" "${key}:" "project-workflow template has dev_flow.${key}"
+done
+require_pattern ".claude/rules/project-workflow.template.md" 'scoped_spec_root:' "project-workflow template has dev_flow.paths.scoped_spec_root"
+require_pattern ".claude/rules/project-workflow.template.md" 'context/implement\.jsonl' "project-workflow template documents implement context manifest"
+require_pattern ".claude/rules/project-workflow.template.md" 'context/review\.jsonl' "project-workflow template documents review context manifest"
+require_pattern ".claude/rules/project-workflow.template.md" 'context/verify\.jsonl' "project-workflow template documents verify context manifest"
+require_pattern ".claude/rules/project-workflow.template.md" 'dev_flow_status:' "status.md template has dev_flow_status frontmatter"
+for field in \
+  "schema_version" \
+  "feature_id" \
+  "level" \
+  "current_gate" \
+  "next_action" \
+  "auto_continue" \
+  "assets" \
+  "risk_gates" \
+  "validation" \
+  "accepted_risks"; do
+  require_pattern ".claude/rules/project-workflow.template.md" "${field}:" "dev_flow_status has ${field}"
 done
 require_pattern ".claude/skills/subagent-driven-development/scripts/sdd-workspace" 'sdd_progress' "sdd-workspace reads dev_flow.paths.sdd_progress"
 require_pattern ".claude/skills/subagent-driven-development/scripts/sdd-workspace" 'runtime_root' "sdd-workspace reads dev_flow.paths.runtime_root"
@@ -106,6 +125,16 @@ for field in \
   "Accepted risks"; do
   require_pattern ".claude/rules/project-workflow.template.md" "${field}:" "status.md template has ${field}"
 done
+
+scoped_spec_count=0
+while IFS= read -r spec_index; do
+  scoped_spec_count=$((scoped_spec_count + 1))
+  require_pattern "$spec_index" '^## Pre-Development Checklist' "scoped spec has Pre-Development Checklist: $spec_index"
+  require_pattern "$spec_index" '^## Quality Check' "scoped spec has Quality Check: $spec_index"
+done < <(find .claude/rules/specs -mindepth 2 -maxdepth 2 -name index.md 2>/dev/null | sort)
+if [ "$scoped_spec_count" -eq 0 ]; then
+  pass "no scoped spec index files configured"
+fi
 
 if [ -f ".claude/rules/project-workflow.md" ]; then
   require_pattern ".claude/rules/project-workflow.md" '^dev_flow:' "project-workflow.md has dev_flow config"
@@ -144,6 +173,19 @@ elif [ "$leak_status" -eq 1 ]; then
   pass "reusable workflow layer has no known source-project leakage"
 else
   fail "reusable workflow layer has no known source-project leakage (search failed)"
+fi
+
+heavy_pattern='Tr[e]llis|task[.]json|workflow[-]state|jo[u]rnal|auto[-]commit|默认创建[ ]task'
+heavy_output=$(rg -n --glob '!**/scripts/dev-flow-doctor' -- "$heavy_pattern" \
+  ".claude/agents" ".claude/commands" ".claude/skills" ".claude/rules" "README.md" "docs" "templates" 2>/dev/null)
+heavy_status=$?
+if [ "$heavy_status" -eq 0 ]; then
+  fail "workflow layer does not introduce heavy workflow concepts"
+  printf '%s\n' "$heavy_output"
+elif [ "$heavy_status" -eq 1 ]; then
+  pass "workflow layer does not introduce heavy workflow concepts"
+else
+  fail "workflow layer does not introduce heavy workflow concepts (search failed)"
 fi
 
 if git check-ignore -q ".claude/runtime/sdd/.probe" 2>/dev/null; then

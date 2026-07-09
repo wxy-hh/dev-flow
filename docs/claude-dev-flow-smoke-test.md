@@ -31,10 +31,12 @@ YYYY-MM-DD-dev-flow-smoke-test
 - 不强制生成需求说明书和实现计划。
 - code-review 可以使用对话内需求摘要、diff、涉及文件和验证证据作为输入。
 - verification-before-completion 能按项目适配层选择验证方式。
+- 不要求生成 `status.md` 或 context manifest。
 
 ### 通过标准
 
 - 不为了 code-review 被迫补 md 文档。
+- 不为了三件套被迫补流程资产。
 - 审查输入里能看到 lightweight context。
 - 验证证据能说明改动是否可信。
 
@@ -48,6 +50,7 @@ YYYY-MM-DD-dev-flow-smoke-test
 
 - 判断为轻量 L。
 - 生成或更新 `<FEATURE_ROOT>/<feature-id>/status.md`。
+- 生成或更新 `<FEATURE_ROOT>/<feature-id>/context/{implement,review,verify}.jsonl`。
 - 安全审查为 `light` 或 `full`。
 - 行为验证为 `full`。
 - 回撤证据至少为 `light`。
@@ -55,7 +58,8 @@ YYYY-MM-DD-dev-flow-smoke-test
 
 ### 通过标准
 
-- `status.md` 存在，并包含 `Risk Gates` 表。
+- `status.md` 存在，并包含 `dev_flow_status` 和 `Risk Gates` 表。
+- context manifest 存在，且只登记需求、计划、规范、审查或验证类文件，不登记源码文件。
 - `security-review` 有证据。
 - `behavior-verification` 是 `full`，有 manual-test 或自动化记录。
 - 有 patch 或其它可恢复回撤证据。
@@ -70,6 +74,7 @@ YYYY-MM-DD-dev-flow-smoke-test
 
 - 需求固化。
 - writing-plans 生成计划。
+- writing-plans 创建或刷新 context manifest。
 - requirements-coverage 是否触发由风险维度决定。
 - plan-review 是否触发由风险维度决定。
 - HANDOFF 使用 `<next-triggered-gate>` 或明确的下一门禁，不固定套满流程。
@@ -79,6 +84,7 @@ YYYY-MM-DD-dev-flow-smoke-test
 - 不触发的门禁不会被强行生成文档。
 - 触发的门禁能读取上一步产物。
 - `status.md` 能记录当前 gate 和下一步。
+- context manifest 能把需求、计划、覆盖结论和后续审查/验证输入串起来。
 
 ## 验证任务 D：标准 L
 
@@ -107,6 +113,9 @@ YYYY-MM-DD-dev-flow-smoke-test
 
 ```text
 <FEATURE_ROOT>/<feature-id>/status.md
+<FEATURE_ROOT>/<feature-id>/context/implement.jsonl
+<FEATURE_ROOT>/<feature-id>/context/review.jsonl
+<FEATURE_ROOT>/<feature-id>/context/verify.jsonl
 <FEATURE_ROOT>/<feature-id>/rollback-units.md
 <REVIEW_ROOT>/YYYY-MM-DD-<feature-id>-manual-test.md
 <REVIEW_ROOT>/YYYY-MM-DD-<feature-id>-verification.md
@@ -130,6 +139,7 @@ YYYY-MM-DD-dev-flow-smoke-test
 再使用 `.claude/rules/project-workflow.md` 中的文档和技能检查命令。至少确认：
 
 - `project-workflow.md` 包含已填充的 `dev_flow` 配置。
+- `project-workflow.md` 包含 `scoped_spec_root`、context manifest 路径和 `dev_flow_status` 结构。
 - 没有旧项目路径或命令残留。
 - 没有 `.agents/runtime` 之类跨智能体路径漂移。
 - 没有直接依赖旧项目的包管理器、测试命令或目录结构。
@@ -167,6 +177,7 @@ YYYY-MM-DD-dev-flow-smoke-test
 - status.md:
 - manual-test:
 - verification:
+- context manifest:
 - rollback evidence:
 
 ## 需要修正

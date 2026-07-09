@@ -22,9 +22,19 @@ L：完整流程 + 风险维度门禁 + 半自动资产交接 + 子任务执行 
 
 用户明确说“轻量流程”“只用某个技能”“直接改”时，优先遵守。涉及登录、鉴权、订单、支付、数据删除、跨系统跳转时，先提示风险，再按用户确认后的路径执行。
 
-每次开始处理 M/L 或涉及交接资产的任务前，先读取项目适配层，确认 `<FEATURE_ROOT>`、`<REVIEW_ROOT>`、`<RUNTIME_ROOT>`、`<SDD_PROGRESS>`、feature-id 规约、测试策略、OpenSpec 策略和验证配置。技能正文中的路径模板都以适配层为准。
+每次开始处理 M/L 或涉及交接资产的任务前，先读取项目适配层，确认 `<FEATURE_ROOT>`、`<REVIEW_ROOT>`、`<RUNTIME_ROOT>`、`<SDD_PROGRESS>`、`<SCOPED_SPEC_ROOT>`、feature-id 规约、测试策略、OpenSpec 策略、context manifest 路径和验证配置。技能正文中的路径模板都以适配层为准。
 
-如果流程中断后恢复，先找 `<FEATURE_ROOT>/<feature-id>/status.md`。存在时先读状态文件和其中列出的资产，再参考上一段 `[HANDOFF]` 与对话中的审查结论；不存在时再按项目适配层的约定目录查找最近产物。不要重跑已完成且仍然可信的步骤。
+如果流程中断后恢复，先找 `<FEATURE_ROOT>/<feature-id>/status.md`。存在时先读 `dev_flow_status`、状态摘要、其中列出的资产和 `context/*.jsonl`，再参考上一段 `[HANDOFF]` 与对话中的审查结论；不存在时再按项目适配层的约定目录查找最近产物。不要重跑已完成且仍然可信的步骤。
+
+## 轻量三件套边界
+
+机器可读 `status.md`、context manifest 和 scoped specs 只服务恢复、审查和验证，不改变任务分级：
+
+- XS/S 不创建 `status.md`、context manifest 或局部规范引用。
+- 轻量 M 默认不创建；只有用户要求记录、已经产生落盘资产或流程升级时才维护。
+- 轻量 L 和标准 M/L 维护 `status.md` 的 `dev_flow_status`，以及 `<FEATURE_ROOT>/<feature-id>/context/implement.jsonl`、`review.jsonl`、`verify.jsonl`。
+- scoped specs 是可选规则库；只有 M/L 明确命中 `<SCOPED_SPEC_ROOT>/<scope>/index.md` 时才读取。找不到匹配 scope 不报错，也不阻塞。
+- context manifest 只登记需求、计划、局部规范、研究、审查和验证文件，不登记源码文件。
 
 ## Claude 项目 onboarding
 
@@ -99,6 +109,16 @@ L 级资产契约：
 
 `<feature-id>` 按项目适配层命名。新功能默认使用 `YYYY-MM-DD-<short-kebab-name>`；已有产物或 OpenSpec change id 已明确时继续沿用。
 
+M/L context manifest 默认位于：
+
+```text
+<FEATURE_ROOT>/<feature-id>/context/implement.jsonl
+<FEATURE_ROOT>/<feature-id>/context/review.jsonl
+<FEATURE_ROOT>/<feature-id>/context/verify.jsonl
+```
+
+`writing-plans` 负责创建或刷新这些清单；后续覆盖、计划审查、回撤、代码审查和验证门禁只追加真实存在或本次明确生成的上下文资产。
+
 ## 第 1 步：分级
 
 快速阅读相关项目文件和规范。按失败后果、影响范围和可回滚性判断级别；关键词只作为辅助信号。不要先问一串问题；如果需求明显模糊且会影响分级，直接路由到 `req-probe` 或 `openspec` 固化需求。只有一个关键边界会影响流程选择时，才问一个问题。
@@ -161,7 +181,7 @@ L 级资产契约：
 3. 运行最相关验证。
 4. 汇报改动文件和验证结果。
 
-不创建 md 产物。
+不创建 md 产物，不创建 `status.md`，不创建 context manifest。
 
 ### S 路径
 
@@ -171,7 +191,7 @@ L 级资产契约：
 4. 边界清楚后实现。
 5. 运行相关验证。
 
-默认不创建 md 产物。只有用户明确要求，或手动触发 `req-probe`、`openspec`、`writing-plans`、审查文档时才创建。
+默认不创建 md 产物、`status.md` 或 context manifest。只有用户明确要求，或手动触发 `req-probe`、`openspec`、`writing-plans`、审查文档时才创建。
 
 ### M 路径
 
@@ -188,24 +208,29 @@ L 级资产契约：
 4. 完成后使用 `code-review`；`code-review` 会委托 `requesting-code-review`。轻量 M 可用对话内需求摘要、diff、涉及文件和验证证据作为审查输入，不强制补落盘需求或计划。
 5. 声称完成前执行 `verification-before-completion` 证据门禁。
 
-轻量 M 默认不创建 md 产物。用户要求记录、出现重要决策，或执行中升级为标准 M/L 时再补产物。
+轻量 M 默认不创建 md 产物、`status.md` 或 context manifest。用户要求记录、出现重要决策、已有落盘资产，或执行中升级为标准 M/L 时再补产物和清单。
 
 #### 标准 M
 
 1. 使用 `openspec` 或 `req-probe` 固化需求。
 2. 使用 `grillme` / `grilling` 压测需求或设计。
 3. 使用 `writing-plans` 创建实现计划。
-4. 按第 4 步风险维度表决定哪些门禁启用，以及使用 `light` 还是 `full`。
-5. 对已触发的需求覆盖、计划审查、安全审查和回撤单元按顺序执行；未触发的不为了仪式强行生成文档。
-6. 按项目适配层的 test strategy 决定是否使用 `test-driven-development`。
-7. 按批准后的计划实现。
-8. 完成后使用 `code-review`；`code-review` 会委托 `requesting-code-review`。
-9. 声称完成前执行 `verification-before-completion` 证据门禁。
+4. 创建或刷新 `status.md` 的 `dev_flow_status` 和 context manifest。
+5. 按第 4 步风险维度表决定哪些门禁启用，以及使用 `light` 还是 `full`。
+6. 对已触发的需求覆盖、计划审查、安全审查和回撤单元按顺序执行；未触发的不为了仪式强行生成文档。
+7. 按项目适配层的 test strategy 决定是否使用 `test-driven-development`。
+8. 按批准后的计划实现。
+9. 完成后使用 `code-review`；`code-review` 会委托 `requesting-code-review`。
+10. 声称完成前执行 `verification-before-completion` 证据门禁。
 
-必需 md 产物：
+必需产物：
 
 ```text
 <FEATURE_ROOT>/<feature-id>/需求说明书.md
+<FEATURE_ROOT>/<feature-id>/status.md
+<FEATURE_ROOT>/<feature-id>/context/implement.jsonl
+<FEATURE_ROOT>/<feature-id>/context/review.jsonl
+<FEATURE_ROOT>/<feature-id>/context/verify.jsonl
 <FEATURE_ROOT>/<feature-id>/初步实现计划.md
 ```
 
@@ -227,17 +252,21 @@ L 级资产契约：
 #### 轻量 L
 
 1. 复述高风险边界、改动范围和不做范围。
-2. 更新 `<FEATURE_ROOT>/<feature-id>/status.md`；如果没有稳定 feature-id，先按项目适配层生成一个。
-3. 按风险维度至少触发：安全审查 `light/full`、行为验证 `full`、回撤证据 `light`。
-4. 设计自明时不强制 `grillme`、完整 `writing-plans`、`requirements-coverage full` 或 `plan-review full`。
-5. 实现前停下确认是否接受轻量 L 路径；用户确认后实现。
-6. 完成后执行 `code-review` 和 `verification-before-completion`。
-7. 行为验证在当前项目 `webapp-testing: disabled` 时必须落盘 `<REVIEW_ROOT>/YYYY-MM-DD-<feature-id>-manual-test.md`。
+2. 更新 `<FEATURE_ROOT>/<feature-id>/status.md` 的 `dev_flow_status`；如果没有稳定 feature-id，先按项目适配层生成一个。
+3. 创建或刷新 `context/implement.jsonl`、`review.jsonl`、`verify.jsonl`。
+4. 按风险维度至少触发：安全审查 `light/full`、行为验证 `full`、回撤证据 `light`。
+5. 设计自明时不强制 `grillme`、完整 `writing-plans`、`requirements-coverage full` 或 `plan-review full`。
+6. 实现前停下确认是否接受轻量 L 路径；用户确认后实现。
+7. 完成后执行 `code-review` 和 `verification-before-completion`。
+8. 行为验证在当前项目 `webapp-testing: disabled` 时必须落盘 `<REVIEW_ROOT>/YYYY-MM-DD-<feature-id>-manual-test.md`。
 
 轻量 L 必需证据：
 
 ```text
 <FEATURE_ROOT>/<feature-id>/status.md
+<FEATURE_ROOT>/<feature-id>/context/implement.jsonl
+<FEATURE_ROOT>/<feature-id>/context/review.jsonl
+<FEATURE_ROOT>/<feature-id>/context/verify.jsonl
 <REVIEW_ROOT>/YYYY-MM-DD-<feature-id>-code-review.md
 <REVIEW_ROOT>/YYYY-MM-DD-<feature-id>-verification.md
 <REVIEW_ROOT>/YYYY-MM-DD-<feature-id>-manual-test.md（行为改动时）
@@ -250,23 +279,27 @@ L 级资产契约：
 3. 设计不确定性高时，先在 OpenSpec `design.md` 或实现计划中写 2-3 个候选方案与取舍；设计自明时跳过。
 4. 使用 `grillme` / `grilling` 压测。
 5. 使用 `writing-plans` 创建实现计划。
-6. 按第 4 步风险维度表启用门禁。L 级默认至少保留 `status.md`，触及安全或运行时行为时必须保留相应证据。
-7. 已触发的 `requirements-coverage` 有阻塞缺口时，不进入实现。
-8. 已触发的 `plan-review` 出现 CRITICAL/HIGH 时，必须修复、反驳或由用户明确接受风险。
-9. 已触发的 `rollback-units` 为 `full` 时落盘，明确任务依赖、回撤顺序和回撤后验证；为 `light` 时至少写入 `status.md`。
-10. 涉及登录、鉴权、token/session、权限守卫、订单、支付、数据删除、跨系统入口或数据完整性时，按项目适配层加入安全审查。
-11. 按项目适配层的 test strategy 决定是否使用 `test-driven-development`。
-12. 停下询问用户是否开始实现。
-13. 可拆分时按子任务执行；平台支持时使用 `subagent-driven-development`，否则使用 `executing-plans`。
-14. 最终执行 `code-review`。
-15. 按项目适配层运行最强相关验证；L 级运行时行为改动必须包含 `webapp-testing` 证据或手动测试脚本。
-16. 进入 `finishing-a-development-branch`，停下询问分支收尾方式。
+6. 创建或刷新 `status.md` 的 `dev_flow_status` 和 context manifest。
+7. 按第 4 步风险维度表启用门禁。L 级默认至少保留 `status.md`，触及安全或运行时行为时必须保留相应证据。
+8. 已触发的 `requirements-coverage` 有阻塞缺口时，不进入实现。
+9. 已触发的 `plan-review` 出现 CRITICAL/HIGH 时，必须修复、反驳或由用户明确接受风险。
+10. 已触发的 `rollback-units` 为 `full` 时落盘，明确任务依赖、回撤顺序和回撤后验证；为 `light` 时至少写入 `status.md`。
+11. 涉及登录、鉴权、token/session、权限守卫、订单、支付、数据删除、跨系统入口或数据完整性时，按项目适配层加入安全审查。
+12. 按项目适配层的 test strategy 决定是否使用 `test-driven-development`。
+13. 停下询问用户是否开始实现。
+14. 可拆分时按子任务执行；平台支持时使用 `subagent-driven-development`，否则使用 `executing-plans`。
+15. 最终执行 `code-review`。
+16. 按项目适配层运行最强相关验证；L 级运行时行为改动必须包含 `webapp-testing` 证据或手动测试脚本。
+17. 进入 `finishing-a-development-branch`，停下询问分支收尾方式。
 
-必需 md 产物：
+必需产物：
 
 ```text
 <FEATURE_ROOT>/<feature-id>/需求说明书.md
 <FEATURE_ROOT>/<feature-id>/status.md
+<FEATURE_ROOT>/<feature-id>/context/implement.jsonl
+<FEATURE_ROOT>/<feature-id>/context/review.jsonl
+<FEATURE_ROOT>/<feature-id>/context/verify.jsonl
 <FEATURE_ROOT>/<feature-id>/初步实现计划.md
 <FEATURE_ROOT>/<feature-id>/requirements-coverage.md（触发 full 时）
 <REVIEW_ROOT>/YYYY-MM-DD-<feature-id>-plan-review.md（触发 full 时）
@@ -384,9 +417,9 @@ L 级运行时行为改动不能只用 type-check 或 lint 作为完成证据；
 
 - XS：不生成 md。
 - S：默认不生成 md。
-- 轻量 M：默认不生成 md；出现重要决策、用户要求记录或流程升级时再生成。
-- 标准 M：需求说明书和实现计划；必要时保存覆盖、审查、回撤、安全和行为验证资产。
-- L：需求说明书、`status.md`、实现计划、代码审查、验证证据；其它门禁按风险维度决定 `light` 或 `full`。
+- 轻量 M：默认不生成 md、`status.md` 或 context manifest；出现重要决策、用户要求记录、已有落盘资产或流程升级时再生成。
+- 标准 M：需求说明书、`status.md`、context manifest 和实现计划；必要时保存覆盖、审查、回撤、安全和行为验证资产。
+- L：需求说明书、`status.md`、context manifest、实现计划、代码审查、验证证据；其它门禁按风险维度决定 `light` 或 `full`。
 
 如果 grill 过程产生重要决策，把结论合并到需求或计划，不单独保存长对话记录。
 
@@ -424,7 +457,7 @@ L 级运行时行为改动不能只用 type-check 或 lint 作为完成证据；
 我判断这是 <level>，原因是 <short reason>。我会走 <route summary>。
 ```
 
-M/L 阶段结束时更新 `<FEATURE_ROOT>/<feature-id>/status.md`，并追加 `[HANDOFF]`。如果 `Auto-continue: yes`，可以直接调用下一技能；如果 `Auto-continue: no`，先说明停顿原因并等待用户确认。
+M/L 阶段结束时更新 `<FEATURE_ROOT>/<feature-id>/status.md` 和 `dev_flow_status`，并追加 `[HANDOFF]`。如果 `Auto-continue: yes`，可以直接调用下一技能；如果 `Auto-continue: no`，先说明停顿原因并等待用户确认。
 
 完成汇报：
 
