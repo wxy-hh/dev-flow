@@ -170,6 +170,15 @@ dev_flow_status:
     implement: "<FEATURE_ROOT>/<feature-id>/context/implement.jsonl"
     review: "<FEATURE_ROOT>/<feature-id>/context/review.jsonl"
     verify: "<FEATURE_ROOT>/<feature-id>/context/verify.jsonl"
+  human_gates:
+    requirement_confirmation:
+      required: false
+      status: "pending"
+      evidence: "not required"
+    implementation_approval:
+      required: false
+      status: "pending"
+      evidence: "not required"
   risk_gates:
     requirements_coverage: "none"
     plan_review: "none"
@@ -191,6 +200,7 @@ dev_flow_status:
 - Level:
 - Current gate:
 - Completed gates:
+- Human gates:
 - Next action:
 - Auto-continue:
 - Assets:
@@ -216,6 +226,9 @@ dev_flow_status:
 - 如果 git 可用，每次更新同时记录 `Base SHA`、`Head SHA`、`Working tree dirty` 和 `Diff stat hash`；没有 git 时写 `unknown` 并说明原因。
 - 验证门禁完成后必须记录 `Last validation at` 和 `Last validation commands`。验证后如果 `Head SHA`、`Working tree dirty` 或 `Diff stat hash` 发生变化，已有验证证据视为过期，完成前必须重新验证。
 - 如果任务包含风险门禁，维护一个 `Risk Gates` 表，列出每个 gate 的 `none` / `light` / `full` 形态和证据路径。
+- 标准 M/L 的 `human_gates.requirement_confirmation` 和 `human_gates.implementation_approval` 必须为 `required: true`。轻量 L 也必须要求边界确认和实现前确认；如果用户一次明确确认边界和轻量 L 路径，可以用同一条用户回复作为两个 gate 的 `evidence`。XS/S 和默认轻量 M 不要求这些 gate。
+- 一旦输出 `[HUMAN GATE:<gate-id>]` 或 `[HANDOFF]` 中 `Auto-continue: no`，当前回合必须停止；不得在同一回合把 `auto_continue: false` 改成 `true` 或继续写计划/源码。
+- 只有用户后续明确确认、继续、接受风险或跳过并接受风险，才能把对应 `human_gates.<gate>.status` 写成 `confirmed` 或 `skipped`，并把原话或接受风险理由写入 `evidence`。
 - 如果验证失败或用户接受风险，在 `Next action` 和 `Accepted risks` 中写清阻塞点或接受风险依据。
 - 同步维护 frontmatter 中的 `dev_flow_status`；机器可读字段和人类可读摘要不一致时，以最新明确验证证据和已有资产为准并立即修正摘要。
 

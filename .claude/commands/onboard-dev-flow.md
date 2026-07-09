@@ -33,6 +33,7 @@
    - test strategy。
    - OpenSpec 策略。
    - scoped spec 和 context manifest 路径。
+   - HUMAN GATE 字段和标准 M/L 停顿边界。
    - 启用 / 禁用 agents。
    - 版本管理边界。
 5. 运行 `.claude/skills/dev-flow/scripts/dev-flow-doctor` 做静态自检。
@@ -46,7 +47,8 @@
 - 发现无法判断的命令或能力时，写成 `none` 或 `needs-confirmation`，不要猜。
 - `project-workflow.md` 必须保留 `dev_flow` 配置块，且配置值要与 Markdown 表格一致。
 - `dev_flow.paths.scoped_spec_root` 默认写 `.claude/rules/specs`；不要因为没有真实 scope 就生成空规范。
-- 标准资产中必须包含 `status.md` 的 `dev_flow_status` 结构和 context manifest 路径。
+- 标准资产中必须包含 `status.md` 的 `dev_flow_status`、`human_gates` 结构和 context manifest 路径。
+- 生成后的说明必须写清：标准 M/L 需求确认前不写计划，实现前确认前不写代码；`code-review` 不能替代 `plan-review`。
 - 生成后运行项目适配层中的文档/技能自检命令。
 
 ## 完成格式

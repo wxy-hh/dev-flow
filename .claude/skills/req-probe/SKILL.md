@@ -64,7 +64,7 @@ C. <备选方案>
 
 ### 3. 输出需求说明书
 
-完成提问后，输出完整《需求说明书.md》到 `<FEATURE_ROOT>/<feature-id>/需求说明书.md`，并创建或更新 `<FEATURE_ROOT>/<feature-id>/status.md`。轻量 L 和标准 M/L 的 `status.md` 必须包含 `dev_flow_status`；context manifest 由后续 `writing-plans` 创建或刷新。
+完成提问后，输出完整《需求说明书.md》到 `<FEATURE_ROOT>/<feature-id>/需求说明书.md`，并创建或更新 `<FEATURE_ROOT>/<feature-id>/status.md`。轻量 L 和标准 M/L 的 `status.md` 必须包含 `dev_flow_status`；标准 M/L 必须把 `human_gates.requirement_confirmation.required` 写为 `true`、`status` 写为 `pending`。context manifest 由后续 `writing-plans` 创建或刷新。
 
 ### 4. 反向确认
 
@@ -73,7 +73,9 @@ C. <备选方案>
 输出后显示：
 
 > ```
-> [HUMAN GATE] — 请确认以上需求说明书是否准确完整。确认后进入第 2 步：生成初步实现计划。
+> [HUMAN GATE:requirement_confirmation]
+> 请确认以上需求说明书是否准确完整。确认后进入 grillme / writing-plans；确认前不得写实现计划或源码。
+> [/HUMAN GATE]
 > ```
 
 随后输出 `[HANDOFF]`：
@@ -95,7 +97,7 @@ Stop reason: human requirement confirmation required
 [/HANDOFF]
 ```
 
-**必须立即停止所有操作**，等待用户发送明确确认指令（如"确认""继续"）后方可推进。
+**必须立即停止所有操作**，等待用户发送明确确认指令（如"确认""继续"）后方可推进。后续恢复时，先把 `dev_flow_status.human_gates.requirement_confirmation.status` 更新为 `confirmed`，并把用户确认原话写入 `evidence`；如果用户要求跳过，写为 `skipped` 并同步写入 `accepted_risks`。
 
 ## 五维度覆盖清单（内部检查用，不直接问用户）
 

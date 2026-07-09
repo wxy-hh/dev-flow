@@ -117,16 +117,22 @@ openspec/changes/<change-id>/tasks.md
 后续步骤通常是：
 
 ```text
-grillme → writing-plans → requirements-coverage → plan-review → rollback-units → 实现 → code-review → verification-before-completion
+grillme → [HUMAN GATE:requirement_confirmation] → writing-plans → requirements-coverage → plan-review → rollback-units → [HUMAN GATE:implementation_approval] → 实现 → code-review → verification-before-completion
 ```
 
 如果 `tasks.md` 已经足够具体，`writing-plans` 可以引用它并只补充项目内执行细节，不要重复制造第二套互相冲突的计划。
 
 从 `writing-plans` 起，所有实现层产物都写到 `<FEATURE_ROOT>/<feature-id>/` 或 `<REVIEW_ROOT>/`；OpenSpec 目录只保留需求、设计和 delta spec。
 
-OpenSpec 完成后更新 `<FEATURE_ROOT>/<feature-id>/status.md`；如果目录尚不存在，先创建 feature 目录并记录 OpenSpec 路径。轻量 L 和标准 M/L 的 `status.md` 必须包含 `dev_flow_status`；context manifest 由后续 `writing-plans` 创建或刷新，并把 OpenSpec 产物登记为需求或计划上下文。
+OpenSpec 完成后更新 `<FEATURE_ROOT>/<feature-id>/status.md`；如果目录尚不存在，先创建 feature 目录并记录 OpenSpec 路径。轻量 L 和标准 M/L 的 `status.md` 必须包含 `dev_flow_status`；标准 M/L 必须把 `human_gates.requirement_confirmation.required` 写为 `true`、`status` 写为 `pending`。context manifest 由后续 `writing-plans` 创建或刷新，并把 OpenSpec 产物登记为需求或计划上下文。
 
 完成 OpenSpec 变更包后输出 `[HANDOFF]`，并等待用户确认需求边界：
+
+```text
+[HUMAN GATE:requirement_confirmation]
+请确认 OpenSpec 需求边界是否准确完整。确认前不得进入 writing-plans。
+[/HUMAN GATE]
+```
 
 ```text
 [HANDOFF]

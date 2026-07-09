@@ -117,6 +117,12 @@ L 级设计模式必须保存到：
 设计模式通过后，停在实现前：
 
 ```text
+[HUMAN GATE:implementation_approval]
+回撤单元已准备好。请确认是否按当前计划、回撤边界和风险接受情况开始实现。
+[/HUMAN GATE]
+```
+
+```text
 [HANDOFF]
 Feature ID: <feature-id>
 Level: <M|L>
@@ -133,7 +139,7 @@ Stop reason: rollback units are ready; confirm before implementation starts
 [/HANDOFF]
 ```
 
-输出任何落盘报告后，同步更新 `<FEATURE_ROOT>/<feature-id>/status.md` 和 `dev_flow_status`。如果存在 context manifest，把 `<FEATURE_ROOT>/<feature-id>/rollback-units.md` 追加到 `context/review.jsonl` 和 `context/verify.jsonl`。
+输出任何落盘报告后，同步更新 `<FEATURE_ROOT>/<feature-id>/status.md` 和 `dev_flow_status`。设计模式通过后，标准 M/L 必须保持 `human_gates.implementation_approval.required: true` 且用户确认前为 `pending`。如果存在 context manifest，把 `<FEATURE_ROOT>/<feature-id>/rollback-units.md` 追加到 `context/review.jsonl` 和 `context/verify.jsonl`。
 
 审计模式通过后，进入代码审查：
 

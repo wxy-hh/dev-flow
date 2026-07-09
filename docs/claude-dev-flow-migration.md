@@ -153,10 +153,12 @@ dev_flow:
 | 接口 | 路径 | 使用边界 |
 |------|------|----------|
 | 机器可读状态 | `<FEATURE_ROOT>/<feature-id>/status.md` frontmatter 的 `dev_flow_status` | 轻量 L、标准 M/L、需要跨技能恢复的任务 |
+| HUMAN GATE | `dev_flow_status.human_gates.{requirement_confirmation,implementation_approval}` | 标准 M/L 必须维护；轻量 L 必须记录边界确认和实现前确认 |
 | 上下文清单 | `<FEATURE_ROOT>/<feature-id>/context/{implement,review,verify}.jsonl` | 轻量 L 和标准 M/L 必须维护；轻量 M 仅在已有落盘资产时维护 |
 | 局部规范 | `<SCOPED_SPEC_ROOT>/<scope>/index.md` | 可选；M/L 明确命中 scope 时读取 |
 
 XS/S 不创建 `status.md` 或 context manifest；轻量 M 默认也不创建。不要为了启用三件套而改变任务分级。
+标准 M/L 在需求确认前不得写实现计划，在实现前确认前不得写业务代码；实现后的 `code-review` 不能替代实现前 `plan-review`。
 
 ### 4. 生成验证矩阵
 
@@ -250,6 +252,6 @@ smoke test 通过后，再开始真实业务任务。
 
 ## 迁移后建议
 
-先用一个真实但低风险的 M 级任务试跑，再用一个轻量 L 场景验证安全审查、行为验证和回撤证据。确认没有流程摩擦后，再把迁移包作为团队默认入口。
+先用一个真实但低风险的 M 级任务试跑，再用一个轻量 L 场景验证 HUMAN GATE、安全审查、行为验证和回撤证据。确认没有流程摩擦后，再把迁移包作为团队默认入口。
 
 迁移完成后的日常使用方式、任务描述示例、产物位置和维护规则，见 [迁移后使用说明](./claude-dev-flow-post-migration-usage.md)。

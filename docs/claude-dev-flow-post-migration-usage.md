@@ -46,7 +46,9 @@
 - 分级是否符合团队预期。
 - `project-workflow.md` 的路径、命令和验证矩阵是否准确。
 - `status.md` 能否用 `dev_flow_status` 和摘要记录当前 gate、资产和验证新鲜度。
+- `status.md` 的 `human_gates` 能否记录需求确认和实现前确认；出现 `[HUMAN GATE:*]` 或 `Auto-continue: no` 后是否真的停下。
 - 轻量 L 和标准 M/L 的 context manifest 能否串起需求、计划、审查和验证输入。
+- 标准 M/L 的 `plan-review` 是否发生在第一处源码修改之前，且没有被后置 `code-review` 替代。
 - 代码审查是否只报告真实问题。
 - `/finish` 是否能给出新鲜验证证据。
 
@@ -92,7 +94,8 @@
 
 - 生成需求说明和实现计划。
 - 生成或更新 `status.md` 和 context manifest。
-- 按风险维度触发需求覆盖、计划审查或回撤单元。
+- 需求边界确认后才生成实现计划。
+- 至少执行 `plan-review light`，并在实现前等待确认。
 - 实现后执行代码审查和完成前验证。
 
 ### 轻量 L
@@ -108,7 +111,8 @@
 - 生成或更新 `status.md`。
 - 维护 context manifest，方便安全审查、代码审查和验证读取同一批证据。
 - 至少保留安全审查、行为验证和回撤证据。
-- 实现前说明风险并等待确认。
+- 先输出边界确认卡，列出高风险点、改动范围、不做范围、回撤方式和验证方式；用户确认前不写 `status.md`、context manifest 或业务代码。
+- 实现前说明风险并等待确认；如果出现需求分支、接口契约不明、多模块方案取舍、共享状态/权限结构变化或难回撤，升级标准 L。
 
 ### 标准 L
 
@@ -120,8 +124,8 @@
 
 预期行为：
 
-- 先固化需求边界。
-- 进入计划、覆盖、审查、安全、回撤和实现前确认。
+- 先固化需求边界，并在 `[HUMAN GATE:requirement_confirmation]` 停下。
+- 用户确认需求后再写计划；完成 `plan-review` 和回撤/安全等实现前门禁后，在 `[HUMAN GATE:implementation_approval]` 停下。
 - 维护 `status.md`、context manifest 和必要局部规范引用。
 - 完成后必须有代码审查和新鲜验证证据。
 
@@ -144,6 +148,8 @@
 | `<REVIEW_ROOT>/YYYY-MM-DD-<feature-id>-code-review.md` | 代码审查报告 |
 | `<REVIEW_ROOT>/YYYY-MM-DD-<feature-id>-verification.md` | 完成前验证证据 |
 | `<REVIEW_ROOT>/YYYY-MM-DD-<feature-id>-manual-test.md` | 手动行为验证脚本和实测结果 |
+
+`status.md` 的 `dev_flow_status.human_gates` 是长流程能否继续的机器可读依据。标准 M/L 必须有 `requirement_confirmation` 和 `implementation_approval`；轻量 L 必须有边界确认和实现前确认。确认前不要写实现计划或业务代码。
 
 恢复中断任务时，先读 `status.md` 的 `dev_flow_status` 和摘要，再读其中列出的资产及 context manifest；`[HANDOFF]` 只作为最近一次对话的辅助线索。
 
@@ -190,6 +196,8 @@ doctor 只做静态检查，不替代项目测试、浏览器验证或 smoke tes
 - 新增脚本优先读取 `dev_flow.paths`，不要硬编码 runtime 目录。
 - `.claude/rules/specs/<scope>/index.md` 只有在有真实局部约定时才创建，并包含 `Pre-Development Checklist` 和 `Quality Check`。
 - context manifest 只登记需求、计划、局部规范、研究、审查和验证等上下文文件，不登记源码文件。
+- HUMAN GATE 是硬停顿：`[HUMAN GATE:*]` 或 `Auto-continue: no` 后不能在同一回合继续写计划、写代码或把 `auto_continue` 改回 `true`。
+- `plan-review` 是实现前计划审查，不能由实现后的 `code-review` 代替。
 - 安全审查默认只读；需要修复时，由主流程或用户确认后的任务执行代码修改。
 - `status.md` 是长流程恢复的事实来源，M/L 任务更新资产时要同步更新它。
 
@@ -205,7 +213,7 @@ doctor 只做静态检查，不替代项目测试、浏览器验证或 smoke tes
 
 ### 想跳过某个门禁怎么办
 
-XS/S 默认轻量，不会强行生成文档。标准 M/L 如果要跳过需求覆盖、计划审查、回撤或安全审查，需要说明风险；L 级跳过高风险门禁必须用户明确确认。
+XS/S 默认轻量，不会强行生成文档。标准 M/L 如果要跳过需求确认、计划审查、实现前确认、回撤或安全审查，需要说明风险；L 级跳过高风险门禁必须用户明确确认，并写入 `accepted_risks`。
 
 ### 可以让 Claude 直接提交吗
 

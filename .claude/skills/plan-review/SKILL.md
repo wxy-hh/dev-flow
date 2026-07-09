@@ -13,8 +13,10 @@ description: 多维度独立审查计划，查漏补缺后再执行。已有 req
 
 - 不写业务代码。
 - 不替代 `requirements-coverage`；覆盖矩阵缺失时只能记录流程风险和明显遗漏。
+- 不替代 `code-review`，也不能被实现后的 `code-review` 替代；本技能只做实现前计划审查。
 - 不只依赖当前对话。优先读取用户显式路径和上一步 `[HANDOFF]`，再按约定目录查找文件。
 - CRITICAL/HIGH 是实现前阻塞项；必须修复、反驳，或由用户明确接受风险后才能继续。
+- 标准 M/L 无论 `light` 还是 `full`，都必须在第一处业务源码修改前完成本门禁。
 - L 级审查报告必须保存到 `<REVIEW_ROOT>/YYYY-MM-DD-<feature-id>-plan-review.md`。
 
 ## 资产读取
@@ -126,7 +128,7 @@ description: 多维度独立审查计划，查漏补缺后再执行。已有 req
 请对每条 CRITICAL/HIGH 做出决定：采纳 / 反驳 / 调整。
 ```
 
-根据用户决定修订原始计划，并更新审查报告里的采纳状态。修订后展示修订点摘要。无 CRITICAL/HIGH 时，不需要逐条审批，直接输出交接块进入下一道已触发门禁；如果回撤单元门禁被触发，则进入 `rollback-units`。
+根据用户决定修订原始计划，并更新审查报告里的采纳状态。修订后展示修订点摘要。无 CRITICAL/HIGH 时，不需要逐条审批；如果回撤单元、安全审查等实现前门禁仍未完成，可以自动交给下一道已触发门禁。如果下一步会写业务代码，必须输出 `[HUMAN GATE:implementation_approval]` 并停止。
 
 ## 输出和交接
 
@@ -138,7 +140,7 @@ description: 多维度独立审查计划，查漏补缺后再执行。已有 req
 4. MEDIUM/LOW 摘要。
 5. 修订建议或已修订摘要。
 6. 把报告追加到 `context/review.jsonl`；如果后续验证需要计划审查结论，同时追加到 `context/verify.jsonl`。
-7. 更新 `<FEATURE_ROOT>/<feature-id>/status.md` 和 `dev_flow_status`。
+7. 更新 `<FEATURE_ROOT>/<feature-id>/status.md` 和 `dev_flow_status`；标准 M/L 必须保持 `human_gates.implementation_approval.required: true`，并在用户确认前保持 `status: pending`。
 8. `[HANDOFF]` 交接块。
 
 无 CRITICAL/HIGH 时：
@@ -158,15 +160,40 @@ Next inputs:
 - <FEATURE_ROOT>/<feature-id>/requirements-coverage.md
 - <REVIEW_ROOT>/YYYY-MM-DD-<feature-id>-plan-review.md
 - <FEATURE_ROOT>/<feature-id>/context/review.jsonl
-Auto-continue: yes
+Auto-continue: yes/no
 [/HANDOFF]
 ```
 
 常见取值：
 
 - 回撤单元触发为 `full`：`Next skill: rollback-units`
-- 只需要轻量回撤证据：`Next skill: subagent-driven-development` 或 `executing-plans`，并把回撤摘要写入 `status.md`
+- 只需要轻量回撤证据：先把回撤摘要写入 `status.md`，再输出 `[HUMAN GATE:implementation_approval]`
 - 安全审查尚未完成：`Next skill: security-reviewer` 或在 `status.md` 中补轻量安全结论
+
+如果下一步是 `subagent-driven-development` 或 `executing-plans`，不得使用上面的 `Auto-continue: yes`。必须改为：
+
+```text
+[HUMAN GATE:implementation_approval]
+计划审查已完成，请确认是否按当前计划、回撤边界、风险接受情况开始实现。
+[/HUMAN GATE]
+
+[HANDOFF]
+Feature ID: <feature-id>
+Level: <M|L>
+Current gate: plan-review
+Generated assets:
+- <FEATURE_ROOT>/<feature-id>/status.md
+- <REVIEW_ROOT>/YYYY-MM-DD-<feature-id>-plan-review.md
+Next skill: subagent-driven-development 或 executing-plans
+Next inputs:
+- <FEATURE_ROOT>/<feature-id>/需求说明书.md
+- <FEATURE_ROOT>/<feature-id>/初步实现计划.md
+- <REVIEW_ROOT>/YYYY-MM-DD-<feature-id>-plan-review.md
+- <FEATURE_ROOT>/<feature-id>/context/implement.jsonl
+Auto-continue: no
+Stop reason: human implementation approval required after plan-review
+[/HANDOFF]
+```
 
 有 CRITICAL/HIGH 时：
 

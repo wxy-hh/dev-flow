@@ -107,11 +107,29 @@ for field in \
   "next_action" \
   "auto_continue" \
   "assets" \
+  "human_gates" \
   "risk_gates" \
   "validation" \
   "accepted_risks"; do
   require_pattern ".claude/rules/project-workflow.template.md" "${field}:" "dev_flow_status has ${field}"
 done
+for field in \
+  "requirement_confirmation" \
+  "implementation_approval"; do
+  require_pattern ".claude/rules/project-workflow.template.md" "${field}:" "dev_flow_status.human_gates has ${field}"
+done
+require_pattern ".claude/skills/dev-flow/SKILL.md" 'HUMAN GATE 硬协议' "dev-flow documents HUMAN GATE hard protocol"
+require_pattern ".claude/skills/dev-flow/SKILL.md" 'Auto-continue: no.*当前回合必须停止|当前回合必须停止' "dev-flow stops on Auto-continue no"
+require_pattern ".claude/skills/dev-flow/SKILL.md" 'code-review.*不能.*plan-review|plan-review.*不能.*code-review' "dev-flow does not allow code-review to replace plan-review"
+require_pattern ".claude/skills/writing-plans/SKILL.md" 'requirement_confirmation\.status.*confirmed' "writing-plans requires confirmed requirement gate"
+require_pattern ".claude/skills/writing-plans/SKILL.md" 'human requirement confirmation required before writing-plans' "writing-plans blocks before requirement confirmation"
+require_pattern ".claude/skills/grillme/SKILL.md" '不能 `Auto-continue: yes` 直达 `writing-plans`' "grillme cannot auto-continue to writing-plans in M/L"
+require_pattern ".claude/skills/grilling/SKILL.md" '不得 `Auto-continue: yes` 直达 `writing-plans`|不能 `Auto-continue: yes` 直达 `writing-plans`' "grilling cannot auto-continue to writing-plans in M/L"
+require_pattern ".claude/skills/plan-review/SKILL.md" '不能.*实现后的 `code-review` 替代|实现后的 `code-review`.*不能.*替代' "plan-review is not replaceable by code-review"
+require_pattern ".claude/skills/plan-review/SKILL.md" 'human implementation approval required after plan-review' "plan-review stops for implementation approval"
+require_pattern ".claude/skills/executing-plans/SKILL.md" 'implementation_approval\.status' "executing-plans checks implementation approval"
+require_pattern ".claude/skills/subagent-driven-development/SKILL.md" 'implementation_approval\.status' "subagent-driven-development checks implementation approval"
+require_pattern "docs/claude-dev-flow-smoke-test.md" 'HUMAN GATE 回归用例' "smoke test covers HUMAN GATE regression"
 require_pattern ".claude/skills/subagent-driven-development/scripts/sdd-workspace" 'sdd_progress' "sdd-workspace reads dev_flow.paths.sdd_progress"
 require_pattern ".claude/skills/subagent-driven-development/scripts/sdd-workspace" 'runtime_root' "sdd-workspace reads dev_flow.paths.runtime_root"
 

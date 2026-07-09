@@ -49,8 +49,10 @@ YYYY-MM-DD-dev-flow-smoke-test
 ### 期望路径
 
 - 判断为轻量 L。
-- 生成或更新 `<FEATURE_ROOT>/<feature-id>/status.md`。
-- 生成或更新 `<FEATURE_ROOT>/<feature-id>/context/{implement,review,verify}.jsonl`。
+- 先输出边界确认卡，并在 `[HUMAN GATE:implementation_approval]` 或等价确认点停止。
+- 用户确认前不生成 `status.md`、context manifest 或业务代码。
+- 用户确认后生成或更新 `<FEATURE_ROOT>/<feature-id>/status.md`。
+- 用户确认后生成或更新 `<FEATURE_ROOT>/<feature-id>/context/{implement,review,verify}.jsonl`。
 - 安全审查为 `light` 或 `full`。
 - 行为验证为 `full`。
 - 回撤证据至少为 `light`。
@@ -59,6 +61,7 @@ YYYY-MM-DD-dev-flow-smoke-test
 ### 通过标准
 
 - `status.md` 存在，并包含 `dev_flow_status` 和 `Risk Gates` 表。
+- `status.md` 包含 `human_gates`，边界确认和实现前确认有 evidence。
 - context manifest 存在，且只登记需求、计划、规范、审查或验证类文件，不登记源码文件。
 - `security-review` 有证据。
 - `behavior-verification` 是 `full`，有 manual-test 或自动化记录。
@@ -73,10 +76,12 @@ YYYY-MM-DD-dev-flow-smoke-test
 ### 期望路径
 
 - 需求固化。
+- 需求确认前不得生成实现计划。
 - writing-plans 生成计划。
 - writing-plans 创建或刷新 context manifest。
 - requirements-coverage 是否触发由风险维度决定。
-- plan-review 是否触发由风险维度决定。
+- plan-review 至少以 `light` 形态触发，且发生在实现前。
+- plan-review 后必须停在实现前确认，用户确认前不得写源码。
 - HANDOFF 使用 `<next-triggered-gate>` 或明确的下一门禁，不固定套满流程。
 
 ### 通过标准
@@ -84,6 +89,7 @@ YYYY-MM-DD-dev-flow-smoke-test
 - 不触发的门禁不会被强行生成文档。
 - 触发的门禁能读取上一步产物。
 - `status.md` 能记录当前 gate 和下一步。
+- `human_gates.requirement_confirmation` 和 `implementation_approval` 能记录 `confirmed` / `skipped` 以及 evidence。
 - context manifest 能把需求、计划、覆盖结论和后续审查/验证输入串起来。
 
 ## 验证任务 D：标准 L
@@ -94,8 +100,10 @@ YYYY-MM-DD-dev-flow-smoke-test
 
 ### 期望路径
 
-- 需求边界确认后再进入计划。
+- 需求边界确认后再进入计划；确认前不得生成 `初步实现计划.md`。
 - writing-plans、requirements-coverage、plan-review、rollback-units 按风险维度触发。
+- plan-review 产物必须早于第一处源码修改；实现后的 code-review 不能替代 plan-review。
+- 实现前必须在 `[HUMAN GATE:implementation_approval]` 停下。
 - 安全审查触发。
 - 行为验证必须有运行时或手动证据。
 - 完成后 code-review 和 verification-before-completion。
@@ -105,6 +113,7 @@ YYYY-MM-DD-dev-flow-smoke-test
 - 阻塞缺口会停下。
 - CRITICAL/HIGH 计划审查问题会停下。
 - 实现前有明确回撤边界。
+- `Auto-continue: no` 后同一回合没有继续写计划或源码。
 - 验证报告能证明关键路径。
 
 ## 必查文件
@@ -127,6 +136,18 @@ YYYY-MM-DD-dev-flow-smoke-test
 <FEATURE_ROOT>/<feature-id>/patches/task-N.patch
 <FEATURE_ROOT>/<feature-id>/patches/task-N-untracked-files.txt
 ```
+
+## HUMAN GATE 回归用例
+
+用一个 SSO / 登录回跳类标准 L 场景复跑：
+
+- agent 判断为标准 L 后，可以读取源码和生成需求说明，但必须停在 `[HUMAN GATE:requirement_confirmation]`。
+- 用户确认需求前，不得生成 `初步实现计划.md`、`requirements-coverage.md`、`rollback-units.md` 或写源码。
+- 用户确认需求后，才允许 `writing-plans`。
+- `plan-review` 必须在第一处源码修改之前完成。
+- `plan-review` 和回撤/安全等实现前门禁完成后，必须停在 `[HUMAN GATE:implementation_approval]`。
+- 用户确认实现前，不得修改源码、mock、配置或测试文件。
+- 如果出现 `auto_continue: false` 后同一回合继续写计划或代码，smoke test 失败。
 
 ## 自检命令
 
@@ -175,6 +196,7 @@ YYYY-MM-DD-dev-flow-smoke-test
 
 ## 产物检查
 - status.md:
+- human gates:
 - manual-test:
 - verification:
 - context manifest:
