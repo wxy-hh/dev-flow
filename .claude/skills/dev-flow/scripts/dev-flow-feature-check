@@ -27,6 +27,15 @@ if [ -z "$feature_id" ]; then
   exit 2
 fi
 
+validator="$(dirname "$0")/dev-flow-validate.mjs"
+if ! command -v node >/dev/null 2>&1; then
+  printf 'ERROR Node.js is required for dev-flow validation\n' >&2
+  exit 2
+fi
+if ! node "$validator" feature-id "$feature_id"; then
+  exit 2
+fi
+
 workflow_file=.claude/rules/project-workflow.md
 if [ ! -f "$workflow_file" ]; then
   printf 'FAIL project workflow is missing: %s\nSummary: 0 passed, 1 failure(s)\n' "$workflow_file"
@@ -82,6 +91,11 @@ if [ -z "$feature_root" ] || [ -z "$review_root" ]; then
   printf '\nSummary: %s passed, %s warning(s), %s failure(s)\n' "$passes" "$warnings" "$failures"
   exit 1
 fi
+if ! node "$validator" roots "$root" "$feature_root" "$review_root"; then
+  fail 'project workflow has unsafe feature/review roots'
+  printf '\nSummary: %s passed, %s warning(s), %s failure(s)\n' "$passes" "$warnings" "$failures"
+  exit 1
+fi
 
 feature_dir="$feature_root/$feature_id"
 status_file="$feature_dir/status.md"
@@ -114,6 +128,11 @@ if [ ! -f "$status_file" ]; then
   printf '\nSummary: %s passed, %s warning(s), %s failure(s)\n' "$passes" "$warnings" "$failures"
   exit 1
 fi
+if ! node "$validator" asset "$root" "$feature_root" "$review_root" "$status_file"; then
+  fail "status.md has an unsafe path: $status_file"
+  printf '\nSummary: %s passed, %s warning(s), %s failure(s)\n' "$passes" "$warnings" "$failures"
+  exit 1
+fi
 pass 'status.md exists'
 
 section() {
@@ -129,6 +148,50 @@ completed_gates=$(section completed_gates next_action | sed -n 's/^    - //p')
 status_assets=$(section assets context_manifests | sed -n 's/^    - //p')
 current_gate=$(sed -n 's/^  current_gate: "\([^"]*\)"$/\1/p' "$status_file")
 next_action=$(sed -n 's/^  next_action: "\([^"]*\)"$/\1/p' "$status_file")
+level=$(sed -n 's/^  level: "\([^"]*\)"$/\1/p' "$status_file")
+
+human_gate_value() {
+  local gate=$1
+  local field=$2
+  awk -v gate="$gate" -v field="$field" '
+    /^  human_gates:$/ { in_human_gates=1; next }
+    in_human_gates && $0 == "    " gate ":" { in_gate=1; next }
+    in_gate && /^    [^ ]/ { exit }
+    in_gate && $0 ~ "^      " field ":" {
+      value=$0
+      sub("^[^:]*:[[:space:]]*", "", value)
+      gsub(/^"|"$/, "", value)
+      print value
+      exit
+    }
+  ' "$status_file"
+}
+
+require_human_gate() {
+  local gate=$1
+  local required status evidence
+  required=$(human_gate_value "$gate" required)
+  status=$(human_gate_value "$gate" status)
+  evidence=$(human_gate_value "$gate" evidence)
+
+  if [ "$required" != true ]; then
+    fail "${gate} is not required for this M/L feature"
+  elif [ "$status" = confirmed ]; then
+    if [ -z "$evidence" ] || [ "$evidence" = 'not required' ]; then
+      fail "${gate} is confirmed but has no evidence"
+    else
+      pass "${gate} is confirmed with evidence"
+    fi
+  elif [ "$status" = skipped ]; then
+    if [ -z "$evidence" ] || [ "$evidence" = 'not required' ]; then
+      fail "${gate} is skipped without accepted-risk evidence"
+    else
+      pass "${gate} is skipped with accepted-risk evidence"
+    fi
+  else
+    fail "${gate} is not confirmed"
+  fi
+}
 
 known_gate() {
   case "$1" in
@@ -162,12 +225,28 @@ if [ "$current_gate" = verification-before-completion ] || printf '%s\n' "$next_
   fi
 fi
 
+if [ "$finish" = true ]; then
+  case "$level" in
+    L)
+      require_human_gate requirement_confirmation
+      require_human_gate implementation_approval
+      ;;
+    M)
+      if [ "$(human_gate_value requirement_confirmation required)" = true ] || [ "$(human_gate_value implementation_approval required)" = true ]; then
+        require_human_gate requirement_confirmation
+        require_human_gate implementation_approval
+      fi
+      ;;
+    *) fail 'status level must be M or L for feature completion' ;;
+  esac
+fi
+
 while IFS= read -r asset; do
   [ -z "$asset" ] && continue
-  case "$asset" in
-    "$feature_dir"/*|"$review_root"/*) ;;
-    *) fail "status asset is outside feature/review roots: $asset"; continue ;;
-  esac
+  if ! node "$validator" asset "$root" "$feature_root" "$review_root" "$asset"; then
+    fail "status asset has an unsafe path: $asset"
+    continue
+  fi
   if [ -e "$asset" ]; then pass "status asset exists: $asset"; else fail "status asset is missing: $asset"; fi
 done <<< "$status_assets"
 
@@ -175,6 +254,10 @@ manifest_count=0
 for manifest in "$feature_dir"/context/*.jsonl; do
   [ -f "$manifest" ] || continue
   manifest_count=$((manifest_count + 1))
+  if ! manifest_files=$(node "$validator" manifest "$root" "$manifest"); then
+    fail "context manifest is invalid: $manifest"
+    continue
+  fi
   while IFS= read -r file; do
     [ -z "$file" ] && continue
     if [[ "$file" == src/* || "$file" == mock/* || "$file" == public/* ]]; then
@@ -184,7 +267,7 @@ for manifest in "$feature_dir"/context/*.jsonl; do
     else
       pass "context manifest entry exists: $file"
     fi
-  done < <(sed -n 's/.*"file":"\([^"]*\)".*/\1/p' "$manifest")
+  done <<< "$manifest_files"
 done
 if [ "$manifest_count" -eq 0 ]; then warn 'feature has no context manifests'; fi
 

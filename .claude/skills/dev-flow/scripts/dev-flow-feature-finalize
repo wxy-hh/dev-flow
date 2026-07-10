@@ -26,8 +26,12 @@ if [ -z "$feature_id" ] || [ -z "$retention" ]; then
   printf 'Usage: %s <feature-id> --retention=compact|full [--confirm]\n' "$0" >&2
   exit 2
 fi
-if [[ "$feature_id" == */* || "$feature_id" == .* ]]; then
-  printf 'ERROR feature-id must be a relative identifier: %s\n' "$feature_id" >&2
+validator="$(dirname "$0")/dev-flow-validate.mjs"
+if ! command -v node >/dev/null 2>&1; then
+  printf 'ERROR Node.js is required for dev-flow validation\n' >&2
+  exit 2
+fi
+if ! node "$validator" feature-id "$feature_id"; then
   exit 2
 fi
 
@@ -44,6 +48,14 @@ config_value() {
 
 feature_root=$(config_value feature_root)
 review_root=$(config_value review_root)
+if [ -z "$feature_root" ] || [ -z "$review_root" ]; then
+  printf 'ERROR project workflow has no feature_root/review_root\n' >&2
+  exit 2
+fi
+if ! node "$validator" roots "$root" "$feature_root" "$review_root"; then
+  printf 'ERROR project workflow has unsafe feature/review roots\n' >&2
+  exit 2
+fi
 feature_dir="$feature_root/$feature_id"
 status_file="$feature_dir/status.md"
 feature_file="$feature_dir/feature.md"
@@ -51,6 +63,10 @@ completion_file="$feature_dir/completion.md"
 
 if [ ! -f "$status_file" ]; then
   printf 'ERROR active status is missing: %s\n' "$status_file" >&2
+  exit 1
+fi
+if ! node "$validator" asset "$root" "$feature_root" "$review_root" "$status_file"; then
+  printf 'ERROR active status has an unsafe path: %s\n' "$status_file" >&2
   exit 1
 fi
 if [ ! -f "$feature_file" ] || [ ! -f "$completion_file" ]; then
@@ -79,10 +95,10 @@ archive_root="$feature_dir/archive/$(date '+%Y%m%d-%H%M%S')"
 
 while IFS= read -r asset; do
   [ -z "$asset" ] && continue
-  case "$asset" in
-    "$feature_dir"/*|"$review_root"/*) ;;
-    *) printf 'ERROR status asset is outside feature/review roots: %s\n' "$asset" >&2; exit 1 ;;
-  esac
+  if ! node "$validator" asset "$root" "$feature_root" "$review_root" "$asset"; then
+    printf 'ERROR status asset has an unsafe path: %s\n' "$asset" >&2
+    exit 1
+  fi
 done <<< "$assets"
 
 printf 'Retention: %s\n' "$retention"

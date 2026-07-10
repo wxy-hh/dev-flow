@@ -38,10 +38,52 @@ expect_fail() {
   fi
 }
 
+expect_file() {
+  if [ -f "$1" ]; then
+    printf 'PASS file remains: %s\n' "$1"
+  else
+    printf 'FAIL expected file to remain: %s\n' "$1"
+    failures=$((failures + 1))
+  fi
+}
+
+update_gate_value() {
+  local gate=$1
+  local field=$2
+  local value=$3
+  awk -v target="$gate" -v field="$field" -v value="$value" '
+    $0 == "    " target ":" { in_gate=1; print; next }
+    in_gate && $0 ~ /^    [^ ]/ { in_gate=0 }
+    in_gate && $0 ~ "^      " field ":" {
+      print "      " field ": \"" value "\""
+      in_gate=0
+      next
+    }
+    { print }
+  ' "$tmp/docs/dev-flow/features/demo/status.md" > "$tmp/docs/dev-flow/features/demo/status.new"
+  mv "$tmp/docs/dev-flow/features/demo/status.new" "$tmp/docs/dev-flow/features/demo/status.md"
+}
+
+set_project_feature_root() {
+  awk -v value="$1" '
+    /^    feature_root:/ { print "    feature_root: " value; next }
+    { print }
+  ' "$tmp/.claude/rules/project-workflow.md" > "$tmp/.claude/rules/project-workflow.new"
+  mv "$tmp/.claude/rules/project-workflow.new" "$tmp/.claude/rules/project-workflow.md"
+}
+
+set_status_level() {
+  awk -v value="$1" '
+    /^  level:/ { print "  level: \"" value "\""; next }
+    { print }
+  ' "$tmp/docs/dev-flow/features/demo/status.md" > "$tmp/docs/dev-flow/features/demo/status.new"
+  mv "$tmp/docs/dev-flow/features/demo/status.new" "$tmp/docs/dev-flow/features/demo/status.md"
+}
+
 mkdir -p "$tmp/.claude/rules" "$tmp/docs/dev-flow/features/demo" "$tmp/docs/dev-flow/reviews" "$tmp/docs/dev-flow/features/demo/context" "$tmp/src"
 git -C "$tmp" init -q
 printf '%s\n' 'dev_flow:' '  paths:' '    feature_root: docs/dev-flow/features' '    review_root: docs/dev-flow/reviews' '  verification:' '    webapp_testing: "disabled"' '  artifacts:' '    retention: "compact"' > "$tmp/.claude/rules/project-workflow.md"
-printf '%s\n' '---' 'dev_flow_status:' '  schema_version: "1"' '  workflow_version: "0.3.0"' '  feature_id: "demo"' '  level: "L"' '  current_gate: "verification-before-completion"' '  completed_gates:' '    - verification-before-completion' '  next_action: "finish"' '  assets:' '    - docs/dev-flow/features/demo/status.md' '    - docs/dev-flow/features/demo/context/verify.jsonl' '  context_manifests:' '    verify: docs/dev-flow/features/demo/context/verify.jsonl' '  risk_gates:' '    rollback_units: "light"' '    security_review: "none"' '    behavior_verification: "full"' '  validation:' '    last_validation_at: "2026-01-01"' '    last_validation_commands:' '      - "printf validation"' '    business_diff_fingerprint: "unknown"' '---' > "$tmp/docs/dev-flow/features/demo/status.md"
+printf '%s\n' '---' 'dev_flow_status:' '  schema_version: "1"' '  workflow_version: "0.3.0"' '  feature_id: "demo"' '  level: "L"' '  current_gate: "verification-before-completion"' '  completed_gates:' '    - verification-before-completion' '  next_action: "finish"' '  assets:' '    - docs/dev-flow/features/demo/status.md' '    - docs/dev-flow/features/demo/context/verify.jsonl' '  context_manifests:' '    verify: docs/dev-flow/features/demo/context/verify.jsonl' '  human_gates:' '    requirement_confirmation:' '      required: true' '      status: "confirmed"' '      evidence: "user confirmed requirements"' '    implementation_approval:' '      required: true' '      status: "confirmed"' '      evidence: "user approved implementation"' '  risk_gates:' '    rollback_units: "light"' '    security_review: "none"' '    behavior_verification: "full"' '  validation:' '    last_validation_at: "2026-01-01"' '    last_validation_commands:' '      - "printf validation"' '    business_diff_fingerprint: "unknown"' '---' > "$tmp/docs/dev-flow/features/demo/status.md"
 printf '%s\n' '{"file":"docs/dev-flow/features/demo/status.md","kind":"verification","reason":"fixture"}' > "$tmp/docs/dev-flow/features/demo/context/verify.jsonl"
 printf '%s\n' '# verification' > "$tmp/docs/dev-flow/reviews/demo-verification.md"
 printf '%s\n' '# manual' '实测：通过' > "$tmp/docs/dev-flow/reviews/demo-manual-test.md"
@@ -57,7 +99,31 @@ fixture_fingerprint=$( { git -C "$tmp" diff --binary -- . ':(exclude).claude/**'
 awk -v fp="$fixture_fingerprint" '{ sub(/^    business_diff_fingerprint: ".*"$/, "    business_diff_fingerprint: \"" fp "\""); print }' "$tmp/docs/dev-flow/features/demo/status.md" > "$tmp/docs/dev-flow/features/demo/status.new"
 mv "$tmp/docs/dev-flow/features/demo/status.new" "$tmp/docs/dev-flow/features/demo/status.md"
 
+expect_fail run_feature ../demo --finish
 expect_pass run_feature demo --finish
+set_project_feature_root ../outside
+expect_fail run_feature demo --finish
+set_project_feature_root docs/dev-flow/features
+set_status_level M
+update_gate_value requirement_confirmation required false
+update_gate_value implementation_approval required false
+update_gate_value requirement_confirmation status pending
+update_gate_value implementation_approval status pending
+expect_pass run_feature demo --finish
+set_status_level L
+update_gate_value requirement_confirmation required true
+update_gate_value implementation_approval required true
+update_gate_value requirement_confirmation status confirmed
+update_gate_value implementation_approval status confirmed
+cp "$tmp/docs/dev-flow/features/demo/status.md" "$tmp/docs/dev-flow/features/demo/status.with-human-gates.md"
+awk '
+  /^  human_gates:$/ { skip=1; next }
+  skip && /^  risk_gates:$/ { skip=0 }
+  !skip { print }
+' "$tmp/docs/dev-flow/features/demo/status.md" > "$tmp/docs/dev-flow/features/demo/status.new"
+mv "$tmp/docs/dev-flow/features/demo/status.new" "$tmp/docs/dev-flow/features/demo/status.md"
+expect_fail run_feature demo --finish
+mv "$tmp/docs/dev-flow/features/demo/status.with-human-gates.md" "$tmp/docs/dev-flow/features/demo/status.md"
 awk '{ sub(/^  current_gate: ".*"$/, "  current_gate: \"unknown-gate\""); print }' "$tmp/docs/dev-flow/features/demo/status.md" > "$tmp/docs/dev-flow/features/demo/status.new"
 mv "$tmp/docs/dev-flow/features/demo/status.new" "$tmp/docs/dev-flow/features/demo/status.md"
 expect_fail run_feature demo --finish
@@ -67,6 +133,43 @@ rm "$tmp/docs/dev-flow/reviews/demo-manual-test.md"
 expect_fail run_feature demo --finish
 
 printf '%s\n' '# manual' '实测：通过' > "$tmp/docs/dev-flow/reviews/demo-manual-test.md"
+printf '%s\n' '{"file":"docs/dev-flow/features/demo/status.md","kind":"verification","reason":"fixture"}' '{"file":' > "$tmp/docs/dev-flow/features/demo/context/verify.jsonl"
+expect_fail run_feature demo --finish
+printf '%s\n' '{"file":"docs/dev-flow/features/demo/status.md","kind":"verification","reason":"fixture"}' > "$tmp/docs/dev-flow/features/demo/context/verify.jsonl"
+printf '%s\n' '{"file":"docs/dev-flow/features/demo/status.md","kind":"verification","reason":"fixture"}' >> "$tmp/docs/dev-flow/features/demo/context/verify.jsonl"
+expect_fail run_feature demo --finish
+printf '%s\n' '{"file":"docs/dev-flow/features/demo/status.md","kind":"verification","reason":"fixture"}' > "$tmp/docs/dev-flow/features/demo/context/verify.jsonl"
+update_gate_value implementation_approval evidence 'not required'
+expect_fail run_feature demo --finish
+update_gate_value implementation_approval evidence 'user approved implementation'
+update_gate_value implementation_approval status pending
+expect_fail run_feature demo --finish
+update_gate_value implementation_approval status skipped
+update_gate_value implementation_approval evidence 'not required'
+expect_fail run_feature demo --finish
+update_gate_value implementation_approval status confirmed
+update_gate_value implementation_approval evidence 'user approved implementation'
+printf '%s\n' 'additional business change' > "$tmp/src/business.js"
+expect_fail run_feature demo --finish
+printf '%s\n' 'staged business change' > "$tmp/src/business.js"
+expect_pass run_feature demo --finish
+printf '%s\n' 'do not delete' > "$tmp/.claude/sentinel"
+awk '{ print; if ($0 == "  assets:") print "    - docs/dev-flow/features/demo/../../../../.claude/sentinel" }' "$tmp/docs/dev-flow/features/demo/status.md" > "$tmp/docs/dev-flow/features/demo/status.new"
+mv "$tmp/docs/dev-flow/features/demo/status.new" "$tmp/docs/dev-flow/features/demo/status.md"
+expect_fail run_feature demo --finish
+expect_fail run_in_tmp "$finalizer" demo --retention=compact --confirm
+expect_file "$tmp/.claude/sentinel"
+awk '$0 != "    - docs/dev-flow/features/demo/../../../../.claude/sentinel"' "$tmp/docs/dev-flow/features/demo/status.md" > "$tmp/docs/dev-flow/features/demo/status.new"
+mv "$tmp/docs/dev-flow/features/demo/status.new" "$tmp/docs/dev-flow/features/demo/status.md"
+ln -s "$tmp/.claude" "$tmp/docs/dev-flow/features/demo/unsafe-link"
+awk '{ print; if ($0 == "  assets:") print "    - docs/dev-flow/features/demo/unsafe-link/sentinel" }' "$tmp/docs/dev-flow/features/demo/status.md" > "$tmp/docs/dev-flow/features/demo/status.new"
+mv "$tmp/docs/dev-flow/features/demo/status.new" "$tmp/docs/dev-flow/features/demo/status.md"
+expect_fail run_feature demo --finish
+expect_fail run_in_tmp "$finalizer" demo --retention=compact --confirm
+expect_file "$tmp/.claude/sentinel"
+awk '$0 != "    - docs/dev-flow/features/demo/unsafe-link/sentinel"' "$tmp/docs/dev-flow/features/demo/status.md" > "$tmp/docs/dev-flow/features/demo/status.new"
+mv "$tmp/docs/dev-flow/features/demo/status.new" "$tmp/docs/dev-flow/features/demo/status.md"
+rm "$tmp/docs/dev-flow/features/demo/unsafe-link"
 expect_pass run_in_tmp "$finalizer" demo --retention=compact --confirm
 expect_pass run_feature demo --finish
 

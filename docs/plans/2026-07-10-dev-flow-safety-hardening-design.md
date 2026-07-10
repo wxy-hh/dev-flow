@@ -10,7 +10,7 @@
 
 1. 为 `dev-flow-feature-check` 与 `dev-flow-feature-finalize` 共用 feature ID 和资产路径校验。
 2. 使用一个无第三方依赖的 Node 辅助脚本严格解析 context JSONL：每一非空行必须是合法 JSON，且包含非空的 `file`、`kind`、`reason` 字段；同一 manifest 不允许重复文件。
-3. 对 M/L 的完成前检查要求已有需求确认和实现前确认；`skipped` 必须保留接受风险证据。
+3. 对 L 和已标记人工门禁为必需的标准 M 的完成前检查要求已有需求确认和实现前确认；`skipped` 必须保留接受风险证据。
 4. 在现有 shell 测试中增加路径穿越、损坏 JSONL、缺失人工门禁和验证过期的回归用例。
 
 ## 非范围

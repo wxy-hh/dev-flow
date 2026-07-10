@@ -80,6 +80,7 @@ printf '# dev-flow doctor\n\n'
 
 need_cmd git
 need_cmd rg
+need_cmd node
 
 check_file ".claude/rules/project-workflow.template.md"
 check_file ".claude/rules/specs/README.md"
@@ -87,6 +88,7 @@ check_file ".claude/skills/dev-flow/SKILL.md"
 check_file ".claude/skills/req-probe/SKILL.md"
 check_file ".claude/skills/dev-flow/scripts/dev-flow-feature-check"
 check_file ".claude/skills/dev-flow/scripts/dev-flow-feature-finalize"
+check_file ".claude/skills/dev-flow/scripts/dev-flow-validate.mjs"
 check_file ".claude/agents/security-reviewer.md"
 check_file ".claude/skills/plan-review/references/review-prompts.md"
 check_file ".claude/skills/subagent-driven-development/scripts/task-brief"
