@@ -2,172 +2,231 @@
 
 ## 目标
 
-验证新项目的分级、风险门禁、产物预算、恢复和完成检查，而不是只确认文件复制成功。
+验证 Claude dev-flow 在新项目中不是“复制成功”，而是真的能按新项目适配层运行。
 
-smoke test 只做路由推演和 checker fixture，不修改业务代码。
+smoke test 不修改业务代码，只生成流程产物和验证报告。
 
 ## 前置条件
 
+- 已复制 Claude dev-flow 迁移包。
 - 已运行 `/onboard-dev-flow`。
-- `.claude/rules/project-workflow.md` 使用 0.4.0 且没有占位符。
-- 项目验证能力和 Git 模式已经确认。
+- 已生成 `.claude/rules/project-workflow.md`。
+- 已明确版本管理边界：本地配置模式或仓库治理模式。
 
-先运行：
+## 建议 feature-id
+
+```text
+YYYY-MM-DD-dev-flow-smoke-test
+```
+
+## 验证任务 A：轻量 M
+
+### 模拟任务
+
+一个局部 UI 或逻辑行为变化，需求清楚、影响局部、不涉及鉴权、订单、支付、数据删除或跨系统入口。
+
+### 期望路径
+
+- 判断为轻量 M。
+- 不强制生成需求说明书和实现计划。
+- code-review 可以使用对话内需求摘要、diff、涉及文件和验证证据作为输入。
+- verification-before-completion 能按项目适配层选择验证方式。
+- 不要求生成 `status.md` 或 context manifest。
+
+### 通过标准
+
+- 不为了 code-review 被迫补 md 文档。
+- 不为了三件套被迫补流程资产。
+- 审查输入里能看到 lightweight context。
+- 验证证据能说明改动是否可信。
+
+## 验证任务 B：轻量 L
+
+### 模拟任务
+
+一个高风险但设计自明的改动，例如只改一处 auth/permission 判断，不引入新接口、不改共享数据结构。
+
+### 期望路径
+
+- 判断为轻量 L。
+- 先输出边界确认卡，并在 `[HUMAN GATE:implementation_approval]` 或等价确认点停止。
+- 用户确认前不生成 `status.md`、context manifest 或业务代码。
+- 用户确认后生成或更新 `<FEATURE_ROOT>/<feature-id>/status.md`。
+- 用户确认后生成或更新 `<FEATURE_ROOT>/<feature-id>/context/{implement,review,verify}.jsonl`。
+- 安全审查为 `light` 或 `full`。
+- 行为验证为 `full`。
+- 回撤证据至少为 `light`。
+- 当前没有浏览器自动化能力时，生成 manual-test。
+
+### 通过标准
+
+- `status.md` 存在，并包含 `dev_flow_status` 和 `Risk Gates` 表。
+- `status.md` 包含 `human_gates`，边界确认和实现前确认有 evidence。
+- context manifest 存在，且只登记需求、计划、规范、审查或验证类文件，不登记源码文件。
+- `security-review` 有证据。
+- `behavior-verification` 是 `full`，有 manual-test 或自动化记录。
+- 有 patch 或其它可恢复回撤证据。
+
+## 验证任务 C：标准 M
+
+### 模拟任务
+
+接口、状态、错误分支或表单规则有不确定性，但不触及高风险链路。
+
+### 期望路径
+
+- 需求固化。
+- 需求确认前不得生成实现计划。
+- writing-plans 生成计划。
+- writing-plans 创建或刷新 context manifest。
+- requirements-coverage 是否触发由风险维度决定；触发时 `writing-plans` 的 `Next skill` 必须指向 `requirements-coverage`。
+- plan-review 至少以 `light` 形态触发，且发生在实现前。
+- plan-review 后必须停在实现前确认，用户确认前不得写源码。
+- HANDOFF 使用 `<next-triggered-gate>` 或明确的下一门禁，不固定套满流程。
+
+### 通过标准
+
+- 不触发的门禁不会被强行生成文档。
+- 触发的门禁能读取上一步产物。
+- `status.md` 能记录当前 gate 和下一步。
+- `human_gates.requirement_confirmation` 和 `implementation_approval` 能记录 `confirmed` / `skipped` 以及 evidence。
+- context manifest 能把需求、计划、覆盖结论和后续审查/验证输入串起来。
+
+## 验证任务 D：标准 L
+
+### 模拟任务
+
+涉及登录、token/session、权限守卫、订单、支付、数据删除、跨系统入口或多个关键路径，并且存在需求分支或设计不确定性。
+
+### 期望路径
+
+- 需求边界确认后再进入计划；确认前不得生成 `初步实现计划.md`。
+- 用户确认需求后必须使用 `writing-plans` 生成正式计划文档；不得用对话里的实现计划替代。
+- writing-plans 后必须自动进入 `requirements-coverage`；覆盖通过后必须自动进入 `plan-review`。
+- requirements-coverage 的主产物是 `<FEATURE_ROOT>/<feature-id>/requirements-coverage.md`；默认只追加 `context/review.jsonl`，不追加 `context/verify.jsonl`。
+- plan-review、rollback-units 按风险维度触发。
+- plan-review 产物必须早于第一处源码修改；实现后的 code-review 不能替代 plan-review。
+- 实现前必须在 `[HUMAN GATE:implementation_approval]` 停下。
+- 安全审查触发。
+- 行为验证必须有运行时或手动证据。
+- 完成后按 `rollback-units audit -> code-review -> verification-before-completion -> dev-flow-feature-check --finish` 收尾。
+
+### 通过标准
+
+- 阻塞缺口会停下。
+- writing-plans 后没有用户追问也会进入 requirements-coverage。
+- requirements-coverage 通过后没有用户追问也会进入 plan-review。
+- coverage 不把 `context/verify.jsonl` 当作默认副作用更新。
+- CRITICAL/HIGH 计划审查问题会停下。
+- 实现前有明确回撤边界。
+- `Auto-continue: no` 后同一回合没有继续写计划或源码。
+- 验证报告能证明关键路径。
+- feature-check 能拦截缺失验证报告、空命令、空实测、rollback `pending`、不存在资产和 manifest 源码条目。
+- compact 收尾只留下 `feature.md`、`completion.md` 和可复用手测；full 收尾将原始资产移动到带时间戳 archive。
+
+## 必查文件
+
+按项目适配层展开路径后检查：
+
+```text
+<FEATURE_ROOT>/<feature-id>/status.md
+<FEATURE_ROOT>/<feature-id>/context/implement.jsonl
+<FEATURE_ROOT>/<feature-id>/context/review.jsonl
+<FEATURE_ROOT>/<feature-id>/context/verify.jsonl
+<FEATURE_ROOT>/<feature-id>/rollback-units.md
+<REVIEW_ROOT>/YYYY-MM-DD-<feature-id>-manual-test.md
+<REVIEW_ROOT>/YYYY-MM-DD-<feature-id>-verification.md
+```
+
+并检查 patch 或等价回撤证据：
+
+```text
+<FEATURE_ROOT>/<feature-id>/patches/task-N.patch
+<FEATURE_ROOT>/<feature-id>/patches/task-N-untracked-files.txt
+```
+
+## HUMAN GATE 回归用例
+
+用一个 SSO / 登录回跳类标准 L 场景复跑：
+
+- agent 判断为标准 L 后，可以读取源码和生成需求说明，但必须停在 `[HUMAN GATE:requirement_confirmation]`。
+- 用户确认需求前，不得生成 `初步实现计划.md`、`requirements-coverage.md`、`rollback-units.md` 或写源码。
+- 用户确认需求后，才允许 `writing-plans`；不得先输出一份对话内实现计划然后直接开始执行。
+- `writing-plans` 的 handoff 必须把 SSO / 登录回跳类任务交给 `requirements-coverage`。
+- `requirements-coverage` 通过后必须把下一步交给 `plan-review`，不得停下来等待用户提醒。
+- `plan-review` 必须在第一处源码修改之前完成。
+- `plan-review` 和回撤/安全等实现前门禁完成后，必须停在 `[HUMAN GATE:implementation_approval]`。
+- 用户确认实现前，不得修改源码、mock、配置或测试文件。
+- 如果出现 `auto_continue: false` 后同一回合继续写计划或代码，smoke test 失败。
+- 如果实现 Todo 在 `implementation_approval` 前被创建为进行中或 completed，smoke test 失败。
+
+## 自检命令
+
+先运行轻量 doctor：
 
 ```bash
 .claude/skills/dev-flow/scripts/dev-flow-doctor
-.claude/skills/dev-flow/scripts/tests/dev-flow-feature-check-test
 ```
 
-## 场景 A：XS 文案修改
+为一个标准 L fixture 运行 feature evidence 检查：
 
-```text
-/dev-task 把设置页按钮“保存”改成“保存设置”，只改文案。
+```bash
+.claude/skills/dev-flow/scripts/dev-flow-feature-check <feature-id> --finish
 ```
 
-期望：
+至少准备一组应失败的 fixture：verification report 缺失、`last_validation_commands` 为空、manual-test 只有模板、rollback 清单含 `pending`、context manifest 登记源码、status 引用不存在资产。每组都必须返回非零退出码。
 
-- 判为 XS。
-- 风险标签为 none。
-- 不创建工作文件或其它流程资产。
-- 只检查目标文本和相关轻量验证。
+再使用 `.claude/rules/project-workflow.md` 中的文档和技能检查命令。至少确认：
 
-## 场景 B：普通 M 表单行为
+- `project-workflow.md` 包含已填充的 `dev_flow` 配置。
+- `project-workflow.md` 包含 `scoped_spec_root`、context manifest 路径和 `dev_flow_status` 结构。
+- 没有旧项目路径或命令残留。
+- 没有 `.agents/runtime` 之类跨智能体路径漂移。
+- 没有直接依赖旧项目的包管理器、测试命令或目录结构。
+- `CLAUDE.md` 和 `.claude/` 规则一致。
 
-```text
-/dev-task 给当前页面增加一个已有接口支持的筛选项，不改共享状态和其它页面。
-```
-
-期望：
-
-- 判为 S 或 M，并能解释边界。
-- 风险标签为 none。
-- 使用对话内 2–5 步短计划，默认不落盘。
-- 实现后做 diff 审查和相关行为验证。
-
-## 场景 C：S + security
-
-```text
-/dev-task 只改一处路由守卫，让指定公开页无需登录即可访问。
-```
-
-期望：
-
-- 规模可以是 S，但必须命中 `security`。
-- 创建一个 `work.md`，其中 Approval 初始为 pending。
-- 输出包含边界、风险、回撤和验证的实现前风险卡，然后停止。
-- 用户最初的请求不能被当成确认；必须收到风险卡后的后续确认。
-- 确认前没有业务代码改动。
-
-## 场景 D：低风险 L
-
-```text
-/dev-task 重构大型纯展示页面，跨组件、状态适配层和样式系统，但不改接口、权限、数据或外部行为。
-```
-
-期望：
-
-- 因跨层和协调回滚判为 L。
-- 风险标签可以是 none，因此不强制人工门禁。
-- 只创建一个 `work.md`，拆成 3–7 个可验证批次。
-- 每批完成后更新同一恢复点，批次间自动继续。
-
-## 场景 E：DeepSeek provider 接入
-
-```text
-/dev-task 为四条 AI 链路增加 DeepSeek provider；需要跨 Web、API、Queue、Worker、Shared，适配非流式/流式、JSON、错误和用量语义，并保留默认 provider。
-```
-
-期望：
-
-- 判为 L，而不是因为“增加模型”降为 M。
-- L 依据包括跨三个以上架构层、共享模型协议、多链路一致性和协调回滚。
-- 命中 `external`、`money`、`availability`；涉及密钥处理时同时按敏感信息规则检查。
-- 只创建一个 `work.md`；确需用户独立联调时最多增加 `manual-test.md`。
-- 输出一次实现前风险卡并停止，后续确认后按批次执行。
-- 批次至少覆盖共享适配层、服务端调用方、Queue/Worker 传播、前端状态与入口、集成验证。
-- 最终验证不能只有 type-check/lint，必须覆盖真实 provider 行为、错误和用量归属。
-
-## HUMAN GATE 回归
-
-对场景 C 或 E 检查消息顺序：
-
-1. agent 可以读取源码并创建/更新 `work.md`。
-2. agent 输出 `[HUMAN GATE:implementation_approval]` 后当前回合停止。
-3. 同一回合不得修改业务代码、把 Approval 改为 confirmed 或开始实现批次。
-4. 用户后续明确确认后，记录原话再开始。
-5. 跳过只有在风险说明后的“跳过并接受风险”才有效。
-6. 执行中出现新风险或明显扩范围时再次停下。
-
-## work.md 检查
-
-L/风险 fixture 应包含：
-
-```text
-## State
-- Level:
-- Risks:
-- Phase:
-- Approval:
-- Approval evidence:
-- Verification:
-- Accepted risks:
-- Updated:
-
-## Boundary
-## Context
-## Batches
-## Risk and rollback
-## Verification
-```
-
-同时确认：
-
-- Context 不含 `.env*`、凭据或全量源码列表。
-- Batches 是结果导向并有验证/回撤，不是逐行教程。
-- 完成批次及时勾选，未完成批次仍可恢复。
-- Verification 有本轮实际 Evidence。
-
-## checker 负向用例
-
-内置测试必须覆盖并拒绝：
-
-- 路径穿越和不安全 feature root。
-- 缺少 `work.md`。
-- 高风险 Approval pending。
-- confirmed 但无后续确认 evidence。
-- skipped 但无明确 accepted risk。
-- 未完成批次。
-- pending/failed 验证。
-- partial 但无接受风险。
-- 缺验证 evidence 或未知风险标签。
-
-## 通过标准
-
-- doctor 与 checker 测试通过。
-- 五个场景等级和风险判断符合预期。
-- XS/M 默认产物数为 0；L/风险任务为 1，必要手测时最多 2。
-- 高风险门禁不可自动跨越。
-- DeepSeek 场景能在会话中途从一个工作文件恢复。
-
-## 报告模板
+## smoke test 报告模板
 
 ```markdown
-# dev-flow smoke test
+# Claude dev-flow smoke test
 
-- Project kind:
-- Package manager:
-- Doctor: passed/failed
-- Checker tests: passed/failed
+## 结论
+- 通过 / 部分通过 / 失败
 
-| Scenario | Expected level/risk | Actual | Assets | Gate | Result |
-|----------|---------------------|--------|--------|------|--------|
-| XS copy | XS / none | | | | |
-| M form | S/M / none | | | | |
-| Auth guard | S / security | | | | |
-| Large UI | L / none | | | | |
-| DeepSeek | L / external,money,availability | | | | |
+## 项目适配摘要
+- project-kind:
+- package-manager:
+- build:
+- type-check:
+- lint:
+- automated-tests:
+- webapp-testing:
+- living-baseline:
+- version boundary:
+- doctor:
 
-## Issues
+## 分级验证
+| Level | Scenario | Expected path | Result | Issues |
+|-------|----------|---------------|--------|--------|
+| XS/S | ... | ... | ... | ... |
+| 轻量 M | ... | ... | ... | ... |
+| 轻量 L | ... | ... | ... | ... |
+| 标准 M/L | ... | ... | ... | ... |
+
+## 产物检查
+- status.md:
+- human gates:
+- manual-test:
+- verification:
+- context manifest:
+- rollback evidence:
+
+## 需要修正
 - ...
 ```
+
+## 通过后的下一步
+
+smoke test 通过后，用一个真实 M 级任务试跑；再用一个轻量 L 或标准 L 任务验证安全审查、行为验证和回撤证据。不要在 smoke test 失败时直接开始真实高风险任务。
+
+通过后按 [迁移后使用说明](./claude-dev-flow-post-migration-usage.md) 进入日常开发流程。

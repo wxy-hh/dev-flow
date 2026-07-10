@@ -1,0 +1,43 @@
+#!/usr/bin/env bash
+# 生成审查包：提交列表、统计摘要和带上下文的净 diff。
+# 审查者一次读取该文件即可完成任务级审查。
+# 使用记录的任务 BASE（而不是 HEAD~1）可以保留多提交任务的完整差异。
+#
+# 用法：review-package BASE HEAD [OUTFILE]
+# 默认 OUTFILE：项目适配层配置的 SDD workspace，或 <repo-root>/.claude/runtime/sdd/review-<base7>..<head7>.diff
+# 按提交范围命名，修复后复审会生成新的文件。
+set -euo pipefail
+
+if [ $# -lt 2 ] || [ $# -gt 3 ]; then
+  echo "用法: review-package BASE HEAD [OUTFILE]" >&2
+  exit 2
+fi
+
+base=$1
+head=$2
+
+git rev-parse --verify --quiet "$base" >/dev/null || { echo "无效 BASE: $base" >&2; exit 2; }
+git rev-parse --verify --quiet "$head" >/dev/null || { echo "无效 HEAD: $head" >&2; exit 2; }
+
+if [ $# -eq 3 ]; then
+  out=$3
+else
+  dir=$("$(cd "$(dirname "$0")" && pwd)/sdd-workspace")
+  out="$dir/review-$(git rev-parse --short "$base")..$(git rev-parse --short "$head").diff"
+fi
+
+{
+  echo "# 审查包：${base}..${head}"
+  echo
+  echo "## 提交列表"
+  git log --oneline "${base}..${head}"
+  echo
+  echo "## 变更文件"
+  git diff --stat "${base}..${head}"
+  echo
+  echo "## 差异"
+  git diff -U10 "${base}..${head}"
+} > "$out"
+
+commits=$(git rev-list --count "${base}..${head}")
+echo "已写入 ${out}: ${commits} 个提交，$(wc -c < "$out" | tr -d ' ') 字节"

@@ -1,166 +1,177 @@
 #!/usr/bin/env bash
-set -uo pipefail
+set -u
 
-scripts=$(cd "$(dirname "$0")/.." && pwd)
-checker="$scripts/dev-flow-feature-check"
+root=$(cd "$(dirname "$0")/.." && pwd)
+checker="$root/dev-flow-feature-check"
+finalizer="$root/dev-flow-feature-finalize"
 tmp=$(mktemp -d "${TMPDIR:-/tmp}/dev-flow-feature-check.XXXXXX")
 trap 'rm -rf "$tmp"' EXIT
 
 failures=0
-
+run() {
+  if [ "${DEBUG:-0}" = 1 ]; then
+    "$@"
+  else
+    "$@" >/dev/null 2>&1
+  fi
+}
 run_feature() {
   (cd "$tmp" && "$checker" "$@")
 }
-
+run_in_tmp() {
+  (cd "$tmp" && "$@")
+}
 expect_pass() {
-  local label=$1
-  shift
-  if "$@" >/dev/null 2>&1; then
-    printf 'PASS %s\n' "$label"
+  if run "$@"; then
+    printf 'PASS %s\n' "$*"
   else
-    printf 'FAIL expected pass: %s\n' "$label"
+    printf 'FAIL expected pass: %s\n' "$*"
     failures=$((failures + 1))
   fi
 }
-
 expect_fail() {
-  local label=$1
-  shift
-  if "$@" >/dev/null 2>&1; then
-    printf 'FAIL expected failure: %s\n' "$label"
+  if run "$@"; then
+    printf 'FAIL expected failure: %s\n' "$*"
     failures=$((failures + 1))
   else
-    printf 'PASS expected failure: %s\n' "$label"
+    printf 'PASS expected failure: %s\n' "$*"
   fi
 }
 
-write_work() {
-  local risks=$1
-  local approval=$2
-  local approval_evidence=$3
-  local verification=$4
-  local accepted_risks=$5
-  local phase=${6:-done}
-  local batch=${7:-done}
-  local evidence=${8:-'pnpm test — passed'}
-  local checkbox='[x]'
-  [ "$batch" = done ] || checkbox='[ ]'
-
-  mkdir -p "$tmp/docs/dev-flow/features/demo"
-  printf '%s\n' \
-    '# Demo work' \
-    '' \
-    '## State' \
-    '- Level: L' \
-    "- Risks: $risks" \
-    "- Phase: $phase" \
-    "- Approval: $approval" \
-    "- Approval evidence: $approval_evidence" \
-    "- Verification: $verification" \
-    "- Accepted risks: $accepted_risks" \
-    '- Updated: 2026-07-10' \
-    '' \
-    '## Boundary' \
-    '- Add the requested behavior.' \
-    '' \
-    '## Batches' \
-    "- $checkbox Batch 1: implementation and focused check" \
-    '' \
-    '## Risk and rollback' \
-    '- Revert the batch diff.' \
-    '' \
-    '## Verification' \
-    "- Evidence: $evidence" \
-    > "$tmp/docs/dev-flow/features/demo/work.md"
+expect_file() {
+  if [ -f "$1" ]; then
+    printf 'PASS file remains: %s\n' "$1"
+  else
+    printf 'FAIL expected file to remain: %s\n' "$1"
+    failures=$((failures + 1))
+  fi
 }
 
-mkdir -p "$tmp/.claude/rules"
+update_gate_value() {
+  local gate=$1
+  local field=$2
+  local value=$3
+  awk -v target="$gate" -v field="$field" -v value="$value" '
+    $0 == "    " target ":" { in_gate=1; print; next }
+    in_gate && $0 ~ /^    [^ ]/ { in_gate=0 }
+    in_gate && $0 ~ "^      " field ":" {
+      print "      " field ": \"" value "\""
+      in_gate=0
+      next
+    }
+    { print }
+  ' "$tmp/docs/dev-flow/features/demo/status.md" > "$tmp/docs/dev-flow/features/demo/status.new"
+  mv "$tmp/docs/dev-flow/features/demo/status.new" "$tmp/docs/dev-flow/features/demo/status.md"
+}
+
+set_project_feature_root() {
+  awk -v value="$1" '
+    /^    feature_root:/ { print "    feature_root: " value; next }
+    { print }
+  ' "$tmp/.claude/rules/project-workflow.md" > "$tmp/.claude/rules/project-workflow.new"
+  mv "$tmp/.claude/rules/project-workflow.new" "$tmp/.claude/rules/project-workflow.md"
+}
+
+set_status_level() {
+  awk -v value="$1" '
+    /^  level:/ { print "  level: \"" value "\""; next }
+    { print }
+  ' "$tmp/docs/dev-flow/features/demo/status.md" > "$tmp/docs/dev-flow/features/demo/status.new"
+  mv "$tmp/docs/dev-flow/features/demo/status.new" "$tmp/docs/dev-flow/features/demo/status.md"
+}
+
+mkdir -p "$tmp/.claude/rules" "$tmp/docs/dev-flow/features/demo" "$tmp/docs/dev-flow/reviews" "$tmp/docs/dev-flow/features/demo/context" "$tmp/src"
 git -C "$tmp" init -q
-printf '%s\n' \
-  'dev_flow:' \
-  '  version: "0.4.0"' \
-  '  paths:' \
-  '    feature_root: "docs/dev-flow/features"' \
-  > "$tmp/.claude/rules/project-workflow.md"
+printf '%s\n' 'dev_flow:' '  paths:' '    feature_root: docs/dev-flow/features' '    review_root: docs/dev-flow/reviews' '  verification:' '    webapp_testing: "disabled"' '  artifacts:' '    retention: "compact"' > "$tmp/.claude/rules/project-workflow.md"
+printf '%s\n' '---' 'dev_flow_status:' '  schema_version: "1"' '  workflow_version: "0.3.0"' '  feature_id: "demo"' '  level: "L"' '  current_gate: "verification-before-completion"' '  completed_gates:' '    - verification-before-completion' '  next_action: "finish"' '  assets:' '    - docs/dev-flow/features/demo/status.md' '    - docs/dev-flow/features/demo/context/verify.jsonl' '  context_manifests:' '    verify: docs/dev-flow/features/demo/context/verify.jsonl' '  human_gates:' '    requirement_confirmation:' '      required: true' '      status: "confirmed"' '      evidence: "user confirmed requirements"' '    implementation_approval:' '      required: true' '      status: "confirmed"' '      evidence: "user approved implementation"' '  risk_gates:' '    rollback_units: "light"' '    security_review: "none"' '    behavior_verification: "full"' '  validation:' '    last_validation_at: "2026-01-01"' '    last_validation_commands:' '      - "printf validation"' '    business_diff_fingerprint: "unknown"' '---' > "$tmp/docs/dev-flow/features/demo/status.md"
+printf '%s\n' '{"file":"docs/dev-flow/features/demo/status.md","kind":"verification","reason":"fixture"}' > "$tmp/docs/dev-flow/features/demo/context/verify.jsonl"
+printf '%s\n' '# verification' > "$tmp/docs/dev-flow/reviews/demo-verification.md"
+printf '%s\n' '# manual' '实测：通过' > "$tmp/docs/dev-flow/reviews/demo-manual-test.md"
+printf '%s\n' '### Task 1' '**Depends on:** none' > "$tmp/docs/dev-flow/features/demo/初步实现计划.md"
+printf '%s\n' '# feature' > "$tmp/docs/dev-flow/features/demo/feature.md"
+printf '%s\n' '---' 'dev_flow_completion:' '  retention: "compact"' '  outcome: "verified"' '---' '# completion' > "$tmp/docs/dev-flow/features/demo/completion.md"
+printf '%s\n' 'baseline' > "$tmp/src/business.js"
+git -C "$tmp" add .
+git -C "$tmp" -c user.name='dev-flow test' -c user.email='dev-flow@example.test' commit -qm baseline
+printf '%s\n' 'staged business change' > "$tmp/src/business.js"
+git -C "$tmp" add src/business.js
+fixture_fingerprint=$( { git -C "$tmp" diff --binary -- . ':(exclude).claude/**' ':(exclude)docs/dev-flow/features/**' ':(exclude)docs/dev-flow/reviews/**' ':(exclude)docs/claude-dev-flow-*'; git -C "$tmp" diff --cached --binary -- . ':(exclude).claude/**' ':(exclude)docs/dev-flow/features/**' ':(exclude)docs/dev-flow/reviews/**' ':(exclude)docs/claude-dev-flow-*'; while IFS= read -r file; do if [[ "$file" != .claude/* && "$file" != docs/dev-flow/features/* && "$file" != docs/dev-flow/reviews/* && "$file" != docs/claude-dev-flow-* ]]; then printf 'UNTRACKED %s ' "$file"; git -C "$tmp" hash-object -- "$file"; fi; done < <(git -C "$tmp" -c core.quotePath=false ls-files --others --exclude-standard); } | git -C "$tmp" hash-object --stdin )
+awk -v fp="$fixture_fingerprint" '{ sub(/^    business_diff_fingerprint: ".*"$/, "    business_diff_fingerprint: \"" fp "\""); print }' "$tmp/docs/dev-flow/features/demo/status.md" > "$tmp/docs/dev-flow/features/demo/status.new"
+mv "$tmp/docs/dev-flow/features/demo/status.new" "$tmp/docs/dev-flow/features/demo/status.md"
 
-expect_fail 'rejects traversal feature id' run_feature ../demo --finish
-expect_fail 'requires work.md' run_feature demo --finish
+expect_fail run_feature ../demo --finish
+expect_pass run_feature demo --finish
+set_project_feature_root ../outside
+expect_fail run_feature demo --finish
+set_project_feature_root docs/dev-flow/features
+set_status_level M
+update_gate_value requirement_confirmation required false
+update_gate_value implementation_approval required false
+update_gate_value requirement_confirmation status pending
+update_gate_value implementation_approval status pending
+expect_pass run_feature demo --finish
+set_status_level L
+update_gate_value requirement_confirmation required true
+update_gate_value implementation_approval required true
+update_gate_value requirement_confirmation status confirmed
+update_gate_value implementation_approval status confirmed
+cp "$tmp/docs/dev-flow/features/demo/status.md" "$tmp/docs/dev-flow/features/demo/status.with-human-gates.md"
+awk '
+  /^  human_gates:$/ { skip=1; next }
+  skip && /^  risk_gates:$/ { skip=0 }
+  !skip { print }
+' "$tmp/docs/dev-flow/features/demo/status.md" > "$tmp/docs/dev-flow/features/demo/status.new"
+mv "$tmp/docs/dev-flow/features/demo/status.new" "$tmp/docs/dev-flow/features/demo/status.md"
+expect_fail run_feature demo --finish
+mv "$tmp/docs/dev-flow/features/demo/status.with-human-gates.md" "$tmp/docs/dev-flow/features/demo/status.md"
+awk '{ sub(/^  current_gate: ".*"$/, "  current_gate: \"unknown-gate\""); print }' "$tmp/docs/dev-flow/features/demo/status.md" > "$tmp/docs/dev-flow/features/demo/status.new"
+mv "$tmp/docs/dev-flow/features/demo/status.new" "$tmp/docs/dev-flow/features/demo/status.md"
+expect_fail run_feature demo --finish
+awk '{ sub(/^  current_gate: ".*"$/, "  current_gate: \"verification-before-completion\""); print }' "$tmp/docs/dev-flow/features/demo/status.md" > "$tmp/docs/dev-flow/features/demo/status.new"
+mv "$tmp/docs/dev-flow/features/demo/status.new" "$tmp/docs/dev-flow/features/demo/status.md"
+rm "$tmp/docs/dev-flow/reviews/demo-manual-test.md"
+expect_fail run_feature demo --finish
 
-write_work none not-required none passed none
-expect_pass 'accepts low-risk L work' run_feature demo --finish
-
-sed -i.bak 's/version: "0.4.0"/version: "0.3.0"/' "$tmp/.claude/rules/project-workflow.md"
-rm -f "$tmp/.claude/rules/project-workflow.md.bak"
-expect_fail 'requires workflow 0.4.0' run_feature demo --finish
-sed -i.bak 's/version: "0.3.0"/version: "0.4.0"/' "$tmp/.claude/rules/project-workflow.md"
-rm -f "$tmp/.claude/rules/project-workflow.md.bak"
-
-sed -i.bak 's#docs/dev-flow/features#../outside#' "$tmp/.claude/rules/project-workflow.md"
-rm -f "$tmp/.claude/rules/project-workflow.md.bak"
-expect_fail 'rejects unsafe feature root' run_feature demo --finish
-sed -i.bak 's#../outside#docs/dev-flow/features#' "$tmp/.claude/rules/project-workflow.md"
-rm -f "$tmp/.claude/rules/project-workflow.md.bak"
-
-ln -s "$tmp/docs/dev-flow/features" "$tmp/linked-features"
-sed -i.bak 's#docs/dev-flow/features#linked-features#' "$tmp/.claude/rules/project-workflow.md"
-rm -f "$tmp/.claude/rules/project-workflow.md.bak"
-expect_fail 'rejects symlinked feature root' run_feature demo --finish
-sed -i.bak 's#linked-features#docs/dev-flow/features#' "$tmp/.claude/rules/project-workflow.md"
-rm -f "$tmp/.claude/rules/project-workflow.md.bak"
-
-write_work security pending none passed none
-expect_fail 'blocks high-risk pending approval' run_feature demo --finish
-
-write_work security confirmed none passed none
-expect_fail 'blocks confirmation without evidence' run_feature demo --finish
-
-write_work security confirmed ' NONE ' passed none
-expect_fail 'blocks normalized placeholder approval evidence' run_feature demo --finish
-
-write_work security confirmed 'user confirmed after risk card' passed none
-expect_pass 'accepts confirmed high-risk work' run_feature demo --finish
-
-write_work security skipped 'user asked to skip' passed none
-expect_fail 'blocks skipped gate without accepted risk' run_feature demo --finish
-
-write_work security skipped 'user accepted the disclosed risk' passed 'security: user accepted'
-expect_pass 'accepts explicit risk acceptance' run_feature demo --finish
-
-write_work external confirmed 'user confirmed after risk card' passed none implementation pending
-expect_fail 'blocks unfinished batch' run_feature demo --finish
-
-write_work none not-required none pending none verification
-expect_fail 'blocks pending verification' run_feature demo --finish
-
-write_work none not-required none failed none done
-expect_fail 'blocks failed verification' run_feature demo --finish
-
-write_work none not-required none partial none done
-expect_fail 'blocks partial verification without accepted risk' run_feature demo --finish
-
-write_work none not-required none partial 'runtime path not available: user accepted' done
-expect_pass 'accepts explicit partial verification risk' run_feature demo --finish
-
-write_work none not-required none passed none done done none
-expect_fail 'requires verification evidence' run_feature demo --finish
-
-write_work none not-required none passed none done done pending
-expect_fail 'rejects placeholder verification evidence' run_feature demo --finish
-
-write_work none not-required none passed none done done ' PENDING '
-expect_fail 'rejects normalized placeholder verification evidence' run_feature demo --finish
-
-write_work none not-required none passed none
-awk '/^- Updated:/ { print; print "- Approval: pending"; next } { print }' \
-  "$tmp/docs/dev-flow/features/demo/work.md" > "$tmp/docs/dev-flow/features/demo/work.new"
-mv "$tmp/docs/dev-flow/features/demo/work.new" "$tmp/docs/dev-flow/features/demo/work.md"
-expect_fail 'rejects duplicate State fields' run_feature demo --finish
-
-write_work mystery confirmed 'user confirmed' passed none
-expect_fail 'rejects unknown risk tag' run_feature demo --finish
-
-write_work none not-required none pending none implementation pending
-expect_pass 'non-finish mode accepts active work' run_feature demo
+printf '%s\n' '# manual' '实测：通过' > "$tmp/docs/dev-flow/reviews/demo-manual-test.md"
+printf '%s\n' '{"file":"docs/dev-flow/features/demo/status.md","kind":"verification","reason":"fixture"}' '{"file":' > "$tmp/docs/dev-flow/features/demo/context/verify.jsonl"
+expect_fail run_feature demo --finish
+printf '%s\n' '{"file":"docs/dev-flow/features/demo/status.md","kind":"verification","reason":"fixture"}' > "$tmp/docs/dev-flow/features/demo/context/verify.jsonl"
+printf '%s\n' '{"file":"docs/dev-flow/features/demo/status.md","kind":"verification","reason":"fixture"}' >> "$tmp/docs/dev-flow/features/demo/context/verify.jsonl"
+expect_fail run_feature demo --finish
+printf '%s\n' '{"file":"docs/dev-flow/features/demo/status.md","kind":"verification","reason":"fixture"}' > "$tmp/docs/dev-flow/features/demo/context/verify.jsonl"
+update_gate_value implementation_approval evidence 'not required'
+expect_fail run_feature demo --finish
+update_gate_value implementation_approval evidence 'user approved implementation'
+update_gate_value implementation_approval status pending
+expect_fail run_feature demo --finish
+update_gate_value implementation_approval status skipped
+update_gate_value implementation_approval evidence 'not required'
+expect_fail run_feature demo --finish
+update_gate_value implementation_approval status confirmed
+update_gate_value implementation_approval evidence 'user approved implementation'
+printf '%s\n' 'additional business change' > "$tmp/src/business.js"
+expect_fail run_feature demo --finish
+printf '%s\n' 'staged business change' > "$tmp/src/business.js"
+expect_pass run_feature demo --finish
+printf '%s\n' 'do not delete' > "$tmp/.claude/sentinel"
+awk '{ print; if ($0 == "  assets:") print "    - docs/dev-flow/features/demo/../../../../.claude/sentinel" }' "$tmp/docs/dev-flow/features/demo/status.md" > "$tmp/docs/dev-flow/features/demo/status.new"
+mv "$tmp/docs/dev-flow/features/demo/status.new" "$tmp/docs/dev-flow/features/demo/status.md"
+expect_fail run_feature demo --finish
+expect_fail run_in_tmp "$finalizer" demo --retention=compact --confirm
+expect_file "$tmp/.claude/sentinel"
+awk '$0 != "    - docs/dev-flow/features/demo/../../../../.claude/sentinel"' "$tmp/docs/dev-flow/features/demo/status.md" > "$tmp/docs/dev-flow/features/demo/status.new"
+mv "$tmp/docs/dev-flow/features/demo/status.new" "$tmp/docs/dev-flow/features/demo/status.md"
+ln -s "$tmp/.claude" "$tmp/docs/dev-flow/features/demo/unsafe-link"
+awk '{ print; if ($0 == "  assets:") print "    - docs/dev-flow/features/demo/unsafe-link/sentinel" }' "$tmp/docs/dev-flow/features/demo/status.md" > "$tmp/docs/dev-flow/features/demo/status.new"
+mv "$tmp/docs/dev-flow/features/demo/status.new" "$tmp/docs/dev-flow/features/demo/status.md"
+expect_fail run_feature demo --finish
+expect_fail run_in_tmp "$finalizer" demo --retention=compact --confirm
+expect_file "$tmp/.claude/sentinel"
+awk '$0 != "    - docs/dev-flow/features/demo/unsafe-link/sentinel"' "$tmp/docs/dev-flow/features/demo/status.md" > "$tmp/docs/dev-flow/features/demo/status.new"
+mv "$tmp/docs/dev-flow/features/demo/status.new" "$tmp/docs/dev-flow/features/demo/status.md"
+rm "$tmp/docs/dev-flow/features/demo/unsafe-link"
+expect_pass run_in_tmp "$finalizer" demo --retention=compact --confirm
+expect_pass run_feature demo --finish
 
 printf '\nSummary: %s failure(s)\n' "$failures"
 [ "$failures" -eq 0 ]

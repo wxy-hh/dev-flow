@@ -1,16 +1,24 @@
-# Rules
+# 规则 (Rules)
 
-```text
+## 目录结构
+
+```
 rules/
-├── project-workflow.template.md  # 新项目适配模板
-├── project-workflow.md           # 当前项目真实配置（onboarding 生成）
-├── git-workflow.md               # Git 边界
-├── security.md                   # 通用安全约束
-├── specs/                        # 可选局部工程规则
-└── vue3.md                       # Vue 项目可选规则
+├── README.md              # 本文件
+├── git-workflow.md        # Git 工作流（始终加载）
+├── project-workflow.md    # 当前项目的 Claude 工作流适配层
+├── project-workflow.template.md # 迁移到新项目时使用的适配模板
+├── security.md            # 安全指南（常见源码和配置文件）
+├── specs/                 # 可选局部规范，M/L 命中 scope 时读取
+└── vue3.md                # Vue 3 规范（src/**/*.vue）
 ```
 
-- 迁移后先运行 `/onboard-dev-flow`，不要复制旧项目的成品配置。
-- 项目路径和验证命令只写在 `project-workflow.md` 的 `dev_flow` 配置中。
-- `.claude/rules/specs/<scope>/index.md` 只在 M/L 改动明确命中 scope 时读取，不改变等级，也不产生额外流程资产。
-- 特定语言/模块规则与通用规则冲突时，具体规则优先。
+- **无 paths 限定的 Rule**：全局生效（如 git-workflow.md）。
+- **有 paths 限定的 Rule**：只在该路径文件被访问时才加载，节省上下文。
+- **命令入口**：日常任务优先使用 `.claude/commands/README.md` 中的 `/dev-task`、`/finish`、`/review-diff` 等命令。
+- **项目迁移**：复制 Claude dev-flow 到新项目后，先用 `/onboard-dev-flow` 根据模板生成新的 `project-workflow.md`。
+- **局部规范**：`.claude/rules/specs/<scope>/index.md` 是可选增强，只在 M/L 任务明确命中对应 scope 时读取；XS/S 不因此创建额外产物。
+
+## 规则优先级
+
+当特定语言规则与通用规则冲突时，**特定语言规则优先**（具体覆盖一般）。

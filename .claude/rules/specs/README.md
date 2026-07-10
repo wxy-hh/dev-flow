@@ -1,12 +1,20 @@
 # Scoped Specs
 
-本目录只保存真实存在的局部工程约定，例如 package、模块、页面或技术层规则。
+本目录用于可选的局部工程规范。它只在 M/L 任务明确命中对应 scope 时读取，不影响 XS/S 快速路径。
+
+## 目录约定
 
 ```text
-.claude/rules/specs/<scope>/index.md
+.claude/rules/specs/
+  <scope>/
+    index.md
 ```
 
-每个 index 至少包含：
+`<scope>` 可以是 package、模块、页面、技术层或团队约定的稳定名称。不要为了凑目录而创建空 scope。
+
+## index.md 必需结构
+
+每个 scope 的 `index.md` 必须包含：
 
 ```markdown
 # <scope> Spec
@@ -18,9 +26,12 @@
 - ...
 ```
 
-使用边界：
+- `Pre-Development Checklist`：实现前必须知道的局部约定。
+- `Quality Check`：审查和验证时要检查的局部约定。
 
-- 不为凑目录创建空 scope。
-- 只有 M/L 的改动路径或用户输入明确命中 scope 时才读取。
-- 找不到匹配 scope 时继续使用项目适配层和通用规则。
-- 局部规则约束源码实现，不升级任务，也不要求额外工作文件。
+## 使用边界
+
+- XS/S 不读取本目录，不创建 context manifest。
+- 轻量 M 只有已经产生落盘资产时才使用相关 scope。
+- 轻量 L 和标准 M/L 在计划、改动路径或用户输入命中 scope 时读取。
+- 找不到匹配 scope 时，继续使用 `.claude/rules/project-workflow.md` 和通用 rules。

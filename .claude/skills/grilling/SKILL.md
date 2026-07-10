@@ -1,14 +1,55 @@
 ---
 name: grilling
-description: 用户要求拷问、挑战或压测需求/方案/计划时使用。一次只问一个真正影响决策的问题，并把结论合并回现有 Boundary、设计或 work.md。
+description: 对需求、方案或实现计划进行强力追问。用户想在开发前压测计划、找遗漏分支、找隐含假设，或说 grill、grilling、拷问、挑战方案时使用。
 ---
 
 # 方案拷问
 
-1. 先读相关源码和已有材料，能自行验证的事实不要问用户。
-2. 一次只问一个会改变边界、方案、风险、回撤或验收的问题。
-3. 给出推荐答案和具体理由，用户可以自由选择。
-4. 没有新分支或阻塞时立即结束，不为了轮数继续追问。
-5. 重要结论直接合并回已有设计或 `work.md`；没有工作文件时留在对话。
-6. 不写业务代码，不创建独立访谈记录，不自动串联计划、覆盖或审查技能。
-7. 发现新风险标签时返回 dev-flow 输出风险卡。
+对用户进行一问一答式访谈，直到计划或设计的关键分支都被澄清。
+
+规则：
+
+1. 一次只问一个问题，等待用户回答后再继续。
+2. 每个问题都给出你的推荐答案，降低用户决策成本。
+3. 如果问题可以通过阅读代码库回答，先自己查代码，不要把可验证事实抛给用户。
+4. 只压测需求、方案和计划；不要写代码，不要替代 `writing-plans`。
+5. 把重要结论合并回需求说明书、OpenSpec change 或实现计划。
+6. 没有发现新分支或阻塞问题时，若这是 dev-flow 标准 M/L 或任何 L 级链路，输出 `[HUMAN GATE:requirement_confirmation]` 并停止，等待用户确认后才允许进入 `writing-plans`。
+7. 发现需要用户决策的新边界时，输出 `Auto-continue: no`，并在 `Stop reason` 写明要确认的问题。
+
+交接格式：
+
+```text
+[HANDOFF]
+Feature ID: <feature-id>
+Level: <M|L>
+Current gate: grilling
+Generated assets:
+- <updated requirement or openspec paths>
+Next skill: writing-plans
+Next inputs:
+- <updated requirement or openspec paths>
+Auto-continue: yes
+[/HANDOFF]
+```
+
+dev-flow 标准 M/L 或任何 L 级链路中，使用以下交接，不得 `Auto-continue: yes` 直达 `writing-plans`：
+
+```text
+[HUMAN GATE:requirement_confirmation]
+请确认 grillme 压测后的需求边界是否准确完整。确认前不得进入 writing-plans。
+[/HUMAN GATE]
+
+[HANDOFF]
+Feature ID: <feature-id>
+Level: <M|L>
+Current gate: grilling
+Generated assets:
+- <updated requirement or openspec paths>
+Next skill: writing-plans
+Next inputs:
+- <updated requirement or openspec paths>
+Auto-continue: no
+Stop reason: human requirement confirmation required after grilling
+[/HANDOFF]
+```

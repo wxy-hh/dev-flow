@@ -1,35 +1,73 @@
-# /onboard-dev-flow — 新项目适配
+# /onboard-dev-flow — 新项目适配 Claude dev-flow
 
-根据当前项目生成或刷新 `.claude/rules/project-workflow.md`。
+用于把 Claude dev-flow 迁移到一个新项目后，生成或刷新 `.claude/rules/project-workflow.md`。
+
+## 使用
 
 ```text
-/onboard-dev-flow [--repo-governed|--local-config] [--smoke-test]
+/onboard-dev-flow
+```
+
+可选：
+
+```text
+/onboard-dev-flow --repo-governed
+/onboard-dev-flow --local-config
+/onboard-dev-flow --smoke-test
 ```
 
 ## 流程
 
 1. 读取 `.claude/rules/project-workflow.template.md`。
-2. 检测 package manager、lock 文件、项目类型和 monorepo 边界。
-3. 从真实脚本中识别 install、dev、build、type-check、lint、format 和 test；确认 test 是否为真实测试运行器。
-4. 检测浏览器/运行时验证能力、Git 跟踪边界和已有局部规则。
-5. 生成 0.4.0 配置，只保留 `feature_root`、可选局部规则路径、验证命令和 Git 模式。
-6. 无法确认的能力写 `none` 或 `needs-confirmation`，不猜测、不创建占位资产。
-7. 运行 `.claude/skills/dev-flow/scripts/dev-flow-doctor`。
-8. 指定 `--smoke-test` 时执行 `docs/claude-dev-flow-smoke-test.md` 的五个分级/风险场景。
+2. 检查当前项目：
+   - 包管理器和 lock 文件。
+   - 项目脚本：install、dev、build、build-only、type-check、lint、lint_changed、test、format、preview。
+   - test 是否是真测试运行器。
+   - 是否存在 OpenSpec、Playwright/Cypress、Vitest/Jest、代码映射或文档生成流程。
+   - git 是否可用，`.claude/` 和 `CLAUDE.md` 是否被忽略。
+   - 项目类型：Vue、React、Next、Node backend、monorepo 或其它。
+   - 是否已有 `.claude/rules/specs/<scope>/index.md` 局部规范；没有也可以保留为空能力。
+3. 根据检测结果生成或更新 `.claude/rules/project-workflow.md`，并填充 frontmatter 中的 `dev_flow` 结构化配置。
+4. 输出适配摘要：
+   - 验证命令矩阵。
+   - test strategy。
+   - OpenSpec 策略。
+   - scoped spec 和 context manifest 路径。
+   - HUMAN GATE 字段和标准 M/L 停顿边界。
+   - 启用 / 禁用 agents。
+   - 版本管理边界。
+   - 资产保留策略，默认 `dev_flow.artifacts.retention: compact`。
+5. 运行 `.claude/skills/dev-flow/scripts/dev-flow-doctor` 做静态自检。
+6. 如果用户传入 `--smoke-test`，按 `docs/claude-dev-flow-smoke-test.md` 跑迁移后 smoke test。
 
-## 约束
+## 输出要求
 
-- 不修改业务代码，不自动提交。
-- 不复制旧项目的 `project-workflow.md`。
-- frontmatter 是配置事实源，正文不再复制命令矩阵。
-- 默认 feature id 为 `YYYY-MM-DD-<short-kebab-name>`。
-- 普通 XS/S/M 不需要工作文件；L 或任意风险任务使用 `<feature_root>/<feature-id>/work.md`。
-- 高风险实现前只有一次风险确认，但不能由用户最初的“直接改”自动跨过。
+- 不修改业务代码。
+- 不自动提交。
+- 不复用旧项目的 `project-workflow.md` 事实。
+- 发现无法判断的命令或能力时，写成 `none` 或 `needs-confirmation`，不要猜。
+- `project-workflow.md` 必须保留 `dev_flow` 配置块，且配置值要与 Markdown 表格一致。
+- `dev_flow.paths.scoped_spec_root` 默认写 `.claude/rules/specs`；不要因为没有真实 scope 就生成空规范。
+- 标准资产中必须包含 `status.md` 的 `dev_flow_status`、`human_gates` 结构和 context manifest 路径。
+- 生成后的说明必须写清：标准 M/L 需求确认前不写计划，实现前确认前不写代码；标准 L 计划后先跑 `requirements-coverage` 再跑 `plan-review`；`code-review` 不能替代 `plan-review`。
+- 生成后运行项目适配层中的文档/技能自检命令。
+- 生成后确认 `.claude/rules/project-workflow.md` 包含 `artifacts.retention`；真实 M/L 功能收尾时再运行 `dev-flow-feature-check`。
 
 ## 完成格式
 
 ```text
 已生成/更新 .claude/rules/project-workflow.md。
-检测：project kind、package manager、feature root、验证能力、Git mode。
-验证：dev-flow doctor <通过|失败>；smoke test <通过|未运行|失败>。
+检测结果：
+- package-manager:
+- build:
+- type-check:
+- lint:
+- automated-tests:
+- webapp-testing:
+- living-baseline:
+- version boundary:
+
+验证：
+- dev-flow doctor：通过/失败
+- <check>：通过/失败
 ```

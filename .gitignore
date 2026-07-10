@@ -1,6 +1,7 @@
 .DS_Store
 
-# Claude local state
+# Claude local/runtime state
+.claude/runtime/
 .claude/settings.local.json
 
 # Environment and secrets
