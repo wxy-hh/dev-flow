@@ -1,226 +1,180 @@
-# Claude dev-flow 迁移后使用说明
+# Claude dev-flow 日常使用
 
-## 适用阶段
-
-本说明适用于已经完成以下动作的项目：
-
-- 已复制 dev-flow 迁移包。
-- 已运行 `/onboard-dev-flow`。
-- 已生成 `.claude/rules/project-workflow.md`，且其中 `dev_flow` 配置已按当前项目填好。
-- `dev-flow doctor` 和 smoke test 已通过，或已记录未通过项和接受风险。
-
-如果还没有完成这些动作，先阅读 [迁移使用说明](./claude-dev-flow-migration.md) 和 [迁移后 smoke test](./claude-dev-flow-smoke-test.md)。
-
-## 日常入口
-
-新需求、bug 修复、业务改动、UI 修改和重构，优先使用：
+## 入口
 
 ```text
-/dev-task <需求描述>
-```
-
-收尾、验证和提交前检查，使用：
-
-```text
+/dev-task <需求>
 /finish
+/review-diff
 ```
 
-需要整理提交信息时，使用：
+默认不自动执行 Git 提交、推送、合并、回滚或删除操作。用户明确授权相应动作后再执行。
 
-```text
-/commit
-```
+## 两次判断
 
-默认不自动提交或推送。只有用户明确要求“帮我提交”或“帮我 commit”时，才可以执行 `git add` 和 `git commit`；`git push`、merge/rebase、删除分支、discard/reset/checkout 覆盖文件等高风险动作必须二次确认。
+dev-flow 先判断任务规模：
 
-## 第一次真实任务
+- XS：单点且行为显然。
+- S：局部、清楚、单模块可回滚。
+- M：一个功能内多个步骤，但共享契约稳定。
+- L：跨架构层、共享协议/状态、多条链路或协调回滚。
 
-迁移后不要直接从高风险任务开始。建议按顺序试跑：
+再独立判断风险：
 
-1. 一个真实但低风险的 M 级任务。
-2. 一个轻量 L 场景，例如小范围权限、登录态或关键路径行为调整。
-3. 一个标准 L 场景，确认需求固化、计划、审查、回撤和验证都能顺畅衔接。
+- `security`：登录、鉴权、权限、敏感信息。
+- `data`：删除、迁移、数据完整性。
+- `money`：支付、订单金额、计费和用量。
+- `external`：外部协议、密钥、跨系统失败语义。
+- `availability`：共享运行时或广泛故障面。
 
-每次试跑后，确认：
-
-- 分级是否符合团队预期。
-- `project-workflow.md` 的路径、命令和验证矩阵是否准确。
-- `status.md` 能否用 `dev_flow_status` 和摘要记录当前 gate、资产和验证新鲜度。
-- `status.md` 的 `human_gates` 能否记录需求确认和实现前确认；出现 `[HUMAN GATE:*]` 或 `Auto-continue: no` 后是否真的停下。
-- 轻量 L 和标准 M/L 的 context manifest 能否串起需求、计划、审查和验证输入。
-- 标准 M/L 的 `plan-review` 是否发生在第一处源码修改之前，且没有被后置 `code-review` 替代。
-- 代码审查是否只报告真实问题。
-- `/finish` 是否能给出新鲜验证证据。
-- `dev-flow-feature-check <feature-id> --finish` 是否能拦截缺失验证、回撤 pending、错误 manifest 和不存在资产。
+规模和风险可以交叉：一行鉴权修改可能是 `S + security`；大型纯 UI 重构可能是 `L + none`。
 
 ## 如何描述任务
 
-### XS/S 小改动
-
-说明目标和验收即可：
+### XS/S
 
 ```text
-/dev-task 把设置页的按钮文案从“保存”改成“保存设置”，只改文案。
+/dev-task 把按钮文案改成“保存设置”，不改变点击行为。
 ```
 
-预期行为：
+提供目标和不做范围即可。预期零流程文件，直接修改并验证。
 
-- 不生成额外 md 产物。
-- 直接修改并运行相关验证或文本检查。
-- 最终说明改了什么、验证了什么。
-
-### 轻量 M
-
-说明行为边界、接口或状态影响：
+### 普通 M
 
 ```text
-/dev-task 在订单列表增加“仅看异常订单”筛选，复用现有列表接口和筛选状态，不改详情页。
+/dev-task 在订单列表增加已有接口支持的异常筛选，只影响当前页面，不改详情和共享状态。
 ```
 
-预期行为：
+说明功能边界、接口和验收。默认使用对话短计划，不落盘；跨会话或有重要决策时才创建一个工作文件。
 
-- 先复述需求边界和不做范围。
-- 实现后做代码审查和完成前验证。
-- 不强制补需求说明书、完整实现计划、`status.md` 或 context manifest。
-
-### 标准 M
-
-当存在接口契约、状态流转、错误分支或业务规则不确定时，让 dev-flow 先固化需求和计划：
+### 低风险 L
 
 ```text
-/dev-task 新增发票抬头管理，涉及列表、新增、编辑、删除和默认抬头规则。先按标准 M 走需求和计划。
+/dev-task 重构报表展示架构，跨页面组件、状态适配层和样式系统，不改 API、权限或数据。
 ```
 
-预期行为：
+跨层和协调回滚足以判 L。使用一个 `work.md` 分批执行，但风险为 none 时不需要人工门禁。
 
-- 生成需求说明和实现计划。
-- 生成或更新 `status.md` 和 context manifest。
-- 需求边界确认后才生成实现计划。
-- 至少执行 `plan-review light`，并在实现前等待确认。
-- 实现后执行代码审查和完成前验证。
-
-### 轻量 L
-
-高后果但设计自明、范围小的任务，可以明确要求轻量 L：
+### L + 风险
 
 ```text
-/dev-task 调整登录过期后的跳转兜底，只改一处 guard，走轻量 L，保留安全审查、回撤说明和行为验证。
+/dev-task 接入新的计费 AI provider，覆盖 Web/API/Queue/Worker/Shared 和多条调用链，保留旧 provider 兜底。
 ```
 
-预期行为：
+预期判为 L，并识别外部、计费、可用性等风险。agent 先创建短工作文件、输出一次风险卡，然后等待后续确认。
 
-- 生成或更新 `status.md`。
-- 维护 context manifest，方便安全审查、代码审查和验证读取同一批证据。
-- 至少保留安全审查、行为验证和回撤证据。
-- 先输出边界确认卡，列出高风险点、改动范围、不做范围、回撤方式和验证方式；用户确认前不写 `status.md`、context manifest 或业务代码。
-- 实现前说明风险并等待确认；如果出现需求分支、接口契约不明、多模块方案取舍、共享状态/权限结构变化或难回撤，升级标准 L。
+## 产物预算
 
-### 标准 L
+| 场景 | 默认流程资产 |
+|------|--------------|
+| 普通 XS/S | 0 |
+| 普通 M | 0；确需恢复时 1 |
+| L | 1 个 `work.md` |
+| 任意风险任务 | 1 个 `work.md` |
+| 必须由用户/外部环境独立手测 | 可增加 1 个 `manual-test.md` |
 
-涉及登录、鉴权、订单、支付、数据删除、数据完整性、跨系统入口或多个关键路径，且存在需求或设计不确定时，走标准 L：
+覆盖检查、计划审查、回撤、代码审查和验证默认写进对话或工作文件，不各自生成报告。用户明确要求独立文档时才例外。
+
+## work.md 生命周期
+
+路径：
 
 ```text
-/dev-task 重构支付结果回跳和订单状态同步，涉及跨系统入口、订单状态和异常兜底，走完整 L 流程。
+<feature_root>/<feature-id>/work.md
 ```
 
-预期行为：
+它同时承载：
 
-- 先固化需求边界，并在 `[HUMAN GATE:requirement_confirmation]` 停下。
-- 用户确认需求后再用 `writing-plans` 写正式计划；计划完成后自动进入 `requirements-coverage`，覆盖通过后自动进入 `plan-review`。
-- 完成 `plan-review` 和回撤/安全等实现前门禁后，在 `[HUMAN GATE:implementation_approval]` 停下。
-- 维护 `status.md`、context manifest 和必要局部规范引用。
-- 完成后必须有代码审查和新鲜验证证据。
+- 当前 Level、Risks、Phase、Approval 和 Verification。
+- Boundary 与不做范围。
+- 少量非敏感 Context。
+- 3–7 个结果导向 Batches。
+- 风险与回撤。
+- 代码审查和验证证据。
 
-## 产物在哪里
+每完成一批就勾选并记录验证。不要等到整个任务结束才补进度，也不要把 `.env*` 或凭据放进 Context。
 
-具体路径以 `.claude/rules/project-workflow.md` 的 `dev_flow.paths` 和路径别名表为准。
+## 高风险确认
 
-常见产物：
+有风险标签时，agent 输出：
 
-| 产物 | 用途 |
-|------|------|
-| `<FEATURE_ROOT>/<feature-id>/status.md` | 当前 gate、完成情况、资产、验证新鲜度和接受风险 |
-| `<FEATURE_ROOT>/<feature-id>/context/implement.jsonl` | 实现阶段要读取的需求、计划、局部规范和研究文件 |
-| `<FEATURE_ROOT>/<feature-id>/context/review.jsonl` | 计划审查和代码审查要读取的需求、计划、覆盖、回撤和规范文件 |
-| `<FEATURE_ROOT>/<feature-id>/context/verify.jsonl` | 完成前验证要读取的审查、验证要求和手动测试文件 |
-| `<FEATURE_ROOT>/<feature-id>/需求说明书.md` | 标准 M/L 的需求边界 |
-| `<FEATURE_ROOT>/<feature-id>/初步实现计划.md` | 标准 M/L 的实现计划 |
-| `<FEATURE_ROOT>/<feature-id>/requirements-coverage.md` | 需求到任务和验证的覆盖关系 |
-| `<FEATURE_ROOT>/<feature-id>/rollback-units.md` | 最小回撤单元和回撤顺序 |
-| `<REVIEW_ROOT>/YYYY-MM-DD-<feature-id>-code-review.md` | 代码审查报告 |
-| `<REVIEW_ROOT>/YYYY-MM-DD-<feature-id>-verification.md` | 完成前验证证据 |
-| `<REVIEW_ROOT>/YYYY-MM-DD-<feature-id>-manual-test.md` | 手动行为验证脚本和实测结果 |
-| `<FEATURE_ROOT>/<feature-id>/feature.md` | 完成后的需求边界、方案和关键决策摘要 |
-| `<FEATURE_ROOT>/<feature-id>/completion.md` | 完成后的审查、验证、风险和回撤事实源 |
+```text
+[HUMAN GATE:implementation_approval]
+边界：...
+风险：...
+回撤：...
+验证：...
+请确认是否开始实现。
+[/HUMAN GATE]
+```
 
-`status.md` 的 `dev_flow_status.human_gates` 是长流程能否继续的机器可读依据。标准 M/L 必须有 `requirement_confirmation` 和 `implementation_approval`；轻量 L 必须有边界确认和实现前确认。确认前不要写实现计划或业务代码。
+这条消息后当前回合停止。用户最初的“直接改”不能算作对尚未披露风险的接受；必须在风险卡之后明确确认。
 
-`requirements-coverage.md` 是需求和计划的对齐报告，不是完成前验证报告。它默认只追加到 `context/review.jsonl` 供 `plan-review` 读取；只有覆盖报告新增了后续验证必须读取、且计划或验证脚本里没有的明确验证义务时，才追加到 `context/verify.jsonl`。
+如要跳过，用户需要在风险说明后明确表示接受具体风险。否则 agent 不能把 Approval 标为 skipped。
 
-恢复中断任务时，先读 `status.md` 的 `dev_flow_status` 和摘要，再读其中列出的资产及 context manifest；`[HANDOFF]` 只作为最近一次对话的辅助线索。
+## 长任务执行与恢复
 
-## 验证和新鲜度
+L 一次推进一个可验证批次：
 
-完成前必须有新鲜验证证据。`status.md` 中的以下字段用于判断验证是否过期：
+1. 实现本批 Outcome。
+2. 运行本批最相关验证。
+3. 更新 checkbox、Evidence 和 State。
+4. 没有新风险或扩范围时自动进入下一批。
 
-- `Base SHA`
-- `Head SHA`
-- `Working tree dirty`
-- `Diff stat hash`
-- `Last validation at`
-- `Last validation commands`
-- `Accepted risks`
+会话中断后，只需读取未完成批次、其 Context 和当前 diff。已经完成且证据仍新鲜的批次不重跑。
 
-如果验证后代码又变了，或者 `Head SHA`、`Working tree dirty`、`Diff stat hash` 与记录不一致，不能复用旧验证结论，必须重新运行相关验证。
+## 审查与验证
 
-context manifest 只解决“该读哪些文件”，不等于验证通过。验证结论仍以最新命令输出、人工测试记录、验证报告和 feature-check 为准。完成后默认清理中间 manifest；需要完整审计时使用 `retention: full` 归档。
+完成前：
+
+- 基于真实 diff 审查，而不是计划想象。
+- 运行与改动匹配的 type-check、lint、test、build 或行为验证。
+- L 运行时行为不能只用静态命令证明。
+- 验证后相关代码变化会使旧证据失效。
+- `partial` 必须记录具体缺口和用户接受的残留风险。
+
+L/风险任务最后运行：
+
+```bash
+.claude/skills/dev-flow/scripts/dev-flow-feature-check <feature-id> --finish
+```
+
+checker 不修改文件，只验证路径、确认、批次和证据。
 
 ## 什么时候跑 doctor
-
-运行：
 
 ```bash
 .claude/skills/dev-flow/scripts/dev-flow-doctor
 ```
 
-推荐时机：
+推荐在 onboarding、升级工作流、修改适配配置或 smoke test 前运行。doctor 只检查流程包一致性，不替代业务测试。
 
-- onboarding 后。
-- 修改 `.claude/skills`、`.claude/commands`、`.claude/agents` 或 `.claude/rules` 后。
-- 调整 `project-workflow.md` 的路径、验证命令、测试能力或 Git 边界后。
-- 调整 scoped specs、context manifest 规则或 `status.md` 结构后。
-- smoke test 前。
-- 团队升级 dev-flow 迁移包后。
+## 可选技能
 
-doctor 只做静态检查，不替代项目测试、浏览器验证或 smoke test。
+- `req-probe`：存在真正阻塞歧义时逐个澄清。
+- `writing-plans`：为 L/风险任务组织短批次。
+- `requirements-coverage`：按需查需求遗漏。
+- `plan-review`：按需审查计划结构和风险。
+- `rollback-units`：按需强化回撤边界。
+- `code-review`：审查真实 diff。
+- `verification-before-completion`：取得新鲜完成证据。
 
-## 维护规则
-
-- 流程层可复制，项目事实只写进 `.claude/rules/project-workflow.md`、`CLAUDE.md` 或可选 stack rule。
-- 不要把某个项目的路径、headers、端口、mock 命令或测试命令写进通用 skill、command 或 agent。
-- `project-workflow.md` 的 `dev_flow` 配置和 Markdown 表格要同步更新。
-- 新增脚本优先读取 `dev_flow.paths`，不要硬编码 runtime 目录。
-- `.claude/rules/specs/<scope>/index.md` 只有在有真实局部约定时才创建，并包含 `Pre-Development Checklist` 和 `Quality Check`。
-- context manifest 只登记需求、计划、局部规范、研究、审查和验证等上下文文件，不登记源码文件。
-- HUMAN GATE 是硬停顿：`[HUMAN GATE:*]` 或 `Auto-continue: no` 后不能在同一回合继续写计划、写代码或把 `auto_continue` 改回 `true`。
-- `plan-review` 是实现前计划审查，不能由实现后的 `code-review` 代替。
-- 安全审查默认只读；需要修复时，由主流程或用户确认后的任务执行代码修改。
-- `status.md` 是长流程恢复的事实来源，M/L 任务更新资产时要同步更新它。
+它们是检查视角，不是固定串联的门禁流水线。
 
 ## 常见问题
 
-### doctor 提示缺少 project-workflow.md
+### 没有自动化测试
 
-在源迁移包仓库中这是正常 warning；在目标业务项目中应先运行 `/onboard-dev-flow` 生成 `.claude/rules/project-workflow.md`。
+把 `automated_tests` 写为 `none`。选择静态检查、可执行小验证和真实行为检查，不伪造测试通过。
 
-### 没有自动化测试怎么办
+### 想走轻量流程
 
-把 `automated-tests` 明确写成 `none`。不要把 dev/watch 命令当测试证据。L 级运行时行为改动必须保留手动测试脚本或其它可复查行为证据。
+普通任务可以直接要求轻量处理。L 仍保留一个恢复文件；高风险仍必须在风险披露后确认，但不会因此生成多份报告。
 
-### 想跳过某个门禁怎么办
+### 任务执行中变大
 
-XS/S 默认轻量，不会强行生成文档。标准 M/L 如果要跳过需求确认、计划审查、实现前确认、回撤或安全审查，需要说明风险；L 级跳过高风险门禁必须用户明确确认，并写入 `accepted_risks`。
+出现跨层、共享契约、多链路或协调回滚时升级为 L；出现新风险标签时暂停并重新输出风险卡。已有有效证据保留，不回填无用文件。
 
-### 可以让 Claude 直接提交吗
+### 可以直接提交吗
 
-默认不提交。用户明确要求“帮我提交”或“帮我 commit”时，可以执行 `git add` 和 `git commit`；推送、合并、删除分支、丢弃改动等动作必须二次确认。
+用户明确要求提交时可以执行；推送、合并、丢弃改动和删除分支需确认目标与影响。

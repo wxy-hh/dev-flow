@@ -1,50 +1,23 @@
 # /dev-task — 开发任务入口
 
-用于把一个新需求先分级，再选择最小足够流程。
-
-## 使用
-
 ```text
 /dev-task <需求描述>
 ```
 
-## 流程
+1. 读取 `.claude/rules/project-workflow.md`、`CLAUDE.md` 和直接相关源码。
+2. 按改动拓扑判断 XS/S/M/L：
+   - XS：单点且行为显然。
+   - S：局部、清楚、单模块可回滚。
+   - M：一个功能内多个步骤，但共享契约稳定。
+   - L：跨三个以上架构层、共享协议/状态、多条调用链或协调回滚；任一强信号即可判 L。
+3. 独立识别 `security`、`data`、`money`、`external`、`availability` 风险。
+4. 选择最小路径：XS/S 直接做；M 用对话短计划；L 或任意风险任务只创建一个 `work.md`。
+5. 有风险标签时，先写风险卡并输出 `[HUMAN GATE:implementation_approval]`；用户在风险卡后的明确确认前不得写业务代码。用户最初的“直接改”不算风险接受。
+6. L 按 `work.md` 中的结果批次执行，每批验证并更新恢复点；批次间默认自动继续。
+7. 完成后基于真实 diff 审查并运行新鲜验证。L/风险任务运行：
 
-1. 阅读 `.claude/rules/project-workflow.md`、`CLAUDE.md`、相关源码、已有产物和现有约定。
-2. 判断任务级别：
-   - XS：文案、样式、简单配置、单文件小 bug
-   - S：影响局部、行为清楚、风险低、可直接验证和回撤
-   - M：涉及接口、路由、状态、权限展示、错误分支、表单或业务规则
-   - L：登录、鉴权、订单、支付、数据删除、跨系统跳转或关键链路
-3. 简短说明判断理由和边界。
-4. 按级别选择流程：
-   - XS/S：直接实现并运行相关验证
-   - 轻量 M：复述边界，实现后做代码审查和完成前验证
-   - 轻量 L：先输出边界确认卡并等待用户确认，再保留安全、回撤和行为验证证据
-   - 标准 M/L：按 `dev-flow` 固化需求；用户确认需求后才写计划；计划审查和实现前确认后才写代码
-5. 完成前必须提供新鲜验证证据。
+```bash
+.claude/skills/dev-flow/scripts/dev-flow-feature-check <feature-id> --finish
+```
 
-## 标准 L 启动前检查
-
-- 进入标准 L 前先运行 `.claude/skills/dev-flow/scripts/dev-flow-doctor`。
-- doctor 有失败项时先停止并报告；只有用户明确说“跳过并接受流程完整性风险”后才可继续，并把理由写入 `accepted_risks`。
-- 实现完成后，标准 L 必须按 `rollback-units` audit → `code-review` → `verification-before-completion` → `dev-flow-feature-check --finish` 顺序收尾。
-
-## L 级入口硬规则
-
-- 涉及登录、鉴权、token/session、权限守卫、跨系统入口、订单、支付、数据删除或数据完整性时，先按 L 候选处理；存在接口契约不明、多模块方案取舍、共享状态/权限结构变化或难回撤时，走标准 L。
-- 标准 L 判断完成后，必须先固化需求并输出 `[HUMAN GATE:requirement_confirmation]`；用户确认前不得写实现计划。
-- 用户确认需求后，下一步必须调用 `writing-plans` 生成正式计划文档，不要用对话里的“实现计划”代替 `writing-plans`。
-- `writing-plans` 完成后，如果 `Next skill` 是 `requirements-coverage` 或 `plan-review` 且 `Auto-continue: yes`，必须继续调用下一技能，直到遇到 HUMAN GATE、阻塞缺口或用户明确要求停下。
-- 涉及登录、鉴权或跨系统入口的标准 L，默认 `requirements-coverage: full`；计划跨模块、改共享登录态/守卫/HTTP 拦截器时，默认 `plan-review: full`。
-- 实现任务列表、Todo 或子任务执行计划只能在 `implementation_approval` 确认后创建或标为进行中。确认前可以在计划文档里列任务，但不得把实现任务标为 completed。
-
-## 输出要求
-
-- 先说任务级别和原因。
-- 只问阻塞问题；非阻塞问题用合理默认值继续。
-- 不为 XS/S 任务生成不必要的 md 产物。
-- 涉及高风险链路时，先提示风险并建议完整流程。
-- 出现 `[HUMAN GATE:*]` 或 `Auto-continue: no` 后必须停止，等待用户后续明确确认。
-- `code-review` 不能替代实现前 `plan-review`。
-- 文件数量不是决定项；按失败后果、影响范围和可回撤性分级。
+默认产物预算：XS/S 为 0；M 为 0、确需恢复时最多 1；L 或风险任务为 1；只有独立手测需要时最多增加 1 个附件。
