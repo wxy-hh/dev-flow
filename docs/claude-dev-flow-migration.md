@@ -158,7 +158,7 @@ dev_flow:
 | 局部规范 | `<SCOPED_SPEC_ROOT>/<scope>/index.md` | 可选；M/L 明确命中 scope 时读取 |
 
 XS/S 不创建 `status.md` 或 context manifest；轻量 M 默认也不创建。不要为了启用三件套而改变任务分级。
-标准 M/L 在需求确认前不得写实现计划，在实现前确认前不得写业务代码；实现后的 `code-review` 不能替代实现前 `plan-review`。
+标准 M/L 在需求确认前不得写实现计划，在实现前确认前不得写业务代码；实现后的 `code-review` 不能替代实现前 `plan-review`。标准 L 的计划后固定骨架是 `requirements-coverage -> plan-review`，覆盖报告默认只进入 `context/review.jsonl`，不进入 `context/verify.jsonl`。
 
 ### 4. 生成验证矩阵
 

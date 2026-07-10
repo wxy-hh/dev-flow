@@ -20,6 +20,7 @@
 - 迁移到新项目后先运行 `/onboard-dev-flow`，不要直接复用旧项目的 `project-workflow.md`。
 - M/L 级改动交给 `dev-flow` 串联需求、计划、覆盖、审查、回撤和验证。
 - 标准 M/L 和所有 L 级关键 HUMAN GATE 不能被自动跨过；`code-review` 不能替代实现前 `plan-review`。
+- 标准 L 中，`writing-plans` 后要先跑 `requirements-coverage`，覆盖通过后再跑 `plan-review`；不要用对话里的实现计划替代正式计划文档。
 - `/review-diff` 只报告真实风险，不输出风格偏好。
 - `/finish` 必须有新鲜验证证据，验证失败时不能给出“完成”结论。
 - Git 提交和推送默认由用户确认后再执行。

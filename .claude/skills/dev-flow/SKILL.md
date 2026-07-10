@@ -48,8 +48,8 @@ L：完整流程或轻量 L 路径 + HUMAN GATE + 风险维度门禁 + 最终审
 
 自动继续的场景：
 
-- `writing-plans` 完成后，自动进入已触发的 `requirements-coverage`；未触发时进入下一道已触发门禁。
-- 需求覆盖门禁被触发且无阻塞缺口时，自动进入下一道已触发门禁。
+- `writing-plans` 完成后，必须按 `[HANDOFF]` 的 `Next skill` 继续；标准 L 或登录/鉴权/跨系统入口类任务的下一跳通常是 `requirements-coverage`，不得直接停在实现确认。
+- 需求覆盖门禁被触发且无阻塞缺口时，标准 M/L 至少继续到 `plan-review`；不得等待用户追问“是不是要 plan-review”。
 - `plan-review` 被触发且无 CRITICAL/HIGH 时，可以自动进入仍在实现前的回撤、安全等检查门禁；如果下一步会写业务代码，必须先停在 `implementation_approval`。
 - `rollback-units` 被触发为 `full` 时，完成设计后停在实现前；被触发为 `light` 时，把回撤证据写入 `status.md` 或最终审查。
 - 安全审查被触发时，按项目适配层决定 `light` 或 `full`。
@@ -64,6 +64,7 @@ L：完整流程或轻量 L 路径 + HUMAN GATE + 风险维度门禁 + 最终审
 - L 级需求边界固化后、进入计划前。
 - `requirements-coverage` 出现 `MISSING`、`CONFLICT`、`OUT_OF_SCOPE`，或 L 级出现未接受的 `PARTIAL` / `UNVERIFIABLE`。
 - 被触发的 `plan-review` 出现 CRITICAL/HIGH。
+- 标准 L 或登录/鉴权/跨系统入口类任务写完计划后，尚未完成 `requirements-coverage` 和 `plan-review`。
 - `rollback-units` 为 `full` 且完成设计后、开始实现前。
 - 安全审查发现高风险残留，或用户需要选择是否接受风险。
 - 验证失败且需要选择修复范围、降级验收或接受风险。
@@ -120,7 +121,7 @@ L 级资产契约：
 |------|----------|--------|
 | `req-probe` / `openspec` | `<FEATURE_ROOT>/<feature-id>/需求说明书.md` 或 `openspec/changes/<change-id>/` | 输出 `[HUMAN GATE:requirement_confirmation]` 并停止；用户确认后进入 `grillme` / `writing-plans` |
 | `writing-plans` | `<FEATURE_ROOT>/<feature-id>/初步实现计划.md`，更新 `<FEATURE_ROOT>/<feature-id>/status.md` | 自动进入已触发的 `requirements-coverage` |
-| `requirements-coverage` | `<FEATURE_ROOT>/<feature-id>/requirements-coverage.md` 或 `status.md` 轻量结论 | 通过后自动进入下一道已触发门禁 |
+| `requirements-coverage` | `<FEATURE_ROOT>/<feature-id>/requirements-coverage.md` 或 `status.md` 轻量结论 | 标准 M/L 通过后至少进入 `plan-review` |
 | `plan-review` | `<REVIEW_ROOT>/YYYY-MM-DD-<feature-id>-plan-review.md` 或 `status.md` 轻量结论 | 无 CRITICAL/HIGH 后可进入实现前回撤/安全门禁；写代码前必须输出 `[HUMAN GATE:implementation_approval]` |
 | `security-reviewer` / 安全审查 | `<REVIEW_ROOT>/YYYY-MM-DD-<feature-id>-security-review.md` 或 `status.md` 安全结论 | 高风险残留需停下确认 |
 | `rollback-units` | `<FEATURE_ROOT>/<feature-id>/rollback-units.md` 或 `status.md` 轻量回撤证据 | `full` 时停下询问是否开始实现 |
@@ -317,6 +318,8 @@ M/L context manifest 默认位于：
 16. 按项目适配层运行最强相关验证；L 级运行时行为改动必须包含 `webapp-testing` 证据或手动测试脚本。
 17. 进入 `finishing-a-development-branch`，停下询问分支收尾方式。
 
+标准 L 中，`writing-plans -> requirements-coverage -> plan-review` 是实现前固定骨架。`requirements-coverage` 只回答“需求和计划是否一一覆盖”；`plan-review` 再回答“这个计划是否安全、可回撤、符合项目结构”。两者都完成前，不进入 `implementation_approval`。
+
 必需产物：
 
 ```text
@@ -366,6 +369,14 @@ L 级不使用“干净就过”跳过需求边界确认、实现前确认或最
 
 示例：一个“碰 auth 但只改一行守卫、设计自明”的 L 级任务，可以走安全审查 `light/full` + 行为验证 `full` + 回撤说明 `light`，不强制生成 plan-review/rollback-units 大文档；但不能完全没有安全、行为和回撤证据。
 
+登录、鉴权、SSO、token/session、路由守卫、HTTP 拦截器或跨系统入口的标准 L 默认：
+
+- `requirements_coverage: full`
+- `plan_review: full`，除非计划只改单点且无共享状态、接口契约或跳转链路变化
+- `security_review: light/full`
+- `behavior_verification: full`
+- `rollback_units: light/full`
+
 ### 需求覆盖门禁
 
 复用 `requirements-coverage`。在实现计划生成后、计划审查前执行。检查每条需求是否有对应计划任务和验证方式：
@@ -381,6 +392,8 @@ L 级不使用“干净就过”跳过需求边界确认、实现前确认或最
 - 需求没有验收方式或验证方式。
 - 需求文档内部存在冲突。
 - 计划触碰了明确不做的范围。
+
+通过时只把覆盖报告作为 `plan-review` 输入；默认不把覆盖矩阵追加到 `context/verify.jsonl`，避免把“计划对齐证据”误当成完成前验证证据。
 
 ### 计划审查门禁
 

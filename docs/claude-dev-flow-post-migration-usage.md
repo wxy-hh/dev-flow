@@ -125,7 +125,8 @@
 预期行为：
 
 - 先固化需求边界，并在 `[HUMAN GATE:requirement_confirmation]` 停下。
-- 用户确认需求后再写计划；完成 `plan-review` 和回撤/安全等实现前门禁后，在 `[HUMAN GATE:implementation_approval]` 停下。
+- 用户确认需求后再用 `writing-plans` 写正式计划；计划完成后自动进入 `requirements-coverage`，覆盖通过后自动进入 `plan-review`。
+- 完成 `plan-review` 和回撤/安全等实现前门禁后，在 `[HUMAN GATE:implementation_approval]` 停下。
 - 维护 `status.md`、context manifest 和必要局部规范引用。
 - 完成后必须有代码审查和新鲜验证证据。
 
@@ -139,7 +140,7 @@
 |------|------|
 | `<FEATURE_ROOT>/<feature-id>/status.md` | 当前 gate、完成情况、资产、验证新鲜度和接受风险 |
 | `<FEATURE_ROOT>/<feature-id>/context/implement.jsonl` | 实现阶段要读取的需求、计划、局部规范和研究文件 |
-| `<FEATURE_ROOT>/<feature-id>/context/review.jsonl` | 代码审查要读取的需求、计划、回撤和规范文件 |
+| `<FEATURE_ROOT>/<feature-id>/context/review.jsonl` | 计划审查和代码审查要读取的需求、计划、覆盖、回撤和规范文件 |
 | `<FEATURE_ROOT>/<feature-id>/context/verify.jsonl` | 完成前验证要读取的审查、验证要求和手动测试文件 |
 | `<FEATURE_ROOT>/<feature-id>/需求说明书.md` | 标准 M/L 的需求边界 |
 | `<FEATURE_ROOT>/<feature-id>/初步实现计划.md` | 标准 M/L 的实现计划 |
@@ -150,6 +151,8 @@
 | `<REVIEW_ROOT>/YYYY-MM-DD-<feature-id>-manual-test.md` | 手动行为验证脚本和实测结果 |
 
 `status.md` 的 `dev_flow_status.human_gates` 是长流程能否继续的机器可读依据。标准 M/L 必须有 `requirement_confirmation` 和 `implementation_approval`；轻量 L 必须有边界确认和实现前确认。确认前不要写实现计划或业务代码。
+
+`requirements-coverage.md` 是需求和计划的对齐报告，不是完成前验证报告。它默认只追加到 `context/review.jsonl` 供 `plan-review` 读取；只有覆盖报告新增了后续验证必须读取、且计划或验证脚本里没有的明确验证义务时，才追加到 `context/verify.jsonl`。
 
 恢复中断任务时，先读 `status.md` 的 `dev_flow_status` 和摘要，再读其中列出的资产及 context manifest；`[HANDOFF]` 只作为最近一次对话的辅助线索。
 

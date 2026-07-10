@@ -24,6 +24,15 @@
    - 标准 M/L：按 `dev-flow` 固化需求；用户确认需求后才写计划；计划审查和实现前确认后才写代码
 5. 完成前必须提供新鲜验证证据。
 
+## L 级入口硬规则
+
+- 涉及登录、鉴权、token/session、权限守卫、跨系统入口、订单、支付、数据删除或数据完整性时，先按 L 候选处理；存在接口契约不明、多模块方案取舍、共享状态/权限结构变化或难回撤时，走标准 L。
+- 标准 L 判断完成后，必须先固化需求并输出 `[HUMAN GATE:requirement_confirmation]`；用户确认前不得写实现计划。
+- 用户确认需求后，下一步必须调用 `writing-plans` 生成正式计划文档，不要用对话里的“实现计划”代替 `writing-plans`。
+- `writing-plans` 完成后，如果 `Next skill` 是 `requirements-coverage` 或 `plan-review` 且 `Auto-continue: yes`，必须继续调用下一技能，直到遇到 HUMAN GATE、阻塞缺口或用户明确要求停下。
+- 涉及登录、鉴权或跨系统入口的标准 L，默认 `requirements-coverage: full`；计划跨模块、改共享登录态/守卫/HTTP 拦截器时，默认 `plan-review: full`。
+- 实现任务列表、Todo 或子任务执行计划只能在 `implementation_approval` 确认后创建或标为进行中。确认前可以在计划文档里列任务，但不得把实现任务标为 completed。
+
 ## 输出要求
 
 - 先说任务级别和原因。

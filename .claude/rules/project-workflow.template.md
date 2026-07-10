@@ -148,6 +148,7 @@ YYYY-MM-DD-<short-kebab-name>
 - 轻量 L 和标准 M/L 必须维护 `context/implement.jsonl`、`context/review.jsonl` 和 `context/verify.jsonl`。
 - 轻量 M 只有已经产生落盘需求、计划、审查或验证资产时才维护上下文清单。
 - XS/S 不维护上下文清单。
+- `requirements-coverage` 的主产物是覆盖结论；默认只追加到 `context/review.jsonl` 供 `plan-review` 读取，不追加到 `context/verify.jsonl`。只有覆盖报告新增了后续验证必须读取、且计划或验证脚本里没有的明确验证义务时，才追加到 verify manifest。
 
 ## 状态文件规则
 
@@ -226,6 +227,7 @@ dev_flow_status:
 - 如果 git 可用，每次更新同时记录 `Base SHA`、`Head SHA`、`Working tree dirty` 和 `Diff stat hash`；没有 git 时写 `unknown` 并说明原因。
 - 验证门禁完成后必须记录 `Last validation at` 和 `Last validation commands`。验证后如果 `Head SHA`、`Working tree dirty` 或 `Diff stat hash` 发生变化，已有验证证据视为过期，完成前必须重新验证。
 - 如果任务包含风险门禁，维护一个 `Risk Gates` 表，列出每个 gate 的 `none` / `light` / `full` 形态和证据路径。
+- 标准 L 默认 `requirements_coverage: "full"`。涉及登录、鉴权、SSO、token/session、路由守卫、HTTP 拦截器或跨系统入口的标准 L，默认 `requirements_coverage: "full"`；计划跨模块或改共享登录态/守卫/请求拦截器时，默认 `plan_review: "full"`。
 - 标准 M/L 的 `human_gates.requirement_confirmation` 和 `human_gates.implementation_approval` 必须为 `required: true`。轻量 L 也必须要求边界确认和实现前确认；如果用户一次明确确认边界和轻量 L 路径，可以用同一条用户回复作为两个 gate 的 `evidence`。XS/S 和默认轻量 M 不要求这些 gate。
 - 一旦输出 `[HUMAN GATE:<gate-id>]` 或 `[HANDOFF]` 中 `Auto-continue: no`，当前回合必须停止；不得在同一回合把 `auto_continue: false` 改成 `true` 或继续写计划/源码。
 - 只有用户后续明确确认、继续、接受风险或跳过并接受风险，才能把对应 `human_gates.<gate>.status` 写成 `confirmed` 或 `skipped`，并把原话或接受风险理由写入 `evidence`。
@@ -316,3 +318,24 @@ rg -u -n "<detect-feature-root>|<detect-review-root>|\\.claude/runtime/sdd/progr
 
 - `light`：结论写入 `status.md`、计划审查或最终代码审查。
 - `full`：保存到 `<REVIEW_ROOT>/YYYY-MM-DD-<feature-id>-security-review.md`。
+
+### 登录 / 鉴权 / SSO 验证矩阵
+
+涉及登录、鉴权、SSO、token/session、权限守卫、HTTP 401/403 或跨系统回跳时，验证计划至少覆盖：
+
+| 路径 | 必查点 |
+|------|--------|
+| SSO 入口 | URL 参数存在、缺失、重复或非法时的处理 |
+| token 交换 | 请求参数、成功返回 token 写入、失败兜底跳转 |
+| 本地登录 | 原 `/login` 独立登录能力不被破坏 |
+| 路由守卫 | 已登录放行、未登录拦截、被动 token 失效后的去向 |
+| HTTP 拦截器 | Authorization 注入、401/403 处理、错误信息不泄露敏感数据 |
+| 显式登出 | 清理登录态、SSO 来源标记和跳转目标符合需求 |
+| 跨系统回跳 | 认证中心地址占位符、回跳循环和来源判断 |
+| 现有登录副作用 | license、门户、菜单、报表或项目已有登录后置流程是否保留 |
+
+计划或验证报告应记录 `/login` 跳转点扫描结果。可按项目语言调整命令，基础扫描示例：
+
+```bash
+rg -n "router\\.(push|replace)\\(['\\\"]/login['\\\"]\\)|window\\.location\\.(href|replace)\\s*=\\s*['\\\"]/login['\\\"]|next\\(['\\\"]/login['\\\"]\\)" src
+```

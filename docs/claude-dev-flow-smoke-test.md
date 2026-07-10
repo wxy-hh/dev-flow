@@ -79,7 +79,7 @@ YYYY-MM-DD-dev-flow-smoke-test
 - 需求确认前不得生成实现计划。
 - writing-plans 生成计划。
 - writing-plans 创建或刷新 context manifest。
-- requirements-coverage 是否触发由风险维度决定。
+- requirements-coverage 是否触发由风险维度决定；触发时 `writing-plans` 的 `Next skill` 必须指向 `requirements-coverage`。
 - plan-review 至少以 `light` 形态触发，且发生在实现前。
 - plan-review 后必须停在实现前确认，用户确认前不得写源码。
 - HANDOFF 使用 `<next-triggered-gate>` 或明确的下一门禁，不固定套满流程。
@@ -101,7 +101,10 @@ YYYY-MM-DD-dev-flow-smoke-test
 ### 期望路径
 
 - 需求边界确认后再进入计划；确认前不得生成 `初步实现计划.md`。
-- writing-plans、requirements-coverage、plan-review、rollback-units 按风险维度触发。
+- 用户确认需求后必须使用 `writing-plans` 生成正式计划文档；不得用对话里的实现计划替代。
+- writing-plans 后必须自动进入 `requirements-coverage`；覆盖通过后必须自动进入 `plan-review`。
+- requirements-coverage 的主产物是 `<FEATURE_ROOT>/<feature-id>/requirements-coverage.md`；默认只追加 `context/review.jsonl`，不追加 `context/verify.jsonl`。
+- plan-review、rollback-units 按风险维度触发。
 - plan-review 产物必须早于第一处源码修改；实现后的 code-review 不能替代 plan-review。
 - 实现前必须在 `[HUMAN GATE:implementation_approval]` 停下。
 - 安全审查触发。
@@ -111,6 +114,9 @@ YYYY-MM-DD-dev-flow-smoke-test
 ### 通过标准
 
 - 阻塞缺口会停下。
+- writing-plans 后没有用户追问也会进入 requirements-coverage。
+- requirements-coverage 通过后没有用户追问也会进入 plan-review。
+- coverage 不把 `context/verify.jsonl` 当作默认副作用更新。
 - CRITICAL/HIGH 计划审查问题会停下。
 - 实现前有明确回撤边界。
 - `Auto-continue: no` 后同一回合没有继续写计划或源码。
@@ -143,11 +149,14 @@ YYYY-MM-DD-dev-flow-smoke-test
 
 - agent 判断为标准 L 后，可以读取源码和生成需求说明，但必须停在 `[HUMAN GATE:requirement_confirmation]`。
 - 用户确认需求前，不得生成 `初步实现计划.md`、`requirements-coverage.md`、`rollback-units.md` 或写源码。
-- 用户确认需求后，才允许 `writing-plans`。
+- 用户确认需求后，才允许 `writing-plans`；不得先输出一份对话内实现计划然后直接开始执行。
+- `writing-plans` 的 handoff 必须把 SSO / 登录回跳类任务交给 `requirements-coverage`。
+- `requirements-coverage` 通过后必须把下一步交给 `plan-review`，不得停下来等待用户提醒。
 - `plan-review` 必须在第一处源码修改之前完成。
 - `plan-review` 和回撤/安全等实现前门禁完成后，必须停在 `[HUMAN GATE:implementation_approval]`。
 - 用户确认实现前，不得修改源码、mock、配置或测试文件。
 - 如果出现 `auto_continue: false` 后同一回合继续写计划或代码，smoke test 失败。
+- 如果实现 Todo 在 `implementation_approval` 前被创建为进行中或 completed，smoke test 失败。
 
 ## 自检命令
 
