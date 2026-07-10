@@ -109,7 +109,7 @@ YYYY-MM-DD-dev-flow-smoke-test
 - 实现前必须在 `[HUMAN GATE:implementation_approval]` 停下。
 - 安全审查触发。
 - 行为验证必须有运行时或手动证据。
-- 完成后 code-review 和 verification-before-completion。
+- 完成后按 `rollback-units audit -> code-review -> verification-before-completion -> dev-flow-feature-check --finish` 收尾。
 
 ### 通过标准
 
@@ -121,6 +121,8 @@ YYYY-MM-DD-dev-flow-smoke-test
 - 实现前有明确回撤边界。
 - `Auto-continue: no` 后同一回合没有继续写计划或源码。
 - 验证报告能证明关键路径。
+- feature-check 能拦截缺失验证报告、空命令、空实测、rollback `pending`、不存在资产和 manifest 源码条目。
+- compact 收尾只留下 `feature.md`、`completion.md` 和可复用手测；full 收尾将原始资产移动到带时间戳 archive。
 
 ## 必查文件
 
@@ -165,6 +167,14 @@ YYYY-MM-DD-dev-flow-smoke-test
 ```bash
 .claude/skills/dev-flow/scripts/dev-flow-doctor
 ```
+
+为一个标准 L fixture 运行 feature evidence 检查：
+
+```bash
+.claude/skills/dev-flow/scripts/dev-flow-feature-check <feature-id> --finish
+```
+
+至少准备一组应失败的 fixture：verification report 缺失、`last_validation_commands` 为空、manual-test 只有模板、rollback 清单含 `pending`、context manifest 登记源码、status 引用不存在资产。每组都必须返回非零退出码。
 
 再使用 `.claude/rules/project-workflow.md` 中的文档和技能检查命令。至少确认：
 

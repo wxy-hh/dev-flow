@@ -84,11 +84,20 @@ need_cmd rg
 check_file ".claude/rules/project-workflow.template.md"
 check_file ".claude/rules/specs/README.md"
 check_file ".claude/skills/dev-flow/SKILL.md"
+check_file ".claude/skills/req-probe/SKILL.md"
+check_file ".claude/skills/dev-flow/scripts/dev-flow-feature-check"
+check_file ".claude/skills/dev-flow/scripts/dev-flow-feature-finalize"
 check_file ".claude/agents/security-reviewer.md"
 check_file ".claude/skills/plan-review/references/review-prompts.md"
 check_file ".claude/skills/subagent-driven-development/scripts/task-brief"
 check_file ".claude/skills/subagent-driven-development/scripts/review-package"
 check_file ".claude/skills/subagent-driven-development/scripts/sdd-workspace"
+
+if [ -e ".claude/skills/requesting-code-review/req-probe" ]; then
+  fail "req-probe must remain a top-level skill; remove nested .claude/skills/requesting-code-review/req-probe"
+else
+  pass "req-probe has no nested duplicate under requesting-code-review"
+fi
 
 require_pattern ".claude/rules/project-workflow.template.md" '^dev_flow:' "project-workflow template has dev_flow config"
 for key in version project_kind package_manager verification openspec git; do
@@ -99,6 +108,8 @@ require_pattern ".claude/rules/project-workflow.template.md" 'context/implement\
 require_pattern ".claude/rules/project-workflow.template.md" 'context/review\.jsonl' "project-workflow template documents review context manifest"
 require_pattern ".claude/rules/project-workflow.template.md" 'context/verify\.jsonl' "project-workflow template documents verify context manifest"
 require_pattern ".claude/rules/project-workflow.template.md" 'dev_flow_status:' "status.md template has dev_flow_status frontmatter"
+require_pattern ".claude/rules/project-workflow.template.md" 'artifacts:' "project-workflow template has artifact retention config"
+require_pattern ".claude/rules/project-workflow.template.md" 'retention: "compact"' "project-workflow template defaults artifact retention to compact"
 for field in \
   "schema_version" \
   "feature_id" \
@@ -123,12 +134,15 @@ require_pattern ".claude/skills/dev-flow/SKILL.md" 'Auto-continue: no.*当前回
 require_pattern ".claude/skills/dev-flow/SKILL.md" 'code-review.*不能.*plan-review|plan-review.*不能.*code-review' "dev-flow does not allow code-review to replace plan-review"
 require_pattern ".claude/commands/dev-task.md" '不要用对话里的“实现计划”代替 `writing-plans`' "dev-task routes standard L to writing-plans"
 require_pattern ".claude/commands/dev-task.md" '实现任务列表.*`implementation_approval`' "dev-task blocks implementation todos before approval"
+require_pattern ".claude/commands/dev-task.md" 'dev-flow-feature-check' "dev-task requires feature-check before L finish"
 require_pattern ".claude/skills/dev-flow/SKILL.md" 'writing-plans -> requirements-coverage -> plan-review' "dev-flow fixes standard L pre-implementation gate order"
+require_pattern ".claude/skills/dev-flow/SKILL.md" 'rollback-units.*审计' "dev-flow requires rollback audit after implementation"
 require_pattern ".claude/skills/dev-flow/SKILL.md" '默认不把覆盖矩阵追加到 `context/verify\.jsonl`' "dev-flow keeps coverage out of verify manifest by default"
 require_pattern ".claude/skills/writing-plans/SKILL.md" 'requirement_confirmation\.status.*confirmed' "writing-plans requires confirmed requirement gate"
 require_pattern ".claude/skills/writing-plans/SKILL.md" 'human requirement confirmation required before writing-plans' "writing-plans blocks before requirement confirmation"
 require_pattern ".claude/skills/writing-plans/SKILL.md" '标准 L 默认触发 `requirements_coverage: full`' "writing-plans defaults standard L to requirements coverage"
 require_pattern ".claude/skills/writing-plans/SKILL.md" '不得直接从 `writing-plans` 进入 .*`implementation_approval`' "writing-plans cannot jump directly to implementation approval"
+require_pattern ".claude/skills/writing-plans/SKILL.md" 'Depends on' "writing-plans requires explicit dependency relation"
 require_pattern ".claude/skills/requirements-coverage/SKILL.md" '默认不创建或更新 `context/verify\.jsonl`' "requirements-coverage does not update verify manifest by default"
 require_pattern ".claude/skills/requirements-coverage/SKILL.md" 'Updated manifests' "requirements-coverage separates generated assets from manifest updates"
 require_pattern ".claude/skills/grillme/SKILL.md" '不能 `Auto-continue: yes` 直达 `writing-plans`' "grillme cannot auto-continue to writing-plans in M/L"
@@ -149,6 +163,7 @@ for field in \
   "Head SHA" \
   "Working tree dirty" \
   "Diff stat hash" \
+  "Business diff fingerprint" \
   "Last validation at" \
   "Last validation commands" \
   "Accepted risks"; do
@@ -167,6 +182,7 @@ fi
 
 if [ -f ".claude/rules/project-workflow.md" ]; then
   require_pattern ".claude/rules/project-workflow.md" '^dev_flow:' "project-workflow.md has dev_flow config"
+  require_pattern ".claude/rules/project-workflow.md" 'retention:' "project-workflow.md has artifact retention config"
   forbid_pattern '<detect|<none\|present>|<false\|true>|<local-config\|repo-governed>|<required-for-L-behavior\|optional\|custom>|<disabled\|enabled>' \
     "project-workflow.md has no unresolved config placeholders" \
     ".claude/rules/project-workflow.md"

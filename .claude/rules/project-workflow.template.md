@@ -6,7 +6,7 @@ paths:
   - "<review-root>/**"
   - "<plan-root>/**"
 dev_flow:
-  version: "0.2.0"
+  version: "0.3.0"
   project_kind: "<detect>"
   package_manager: "<detect>"
   paths:
@@ -24,12 +24,15 @@ dev_flow:
     build_only: "<detect-or-none>"
     type_check: "<detect-or-none>"
     lint: "<detect-or-none>"
+    lint_changed: "<detect-or-none>"
     format: "<detect-or-none>"
     test: "<detect-or-none>"
     automated_tests: "<none|present>"
     runtime_verification: "<required-for-L-behavior|optional|custom>"
     webapp_testing: "<disabled|enabled>"
     codemaps: "<disabled|enabled>"
+  artifacts:
+    retention: "compact"
   openspec:
     living_baseline: "<false|true>"
   git:
@@ -117,6 +120,8 @@ YYYY-MM-DD-<short-kebab-name>
 | 代码审查 | `<REVIEW_ROOT>/YYYY-MM-DD-<feature-id>-code-review.md` |
 | 完成前验证 | `<REVIEW_ROOT>/YYYY-MM-DD-<feature-id>-verification.md` |
 | 手动行为验证脚本 | `<REVIEW_ROOT>/YYYY-MM-DD-<feature-id>-manual-test.md` |
+| 最终功能说明 | `<FEATURE_ROOT>/<feature-id>/feature.md` |
+| 最终完成报告 | `<FEATURE_ROOT>/<feature-id>/completion.md` |
 | 安全审查 | `<REVIEW_ROOT>/YYYY-MM-DD-<feature-id>-security-review.md` |
 | 子任务台账 | `<SDD_PROGRESS>` |
 | 实现上下文清单 | `<FEATURE_ROOT>/<feature-id>/context/implement.jsonl` |
@@ -160,6 +165,7 @@ YYYY-MM-DD-<short-kebab-name>
 ---
 dev_flow_status:
   schema_version: "1"
+  workflow_version: "0.3.0"
   feature_id: "<feature-id>"
   level: "<M|L>"
   current_gate: "<gate-name>"
@@ -191,6 +197,7 @@ dev_flow_status:
     head_sha: "unknown"
     working_tree_dirty: "unknown"
     diff_stat_hash: "unknown"
+    business_diff_fingerprint: "unknown" # 覆盖未暂存和已暂存的业务改动；排除 dev-flow 资产
     last_validation_at: "none"
     last_validation_commands: []
   accepted_risks: []
@@ -210,9 +217,12 @@ dev_flow_status:
 - Head SHA:
 - Working tree dirty:
 - Diff stat hash:
+- Business diff fingerprint:
 - Last validation at:
 - Last validation commands:
 - Accepted risks:
+
+完成收尾后，默认将中间资产压缩为 `feature.md`、`completion.md` 和可复用的 `manual-test.md`。`dev_flow.artifacts.retention: full` 时，把原始需求、计划、覆盖、审查、回撤、验证和 context 资产移动到 feature 目录下的带时间戳 `archive/`；默认 `compact` 不保留这些中间资产。
 ```
 
 恢复中断流程时，先读 `status.md`，再读其中列出的资产；`[HANDOFF]` 只作为最近一次对话的辅助线索。

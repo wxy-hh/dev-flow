@@ -172,9 +172,10 @@ Stop reason: human implementation approval required before dispatching implement
 
 1. 检查所有任务的 rollback unit 都已从 `pending` 补成 commit、diff 范围或落盘 patch 策略。
 2. 如果仍有缺失，先运行 `rollback-units` 审计模式。
-3. 用 `requesting-code-review` 或 `code-review` 做整体验收。
+3. 如果回撤门禁为 `full`，先运行 `rollback-units` 审计模式，确认真实 diff/patch/commit 证据完整。
+4. 用 `requesting-code-review` 或 `code-review` 做整体验收。
 4. 严重/重要问题（Critical / Important）必须修复，或由用户明确接受风险。
-5. 使用 `verification-before-completion` 运行最终验证。
+6. 使用 `verification-before-completion` 运行最终验证，并执行 `dev-flow-feature-check <feature-id> --finish`。
 
 ## 输出和交接
 
@@ -188,7 +189,7 @@ Current gate: subagent-driven-development
 Generated assets:
 - <SDD_PROGRESS>
 - <FEATURE_ROOT>/<feature-id>/rollback-units.md
-Next skill: code-review
+Next skill: rollback-units audit 或 code-review
 Next inputs:
 - <FEATURE_ROOT>/<feature-id>/需求说明书.md
 - <FEATURE_ROOT>/<feature-id>/初步实现计划.md

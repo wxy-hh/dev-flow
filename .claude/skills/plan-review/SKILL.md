@@ -44,6 +44,7 @@ description: 多维度独立审查计划，查漏补缺后再执行。已有 req
 - 标准 L 或登录、鉴权、SSO、token/session、路由守卫、HTTP 拦截器、跨系统入口类计划，必须先完成 `requirements-coverage`。如果 `<FEATURE_ROOT>/<feature-id>/requirements-coverage.md` 缺失，且 `status.md` 没有记录 `requirements-coverage` 已完成，停止并交回 `requirements-coverage`，不要生成 plan-review 报告。
 - 标准 M 中如果 `risk_gates.requirements_coverage` 不是 `none`，同样要求先完成覆盖门禁。
 - `requirements-coverage` 有 `MISSING`、`CONFLICT`、`OUT_OF_SCOPE`，或 L 级有未接受的 `PARTIAL` / `UNVERIFIABLE` 时，不继续审查计划优劣；先修订需求或计划。
+- 审查过程中如果新发现属于“需求条目未映射到任务/验收/验证”的 coverage 缺口，必须标记为 `coverage-return`，退回 `requirements-coverage` 更新矩阵后再重新审查；不要在 plan-review 报告里直接改计划并把 coverage 结论当作已通过。
 
 未完成覆盖时输出：
 
@@ -158,14 +159,15 @@ Stop reason: requirements coverage required before plan-review
 
 输出顺序：
 
-1. 一句话结论：通过 / 需修订 / 阻塞。
-2. 报告路径；L 级必须保存为 `<REVIEW_ROOT>/YYYY-MM-DD-<feature-id>-plan-review.md`。
-3. CRITICAL/HIGH 阻塞项摘要。
-4. MEDIUM/LOW 摘要。
-5. 修订建议或已修订摘要。
-6. 把报告追加到 `context/review.jsonl`；如果后续验证需要计划审查结论，同时追加到 `context/verify.jsonl`。
-7. 更新 `<FEATURE_ROOT>/<feature-id>/status.md` 和 `dev_flow_status`；标准 M/L 必须保持 `human_gates.implementation_approval.required: true`，并在用户确认前保持 `status: pending`。
-8. `[HANDOFF]` 交接块。
+1. 用户决策摘要（3-5 行）：结论、阻塞项、需要决定的事项、下一步。
+2. 一句话结论：通过 / 需修订 / 阻塞。
+3. 报告路径；L 级必须保存为 `<REVIEW_ROOT>/YYYY-MM-DD-<feature-id>-plan-review.md`。
+4. CRITICAL/HIGH 阻塞项摘要。
+5. MEDIUM/LOW 摘要。
+6. 修订建议或已修订摘要。
+7. 把报告追加到 `context/review.jsonl`；如果后续验证需要计划审查结论，同时追加到 `context/verify.jsonl`。
+8. 更新 `<FEATURE_ROOT>/<feature-id>/status.md` 和 `dev_flow_status`；标准 M/L 必须保持 `human_gates.implementation_approval.required: true`，并在用户确认前保持 `status: pending`。
+9. `[HANDOFF]` 交接块。
 
 无 CRITICAL/HIGH 时：
 

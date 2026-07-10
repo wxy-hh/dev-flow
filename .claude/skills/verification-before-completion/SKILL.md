@@ -45,7 +45,7 @@ context manifest 只负责列出应读取的材料，不代表验证通过。完
 
 ## 验证配置
 
-具体命令和默认矩阵以项目适配层为准。不要把当前项目的命令复制到本技能正文；迁移项目时只更新适配层。
+具体命令和默认矩阵以项目适配层为准。不要把当前项目的命令复制到本技能正文；迁移项目时只更新适配层。若完整 lint/build 过慢，优先使用适配层的 `lint_changed` 或等价目标文件检查；这只能补充快速反馈，不能把未运行的完整验证伪装成通过。
 
 运行时行为验证也以项目适配层为准：
 
@@ -68,6 +68,8 @@ context manifest 只负责列出应读取的材料，不代表验证通过。完
 ## 未覆盖项
 - ...
 ```
+
+只有填写了“实测”结果的手动测试脚本才算行为验证证据；空模板、预期结果或“未执行”不算通过证据。
 
 文档/技能改动至少执行适配层列出的文档检查，并人工确认：
 
@@ -117,11 +119,19 @@ context manifest 只负责列出应读取的材料，不代表验证通过。完
 - ...
 ```
 
-保存验证报告后，同步更新 `<FEATURE_ROOT>/<feature-id>/status.md` 的 `Current gate`、`Completed gates`、`Next action`、`Assets`、`Last updated`、`Base SHA`、`Head SHA`、`Working tree dirty`、`Diff stat hash`、`Last validation at` 和 `Last validation commands`，并同步更新 frontmatter 中的 `dev_flow_status.validation`。
+保存验证报告后，同步更新 `<FEATURE_ROOT>/<feature-id>/status.md` 的 `Current gate`、`Completed gates`、`Next action`、`Assets`、`Last updated`、`Base SHA`、`Head SHA`、`Working tree dirty`、`Diff stat hash`、`Last validation at` 和 `Last validation commands`，并同步更新 frontmatter 中的 `dev_flow_status.validation`。`Last validation commands` 至少包含一条实际执行的命令或一条填写了实测结果的人工检查；用户跳过完整验证时，报告结论必须为“部分验证”，不得把 `verification-before-completion` 追加到 `Completed gates`。
 
 如果存在 context manifest，把验证报告和手动测试脚本追加到 `context/verify.jsonl`。
 
-如果 status 中已有 `Last validation at`，在声称完成前先比较当前 `Head SHA`、`Working tree dirty` 和 `Diff stat hash`。任一项与上次验证记录不一致，已有验证证据视为过期，必须重新运行相关验证。
+如果 status 中已有 `Last validation at`，在声称完成前先比较当前 `Head SHA`、`Working tree dirty` 和 `Diff stat hash`。任一项与上次验证记录不一致，已有验证证据视为过期，必须重新运行相关验证。`Diff stat hash` 应只覆盖业务改动，排除 `<FEATURE_ROOT>`、`<REVIEW_ROOT>` 和 `.claude/runtime` 生成的流程资产，避免生成验证报告本身让业务验证失效；业务指纹必须同时覆盖未暂存和已暂存改动。
+
+验证报告保存后，M/L 任务必须运行：
+
+```text
+.claude/skills/dev-flow/scripts/dev-flow-feature-check <feature-id> --finish
+```
+
+检查失败时只能输出部分验证或阻塞结论，不得进入“验证通过”的分支收尾。
 
 验证通过后输出交接块，但不要自动提交、合并、推送或创建 PR：
 

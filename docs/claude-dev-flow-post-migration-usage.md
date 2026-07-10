@@ -51,6 +51,7 @@
 - 标准 M/L 的 `plan-review` 是否发生在第一处源码修改之前，且没有被后置 `code-review` 替代。
 - 代码审查是否只报告真实问题。
 - `/finish` 是否能给出新鲜验证证据。
+- `dev-flow-feature-check <feature-id> --finish` 是否能拦截缺失验证、回撤 pending、错误 manifest 和不存在资产。
 
 ## 如何描述任务
 
@@ -149,6 +150,8 @@
 | `<REVIEW_ROOT>/YYYY-MM-DD-<feature-id>-code-review.md` | 代码审查报告 |
 | `<REVIEW_ROOT>/YYYY-MM-DD-<feature-id>-verification.md` | 完成前验证证据 |
 | `<REVIEW_ROOT>/YYYY-MM-DD-<feature-id>-manual-test.md` | 手动行为验证脚本和实测结果 |
+| `<FEATURE_ROOT>/<feature-id>/feature.md` | 完成后的需求边界、方案和关键决策摘要 |
+| `<FEATURE_ROOT>/<feature-id>/completion.md` | 完成后的审查、验证、风险和回撤事实源 |
 
 `status.md` 的 `dev_flow_status.human_gates` 是长流程能否继续的机器可读依据。标准 M/L 必须有 `requirement_confirmation` 和 `implementation_approval`；轻量 L 必须有边界确认和实现前确认。确认前不要写实现计划或业务代码。
 
@@ -170,7 +173,7 @@
 
 如果验证后代码又变了，或者 `Head SHA`、`Working tree dirty`、`Diff stat hash` 与记录不一致，不能复用旧验证结论，必须重新运行相关验证。
 
-context manifest 只解决“该读哪些文件”，不等于验证通过。验证结论仍以最新命令输出、人工测试记录和验证报告为准。
+context manifest 只解决“该读哪些文件”，不等于验证通过。验证结论仍以最新命令输出、人工测试记录、验证报告和 feature-check 为准。完成后默认清理中间 manifest；需要完整审计时使用 `retention: full` 归档。
 
 ## 什么时候跑 doctor
 

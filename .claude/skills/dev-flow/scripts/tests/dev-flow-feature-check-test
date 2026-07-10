@@ -1,0 +1,74 @@
+#!/usr/bin/env bash
+set -u
+
+root=$(cd "$(dirname "$0")/.." && pwd)
+checker="$root/dev-flow-feature-check"
+finalizer="$root/dev-flow-feature-finalize"
+tmp=$(mktemp -d "${TMPDIR:-/tmp}/dev-flow-feature-check.XXXXXX")
+trap 'rm -rf "$tmp"' EXIT
+
+failures=0
+run() {
+  if [ "${DEBUG:-0}" = 1 ]; then
+    "$@"
+  else
+    "$@" >/dev/null 2>&1
+  fi
+}
+run_feature() {
+  (cd "$tmp" && "$checker" "$@")
+}
+run_in_tmp() {
+  (cd "$tmp" && "$@")
+}
+expect_pass() {
+  if run "$@"; then
+    printf 'PASS %s\n' "$*"
+  else
+    printf 'FAIL expected pass: %s\n' "$*"
+    failures=$((failures + 1))
+  fi
+}
+expect_fail() {
+  if run "$@"; then
+    printf 'FAIL expected failure: %s\n' "$*"
+    failures=$((failures + 1))
+  else
+    printf 'PASS expected failure: %s\n' "$*"
+  fi
+}
+
+mkdir -p "$tmp/.claude/rules" "$tmp/docs/dev-flow/features/demo" "$tmp/docs/dev-flow/reviews" "$tmp/docs/dev-flow/features/demo/context" "$tmp/src"
+git -C "$tmp" init -q
+printf '%s\n' 'dev_flow:' '  paths:' '    feature_root: docs/dev-flow/features' '    review_root: docs/dev-flow/reviews' '  verification:' '    webapp_testing: "disabled"' '  artifacts:' '    retention: "compact"' > "$tmp/.claude/rules/project-workflow.md"
+printf '%s\n' '---' 'dev_flow_status:' '  schema_version: "1"' '  workflow_version: "0.3.0"' '  feature_id: "demo"' '  level: "L"' '  current_gate: "verification-before-completion"' '  completed_gates:' '    - verification-before-completion' '  next_action: "finish"' '  assets:' '    - docs/dev-flow/features/demo/status.md' '    - docs/dev-flow/features/demo/context/verify.jsonl' '  context_manifests:' '    verify: docs/dev-flow/features/demo/context/verify.jsonl' '  risk_gates:' '    rollback_units: "light"' '    security_review: "none"' '    behavior_verification: "full"' '  validation:' '    last_validation_at: "2026-01-01"' '    last_validation_commands:' '      - "printf validation"' '    business_diff_fingerprint: "unknown"' '---' > "$tmp/docs/dev-flow/features/demo/status.md"
+printf '%s\n' '{"file":"docs/dev-flow/features/demo/status.md","kind":"verification","reason":"fixture"}' > "$tmp/docs/dev-flow/features/demo/context/verify.jsonl"
+printf '%s\n' '# verification' > "$tmp/docs/dev-flow/reviews/demo-verification.md"
+printf '%s\n' '# manual' '实测：通过' > "$tmp/docs/dev-flow/reviews/demo-manual-test.md"
+printf '%s\n' '### Task 1' '**Depends on:** none' > "$tmp/docs/dev-flow/features/demo/初步实现计划.md"
+printf '%s\n' '# feature' > "$tmp/docs/dev-flow/features/demo/feature.md"
+printf '%s\n' '---' 'dev_flow_completion:' '  retention: "compact"' '  outcome: "verified"' '---' '# completion' > "$tmp/docs/dev-flow/features/demo/completion.md"
+printf '%s\n' 'baseline' > "$tmp/src/business.js"
+git -C "$tmp" add .
+git -C "$tmp" -c user.name='dev-flow test' -c user.email='dev-flow@example.test' commit -qm baseline
+printf '%s\n' 'staged business change' > "$tmp/src/business.js"
+git -C "$tmp" add src/business.js
+fixture_fingerprint=$( { git -C "$tmp" diff --binary -- . ':(exclude).claude/**' ':(exclude)docs/dev-flow/features/**' ':(exclude)docs/dev-flow/reviews/**' ':(exclude)docs/claude-dev-flow-*'; git -C "$tmp" diff --cached --binary -- . ':(exclude).claude/**' ':(exclude)docs/dev-flow/features/**' ':(exclude)docs/dev-flow/reviews/**' ':(exclude)docs/claude-dev-flow-*'; while IFS= read -r file; do if [[ "$file" != .claude/* && "$file" != docs/dev-flow/features/* && "$file" != docs/dev-flow/reviews/* && "$file" != docs/claude-dev-flow-* ]]; then printf 'UNTRACKED %s ' "$file"; git -C "$tmp" hash-object -- "$file"; fi; done < <(git -C "$tmp" -c core.quotePath=false ls-files --others --exclude-standard); } | git -C "$tmp" hash-object --stdin )
+awk -v fp="$fixture_fingerprint" '{ sub(/^    business_diff_fingerprint: ".*"$/, "    business_diff_fingerprint: \"" fp "\""); print }' "$tmp/docs/dev-flow/features/demo/status.md" > "$tmp/docs/dev-flow/features/demo/status.new"
+mv "$tmp/docs/dev-flow/features/demo/status.new" "$tmp/docs/dev-flow/features/demo/status.md"
+
+expect_pass run_feature demo --finish
+awk '{ sub(/^  current_gate: ".*"$/, "  current_gate: \"unknown-gate\""); print }' "$tmp/docs/dev-flow/features/demo/status.md" > "$tmp/docs/dev-flow/features/demo/status.new"
+mv "$tmp/docs/dev-flow/features/demo/status.new" "$tmp/docs/dev-flow/features/demo/status.md"
+expect_fail run_feature demo --finish
+awk '{ sub(/^  current_gate: ".*"$/, "  current_gate: \"verification-before-completion\""); print }' "$tmp/docs/dev-flow/features/demo/status.md" > "$tmp/docs/dev-flow/features/demo/status.new"
+mv "$tmp/docs/dev-flow/features/demo/status.new" "$tmp/docs/dev-flow/features/demo/status.md"
+rm "$tmp/docs/dev-flow/reviews/demo-manual-test.md"
+expect_fail run_feature demo --finish
+
+printf '%s\n' '# manual' '实测：通过' > "$tmp/docs/dev-flow/reviews/demo-manual-test.md"
+expect_pass run_in_tmp "$finalizer" demo --retention=compact --confirm
+expect_pass run_feature demo --finish
+
+printf '\nSummary: %s failure(s)\n' "$failures"
+[ "$failures" -eq 0 ]

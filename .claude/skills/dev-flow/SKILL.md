@@ -53,7 +53,7 @@ L：完整流程或轻量 L 路径 + HUMAN GATE + 风险维度门禁 + 最终审
 - `plan-review` 被触发且无 CRITICAL/HIGH 时，可以自动进入仍在实现前的回撤、安全等检查门禁；如果下一步会写业务代码，必须先停在 `implementation_approval`。
 - `rollback-units` 被触发为 `full` 时，完成设计后停在实现前；被触发为 `light` 时，把回撤证据写入 `status.md` 或最终审查。
 - 安全审查被触发时，按项目适配层决定 `light` 或 `full`。
-- 代码审查无 Critical/Important 阻塞项时，自动进入 `verification-before-completion`。
+- `rollback-units` 为 `full` 时，实现完成后先运行 `rollback-units` 审计，再进入 `code-review`；代码审查无 Critical/Important 阻塞项时，进入 `verification-before-completion`。
 
 必须停下来询问用户的场景：
 
@@ -125,8 +125,9 @@ L 级资产契约：
 | `plan-review` | `<REVIEW_ROOT>/YYYY-MM-DD-<feature-id>-plan-review.md` 或 `status.md` 轻量结论 | 无 CRITICAL/HIGH 后可进入实现前回撤/安全门禁；写代码前必须输出 `[HUMAN GATE:implementation_approval]` |
 | `security-reviewer` / 安全审查 | `<REVIEW_ROOT>/YYYY-MM-DD-<feature-id>-security-review.md` 或 `status.md` 安全结论 | 高风险残留需停下确认 |
 | `rollback-units` | `<FEATURE_ROOT>/<feature-id>/rollback-units.md` 或 `status.md` 轻量回撤证据 | `full` 时停下询问是否开始实现 |
-| `subagent-driven-development` / `executing-plans` | `<SDD_PROGRESS>`，任务报告，回撤证据 | 仅在 `implementation_approval.status` 为 `confirmed` 或用户明确跳过并接受风险后执行；完成后自动进入 `code-review` |
-| `code-review` / `requesting-code-review` | `<REVIEW_ROOT>/YYYY-MM-DD-<feature-id>-code-review.md` | 无阻塞后自动进入 `verification-before-completion` |
+| `subagent-driven-development` / `executing-plans` | `<SDD_PROGRESS>`，任务报告，回撤证据 | 仅在 `implementation_approval.status` 为 `confirmed` 或用户明确跳过并接受风险后执行；完成后按风险进入 `rollback-units` 审计或 `code-review` |
+| `rollback-units` audit | `<FEATURE_ROOT>/<feature-id>/rollback-units.md` | `full` 回撤门禁实现后必须补齐真实 diff/patch/commit 证据；无未解释 `pending` 后进入 `code-review` |
+| `code-review` / `requesting-code-review` | `<REVIEW_ROOT>/YYYY-MM-DD-<feature-id>-code-review.md` | 无阻塞后进入 `verification-before-completion` |
 | `verification-before-completion` | `<REVIEW_ROOT>/YYYY-MM-DD-<feature-id>-verification.md`，必要时 `<REVIEW_ROOT>/YYYY-MM-DD-<feature-id>-manual-test.md` | 停下询问分支收尾方式 |
 | `finishing-a-development-branch` | 当前分支状态、用户选择的收尾动作和最终验证结论 | 按用户选择合并、推送 PR、保留或丢弃 |
 
@@ -145,6 +146,8 @@ M/L context manifest 默认位于：
 ## 第 1 步：分级
 
 快速阅读相关项目文件和规范。按失败后果、影响范围和可回滚性判断级别；关键词只作为辅助信号。不要先问一串问题；如果需求明显模糊且会影响分级，直接路由到 `req-probe` 或 `openspec` 固化需求。只有一个关键边界会影响流程选择时，才问一个问题。
+
+命中登录、鉴权、SSO、token/session、路由守卫、HTTP 拦截器或跨系统回跳时，需求固化阶段至少检查认证中心/回跳配置、token 生命周期与传递方式、公开接口 Authorization、所有 `/login` 跳转点、成功/失败/缺失参数/401/403/登出清理、URL query 和本地状态清理、门户菜单等既有登录副作用。任一项未决都要留在需求确认门禁，不用占位符推进计划。
 
 | 级别 | 判断信号 | 默认动作 |
 |------|----------|----------|
@@ -245,8 +248,9 @@ M/L context manifest 默认位于：
 8. 输出 `[HUMAN GATE:implementation_approval]`，等待用户确认计划、风险和回撤边界；确认前不得写业务代码。
 9. 按项目适配层的 test strategy 决定是否使用 `test-driven-development`。
 10. 按批准后的计划实现。
-11. 完成后使用 `code-review`；`code-review` 会委托 `requesting-code-review`。
-12. 声称完成前执行 `verification-before-completion` 证据门禁。
+11. `rollback_units: full` 时先运行 `rollback-units` 审计模式，补齐真实回撤证据。
+12. 完成后使用 `code-review`；`code-review` 会委托 `requesting-code-review`。
+13. 声称完成前执行 `verification-before-completion` 证据门禁和 `dev-flow-feature-check --finish`。
 
 必需产物：
 
@@ -314,9 +318,10 @@ M/L context manifest 默认位于：
 12. 输出 `[HUMAN GATE:implementation_approval]`，等待用户确认计划、风险、回撤和验证方式；确认前不得写业务代码。
 13. 按项目适配层的 test strategy 决定是否使用 `test-driven-development`。
 14. 可拆分时按子任务执行；平台支持时使用 `subagent-driven-development`，否则使用 `executing-plans`。
-15. 最终执行 `code-review`。
-16. 按项目适配层运行最强相关验证；L 级运行时行为改动必须包含 `webapp-testing` 证据或手动测试脚本。
-17. 进入 `finishing-a-development-branch`，停下询问分支收尾方式。
+15. `rollback_units: full` 时先执行 `rollback-units` 审计，再执行 `code-review`。
+16. 按项目适配层运行最强相关验证；L 级运行时行为改动必须包含 `webapp-testing` 证据或填写完整的手动测试脚本。
+17. 运行 `dev-flow-feature-check <feature-id> --finish`；失败时不得进入“验证通过”的分支收尾。
+18. 进入 `finishing-a-development-branch`，停下询问分支收尾方式。
 
 标准 L 中，`writing-plans -> requirements-coverage -> plan-review` 是实现前固定骨架。`requirements-coverage` 只回答“需求和计划是否一一覆盖”；`plan-review` 再回答“这个计划是否安全、可回撤、符合项目结构”。两者都完成前，不进入 `implementation_approval`。
 
@@ -337,7 +342,7 @@ M/L context manifest 默认位于：
 <REVIEW_ROOT>/YYYY-MM-DD-<feature-id>-manual-test.md（需要手动行为验证时）
 ```
 
-L 级不使用“干净就过”跳过需求边界确认、实现前确认或最终强验证。L 级但架构自明、只改少量高风险逻辑时，允许安全审查 `light/full` + 行为验证 `full` + 回撤说明 `light`，不强制生成 plan-review/rollback-units 大文档；但轻量 L 仍必须先输出边界确认卡并获得用户确认。
+L 级不使用“干净就过”跳过需求边界确认、实现前确认或最终强验证。L 级但架构自明、只改少量高风险逻辑时，允许安全审查 `light/full` + 行为验证 `full` + 回撤说明 `light`，不强制生成 plan-review/rollback-units 大文档；但轻量 L 仍必须先输出边界确认卡并获得用户确认。标准 L 或 `rollback_units: full` 的实现完成后，必须经过回撤审计和 `dev-flow-feature-check --finish`，不能只靠对话中的“已完成”结论收尾。
 
 ### 中途重分级
 
@@ -447,7 +452,7 @@ L 级不使用“干净就过”跳过需求边界确认、实现前确认或最
 - `webapp-testing: disabled`：落盘手动测试脚本 `<REVIEW_ROOT>/YYYY-MM-DD-<feature-id>-manual-test.md`，包含步骤、预期和实测结果。
 - `automated-tests: present`：同时运行相关自动化测试。
 
-L 级运行时行为改动不能只用 type-check 或 lint 作为完成证据；必须说明真实页面、路由、接口、状态或权限路径如何被验证。
+L 级运行时行为改动不能只用 type-check 或 lint 作为完成证据；必须说明真实页面、路由、接口、状态或权限路径如何被验证。用户跳过完整 lint/build 时可以记录 accepted risk，但 verification 只能标记为 partial，不能加入 `completed_gates` 或输出“验证通过”。
 
 ## 第 5 步：控制产物数量
 
@@ -469,6 +474,7 @@ L 级运行时行为改动不能只用 type-check 或 lint 作为完成证据；
 2. 重新运行。
 3. 读取输出和退出码。
 4. 报告证据。
+5. 对 M/L 运行 `.claude/skills/dev-flow/scripts/dev-flow-feature-check <feature-id> --finish`；该检查失败时停止收尾。
 
 按项目适配层的验证配置和 test strategy 选择默认验证；混合改动取并集。不要把某个项目的验证命令当作 dev-flow 本体规则。
 

@@ -24,6 +24,12 @@
    - 标准 M/L：按 `dev-flow` 固化需求；用户确认需求后才写计划；计划审查和实现前确认后才写代码
 5. 完成前必须提供新鲜验证证据。
 
+## 标准 L 启动前检查
+
+- 进入标准 L 前先运行 `.claude/skills/dev-flow/scripts/dev-flow-doctor`。
+- doctor 有失败项时先停止并报告；只有用户明确说“跳过并接受流程完整性风险”后才可继续，并把理由写入 `accepted_risks`。
+- 实现完成后，标准 L 必须按 `rollback-units` audit → `code-review` → `verification-before-completion` → `dev-flow-feature-check --finish` 顺序收尾。
+
 ## L 级入口硬规则
 
 - 涉及登录、鉴权、token/session、权限守卫、跨系统入口、订单、支付、数据删除或数据完整性时，先按 L 候选处理；存在接口契约不明、多模块方案取舍、共享状态/权限结构变化或难回撤时，走标准 L。

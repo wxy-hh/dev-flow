@@ -21,7 +21,7 @@
 1. 读取 `.claude/rules/project-workflow.template.md`。
 2. 检查当前项目：
    - 包管理器和 lock 文件。
-   - 项目脚本：install、dev、build、type-check、lint、test、format、preview。
+   - 项目脚本：install、dev、build、build-only、type-check、lint、lint_changed、test、format、preview。
    - test 是否是真测试运行器。
    - 是否存在 OpenSpec、Playwright/Cypress、Vitest/Jest、代码映射或文档生成流程。
    - git 是否可用，`.claude/` 和 `CLAUDE.md` 是否被忽略。
@@ -36,6 +36,7 @@
    - HUMAN GATE 字段和标准 M/L 停顿边界。
    - 启用 / 禁用 agents。
    - 版本管理边界。
+   - 资产保留策略，默认 `dev_flow.artifacts.retention: compact`。
 5. 运行 `.claude/skills/dev-flow/scripts/dev-flow-doctor` 做静态自检。
 6. 如果用户传入 `--smoke-test`，按 `docs/claude-dev-flow-smoke-test.md` 跑迁移后 smoke test。
 
@@ -50,6 +51,7 @@
 - 标准资产中必须包含 `status.md` 的 `dev_flow_status`、`human_gates` 结构和 context manifest 路径。
 - 生成后的说明必须写清：标准 M/L 需求确认前不写计划，实现前确认前不写代码；标准 L 计划后先跑 `requirements-coverage` 再跑 `plan-review`；`code-review` 不能替代 `plan-review`。
 - 生成后运行项目适配层中的文档/技能自检命令。
+- 生成后确认 `.claude/rules/project-workflow.md` 包含 `artifacts.retention`；真实 M/L 功能收尾时再运行 `dev-flow-feature-check`。
 
 ## 完成格式
 

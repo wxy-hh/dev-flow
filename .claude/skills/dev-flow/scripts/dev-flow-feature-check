@@ -1,0 +1,257 @@
+#!/usr/bin/env bash
+# Read-only validation for one dev-flow feature.
+set -u
+
+root=$(git rev-parse --show-toplevel 2>/dev/null || pwd)
+cd "$root" || exit 2
+
+feature_id=""
+finish=false
+for arg in "$@"; do
+  case "$arg" in
+    --finish) finish=true ;;
+    --help|-h) printf 'Usage: %s <feature-id> [--finish]\n' "$0"; exit 0 ;;
+    --*) printf 'ERROR unknown option: %s\n' "$arg" >&2; exit 2 ;;
+    *)
+      if [ -n "$feature_id" ]; then
+        printf 'ERROR only one feature-id is accepted\n' >&2
+        exit 2
+      fi
+      feature_id=$arg
+      ;;
+  esac
+done
+
+if [ -z "$feature_id" ]; then
+  printf 'Usage: %s <feature-id> [--finish]\n' "$0" >&2
+  exit 2
+fi
+
+workflow_file=.claude/rules/project-workflow.md
+if [ ! -f "$workflow_file" ]; then
+  printf 'FAIL project workflow is missing: %s\nSummary: 0 passed, 1 failure(s)\n' "$workflow_file"
+  exit 1
+fi
+
+passes=0
+warnings=0
+failures=0
+pass() { printf 'PASS %s\n' "$1"; passes=$((passes + 1)); }
+warn() { printf 'WARN %s\n' "$1"; warnings=$((warnings + 1)); }
+fail() { printf 'FAIL %s\n' "$1"; failures=$((failures + 1)); }
+
+config_value() {
+  local key=$1
+  awk -v key="$key" '$0 ~ "^[[:space:]]*" key ":" { value=$0; sub("^[^:]*:[[:space:]]*", "", value); gsub(/^"|"$/, "", value); print value; exit }' "$workflow_file"
+}
+
+is_workflow_path() {
+  case "$1" in
+    .claude/*|"$feature_root"/*|"$review_root"/*|docs/claude-dev-flow-*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+business_fingerprint() {
+  {
+    git diff --binary -- . \
+      ':(exclude).claude/**' \
+      ":(exclude)$feature_root/**" \
+      ":(exclude)$review_root/**" \
+      ':(exclude)docs/claude-dev-flow-*'
+    git diff --cached --binary -- . \
+      ':(exclude).claude/**' \
+      ":(exclude)$feature_root/**" \
+      ":(exclude)$review_root/**" \
+      ':(exclude)docs/claude-dev-flow-*'
+    while IFS= read -r file; do
+      [ -z "$file" ] && continue
+      if ! is_workflow_path "$file"; then
+        printf 'UNTRACKED %s ' "$file"
+        git hash-object -- "$file"
+      fi
+    done < <(git -c core.quotePath=false ls-files --others --exclude-standard)
+  } | git hash-object --stdin
+}
+
+feature_root=$(config_value feature_root)
+review_root=$(config_value review_root)
+webapp_testing=$(config_value webapp_testing)
+if [ -z "$feature_root" ] || [ -z "$review_root" ]; then
+  fail 'project workflow has no feature_root/review_root'
+  printf '\nSummary: %s passed, %s warning(s), %s failure(s)\n' "$passes" "$warnings" "$failures"
+  exit 1
+fi
+
+feature_dir="$feature_root/$feature_id"
+status_file="$feature_dir/status.md"
+completion_file="$feature_dir/completion.md"
+feature_file="$feature_dir/feature.md"
+
+if [ "$finish" = true ] && [ ! -f "$status_file" ] && [ -f "$completion_file" ]; then
+  [ -f "$feature_file" ] && pass 'finalized feature has feature.md' || fail 'finalized feature is missing feature.md'
+  if rg -q '^  outcome: "(verified|partial)"$' "$completion_file"; then
+    pass 'completion.md records a final outcome'
+  else
+    fail 'completion.md has no verified/partial outcome'
+  fi
+  retention=$(sed -n 's/^  retention: "\([^"]*\)"$/\1/p' "$completion_file")
+  [ -n "$retention" ] || retention=$(config_value retention)
+  if [ "$retention" = full ]; then
+    if find "$feature_dir/archive" -mindepth 1 -maxdepth 1 -type d -print -quit 2>/dev/null | rg -q .; then
+      pass 'full-retention archive exists'
+    else
+      fail 'full-retention feature has no archive directory'
+    fi
+  fi
+  printf '\nSummary: %s passed, %s warning(s), %s failure(s)\n' "$passes" "$warnings" "$failures"
+  [ "$failures" -eq 0 ]
+  exit $?
+fi
+
+if [ ! -f "$status_file" ]; then
+  fail "status.md is missing: $status_file"
+  printf '\nSummary: %s passed, %s warning(s), %s failure(s)\n' "$passes" "$warnings" "$failures"
+  exit 1
+fi
+pass 'status.md exists'
+
+section() {
+  sed -n "/^  $1:/,/^  $2:/p" "$status_file"
+}
+
+find_report() {
+  local suffix=$1
+  find "$review_root" -maxdepth 1 -type f \( -name "$feature_id-$suffix.md" -o -name "*-$feature_id-$suffix.md" \) -print -quit 2>/dev/null
+}
+
+completed_gates=$(section completed_gates next_action | sed -n 's/^    - //p')
+status_assets=$(section assets context_manifests | sed -n 's/^    - //p')
+current_gate=$(sed -n 's/^  current_gate: "\([^"]*\)"$/\1/p' "$status_file")
+next_action=$(sed -n 's/^  next_action: "\([^"]*\)"$/\1/p' "$status_file")
+
+known_gate() {
+  case "$1" in
+    req-probe|grillme|grilling|writing-plans|requirements-coverage|plan-review|implementation_approval|implementation|rollback-units|security-review|code-review|requesting-code-review|verification-before-completion|finish) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+if rg -q "feature_id: \"$feature_id\"" "$status_file"; then pass 'status feature_id matches'; else fail 'status feature_id does not match'; fi
+if rg -q '^dev_flow_status:' "$status_file"; then pass 'status has dev_flow_status'; else fail 'status has no dev_flow_status'; fi
+if [ -n "$current_gate" ] && known_gate "$current_gate"; then pass 'status current_gate is recognized'; else fail 'status current_gate is missing or unknown'; fi
+if [ -n "$next_action" ] && [ "$next_action" != '<next-action>' ]; then pass 'status next_action is recorded'; else fail 'status next_action is missing'; fi
+
+duplicate_gates=$(printf '%s\n' "$completed_gates" | sed '/^$/d' | sort | uniq -d)
+if [ -n "$duplicate_gates" ]; then
+  fail "status completed_gates contains duplicates: $duplicate_gates"
+else
+  pass 'status completed_gates has no duplicates'
+fi
+unknown_gates=$(printf '%s\n' "$completed_gates" | sed '/^$/d' | while IFS= read -r gate; do known_gate "$gate" || printf '%s\n' "$gate"; done)
+if [ -n "$unknown_gates" ]; then
+  fail "status completed_gates contains unknown gates: $unknown_gates"
+else
+  pass 'status completed_gates are recognized'
+fi
+if [ "$current_gate" = verification-before-completion ] || printf '%s\n' "$next_action" | rg -qi 'finish|收尾|完成|合并|提交'; then
+  if printf '%s\n' "$completed_gates" | rg -qx 'verification-before-completion'; then
+    pass 'finish-oriented status includes completed verification'
+  else
+    fail 'finish-oriented status is missing completed verification'
+  fi
+fi
+
+while IFS= read -r asset; do
+  [ -z "$asset" ] && continue
+  case "$asset" in
+    "$feature_dir"/*|"$review_root"/*) ;;
+    *) fail "status asset is outside feature/review roots: $asset"; continue ;;
+  esac
+  if [ -e "$asset" ]; then pass "status asset exists: $asset"; else fail "status asset is missing: $asset"; fi
+done <<< "$status_assets"
+
+manifest_count=0
+for manifest in "$feature_dir"/context/*.jsonl; do
+  [ -f "$manifest" ] || continue
+  manifest_count=$((manifest_count + 1))
+  while IFS= read -r file; do
+    [ -z "$file" ] && continue
+    if [[ "$file" == src/* || "$file" == mock/* || "$file" == public/* ]]; then
+      fail "context manifest registers source file: $file"
+    elif [ ! -e "$file" ]; then
+      fail "context manifest registers missing file: $file"
+    else
+      pass "context manifest entry exists: $file"
+    fi
+  done < <(sed -n 's/.*"file":"\([^"]*\)".*/\1/p' "$manifest")
+done
+if [ "$manifest_count" -eq 0 ]; then warn 'feature has no context manifests'; fi
+
+if printf '%s\n' "$completed_gates" | rg -qx 'verification-before-completion'; then
+  verification_report=$(find_report verification)
+  [ -n "$verification_report" ] && pass 'verification report exists' || fail 'verification gate is completed but report is missing'
+  if rg -q '^    last_validation_at: "(none|unknown)"$' "$status_file"; then fail 'verification has no validation timestamp'; fi
+  expected_fingerprint=$(sed -n 's/^    business_diff_fingerprint: "\([^"]*\)"$/\1/p' "$status_file")
+  [ -n "$expected_fingerprint" ] || expected_fingerprint=$(sed -n 's/^    diff_stat_hash: "\([^"]*\)"$/\1/p' "$status_file")
+  if ! printf '%s\n' "$expected_fingerprint" | rg -q '^[0-9a-f]{40}$'; then
+    fail 'business diff fingerprint is missing or not a Git hash'
+  else
+    current_fingerprint=$(business_fingerprint)
+    if [ "$expected_fingerprint" = "$current_fingerprint" ]; then
+      pass 'business diff fingerprint is fresh'
+    else
+      fail 'business diff fingerprint is stale'
+    fi
+  fi
+  if sed -n '/^    last_validation_commands:/,/^  accepted_risks:/p' "$status_file" | rg -q '^      - '; then pass 'validation commands/checks are recorded'; else fail 'validation commands/checks are empty'; fi
+  behavior=$(sed -n 's/^    behavior_verification: "\([^"]*\)"$/\1/p' "$status_file")
+  if [ "$behavior" = full ] && [ "$webapp_testing" = disabled ]; then
+    manual_report=$(find_report manual-test)
+    if [ -z "$manual_report" ]; then
+      fail 'full behavior verification requires manual-test when webapp-testing is disabled'
+    elif rg -q '实测|实际结果|actual|observed' "$manual_report"; then
+      pass 'manual-test contains observed results'
+    else
+      fail 'manual-test has no observed results'
+    fi
+  fi
+else
+  warn 'verification-before-completion is not marked completed'
+fi
+
+rollback=$(sed -n 's/^    rollback_units: "\([^"]*\)"$/\1/p' "$status_file")
+if [ "$rollback" = full ]; then
+  rollback_file="$feature_dir/rollback-units.md"
+  if [ ! -f "$rollback_file" ]; then
+    fail 'rollback_units is full but rollback-units.md is missing'
+  elif rg -n 'pending' "$rollback_file" >/dev/null; then
+    fail 'rollback-units.md still contains pending evidence'
+  elif rg -q 'Commit / Diff range|patch|基线 SHA' "$rollback_file"; then
+    pass 'full rollback evidence is closed'
+  else
+    fail 'rollback-units.md has no auditable evidence'
+  fi
+fi
+
+security=$(sed -n 's/^    security_review: "\([^"]*\)"$/\1/p' "$status_file")
+if [ "$security" = full ]; then
+  security_report=$(find_report security-review)
+  if [ -z "$security_report" ]; then
+    fail 'security_review is full but report is missing'
+  elif rg -n 'SEC-[0-9]+' "$security_report" | rg -q 'pending|待处理'; then
+    fail 'security report still has pending SEC-* implementation obligations'
+  elif rg -q 'SEC-[0-9]+|已确认的安全缓解措施|security obligations' "$security_report"; then
+    pass 'security report has implementation obligations'
+  else
+    warn 'security report has no structured SEC-* obligations'
+  fi
+fi
+
+plan_file=$(find "$feature_dir" -maxdepth 1 -type f -name '*实现计划.md' -print -quit 2>/dev/null)
+if [ -n "$plan_file" ] && rg -q '^### Task ' "$plan_file" && ! rg -q 'Depends on|依赖' "$plan_file"; then
+  warn 'plan has tasks but no explicit dependency relation'
+fi
+
+printf '\nSummary: %s passed, %s warning(s), %s failure(s)\n' "$passes" "$warnings" "$failures"
+[ "$failures" -eq 0 ]

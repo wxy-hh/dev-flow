@@ -97,7 +97,7 @@ Stop reason: human implementation approval required before writing code
 2. 如果仍有缺失，运行或建议 `rollback-units` 审计模式补齐。
 3. 汇总已完成任务、验证结果、回撤证据位置。
 4. 更新 `status.md` 和 `dev_flow_status`。
-5. 输出 `[HANDOFF]` 给 `code-review`。
+5. 输出 `[HANDOFF]` 给 `rollback-units` 审计（full）或 `code-review`（light/none）。
 
 ## 何时停止
 
@@ -124,7 +124,7 @@ Current gate: executing-plans
 Generated assets:
 - <SDD_PROGRESS>
 - <FEATURE_ROOT>/<feature-id>/rollback-units.md
-Next skill: code-review
+Next skill: rollback-units audit 或 code-review
 Next inputs:
 - <FEATURE_ROOT>/<feature-id>/需求说明书.md
 - <FEATURE_ROOT>/<feature-id>/初步实现计划.md

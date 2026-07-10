@@ -141,7 +141,7 @@ Stop reason: rollback units are ready; confirm before implementation starts
 
 输出任何落盘报告后，同步更新 `<FEATURE_ROOT>/<feature-id>/status.md` 和 `dev_flow_status`。设计模式通过后，标准 M/L 必须保持 `human_gates.implementation_approval.required: true` 且用户确认前为 `pending`。如果存在 context manifest，把 `<FEATURE_ROOT>/<feature-id>/rollback-units.md` 追加到 `context/review.jsonl` 和 `context/verify.jsonl`。
 
-审计模式通过后，进入代码审查：
+审计模式通过后，进入代码审查；审计模式是实现后 `code-review` 前的强制闭环，不得只在报告里建议“稍后补齐”。
 
 ```text
 [HANDOFF]

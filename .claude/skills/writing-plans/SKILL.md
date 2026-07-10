@@ -121,7 +121,7 @@ scoped specs 是可选能力。只有计划涉及的路径、package、模块或
 ```markdown
 # [功能名称] 实现计划
 
-> **使用说明：** 按照任务编号顺序执行。每步使用 checkbox (`- [ ]`) 语法跟踪进度。
+> **使用说明：** 按照 `Depends on` 依赖关系执行。每步使用 checkbox (`- [ ]`) 语法跟踪进度。
 
 **目标：** [一句话描述要构建的内容]
 
@@ -148,6 +148,8 @@ scoped specs 是可选能力。只有计划涉及的路径、package、模块或
 
 **Requirement IDs:** REQ-001, REQ-002
 
+**Depends on:** Task 0, or `none`
+
 **Files:**
 - Create: `exact/path/to/file.vue`
 - Modify: `exact/path/to/existing.ts`
@@ -169,6 +171,8 @@ scoped specs 是可选能力。只有计划涉及的路径、package、模块或
 
 验证方式: [具体命令或页面检查点；写明预期结果]
 ````
+
+任务编号只用于稳定引用，不代表必须按数字顺序执行。计划必须显式写出 `Depends on`；实现顺序由依赖关系和可独立验证性决定，回撤顺序另由 `rollback-units` 定义。
 
 ## No Placeholders
 
