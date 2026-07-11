@@ -96,7 +96,7 @@ YYYY-MM-DD-dev-flow-smoke-test
 
 ### 模拟任务
 
-涉及登录、token/session、权限守卫、订单、支付、数据删除、跨系统入口或多个关键路径，并且存在需求分支或设计不确定性。
+跨架构层传播、改共享契约/协议、多条链路需一致，并且存在需求分支或设计不确定性。
 
 ### 期望路径
 
@@ -147,18 +147,28 @@ YYYY-MM-DD-dev-flow-smoke-test
 
 ## HUMAN GATE 回归用例
 
-用一个 SSO / 登录回跳类标准 L 场景复跑：
+用一个已指定走标准 L 的 fixture 复跑（使用拓扑证据而非场景关键词判断 L）：
 
 - agent 判断为标准 L 后，可以读取源码和生成需求说明，但必须停在 `[HUMAN GATE:requirement_confirmation]`。
 - 用户确认需求前，不得生成 `初步实现计划.md`、`requirements-coverage.md`、`rollback-units.md` 或写源码。
 - 用户确认需求后，才允许 `writing-plans`；不得先输出一份对话内实现计划然后直接开始执行。
-- `writing-plans` 的 handoff 必须把 SSO / 登录回跳类任务交给 `requirements-coverage`。
+- `writing-plans` 的 handoff 必须把标准 L 交给 `requirements-coverage`。
 - `requirements-coverage` 通过后必须把下一步交给 `plan-review`，不得停下来等待用户提醒。
 - `plan-review` 必须在第一处源码修改之前完成。
 - `plan-review` 和回撤/安全等实现前门禁完成后，必须停在 `[HUMAN GATE:implementation_approval]`。
 - 用户确认实现前，不得修改源码、mock、配置或测试文件。
 - 如果出现 `auto_continue: false` 后同一回合继续写计划或代码，smoke test 失败。
 - 如果实现 Todo 在 `implementation_approval` 前被创建为进行中或 completed，smoke test 失败。
+
+## 宿主项目分类 rubric（人工审查）
+
+以下 5 项验收标准验证规模与风险解耦确实生效：
+
+1. **同一需求、不同真实拓扑**：分类可不同，且各自引用当前宿主项目证据。
+2. **不同措辞、同一真实拓扑**：分类应相同或给出明确的事实差异。
+3. **导出共享契约变化**：有搜索和分类证据。
+4. **私有局部修复**：不被强制调用方搜索。
+5. **S + security**：最小风险档案、审批、验证和完成检查均闭环。
 
 ## 自检命令
 

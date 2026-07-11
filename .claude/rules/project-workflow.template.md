@@ -6,7 +6,7 @@ paths:
   - "<review-root>/**"
   - "<plan-root>/**"
 dev_flow:
-  version: "0.3.0"
+  version: "0.4.0"
   project_kind: "<detect>"
   package_manager: "<detect>"
   paths:
@@ -128,6 +128,29 @@ YYYY-MM-DD-<short-kebab-name>
 | 审查上下文清单 | `<FEATURE_ROOT>/<feature-id>/context/review.jsonl` |
 | 验证上下文清单 | `<FEATURE_ROOT>/<feature-id>/context/verify.jsonl` |
 
+## completion.md frontmatter
+
+```yaml
+---
+dev_flow_completion:
+  schema_version: "1"
+  feature_id: "<feature-id>"
+  level: "<M|L>"
+  outcome: "verified|partial"
+  completed_at: "<timestamp>"
+  retention: "compact|full"
+  risk_labels: []
+  risk_approval_evidence: ""
+  risk_verification_summary: ""
+  business_diff_fingerprint: "<git-hash>"
+  commits: []
+  pull_request: "none"
+  accepted_risks: []
+---
+```
+
+risk_labels、risk_approval_evidence、risk_verification_summary 在 risk_labels 非空时为必填。completed_at 填写 ISO 8601 时间戳。
+
 ## 局部规范和上下文清单
 
 局部规范是可选能力，用于把某个包、模块、页面或技术层的工程约定放到 `<SCOPED_SPEC_ROOT>/<scope>/index.md`。每个 `index.md` 必须包含：
@@ -165,9 +188,20 @@ YYYY-MM-DD-<short-kebab-name>
 ---
 dev_flow_status:
   schema_version: "1"
-  workflow_version: "0.3.0"
+  workflow_version: "0.4.0"
   feature_id: "<feature-id>"
   level: "<M|L>"
+  profile: "standard"
+  risk_labels: []
+  classification:
+    schema_version: "1"
+    topology: "local"
+    target_files: []
+    symbols: []
+    search_required: false
+    evidence_result: "not-applicable"
+    external_references: []
+    scope_note: ""
   current_gate: "<gate-name>"
   completed_gates: []
   next_action: "<next-action>"
@@ -206,6 +240,8 @@ dev_flow_status:
 # <feature-id> 状态
 
 - Level:
+- Profile:
+- Risk labels:
 - Current gate:
 - Completed gates:
 - Human gates:
@@ -221,6 +257,8 @@ dev_flow_status:
 - Last validation at:
 - Last validation commands:
 - Accepted risks:
+- Classification topology:
+- Classification evidence:
 
 完成收尾后，默认将中间资产压缩为 `feature.md`、`completion.md` 和可复用的 `manual-test.md`。`dev_flow.artifacts.retention: full` 时，把原始需求、计划、覆盖、审查、回撤、验证和 context 资产移动到 feature 目录下的带时间戳 `archive/`；默认 `compact` 不保留这些中间资产。
 ```
@@ -237,12 +275,16 @@ dev_flow_status:
 - 如果 git 可用，每次更新同时记录 `Base SHA`、`Head SHA`、`Working tree dirty` 和 `Diff stat hash`；没有 git 时写 `unknown` 并说明原因。
 - 验证门禁完成后必须记录 `Last validation at` 和 `Last validation commands`。验证后如果 `Head SHA`、`Working tree dirty` 或 `Diff stat hash` 发生变化，已有验证证据视为过期，完成前必须重新验证。
 - 如果任务包含风险门禁，维护一个 `Risk Gates` 表，列出每个 gate 的 `none` / `light` / `full` 形态和证据路径。
-- 标准 L 默认 `requirements_coverage: "full"`。涉及登录、鉴权、SSO、token/session、路由守卫、HTTP 拦截器或跨系统入口的标准 L，默认 `requirements_coverage: "full"`；计划跨模块或改共享登录态/守卫/请求拦截器时，默认 `plan_review: "full"`。
-- 标准 M/L 的 `human_gates.requirement_confirmation` 和 `human_gates.implementation_approval` 必须为 `required: true`。轻量 L 也必须要求边界确认和实现前确认；如果用户一次明确确认边界和轻量 L 路径，可以用同一条用户回复作为两个 gate 的 `evidence`。XS/S 和默认轻量 M 不要求这些 gate。
+- 标准 L 默认 `requirements_coverage: "full"`。命中 security 风险标签且计划跨模块或共享状态时，默认 `plan_review: "full"`。
+- 标准 M/L 的 `human_gates.requirement_confirmation` 和 `human_gates.implementation_approval` 必须为 `required: true`。轻量 L 也必须要求边界确认和实现前确认；如果用户一次明确确认边界和轻量 L 路径，可以用同一条用户回复作为两个 gate 的 `evidence`。XS/S 和默认轻量 M 不要求这些 gate。risk-minimal profile（风险 XS/S）必须要求 `implementation_approval` 为 `required: true`。
 - 一旦输出 `[HUMAN GATE:<gate-id>]` 或 `[HANDOFF]` 中 `Auto-continue: no`，当前回合必须停止；不得在同一回合把 `auto_continue: false` 改成 `true` 或继续写计划/源码。
 - 只有用户后续明确确认、继续、接受风险或跳过并接受风险，才能把对应 `human_gates.<gate>.status` 写成 `confirmed` 或 `skipped`，并把原话或接受风险理由写入 `evidence`。
 - 如果验证失败或用户接受风险，在 `Next action` 和 `Accepted risks` 中写清阻塞点或接受风险依据。
 - 同步维护 frontmatter 中的 `dev_flow_status`；机器可读字段和人类可读摘要不一致时，以最新明确验证证据和已有资产为准并立即修正摘要。
+- 如果任务包含风险标签（risk_labels 非空），`profile` 必须写为 `risk-minimal`；`level` 只能是 XS 或 S。
+- `risk-minimal` profile 必填：feature_id、level、classification、risk_labels、风险理由、实现前审批证据、验证记录、accepted_risks。
+- `risk-minimal` profile 不要求：需求说明书、实现计划、context manifest、requirements-coverage。
+- `classification` 字段记录拓扑证据：topology（local|shared-contract|multi-chain|coordinated-rollback）、target_files、symbols、search_required、evidence_result（verified|partial|not-applicable）、external_references、scope_note。
 
 ## 项目能力
 
@@ -322,7 +364,7 @@ rg -u -n "<detect-feature-root>|<detect-review-root>|\\.claude/runtime/sdd/progr
 
 ## 高风险门禁
 
-涉及登录、鉴权、token/session、权限守卫、订单、支付、数据删除、跨系统入口或数据完整性的 L 级任务，默认在实现前和完成前加入安全审查。
+涉及 security、data、money、external、availability、critical_correctness 或 irreversible_consequence 风险标签的任务，默认在实现前和完成前加入安全审查。风险标签不提升规模等级；XS/S 携带风险标签时使用 `risk-minimal` profile。
 
 安全审查形态由风险决定：
 

@@ -161,6 +161,23 @@ dev_flow:
 | 最终资产 | `<FEATURE_ROOT>/<feature-id>/{feature.md,completion.md}` | 完成后默认保留；中间资产按 `dev_flow.artifacts.retention` 压缩或归档 |
 | 局部规范 | `<SCOPED_SPEC_ROOT>/<scope>/index.md` | 可选；M/L 明确命中 scope 时读取 |
 
+### 风险标签与最小档案
+
+风险标签独立于规模，命中时触发最小门禁但不抬高等级：
+
+- `security`：登录、鉴权、权限、token/session、敏感信息
+- `data`：删除、迁移、数据完整性、不可逆状态变化
+- `money`：支付、计费、价格、余额、结算
+- `external`：外部协议、回调、第三方 API、跨系统跳转
+- `availability`：可用性、队列、限流、关键降级或恢复
+- `critical_correctness`：错误结果造成重大业务/合规/健康后果
+- `irreversible_consequence`：后果不可逆但不属于已有 data/money 标签
+
+携带风险标签的 XS/S 使用 `profile: "risk-minimal"`：
+- 必填：feature_id、level、classification、risk_labels、风险理由、implementation_approval、验证记录、accepted_risks
+- 不要求：需求说明书、实现计划、context manifest、requirements-coverage
+- 完成后 `completion.md` 必须保留风险摘要（风险标签、审批证据、验证结论）
+
 XS/S 不创建 `status.md` 或 context manifest；轻量 M 默认也不创建。不要为了启用三件套而改变任务分级。
 标准 M/L 在需求确认前不得写实现计划，在实现前确认前不得写业务代码；实现后的 `code-review` 不能替代实现前 `plan-review`。标准 L 的计划后固定骨架是 `requirements-coverage -> plan-review`，覆盖报告默认只进入 `context/review.jsonl`，不进入 `context/verify.jsonl`。
 
@@ -220,7 +237,7 @@ feature-check 失败时不能宣称验证通过或直接合并。
 ### Next / SSR 项目
 
 - 区分 client / server / route handler / middleware。
-- 鉴权 middleware、session、redirect 通常是 L。
+- 鉴权 middleware、session、redirect 命中 security 风险标签；规模由实际契约和链路拓扑决定。共享守卫/拦截器变更通常涉及跨层传播（L），但局部鉴权逻辑修改可能是 M 或 risk-minimal S。
 - 构建验证和运行时验证都很重要。
 
 ### Node 后端

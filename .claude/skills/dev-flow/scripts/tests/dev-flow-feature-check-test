@@ -173,5 +173,67 @@ rm "$tmp/docs/dev-flow/features/demo/unsafe-link"
 expect_pass run_in_tmp "$finalizer" demo --retention=compact --confirm
 expect_pass run_feature demo --finish
 
+# --- Risk-minimal fixture setup ---
+mkdir -p "$tmp/docs/dev-flow/features/risk-demo" "$tmp/docs/dev-flow/reviews"
+
+# Create risk-minimal status.md
+printf '%s\n' '---' 'dev_flow_status:' '  schema_version: "1"' '  workflow_version: "0.4.0"' '  feature_id: "risk-demo"' '  level: "S"' '  profile: "risk-minimal"' '  risk_labels: ["security"]' '  current_gate: "verification-before-completion"' '  completed_gates:' '    - verification-before-completion' '  next_action: "finish"' '  auto_continue: false' '  assets:' '    - docs/dev-flow/features/risk-demo/status.md' '  context_manifests:' '    implement: ""' '    review: ""' '    verify: ""' '  human_gates:' '    requirement_confirmation:' '      required: false' '      status: "not required"' '      evidence: "not required"' '    implementation_approval:' '      required: true' '      status: "confirmed"' '      evidence: "user approved risk-minimal path"' '  risk_gates:' '    requirements_coverage: "none"' '    plan_review: "none"' '    rollback_units: "light"' '    security_review: "light"' '    behavior_verification: "light"' '  classification:' '    schema_version: "1"' '    topology: "local"' '    target_files: ["src/business.js"]' '    symbols: ["exampleFunc"]' '    search_required: false' '    evidence_result: "verified"' '    external_references: []' '    scope_note: "Private function fix; no contract change"' '  validation:' '    last_validation_at: "2026-01-01"' '    last_validation_commands:' '      - "printf validation"' '    business_diff_fingerprint: "unknown"' '  accepted_risks: []' '---' > "$tmp/docs/dev-flow/features/risk-demo/status.md"
+
+# Create verification report for risk-demo
+printf '%s\n' '# verification' > "$tmp/docs/dev-flow/reviews/risk-demo-verification.md"
+
+# Create manual test for risk-demo
+printf '%s\n' '# manual' '实测：通过' > "$tmp/docs/dev-flow/reviews/risk-demo-manual-test.md"
+
+# Create feature.md and completion.md for finalized state
+printf '%s\n' '# feature' > "$tmp/docs/dev-flow/features/risk-demo/feature.md"
+printf '%s\n' '---' 'dev_flow_completion:' '  feature_id: "risk-demo"' '  level: "S"' '  outcome: "verified"' '  completed_at: "2026-01-01"' '  retention: "compact"' '  risk_labels: ["security"]' '  risk_approval_evidence: "user confirmed risk-minimal path"' '  risk_verification_summary: "manual verification passed"' '  business_diff_fingerprint: ""' '  commits: []' '  pull_request: "none"' '  accepted_risks: []' '---' '# completion' > "$tmp/docs/dev-flow/features/risk-demo/completion.md"
+
+# Set business diff fingerprint for risk-demo
+fixture_fingerprint_risk=$( { git -C "$tmp" diff --binary -- . ':(exclude).claude/**' ':(exclude)docs/dev-flow/features/**' ':(exclude)docs/dev-flow/reviews/**' ':(exclude)docs/claude-dev-flow-*'; git -C "$tmp" diff --cached --binary -- . ':(exclude).claude/**' ':(exclude)docs/dev-flow/features/**' ':(exclude)docs/dev-flow/reviews/**' ':(exclude)docs/claude-dev-flow-*'; while IFS= read -r file; do if [[ "$file" != .claude/* && "$file" != docs/dev-flow/features/* && "$file" != docs/dev-flow/reviews/* && "$file" != docs/claude-dev-flow-* ]]; then printf 'UNTRACKED %s ' "$file"; git -C "$tmp" hash-object -- "$file"; fi; done < <(git -C "$tmp" -c core.quotePath=false ls-files --others --exclude-standard); } | git -C "$tmp" hash-object --stdin )
+awk -v fp="$fixture_fingerprint_risk" '{ sub(/^    business_diff_fingerprint: ".*"$/, "    business_diff_fingerprint: \"" fp "\""); print }' "$tmp/docs/dev-flow/features/risk-demo/status.md" > "$tmp/docs/dev-flow/features/risk-demo/status.fp"
+mv "$tmp/docs/dev-flow/features/risk-demo/status.fp" "$tmp/docs/dev-flow/features/risk-demo/status.md"
+
+# Risk-minimal: S + security with correct evidence should PASS
+expect_pass run_feature risk-demo --finish
+
+# Risk-minimal: S + security missing implementation_approval should FAIL
+cp "$tmp/docs/dev-flow/features/risk-demo/status.md" "$tmp/docs/dev-flow/features/risk-demo/status.bak"
+awk -v target="implementation_approval" -v field="status" -v value="pending" '
+  $0 == "    " target ":" { in_gate=1; print; next }
+  in_gate && $0 ~ /^    [^ ]/ { in_gate=0 }
+  in_gate && $0 ~ "^      status:"   { print "      status: \"pending\""; next }
+  in_gate && $0 ~ "^      evidence:" { print "      evidence: \"not required\""; next }
+  { print }
+' "$tmp/docs/dev-flow/features/risk-demo/status.md" > "$tmp/docs/dev-flow/features/risk-demo/status.new"
+mv "$tmp/docs/dev-flow/features/risk-demo/status.new" "$tmp/docs/dev-flow/features/risk-demo/status.md"
+expect_fail run_feature risk-demo --finish
+
+# Restore
+cp "$tmp/docs/dev-flow/features/risk-demo/status.bak" "$tmp/docs/dev-flow/features/risk-demo/status.md"
+
+# Risk-minimal: empty risk_labels should FAIL
+awk '{ sub(/^  risk_labels: \[.*\]$/, "  risk_labels: []"); print }' "$tmp/docs/dev-flow/features/risk-demo/status.md" > "$tmp/docs/dev-flow/features/risk-demo/status.new"
+mv "$tmp/docs/dev-flow/features/risk-demo/status.new" "$tmp/docs/dev-flow/features/risk-demo/status.md"
+expect_fail run_feature risk-demo --finish
+cp "$tmp/docs/dev-flow/features/risk-demo/status.bak" "$tmp/docs/dev-flow/features/risk-demo/status.md"
+
+# Risk-minimal: stale business fingerprint should FAIL
+printf '%s\n' 'additional business change' > "$tmp/src/business.js"
+expect_fail run_feature risk-demo --finish
+printf '%s\n' 'staged business change' > "$tmp/src/business.js"
+git -C "$tmp" add src/business.js
+expect_pass run_feature risk-demo --finish
+
+# Risk-minimal finalized feature check
+cp "$tmp/docs/dev-flow/features/risk-demo/status.md" "$tmp/docs/dev-flow/features/risk-demo/status.bak2"
+rm "$tmp/docs/dev-flow/features/risk-demo/status.md"
+expect_pass run_feature risk-demo --finish
+
+# Risk-minimal completion with missing risk summary should FAIL
+awk '!/risk_approval_evidence:/ && !/risk_verification_summary:/' "$tmp/docs/dev-flow/features/risk-demo/completion.md" > "$tmp/docs/dev-flow/features/risk-demo/completion.new"
+mv "$tmp/docs/dev-flow/features/risk-demo/completion.new" "$tmp/docs/dev-flow/features/risk-demo/completion.md"
+expect_fail run_feature risk-demo --finish
+
 printf '\nSummary: %s failure(s)\n' "$failures"
 [ "$failures" -eq 0 ]

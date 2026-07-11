@@ -125,7 +125,7 @@ context manifest 只负责列出应读取的材料，不代表验证通过。完
 
 如果 status 中已有 `Last validation at`，在声称完成前先比较当前 `Head SHA`、`Working tree dirty` 和 `Diff stat hash`。任一项与上次验证记录不一致，已有验证证据视为过期，必须重新运行相关验证。`Diff stat hash` 应只覆盖业务改动，排除 `<FEATURE_ROOT>`、`<REVIEW_ROOT>` 和 `.claude/runtime` 生成的流程资产，避免生成验证报告本身让业务验证失效；业务指纹必须同时覆盖未暂存和已暂存改动。
 
-验证报告保存后，M/L 任务必须运行：
+验证报告保存后，M/L 任务和携带风险标签（risk-minimal profile）的任务必须运行：
 
 ```text
 .claude/skills/dev-flow/scripts/dev-flow-feature-check <feature-id> --finish

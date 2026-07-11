@@ -12,7 +12,7 @@ description: 多维度独立审查计划，查漏补缺后再执行。已有 req
 ## 核心规则
 
 - 不写业务代码。
-- 不替代 `requirements-coverage`；标准 L 和高风险登录/鉴权/跨系统入口类计划缺少覆盖矩阵时必须退回 `requirements-coverage`，其它场景才可记录流程风险和明显遗漏。
+- 不替代 `requirements-coverage`；标准 L 和命中 security 风险标签的计划缺少覆盖矩阵时必须退回 `requirements-coverage`，其它场景才可记录流程风险和明显遗漏。
 - 不替代 `code-review`，也不能被实现后的 `code-review` 替代；本技能只做实现前计划审查。
 - 不只依赖当前对话。优先读取用户显式路径和上一步 `[HANDOFF]`，再按约定目录查找文件。
 - CRITICAL/HIGH 是实现前阻塞项；必须修复、反驳，或由用户明确接受风险后才能继续。
@@ -41,7 +41,7 @@ description: 多维度独立审查计划，查漏补缺后再执行。已有 req
 
 ## 前置检查
 
-- 标准 L 或登录、鉴权、SSO、token/session、路由守卫、HTTP 拦截器、跨系统入口类计划，必须先完成 `requirements-coverage`。如果 `<FEATURE_ROOT>/<feature-id>/requirements-coverage.md` 缺失，且 `status.md` 没有记录 `requirements-coverage` 已完成，停止并交回 `requirements-coverage`，不要生成 plan-review 报告。
+- 标准 L 和命中 security 风险标签的计划，必须先完成 `requirements-coverage`。如果 `<FEATURE_ROOT>/<feature-id>/requirements-coverage.md` 缺失，且 `status.md` 没有记录 `requirements-coverage` 已完成，停止并交回 `requirements-coverage`，不要生成 plan-review 报告。
 - 标准 M 中如果 `risk_gates.requirements_coverage` 不是 `none`，同样要求先完成覆盖门禁。
 - `requirements-coverage` 有 `MISSING`、`CONFLICT`、`OUT_OF_SCOPE`，或 L 级有未接受的 `PARTIAL` / `UNVERIFIABLE` 时，不继续审查计划优劣；先修订需求或计划。
 - 审查过程中如果新发现属于“需求条目未映射到任务/验收/验证”的 coverage 缺口，必须标记为 `coverage-return`，退回 `requirements-coverage` 更新矩阵后再重新审查；不要在 plan-review 报告里直接改计划并把 coverage 结论当作已通过。

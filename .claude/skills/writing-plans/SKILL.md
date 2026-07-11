@@ -221,7 +221,7 @@ scoped specs 是可选能力。只有计划涉及的路径、package、模块或
 4. 简短说明任务数量、关键风险、命中的 scoped specs 和需要用户确认的点。
 5. `[HANDOFF]` 交接块。
 
-标准 M/L 中，如果需求覆盖门禁被风险维度触发，自动交给 `requirements-coverage`；否则交给 `plan-review`。标准 L 默认触发 `requirements_coverage: full`；涉及登录、鉴权、SSO、token/session、路由守卫、HTTP 拦截器或跨系统入口时也默认 `requirements_coverage: full`。标准 M/L 的计划审查至少为 `light`；登录/鉴权/跨系统入口且计划跨模块或共享状态时，默认 `plan_review: full`。不得直接从 `writing-plans` 进入 `subagent-driven-development`、`executing-plans` 或 `implementation_approval`。
+标准 M/L 中，如果需求覆盖门禁被风险维度触发，自动交给 `requirements-coverage`；否则交给 `plan-review`。标准 L 默认触发 `requirements_coverage: full`。标准 M/L 的计划审查至少为 `light`；命中 security 风险标签且计划跨模块或共享状态时，默认 `plan_review: full`。不得直接从 `writing-plans` 进入 `subagent-driven-development`、`executing-plans` 或 `implementation_approval`。
 
 计划阶段不要创建实现 Todo 或把实现任务标记为进行中/完成。可以在计划文档里列任务清单；真正的执行任务只在 `implementation_approval.status == confirmed` 后创建或推进。
 
@@ -252,5 +252,5 @@ Auto-continue: yes
 
 - 需求覆盖触发：`Next skill: requirements-coverage`
 - 需求覆盖未触发：`Next skill: plan-review`
-- 标准 L / 登录鉴权跨系统入口：`Next skill: requirements-coverage`
+- 标准 L：`Next skill: requirements-coverage`
 - 如果用户显式跳过计划审查，L 级必须先写入 `accepted_risks`，并停在 `[HUMAN GATE:implementation_approval]`

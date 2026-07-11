@@ -135,6 +135,73 @@ function validateManifest(root, manifestPath) {
   process.stdout.write(output.length === 0 ? '' : `${output.join('\n')}\n`);
 }
 
+function validateClassification(root, statusPath) {
+  const absoluteRoot = path.resolve(root);
+  const absoluteStatusPath = repositoryPath(absoluteRoot, statusPath, 'status path');
+  rejectSymlinks(absoluteRoot, absoluteStatusPath, 'status path');
+
+  let content;
+  try {
+    content = fs.readFileSync(absoluteStatusPath, 'utf8');
+  } catch (error) {
+    fail(`cannot read status file ${statusPath}: ${error.message}`);
+  }
+
+  // Extract classification YAML block from frontmatter
+  const lines = content.split(/\r?\n/);
+  let inClassification = false;
+  let classificationLines = [];
+
+  for (const line of lines) {
+    if (line.match(/^  classification:/)) {
+      inClassification = true;
+      continue;
+    }
+    if (inClassification) {
+      if (line.match(/^  [a-z_]/) && !line.startsWith('   ')) {
+        break; // next top-level key
+      }
+      classificationLines.push(line);
+    }
+  }
+
+  if (classificationLines.length === 0) {
+    // No classification block - not an error for non-classified features
+    return;
+  }
+
+  // Parse key-value pairs from classification
+  const fields = {};
+  for (const line of classificationLines) {
+    const m = line.match(/^    (\w+):\s*(.*)$/);
+    if (m) {
+      let value = m[2].trim();
+      // Remove quotes
+      if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) {
+        value = value.slice(1, -1);
+      }
+      fields[m[1]] = value;
+    }
+  }
+
+  // Validate schema_version
+  if (!fields.schema_version || fields.schema_version !== '1') {
+    fail('classification schema_version must be "1"');
+  }
+
+  // Validate topology
+  const validTopologies = ['local', 'shared-contract', 'multi-chain', 'coordinated-rollback'];
+  if (!fields.topology || !validTopologies.includes(fields.topology)) {
+    fail(`classification topology must be one of: ${validTopologies.join(', ')}`);
+  }
+
+  // Validate evidence_result
+  const validEvidence = ['verified', 'partial', 'not-applicable'];
+  if (fields.evidence_result && !validEvidence.includes(fields.evidence_result)) {
+    fail(`classification evidence_result must be one of: ${validEvidence.join(', ')}`);
+  }
+}
+
 switch (command) {
   case 'feature-id':
     if (args.length !== 1) fail('usage: dev-flow-validate.mjs feature-id <feature-id>');
@@ -151,6 +218,10 @@ switch (command) {
   case 'manifest':
     if (args.length !== 2) fail('usage: dev-flow-validate.mjs manifest <repo-root> <manifest-path>');
     validateManifest(...args);
+    break;
+  case 'classification':
+    if (args.length !== 2) fail('usage: dev-flow-validate.mjs classification <repo-root> <status-path>');
+    validateClassification(path.resolve(args[0]), args[1]);
     break;
   default:
     fail(`unknown command: ${command ?? ''}`);

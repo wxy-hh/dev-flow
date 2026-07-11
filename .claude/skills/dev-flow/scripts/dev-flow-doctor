@@ -123,7 +123,10 @@ for field in \
   "human_gates" \
   "risk_gates" \
   "validation" \
-  "accepted_risks"; do
+  "accepted_risks" \
+  "profile" \
+  "risk_labels" \
+  "classification"; do
   require_pattern ".claude/rules/project-workflow.template.md" "${field}:" "dev_flow_status has ${field}"
 done
 for field in \
@@ -171,6 +174,11 @@ for field in \
   "Accepted risks"; do
   require_pattern ".claude/rules/project-workflow.template.md" "${field}:" "status.md template has ${field}"
 done
+
+require_pattern ".claude/rules/project-workflow.template.md" 'risk_labels: \[' "project-workflow template has risk_labels in completion frontmatter"
+require_pattern ".claude/rules/project-workflow.template.md" 'risk_approval_evidence:' "project-workflow template has risk_approval_evidence in completion frontmatter"
+require_pattern ".claude/rules/project-workflow.template.md" 'risk_verification_summary:' "project-workflow template has risk_verification_summary in completion frontmatter"
+require_pattern ".claude/rules/project-workflow.template.md" 'risk-minimal' "project-workflow template documents risk-minimal profile"
 
 scoped_spec_count=0
 while IFS= read -r spec_index; do

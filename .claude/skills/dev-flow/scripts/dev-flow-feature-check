@@ -118,6 +118,14 @@ if [ "$finish" = true ] && [ ! -f "$status_file" ] && [ -f "$completion_file" ];
       fail 'full-retention feature has no archive directory'
     fi
   fi
+  risk_labels_completion=$(sed -n 's/^  risk_labels: \[\(.*\)\]$/\1/p' "$completion_file")
+  if [ -n "$risk_labels_completion" ]; then
+    if rg -q '^  risk_approval_evidence:' "$completion_file" && rg -q '^  risk_verification_summary:' "$completion_file"; then
+      pass 'completion.md preserves risk summary'
+    else
+      fail 'completion.md is missing risk approval evidence or verification summary'
+    fi
+  fi
   printf '\nSummary: %s passed, %s warning(s), %s failure(s)\n' "$passes" "$warnings" "$failures"
   [ "$failures" -eq 0 ]
   exit $?
@@ -149,6 +157,8 @@ status_assets=$(section assets context_manifests | sed -n 's/^    - //p')
 current_gate=$(sed -n 's/^  current_gate: "\([^"]*\)"$/\1/p' "$status_file")
 next_action=$(sed -n 's/^  next_action: "\([^"]*\)"$/\1/p' "$status_file")
 level=$(sed -n 's/^  level: "\([^"]*\)"$/\1/p' "$status_file")
+profile=$(sed -n 's/^  profile: "\([^"]*\)"$/\1/p' "$status_file")
+risk_labels=$(sed -n 's/^  risk_labels: \[\(.*\)\]$/\1/p' "$status_file")
 
 human_gate_value() {
   local gate=$1
@@ -237,7 +247,22 @@ if [ "$finish" = true ]; then
         require_human_gate implementation_approval
       fi
       ;;
-    *) fail 'status level must be M or L for feature completion' ;;
+    XS|S)
+      if [ "$profile" = "risk-minimal" ]; then
+        require_human_gate implementation_approval
+        if [ -z "$risk_labels" ] || [ "$risk_labels" = "" ]; then
+          fail 'risk-minimal profile requires non-empty risk_labels'
+        else
+          pass 'risk-minimal profile has risk_labels'
+        fi
+        if ! printf '%s\n' "$completed_gates" | rg -qx 'verification-before-completion'; then
+          fail 'risk-minimal feature must complete verification-before-completion'
+        fi
+      else
+        pass 'XS/S feature without risk labels uses lightweight path'
+      fi
+      ;;
+    *) fail 'status level must be M or L for feature completion, or XS/S with risk-minimal profile' ;;
   esac
 fi
 
@@ -334,6 +359,22 @@ fi
 plan_file=$(find "$feature_dir" -maxdepth 1 -type f -name '*实现计划.md' -print -quit 2>/dev/null)
 if [ -n "$plan_file" ] && rg -q '^### Task ' "$plan_file" && ! rg -q 'Depends on|依赖' "$plan_file"; then
   warn 'plan has tasks but no explicit dependency relation'
+fi
+
+if [ "$profile" = "risk-minimal" ]; then
+  pass 'risk-minimal profile is active'
+  # Check classification block exists
+  if rg -q '^  classification:' "$status_file"; then
+    pass 'classification block exists'
+  else
+    fail 'risk-minimal profile requires classification block'
+  fi
+  # Validate classification with the new validator subcommand
+  if node "$validator" classification "$root" "$status_file"; then
+    pass 'classification block is valid'
+  else
+    fail 'classification block is invalid'
+  fi
 fi
 
 printf '\nSummary: %s passed, %s warning(s), %s failure(s)\n' "$passes" "$warnings" "$failures"
