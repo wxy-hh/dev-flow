@@ -174,9 +174,11 @@ dev_flow:
 - `irreversible_consequence`：后果不可逆但不属于已有 data/money 标签
 
 携带风险标签的 XS/S 使用 `profile: "risk-minimal"`：
-- 必填：feature_id、level、classification、risk_labels、风险理由、implementation_approval、验证记录、accepted_risks
+- 必填：feature_id、level、classification、risk_labels、risk_evidence、风险理由、implementation_approval、验证记录、accepted_risks
 - 不要求：需求说明书、实现计划、context manifest、requirements-coverage
 - 完成后 `completion.md` 必须保留风险摘要（风险标签、审批证据、验证结论）
+
+M/L 即使携带风险标签也保持 `profile: "standard"`。新建 v2 `status.md` 中，每个风险标签都要有一项 `risk_evidence`：`inline` 在已有状态文件中写非空结论和验证引用，不创建独立报告；`report` 还要指向仓库内现有报告。标签的最低 gate 由模板和 `dev-flow-feature-check --finish` 校验，不能写成 `none`。
 
 XS/S 不创建 `status.md` 或 context manifest；轻量 M 默认也不创建。不要为了启用三件套而改变任务分级。
 标准 M/L 在需求确认前不得写实现计划，在实现前确认前不得写业务代码；实现后的 `code-review` 不能替代实现前 `plan-review`。标准 L 的计划后固定骨架是 `requirements-coverage -> plan-review`，覆盖报告默认只进入 `context/review.jsonl`，不进入 `context/verify.jsonl`。

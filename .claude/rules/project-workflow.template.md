@@ -6,7 +6,7 @@ paths:
   - "<review-root>/**"
   - "<plan-root>/**"
 dev_flow:
-  version: "0.4.0"
+  version: "0.5.0"
   project_kind: "<detect>"
   package_manager: "<detect>"
   paths:
@@ -135,7 +135,7 @@ YYYY-MM-DD-<short-kebab-name>
 dev_flow_completion:
   schema_version: "1"
   feature_id: "<feature-id>"
-  level: "<M|L>"
+  level: "<XS|S|M|L>"
   outcome: "verified|partial"
   completed_at: "<timestamp>"
   retention: "compact|full"
@@ -187,12 +187,13 @@ risk_labels、risk_approval_evidence、risk_verification_summary 在 risk_labels
 ```markdown
 ---
 dev_flow_status:
-  schema_version: "1"
-  workflow_version: "0.4.0"
+  schema_version: "2"
+  workflow_version: "0.5.0"
   feature_id: "<feature-id>"
-  level: "<M|L>"
+  level: "<XS|S|M|L>"
   profile: "standard"
   risk_labels: []
+  risk_evidence: {}
   classification:
     schema_version: "1"
     topology: "local"
@@ -242,6 +243,7 @@ dev_flow_status:
 - Level:
 - Profile:
 - Risk labels:
+- Risk evidence:
 - Current gate:
 - Completed gates:
 - Human gates:
@@ -281,10 +283,11 @@ dev_flow_status:
 - 只有用户后续明确确认、继续、接受风险或跳过并接受风险，才能把对应 `human_gates.<gate>.status` 写成 `confirmed` 或 `skipped`，并把原话或接受风险理由写入 `evidence`。
 - 如果验证失败或用户接受风险，在 `Next action` 和 `Accepted risks` 中写清阻塞点或接受风险依据。
 - 同步维护 frontmatter 中的 `dev_flow_status`；机器可读字段和人类可读摘要不一致时，以最新明确验证证据和已有资产为准并立即修正摘要。
-- 如果任务包含风险标签（risk_labels 非空），`profile` 必须写为 `risk-minimal`；`level` 只能是 XS 或 S。
-- `risk-minimal` profile 必填：feature_id、level、classification、risk_labels、风险理由、实现前审批证据、验证记录、accepted_risks。
+- `risk-minimal` 只适用于带风险标签的 XS/S；`risk-minimal` 必须有非空 `risk_labels`。带风险标签的 M/L 使用 `profile: "standard"`。
+- `risk-minimal` profile 必填：feature_id、level、classification、risk_labels、risk_evidence、风险理由、实现前审批证据、验证记录、accepted_risks。
 - `risk-minimal` profile 不要求：需求说明书、实现计划、context manifest、requirements-coverage。
 - `classification` 字段记录拓扑证据：topology（local|shared-contract|multi-chain|coordinated-rollback）、target_files、symbols、search_required、evidence_result（verified|partial|not-applicable）、external_references、scope_note。
+- v2 状态只要 `risk_labels` 非空，就必须维护 `risk_evidence`。每个标签一项；`mode: "inline"` 需要非空 `conclusion` 和 `verification`，`mode: "report"` 还需要仓库内、非符号链接的 `report` 路径。
 
 ## 项目能力
 
@@ -364,12 +367,32 @@ rg -u -n "<detect-feature-root>|<detect-review-root>|\\.claude/runtime/sdd/progr
 
 ## 高风险门禁
 
-涉及 security、data、money、external、availability、critical_correctness 或 irreversible_consequence 风险标签的任务，默认在实现前和完成前加入安全审查。风险标签不提升规模等级；XS/S 携带风险标签时使用 `risk-minimal` profile。
+风险标签不提升规模等级；只有 XS/S 携带风险标签时使用 `risk-minimal` profile，M/L 保持 `profile: "standard"`。多个标签取最低门禁的并集：
 
-安全审查形态由风险决定：
+| 标签 | 最低风险门禁 |
+|---|---|
+| `security` | `security_review: light`、`behavior_verification: light` |
+| `data` | `rollback_units: light`、`behavior_verification: light` |
+| `money` | `rollback_units: light`、`behavior_verification: light` |
+| `external` | `behavior_verification: light` |
+| `availability` | `behavior_verification: light` |
+| `critical_correctness` | `behavior_verification: light` |
+| `irreversible_consequence` | `rollback_units: light`、`behavior_verification: light` |
 
-- `light`：结论写入 `status.md`、计划审查或最终代码审查。
-- `full`：保存到 `<REVIEW_ROOT>/YYYY-MM-DD-<feature-id>-security-review.md`。
+每个风险标签都在 `risk_evidence` 中写一项：
+
+```yaml
+risk_evidence:
+  security:
+    mode: "inline|report"
+    conclusion: "审查或验证结论"
+    verification: "命令、检查或可定位引用"
+    report: "<repo-relative-path，report 模式必填>"
+```
+
+- `inline`：只写入 `status.md`，不创建独立报告。
+- `report`：`report` 必须指向仓库内现有文件；标签所需任一 gate 为 `full` 时必须使用该模式。
+- 标签对应的最低 gate 不得降为 `none`；项目或任务可以将其升为 `full`。
 
 ### 登录 / 鉴权 / SSO 验证矩阵
 

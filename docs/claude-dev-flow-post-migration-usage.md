@@ -47,6 +47,7 @@
 - `project-workflow.md` 的路径、命令和验证矩阵是否准确。
 - `status.md` 能否用 `dev_flow_status` 和摘要记录当前 gate、资产和验证新鲜度。
 - `status.md` 的 `human_gates` 能否记录需求确认和实现前确认；出现 `[HUMAN GATE:*]` 或 `Auto-continue: no` 后是否真的停下。
+- 新建 v2 风险任务的 `risk_evidence` 能否为每个风险标签留下非空结论和验证引用；`light` 不应新增报告，`full` 必须引用现有报告。
 - 轻量 L 和标准 M/L 的 context manifest 能否串起需求、计划、审查和验证输入。
 - 标准 M/L 的 `plan-review` 是否发生在第一处源码修改之前，且没有被后置 `code-review` 替代。
 - 代码审查是否只报告真实问题。
@@ -128,6 +129,7 @@
 - 输出最小风险卡：范围、风险、回撤/恢复方式、验证方式。
 - 停在 `[HUMAN GATE:implementation_approval]`，用户确认风险卡前不写业务代码。
 - 生成 `status.md`（`profile: "risk-minimal"`）。
+- 在 `risk_evidence.security` 中记录安全结论和负面路径验证引用；`light` 只更新 `status.md`，不生成新报告。
 - 执行风险标签匹配的验证（如 security 的负面路径测试）。
 - 完成后保留 `completion.md` 风险摘要。
 - 不要求需求说明书、实现计划、context manifest。
@@ -156,7 +158,7 @@
 
 | 产物 | 用途 |
 |------|------|
-| `<FEATURE_ROOT>/<feature-id>/status.md` | 当前 gate、完成情况、资产、验证新鲜度和接受风险 |
+| `<FEATURE_ROOT>/<feature-id>/status.md` | 当前 gate、完成情况、资产、验证新鲜度、风险证据和接受风险 |
 | `<FEATURE_ROOT>/<feature-id>/context/implement.jsonl` | 实现阶段要读取的需求、计划、局部规范和研究文件 |
 | `<FEATURE_ROOT>/<feature-id>/context/review.jsonl` | 计划审查和代码审查要读取的需求、计划、覆盖、回撤和规范文件 |
 | `<FEATURE_ROOT>/<feature-id>/context/verify.jsonl` | 完成前验证要读取的审查、验证要求和手动测试文件 |

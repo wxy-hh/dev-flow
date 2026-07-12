@@ -60,7 +60,7 @@ YYYY-MM-DD-dev-flow-smoke-test
 
 ### 通过标准
 
-- `status.md` 存在，并包含 `dev_flow_status` 和 `Risk Gates` 表。
+- `status.md` 存在，并包含 `dev_flow_status`、`Risk Gates` 表和每个风险标签对应的 `risk_evidence`。
 - `status.md` 包含 `human_gates`，边界确认和实现前确认有 evidence。
 - context manifest 存在，且只登记需求、计划、规范、审查或验证类文件，不登记源码文件。
 - `security-review` 有证据。
@@ -168,7 +168,7 @@ YYYY-MM-DD-dev-flow-smoke-test
 2. **不同措辞、同一真实拓扑**：分类应相同或给出明确的事实差异。
 3. **导出共享契约变化**：有搜索和分类证据。
 4. **私有局部修复**：不被强制调用方搜索。
-5. **S + security**：最小风险档案、审批、验证和完成检查均闭环。
+5. **S + security**：最小风险档案、审批、`risk_evidence`、验证和完成检查均闭环。
 
 ## 自检命令
 
@@ -184,12 +184,12 @@ YYYY-MM-DD-dev-flow-smoke-test
 .claude/skills/dev-flow/scripts/dev-flow-feature-check <feature-id> --finish
 ```
 
-至少准备一组应失败的 fixture：verification report 缺失、`last_validation_commands` 为空、manual-test 只有模板、rollback 清单含 `pending`、context manifest 登记源码、status 引用不存在资产。每组都必须返回非零退出码。
+至少准备一组应失败的 fixture：verification report 缺失、`last_validation_commands` 为空、manual-test 只有模板、rollback 清单含 `pending`、context manifest 登记源码、status 引用不存在资产、风险标签缺 `risk_evidence` 或把最低 gate 写成 `none`。每组都必须返回非零退出码。
 
 再使用 `.claude/rules/project-workflow.md` 中的文档和技能检查命令。至少确认：
 
 - `project-workflow.md` 包含已填充的 `dev_flow` 配置。
-- `project-workflow.md` 包含 `scoped_spec_root`、context manifest 路径和 `dev_flow_status` 结构。
+- `project-workflow.md` 包含 `scoped_spec_root`、context manifest 路径、`risk_evidence` 和 `dev_flow_status` 结构。
 - 没有旧项目路径或命令残留。
 - 没有 `.agents/runtime` 之类跨智能体路径漂移。
 - 没有直接依赖旧项目的包管理器、测试命令或目录结构。

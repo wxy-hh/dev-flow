@@ -126,6 +126,7 @@ for field in \
   "accepted_risks" \
   "profile" \
   "risk_labels" \
+  "risk_evidence" \
   "classification"; do
   require_pattern ".claude/rules/project-workflow.template.md" "${field}:" "dev_flow_status has ${field}"
 done
@@ -179,6 +180,9 @@ require_pattern ".claude/rules/project-workflow.template.md" 'risk_labels: \[' "
 require_pattern ".claude/rules/project-workflow.template.md" 'risk_approval_evidence:' "project-workflow template has risk_approval_evidence in completion frontmatter"
 require_pattern ".claude/rules/project-workflow.template.md" 'risk_verification_summary:' "project-workflow template has risk_verification_summary in completion frontmatter"
 require_pattern ".claude/rules/project-workflow.template.md" 'risk-minimal' "project-workflow template documents risk-minimal profile"
+require_pattern ".claude/rules/project-workflow.template.md" 'risk_evidence:' "project-workflow template has risk_evidence contract"
+require_pattern ".claude/rules/project-workflow.template.md" 'mode: "inline\|report"' "project-workflow template documents risk evidence modes"
+require_pattern ".claude/skills/dev-flow/SKILL.md" 'risk_evidence' "dev-flow documents machine-readable risk evidence"
 
 scoped_spec_count=0
 while IFS= read -r spec_index; do

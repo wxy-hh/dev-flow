@@ -39,7 +39,7 @@
 - `writing-plans` 完成后，如果 `Next skill` 是 `requirements-coverage` 或 `plan-review` 且 `Auto-continue: yes`，必须继续调用下一技能，直到遇到 HUMAN GATE、阻塞缺口或用户明确要求停下。
 - 命中 security 风险标签且计划跨模块或共享状态时，默认 `plan-review: full`。
 - 实现任务列表、Todo 或子任务执行计划只能在 `implementation_approval` 确认后创建或标为进行中。确认前可以在计划文档里列任务，但不得把实现任务标为 completed。
-- 风险标签的 XS/S（risk-minimal profile）不要求需求说明书、实现计划、context manifest；但必须有风险卡、implementation_approval 证据、标签匹配验证和 feature-check 通过。
+- 风险标签的 XS/S（risk-minimal profile）不要求需求说明书、实现计划、context manifest；但必须有风险卡、implementation_approval 证据、`risk_evidence` 中的标签匹配结论与验证引用，并通过 feature-check。
 
 ## 输出要求
 

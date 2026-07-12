@@ -143,6 +143,12 @@ if ! node "$validator" asset "$root" "$feature_root" "$review_root" "$status_fil
 fi
 pass 'status.md exists'
 
+if node "$validator" risk-contract "$root" "$status_file"; then
+  pass 'risk contract is valid'
+else
+  fail 'risk contract is invalid'
+fi
+
 section() {
   sed -n "/^  $1:/,/^  $2:/p" "$status_file"
 }

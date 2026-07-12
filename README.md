@@ -4,7 +4,7 @@
 
 dev-flow 的目标是把一次开发请求先分级，再按风险选择最小足够流程：小改动快速实现和验证，复杂改动补齐需求固化、计划、覆盖审查、回撤单元、代码审查和完成前验证。
 
-本迁移包保留轻量优先：XS/S 不创建流程文档；轻量 M 默认不落盘。轻量 L 和标准 M/L 会维护机器可读 `status.md`、上下文清单和可选局部规范引用，方便中断恢复、审查和验证；L 级和标准 M/L 的关键 HUMAN GATE 不能被自动跨过，但不会引入自动任务系统、hook 或自动提交。
+本迁移包保留轻量优先：无风险 XS/S 不创建流程文档；携带风险标签的 XS/S 使用最小 `status.md` 证据档案；轻量 M 默认不落盘。轻量 L 和标准 M/L 会维护机器可读 `status.md`、上下文清单和可选局部规范引用，方便中断恢复、审查和验证；L 级和标准 M/L 的关键 HUMAN GATE 不能被自动跨过，但不会引入自动任务系统、hook 或自动提交。
 
 ## 适合场景
 
@@ -102,13 +102,13 @@ dev-flow 会先判断 XS / S / M / L：
 
 doctor 只做静态检查：结构化配置、HUMAN GATE 约束、旧项目事实泄漏、审查 prompt 激励、安全审查权限、runtime 忽略规则和脚本可执行性。它不运行业务测试，也不替代 smoke test。
 
-单个 M/L 功能收尾前运行 feature evidence 检查：
+单个 M/L 功能和携带风险标签的 XS/S 功能收尾前运行 feature evidence 检查：
 
 ```bash
 .claude/skills/dev-flow/scripts/dev-flow-feature-check <feature-id> --finish
 ```
 
-它检查验证报告、手动行为证据、回撤闭环、资产路径、context manifest 和验证新鲜度。doctor 负责流程包/项目适配层，feature-check 负责某个真实 feature 的执行产物；两者都通过后才能进入分支收尾。
+它检查验证报告、手动行为证据、风险标签的最低 gate 与证据、回撤闭环、资产路径、context manifest 和验证新鲜度。doctor 负责流程包/项目适配层，feature-check 负责某个真实 feature 的执行产物；两者都通过后才能进入分支收尾。
 
 ## 注意
 

@@ -277,7 +277,7 @@ M/L 与风险 XS/S 将结构化结论写入 status 的 `classification` 块。
 <FEATURE_ROOT>/<feature-id>/completion.md（完成后，保留风险摘要）
 ```
 
-risk-minimal 不要求：需求说明书、实现计划、context manifest、requirements-coverage、plan-review、grillme。安全审查和行为验证仍按风险标签触发（light/full），但结论写入 `status.md` 或对话，不强制落盘大文档。
+risk-minimal 不要求：需求说明书、实现计划、context manifest、requirements-coverage、plan-review、grillme。安全审查和行为验证仍按风险标签触发（light/full）；v2 `status.md` 必须在 `risk_evidence` 中留下每个标签的机器可读短结论和验证引用，但不强制落盘大文档。
 
 ### S 路径（无风险标签）
 
@@ -432,9 +432,9 @@ L 级不使用“干净就过”跳过需求边界确认、实现前确认或最
 |------|----------|----------|
 | 需求覆盖 | 需求分支、多条业务规则、接口契约不确定、OpenSpec/需求文档与计划需要追踪 | 标准 M `light/full`；L 通常 `full` |
 | 计划审查 | 标准 M/L 的实现计划；或计划中存在架构选择、多个候选方案、共享模块改造、跨页面/跨状态流转 | 标准 M/L 至少 `light`；L 按不确定性升为 `full` |
-| 回撤单元 | 任务间有依赖，或改动共享接口、状态、权限、路由、数据结构、构建配置 | 标准 M `light/full`；L 至少 `light` |
-| 安全审查 | security、data、money 标签，或涉及敏感信息 | M/L 默认触发；复杂或高后果为 `full` |
-| 行为验证 | 改动会改变运行时行为，尤其是路由、接口、登录态、权限、表单、错误分支 | M/L 默认触发；L 行为改动必须 `full` |
+| 回撤单元 | 任务间有依赖，或改动共享接口、状态、权限、路由、数据结构、构建配置；`data`、`money`、`irreversible_consequence` 的最低契约 | 标准 M `light/full`；L 至少 `light` |
+| 安全审查 | `security` 标签或涉及敏感信息 | M/L 默认触发；复杂或高后果为 `full` |
+| 行为验证 | 改动会改变运行时行为，尤其是路由、接口、登录态、权限、表单、错误分支；或风险标签的最低契约 | M/L 默认触发；L 行为改动必须 `full` |
 
 ### 风险标签 → 证明方向
 
@@ -449,10 +449,26 @@ L 级不使用“干净就过”跳过需求边界确认、实现前确认或最
 多个标签取所需证明的并集。门禁形态：
 
 - `none`：不触发。
-- `light`：把结论写入对话、`status.md`、代码审查或验证报告，不生成独立大文档。
+- `light`：把结论写入 v2 `status.md` 的 `risk_evidence`，不生成独立大文档。
 - `full`：落盘为项目适配层定义的标准资产，并作为后续门禁输入。
 
-示例：一个 S + security 的改动只改一行守卫、设计自明，可以走安全审查 `light` + 行为验证 `full` + 回撤说明 `light`，不强制生成 plan-review/rollback-units 大文档；但不能完全没有安全、行为和回撤证据。
+### 风险标签 → 最低 gate 与最小证据
+
+新建 v2 状态中，每个 `risk_labels` 条目都必须有同名 `risk_evidence`。每项的 `conclusion` 和 `verification` 必须非空；`inline` 不创建文件，`report` 指向仓库内报告。对应的最低 gate 被升为 `full` 时，证据必须使用 `report`：
+
+| 标签 | 最低 gate |
+|---|---|
+| `security` | `security_review: light`、`behavior_verification: light` |
+| `data` | `rollback_units: light`、`behavior_verification: light` |
+| `money` | `rollback_units: light`、`behavior_verification: light` |
+| `external` | `behavior_verification: light` |
+| `availability` | `behavior_verification: light` |
+| `critical_correctness` | `behavior_verification: light` |
+| `irreversible_consequence` | `rollback_units: light`、`behavior_verification: light` |
+
+风险 XS/S 使用 `profile: "risk-minimal"`；携带风险标签的 M/L 继续使用 `profile: "standard"`。v1 历史状态不要求补写本节字段，v2 状态由 `dev-flow-feature-check --finish` 校验。
+
+示例：一个 S + security 的改动只改一行守卫、设计自明，可以走安全审查 `light` + 行为验证 `full` + 回撤说明 `light`，并在 `risk_evidence.security` 写明审查结论和验证引用；不强制生成 plan-review/rollback-units 大文档，但不能完全没有安全、行为和回撤证据。
 
 ### 需求覆盖门禁
 
@@ -546,7 +562,7 @@ L 级运行时行为改动不能只用 type-check 或 lint 作为完成证据；
 2. 重新运行。
 3. 读取输出和退出码。
 4. 报告证据。
-5. 对 M/L 运行 `.claude/skills/dev-flow/scripts/dev-flow-feature-check <feature-id> --finish`；该检查失败时停止收尾。
+5. 对 M/L 和携带风险标签的 XS/S 运行 `.claude/skills/dev-flow/scripts/dev-flow-feature-check <feature-id> --finish`；该检查失败时停止收尾。
 
 按项目适配层的验证配置和 test strategy 选择默认验证；混合改动取并集。不要把某个项目的验证命令当作 dev-flow 本体规则。
 
