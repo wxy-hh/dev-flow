@@ -99,13 +99,13 @@ dev-flow 会先判断 XS / S / M / L：
 
 doctor 只做静态检查，分三类：结构（关键文件存在、脚本可执行、`contract.json` 可解析、hooks 已注册）、一致性（`risk-gates.md` 与 contract 风险标签同步、旧项目事实泄漏、行数预算、`workflow_version` 单源）、适配层（占位符残留、test 命令疑似 dev/watch）。它不运行业务测试，也不替代 smoke test。
 
-单个 M/L 功能和携带风险标签的 XS/S 功能收尾前运行 feature evidence 检查：
+单个标准 M/L、轻量 L 功能和携带风险标签的 XS/S 功能收尾前运行 feature evidence 检查：
 
 ```bash
 .claude/skills/dev-flow/scripts/dev-flow-feature-check <feature-id> --finish
 ```
 
-它检查验证报告、手动行为证据、风险标签的最低 gate 与证据、回撤闭环、`status.md` 的 `assets` 列表和验证新鲜度。doctor 负责流程包/项目适配层，feature-check 负责某个真实 feature 的执行产物；两者都通过后才能进入分支收尾。
+它检查验证报告、手动行为证据、风险标签的最低 gate 与证据、回撤闭环、`status.md` 的 `assets` 列表和验证新鲜度。doctor 负责流程包/项目适配层，feature-check 负责某个真实 feature 的执行产物；两者都通过后才能进入分支收尾。无风险 XS/S 与默认轻量 M（无 `status.md`）不强制 feature-check。
 
 ## 注意
 

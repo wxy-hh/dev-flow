@@ -18,7 +18,9 @@
 - 一旦输出 `[HUMAN GATE:<gate-id>]` 或 `[HANDOFF]` 中 `Auto-continue: no`，当前回合必须停止；不得继续写计划、执行代码、运行后续门禁，或在同一回合把 `auto_continue: false` 改成 `true`。
 - `implementation_approval` 确认前，实现任务列表、Todo 或子任务执行计划只能停留在"已列出"状态，不得标记为进行中或已完成——这是"没确认就直接改代码"的常见绕过方式。
 - 只有用户后续明确回复"确认""继续""接受风险"或"跳过并接受风险"后，才能把 `human_gates.<gate-id>.status` 写为 `confirmed` 或 `skipped`，并把用户原话或接受风险理由写入 `evidence`。
-- 标准 M/L 的 `requirement_confirmation` 和 `implementation_approval` 都是必需 gate；轻量 L 和 risk-minimal 只需 `implementation_approval`。同一条用户回复可以同时作为两个 gate 的证据，但必须明确覆盖两者。
+- 标准 M/L 的 `requirement_confirmation` 和 `implementation_approval` 都是必需 gate（`required: true`）。
+- 轻量 L 和 risk-minimal 只需 `implementation_approval`（`required: true`）；`requirement_confirmation.required` 必须为 `false`。完成检查按声明的 `required` 字段区分轻量/标准，不再仅凭 `level: L` 强制两门。
+- 同一条用户回复可以同时作为两个 gate 的证据，但必须明确覆盖两者。
 - `plan-review` 是实现前计划审查，不能由实现后的 `code-review` 替代；`code-review` 只审查已写代码，不能倒填为计划门禁通过。
 
 ## 半自动门禁模式

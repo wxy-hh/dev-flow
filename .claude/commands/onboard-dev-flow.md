@@ -55,7 +55,7 @@
 - `dev_flow.label_hints` 是可选提示，允许留空数组，不强制每个项目都能猜出敏感路径，也不能替代实际风险判断。
 - 生成后的说明必须写清：标准 M/L 需求确认前不写计划，实现前确认前不写代码；标准 L 计划后先跑 `requirements-coverage` 再跑 `plan-review`；`code-review` 不能替代 `plan-review`。
 - 生成后运行项目适配层中的文档/技能自检命令。
-- 生成后确认 `.claude/rules/project-workflow.md` 包含 `artifacts.retention`；真实 M/L 功能收尾时再运行 `dev-flow-feature-check`。
+- 生成后确认 `.claude/rules/project-workflow.md` 包含 `artifacts.retention`；标准 M/L、轻量 L 与 risk-minimal 功能收尾时再运行 `dev-flow-feature-check`。
 
 ## 完成格式
 

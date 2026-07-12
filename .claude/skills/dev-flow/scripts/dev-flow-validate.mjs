@@ -449,6 +449,12 @@ function validateStatus(root, statusPath, finish) {
   }
 
   // finish-mode human gate enforcement
+  // Lightweight vs standard is inferred from declared required gates:
+  // - lightweight M: no required human gates
+  // - standard M: both gates required
+  // - lightweight L: only implementation_approval required
+  // - standard L: both gates required
+  // - risk-minimal XS/S: only implementation_approval required
   if (finish) {
     const requireGate = (gateName) => {
       const gate = humanGates?.[gateName];
@@ -465,11 +471,23 @@ function validateStatus(root, statusPath, finish) {
       }
     };
 
+    const reqRequired = humanGates?.requirement_confirmation?.required === 'true';
+    const implRequired = humanGates?.implementation_approval?.required === 'true';
+
     if (level === 'L') {
-      requireGate('requirement_confirmation');
-      requireGate('implementation_approval');
+      // Lightweight L only needs implementation_approval; standard L needs both.
+      if (reqRequired) {
+        requireGate('requirement_confirmation');
+        requireGate('implementation_approval');
+      } else if (implRequired) {
+        requireGate('implementation_approval');
+        pass('lightweight L requires only implementation_approval');
+      } else {
+        failCheck('L features require implementation_approval (lightweight) or both human gates (standard)');
+      }
     } else if (level === 'M') {
-      if (humanGates?.requirement_confirmation?.required === 'true' || humanGates?.implementation_approval?.required === 'true') {
+      if (reqRequired || implRequired) {
+        // Standard M: both gates must be required and satisfied.
         requireGate('requirement_confirmation');
         requireGate('implementation_approval');
       } else {

@@ -17,7 +17,7 @@
    - 构建配置、路由、接口、关键页面：运行适配层定义的构建或集成验证
    - UI 行为：必要时启动适配层定义的开发服务并浏览器验证
 3. 阅读验证输出和退出码。
-4. 对所有 M/L 功能和携带风险标签的 XS/S 功能运行 `.claude/skills/dev-flow/scripts/dev-flow-feature-check <feature-id> --finish`。
+4. 对标准 M/L、轻量 L 和携带风险标签的 XS/S（risk-minimal）运行 `.claude/skills/dev-flow/scripts/dev-flow-feature-check <feature-id> --finish`。无风险 XS/S 与默认轻量 M（无 `status.md`）不强制该检查。
 5. 汇总成果、验证结果、未覆盖风险和建议提交信息；检查失败时不得说“完成”“通过”或“可提交”。
 
 ## 输出要求

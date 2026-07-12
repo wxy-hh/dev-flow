@@ -38,7 +38,7 @@ templates/
 3. 运行 `/onboard-dev-flow`（或 `/onboard-dev-flow --smoke-test` 同时验证迁移包）。它会检测项目事实、生成 `.claude/rules/project-workflow.md`、确认 hooks 已注册且可执行、生成 `dev_flow.label_hints` 初始猜测。
 4. 检测清单：项目类型、包管理器、install/dev/build/type-check/lint/test 脚本、test 是否为真测试运行器、是否有浏览器测试/OpenSpec/代码映射、局部规范是否存在、git 边界（本地配置/仓库治理）、agent 例外。这些事实写入 `project-workflow.md` frontmatter 的 `dev_flow` 配置块（结构见 `project-workflow.template.md`），机器可读锚点与下方 Markdown 表格必须一致。
 5. 决定版本管理边界：本地配置模式下 `.claude/` 可以继续被忽略，验收看文件内容；仓库治理模式下提交需要共享的治理文件，继续忽略 runtime、本地设置和一次性产物。
-6. 运行 `.claude/skills/dev-flow/scripts/dev-flow-doctor`，再按 [smoke test](./claude-dev-flow-smoke-test.md) 执行。通过后才开始真实业务任务；M/L 功能收尾时另跑 `dev-flow-feature-check <feature-id> --finish`。
+6. 运行 `.claude/skills/dev-flow/scripts/dev-flow-doctor`，再按 [smoke test](./claude-dev-flow-smoke-test.md) 执行。通过后才开始真实业务任务；标准 M/L、轻量 L 功能收尾时另跑 `dev-flow-feature-check <feature-id> --finish`。
 
 ## 核心资产与风险标签
 
@@ -116,7 +116,7 @@ templates/
 
 `dev-flow-doctor` 时机：onboarding 后；修改 `.claude/skills`/`commands`/`agents`/`rules`/`hooks` 后；调整 `project-workflow.md` 的路径/验证命令/Git 边界后；smoke test 前；升级迁移包后。它只做静态检查，不替代业务测试或 smoke test。
 
-`dev-flow-feature-check <feature-id> --finish`：单个 M/L 功能和携带风险标签的 XS/S 功能收尾前运行，检查验证报告、手动行为证据、风险标签最低 gate 与证据、回撤闭环、资产路径和验证新鲜度。doctor 管流程包/适配层，feature-check 管单个 feature 的执行产物，两者都通过才能进入分支收尾。
+`dev-flow-feature-check <feature-id> --finish`：标准 M/L、轻量 L 和携带风险标签的 XS/S 功能收尾前运行，检查验证报告、手动行为证据、风险标签最低 gate 与证据、回撤闭环、资产路径和验证新鲜度。无风险 XS/S 与默认轻量 M（无 `status.md`）不强制。doctor 管流程包/适配层，feature-check 管单个 feature 的执行产物；对强制路径，两者都通过才能进入分支收尾。
 
 ## 维护规则
 

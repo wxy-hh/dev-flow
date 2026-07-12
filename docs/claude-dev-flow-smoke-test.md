@@ -37,6 +37,7 @@ YYYY-MM-DD-dev-flow-smoke-test
 
 - 不为了 code-review 被迫补 md 文档。
 - 不为了走流程被迫补 `status.md` 或其它流程资产。
+- 不为了收尾被迫运行 `dev-flow-feature-check`（轻量 M 无 status 时不强制）。
 - 审查输入里能看到 lightweight context。
 - 验证证据能说明改动是否可信。
 
@@ -60,11 +61,12 @@ YYYY-MM-DD-dev-flow-smoke-test
 ### 通过标准
 
 - `status.md` frontmatter 的 `dev_flow_status` 存在，并包含 `risk_gates` 字段和每个风险标签对应的 `risk_evidence`。
-- `status.md` 包含 `human_gates`，边界确认和实现前确认有 evidence。
+- `status.md` 包含 `human_gates`：`implementation_approval.required: true` 且有 evidence；轻量 L 的 `requirement_confirmation.required` 为 `false`（不因 `level: L` 被升格为标准 L）。
 - `assets` 列表存在，且只登记需求、计划、规范、审查或验证类资产（按 `kind` 区分），不登记源码文件。
 - `security-review` 有证据。
 - `behavior-verification` 是 `full`，有 manual-test 或自动化记录。
 - 有 patch 或其它可恢复回撤证据。
+- 收尾时 `dev-flow-feature-check --finish` 在上述轻量 L 配置下可通过。
 
 ## 验证任务 C：标准 M
 

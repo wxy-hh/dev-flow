@@ -162,12 +162,35 @@ update_gate_value requirement_confirmation status pending
 update_gate_value implementation_approval status pending
 expect_pass run_feature demo --finish
 
+# Lightweight L: only implementation_approval required — must pass finish.
 set_status_level L
+update_gate_value requirement_confirmation required false
+update_gate_value implementation_approval required true
+update_gate_value requirement_confirmation status pending
+update_gate_value requirement_confirmation evidence 'not required'
+update_gate_value implementation_approval status confirmed
+update_gate_value implementation_approval evidence 'user approved lightweight L path'
+expect_pass run_feature demo --finish
+
+# Lightweight L without any required human gate — must fail.
+update_gate_value implementation_approval required false
+update_gate_value implementation_approval status pending
+update_gate_value implementation_approval evidence 'not required'
+expect_fail run_feature demo --finish
+
+# Standard L: both human gates required and confirmed.
 update_gate_value requirement_confirmation required true
 update_gate_value implementation_approval required true
 update_gate_value requirement_confirmation status confirmed
+update_gate_value requirement_confirmation evidence 'user confirmed requirements'
 update_gate_value implementation_approval status confirmed
+update_gate_value implementation_approval evidence 'user approved implementation'
 cp "$tmp/docs/dev-flow/features/demo/status.md" "$tmp/docs/dev-flow/features/demo/status.bak"
+
+# Standard L with requirement_confirmation still pending — must fail.
+update_gate_value requirement_confirmation status pending
+expect_fail run_feature demo --finish
+cp "$tmp/docs/dev-flow/features/demo/status.bak" "$tmp/docs/dev-flow/features/demo/status.md"
 
 awk '
   /^  human_gates:$/ { skip=1; next }
