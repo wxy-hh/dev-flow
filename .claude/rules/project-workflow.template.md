@@ -173,7 +173,7 @@ YYYY-MM-DD-<short-kebab-name>
 6. 检查是否已有 `<SCOPED_SPEC_ROOT>`；没有也可以保留为空的可选能力。
 7. 安装并验证 `.claude/settings.json` 中的 hooks 注册（`dev-flow-gate-guard`、`dev-flow-finish-guard`），确认脚本可执行。
 8. 按目录结构生成 `dev_flow.label_hints` 初始猜测（可选）。
-9. 写入项目能力、测试策略、OpenSpec 策略、启用 agents、路径别名和三件套路径。
+9. 写入项目能力、测试策略、OpenSpec 策略、启用 agents、路径别名和 feature/review 等资产路径。
 
 ## 验证配置
 

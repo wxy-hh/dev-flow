@@ -31,7 +31,7 @@
 
 ## 使用边界
 
-- XS/S 不读取本目录，不创建 context manifest。
+- XS/S 不读取本目录，也不因此创建 `status.md` 或其他流程资产。
 - 轻量 M 只有已经产生落盘资产时才使用相关 scope。
 - 轻量 L 和标准 M/L 在计划、改动路径或用户输入命中 scope 时读取。
 - 找不到匹配 scope 时，继续使用 `.claude/rules/project-workflow.md` 和通用 rules。
