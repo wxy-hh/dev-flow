@@ -1,0 +1,65 @@
+{
+  "workflow_version": "0.6.0",
+  "status_schema": "3",
+  "completion_schema": "1",
+  "risk_labels": [
+    "security",
+    "data",
+    "money",
+    "external",
+    "availability",
+    "critical_correctness",
+    "irreversible_consequence"
+  ],
+  "risk_gates": [
+    "requirements_coverage",
+    "plan_review",
+    "rollback_units",
+    "security_review",
+    "behavior_verification"
+  ],
+  "gate_levels": ["none", "light", "full"],
+  "minimum_risk_gates": {
+    "security": { "security_review": "light", "behavior_verification": "light" },
+    "data": { "rollback_units": "light", "behavior_verification": "light" },
+    "money": { "rollback_units": "light", "behavior_verification": "light" },
+    "external": { "behavior_verification": "light" },
+    "availability": { "behavior_verification": "light" },
+    "critical_correctness": { "behavior_verification": "light" },
+    "irreversible_consequence": { "rollback_units": "light", "behavior_verification": "light" }
+  },
+  "profiles": {
+    "risk-minimal": { "levels": ["XS", "S"], "requires_risk_labels": true },
+    "standard": { "levels": ["M", "L"] }
+  },
+  "levels": ["XS", "S", "M", "L"],
+  "human_gates": ["requirement_confirmation", "implementation_approval"],
+  "human_gate_statuses": ["pending", "confirmed", "skipped"],
+  "known_gates": [
+    "req-probe",
+    "openspec",
+    "grillme",
+    "writing-plans",
+    "requirements-coverage",
+    "plan-review",
+    "implementation_approval",
+    "implementation",
+    "rollback-units",
+    "security-review",
+    "code-review",
+    "verification-before-completion",
+    "finish"
+  ],
+  "asset_kinds": ["requirement", "plan", "research", "review", "verification", "spec"],
+  "classification_topologies": ["local", "shared-contract", "multi-chain", "coordinated-rollback"],
+  "classification_evidence_results": ["verified", "partial", "not-applicable"],
+  "evidence_modes": ["inline", "report"],
+  "line_budgets": {
+    ".claude/skills/dev-flow/SKILL.md": 220,
+    ".claude/rules/project-workflow.template.md": 220,
+    ".claude/skills/dev-flow/references/protocol.md": 160,
+    ".claude/skills/dev-flow/references/standard-ml.md": 170,
+    ".claude/skills/dev-flow/references/risk-gates.md": 120,
+    "per_downstream_skill_max": 160
+  }
+}

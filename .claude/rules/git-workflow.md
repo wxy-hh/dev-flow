@@ -21,26 +21,12 @@
 4. 包含实际执行过或计划执行的测试说明，避免占位项
 5. 如果是新分支，使用 `-u` 参数推送
 
-## 功能实现工作流 (Feature Implementation Workflow)
+## 提交与推送边界 (Commit & Push Boundaries)
 
-1. **先分级再行动**
-   - 默认按照项目 `dev-flow` 判断 XS / S / M / L
-   - XS/S 走轻量实现和相关验证
-   - M/L 先固化需求、写计划，再按风险维度触发覆盖、审查、回撤、安全和行为验证门禁
+- 默认不执行 `git add`、`git commit`、`git push`、合并、回滚、丢弃或删除分支，只提示建议暂存文件和提交信息。
+- 用户明确要求“帮我提交”“帮我 commit”时，可以执行 `git add` 和 `git commit`；执行前先展示文件列表、验证结果和 commit message。
+- `git push`、merge/rebase、删除分支、discard/reset/checkout 覆盖文件等高风险动作必须二次确认；丢弃改动类操作使用精确确认词。
 
-2. **验证贴合改动风险**
-   - 先读取 `.claude/rules/project-workflow.md` 的验证配置
-   - 文案、样式、配置改动：运行适配层定义的格式、搜索或局部检查
-   - 源码或类型改动：运行适配层定义的类型检查和代码检查
-   - 路由、接口、构建配置、关键页面改动：运行适配层定义的构建或集成验证
-   - UI 行为改动：必要时启动适配层定义的开发服务并做浏览器验证
+## 功能实现工作流
 
-3. **代码评审 (Code Review)**
-   - M/L 级改动完成后使用代码审查视角检查 diff
-   - 优先解决会导致 Bug、安全风险、回归或缺少验证的问题
-   - 对 XS/S 改动保持轻量，避免为了流程制造无关文档
-
-4. **提交与推送 (Commit & Push)**
-   - 默认不执行 `git add`、`git commit`、`git push`、合并、回滚、丢弃或删除分支，只提示建议暂存文件和提交信息。
-   - 用户明确要求“帮我提交”“帮我 commit”时，可以执行 `git add` 和 `git commit`；执行前先展示文件列表、验证结果和 commit message。
-   - `git push`、merge/rebase、删除分支、discard/reset/checkout 覆盖文件等高风险动作必须二次确认；丢弃改动类操作使用精确确认词。
+分级、验证矩阵选择和代码评审的唯一来源是 `.claude/skills/dev-flow/SKILL.md` 及其 `references/`；本文件不重复维护副本。

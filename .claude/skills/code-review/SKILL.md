@@ -1,22 +1,90 @@
 ---
 name: code-review
-description: 完成实现后进行代码审查。用户说 code-review、代码审查、检查这次改动、写完帮我 review、完成后审查和自验时使用；这是 requesting-code-review 的项目别名。
+description: 完成任务、实现重要功能、合并前或用户要求代码审查时使用。用户说 code-review、代码审查、检查这次改动、写完帮我 review、requesting code review、完成后审查和自验时使用。通过独立审查视角检查需求覆盖、回归风险、代码质量、项目规范和缺失验证。
 ---
 
 # 代码审查
 
-使用 `.claude/skills/requesting-code-review/SKILL.md` 进行审查。
+在代码完成后发起审查。审查者只接收明确输入：本次改动说明、需求/计划来源、代码差异范围、回撤证据和验证结果；不要把当前长对话历史直接交给审查者。
 
-项目约定：
+先读取项目适配层。Claude 环境默认读取 `.claude/rules/project-workflow.md`，从中获取 `<FEATURE_ROOT>`、`<REVIEW_ROOT>`、`<SDD_PROGRESS>` 路径。
 
-1. 先读取项目适配层；Claude 环境默认读取 `.claude/rules/project-workflow.md`。
-2. 审查输入必须包含需求或计划来源。轻量 M 可使用对话内需求摘要 + diff + 涉及文件 + 验证证据；标准 M/L 使用 `openspec/changes/<change>/`、`<FEATURE_ROOT>/<feature>/需求说明书.md`、实现计划或 `status.md`。
-3. 审查输入优先读取用户手动路径、上一步 `[HANDOFF]` 和 `<FEATURE_ROOT>/<feature-id>/context/review.jsonl`；没有时再按 feature 目录自动查找需求、计划、回撤清单和进度台账。
-4. 审查重点先看需求覆盖、回归风险、项目规范、回撤完整性和缺失验证。
-5. `rollback_units: full` 且实现已完成时，先确认 `rollback-units` audit 已补齐 commit/diff/patch；缺失时退回审计，不直接输出通过。
-6. `code-review` 只审查已经产生的代码改动，不能替代实现前 `plan-review`，也不能把缺失的 `plan-review` 倒填为通过。
-7. Critical / Important 问题必须先处理，或由用户明确接受风险。
-8. 审查前优先读取 `<FEATURE_ROOT>/<feature-id>/status.md`；审查后更新状态文件和 `dev_flow_status`，并把审查报告追加到 `context/verify.jsonl`。
-9. L 级功能保存到 `<REVIEW_ROOT>/YYYY-MM-DD-<feature-id>-code-review.md`，并在无阻塞时输出 `[HANDOFF]` 给 `verification-before-completion`。
+核心原则：早审查，常审查；严重和重要问题（Critical / Important）必须处理，或由用户明确接受风险。代码审查只审查已完成实现，不能替代实现前 `plan-review`，也不能把缺失的 `plan-review` 倒填为通过。`rollback_units: full` 且实现已完成时，先确认 `rollback-units` 审计模式已补齐 commit/diff/patch；缺失时退回审计，不直接输出通过。
 
-不要把“代码审查”替代“验证”。审查后仍需要按 `verification-before-completion` 的证据规则完成验证。
+## 何时使用
+
+必须使用：完成 M/L 级功能后；每个子任务完成后（`executing-plans` 子代理模式）；合并到主分支或创建 PR 前。
+适合使用：修复复杂 bug 后、重构后、卡住时需要新视角。
+
+## 资产读取
+
+按 `dev-flow/references/protocol.md` 的资产读取优先级；本技能额外读取：
+
+- `<SDD_PROGRESS>` 和 `<RUNTIME_ROOT>/sdd/reports/*.md`（`executing-plans` 子代理模式的任务报告）。
+- 当前 `git status`、`git diff --stat`、相关 diff 或 commit range。
+- 轻量 M 若没有落盘资产，用对话内需求摘要、涉及文件、`git diff --stat` 和已运行验证证据作为等价输入，不为审查新建资产记录。
+
+## 审查输入
+
+```text
+DESCRIPTION: 本次完成了什么
+PLAN_OR_REQUIREMENTS: 需求或计划来源路径
+LIGHTWEIGHT_CONTEXT: 轻量 M 可填写对话内需求摘要、边界和不做范围
+ROLLBACK_UNITS: 回撤清单路径
+BASE_SHA / HEAD_SHA: 改动起止提交或工作区
+VALIDATION: 已运行的验证命令和结果
+STATUS: 当前 status.md 路径和状态
+```
+
+不能取得 SHA 时，至少提供 `git diff --stat`、涉及文件列表、需求/计划路径、回撤单元路径和已运行验证。
+
+## 审查方式
+
+1. 读取 [references/code-reviewer.md](references/code-reviewer.md)。
+2. 按模板填入本次任务信息，发起独立审查；没有子代理时在当前会话按同一模板审查。
+3. 处理反馈：Critical 立即修复；Important 继续前修复或请用户明确接受风险；Minor 记录，可合并处理。
+4. 修复后重新审查受影响范围。
+
+## 输出格式
+
+```markdown
+# 代码审查报告
+
+## 结论
+- 通过 / 需修改 / 阻塞
+
+## 输入资产
+- 需求：
+- 计划：
+- 回撤清单：
+- Diff / commit range：
+- 验证证据：
+
+## 严重问题（Critical）
+...
+
+## 重要问题（Important）
+...
+
+## 次要问题（Minor）
+...
+
+## 需求覆盖
+...
+
+## 回撤完整性
+...
+
+## 验证缺口
+...
+```
+
+小功能可以只在对话中输出；L 级必须保存到 `<REVIEW_ROOT>/YYYY-MM-DD-<feature-id>-code-review.md`。
+
+保存报告后，更新 `<FEATURE_ROOT>/<feature-id>/status.md`：把报告路径追加到 `assets`（`kind: "review"`），标准 M/L 和轻量 L 同时保留在 `assets` 便于后续恢复。
+
+## 交接规则
+
+对话输出开头先给 3-5 行用户决策摘要：结论、阻塞项、需要决定的事项和下一步；完整发现、证据和修复建议写入报告。
+
+`[HANDOFF]` 格式见 `dev-flow/references/protocol.md`。无 Critical/Important 阻塞项时，`Current gate: code-review`，`Next skill: verification-before-completion`，`Auto-continue: yes`。存在 Critical/Important 时，`Next skill: code-review`，`Auto-continue: no`，`Stop reason` 写明需要修复或用户明确接受风险的问题。

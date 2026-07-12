@@ -90,11 +90,51 @@ write_risk_variant() {
   ' "$tmp/docs/dev-flow/features/risk-demo/status.md" > "$destination"
 }
 
-mkdir -p "$tmp/.claude/rules" "$tmp/docs/dev-flow/features/demo" "$tmp/docs/dev-flow/reviews" "$tmp/docs/dev-flow/features/demo/context" "$tmp/src"
+mkdir -p "$tmp/.claude/rules" "$tmp/docs/dev-flow/features/demo" "$tmp/docs/dev-flow/reviews" "$tmp/src"
 git -C "$tmp" init -q
 printf '%s\n' 'dev_flow:' '  paths:' '    feature_root: docs/dev-flow/features' '    review_root: docs/dev-flow/reviews' '  verification:' '    webapp_testing: "disabled"' '  artifacts:' '    retention: "compact"' > "$tmp/.claude/rules/project-workflow.md"
-printf '%s\n' '---' 'dev_flow_status:' '  schema_version: "1"' '  workflow_version: "0.3.0"' '  feature_id: "demo"' '  level: "L"' '  current_gate: "verification-before-completion"' '  completed_gates:' '    - verification-before-completion' '  next_action: "finish"' '  assets:' '    - docs/dev-flow/features/demo/status.md' '    - docs/dev-flow/features/demo/context/verify.jsonl' '  context_manifests:' '    verify: docs/dev-flow/features/demo/context/verify.jsonl' '  human_gates:' '    requirement_confirmation:' '      required: true' '      status: "confirmed"' '      evidence: "user confirmed requirements"' '    implementation_approval:' '      required: true' '      status: "confirmed"' '      evidence: "user approved implementation"' '  risk_gates:' '    rollback_units: "light"' '    security_review: "none"' '    behavior_verification: "full"' '  validation:' '    last_validation_at: "2026-01-01"' '    last_validation_commands:' '      - "printf validation"' '    business_diff_fingerprint: "unknown"' '---' > "$tmp/docs/dev-flow/features/demo/status.md"
-printf '%s\n' '{"file":"docs/dev-flow/features/demo/status.md","kind":"verification","reason":"fixture"}' > "$tmp/docs/dev-flow/features/demo/context/verify.jsonl"
+printf '%s\n' \
+  '---' \
+  'dev_flow_status:' \
+  '  schema_version: "3"' \
+  '  feature_id: "demo"' \
+  '  level: "L"' \
+  '  profile: "standard"' \
+  '  risk_labels: []' \
+  '  risk_evidence: {}' \
+  '  classification:' \
+  '    topology: "local"' \
+  '    evidence_result: "not-applicable"' \
+  '    note: "fixture"' \
+  '  current_gate: "verification-before-completion"' \
+  '  completed_gates:' \
+  '    - verification-before-completion' \
+  '  next_action: "finish"' \
+  '  auto_continue: false' \
+  '  human_gates:' \
+  '    requirement_confirmation:' \
+  '      required: true' \
+  '      status: "confirmed"' \
+  '      evidence: "user confirmed requirements"' \
+  '    implementation_approval:' \
+  '      required: true' \
+  '      status: "confirmed"' \
+  '      evidence: "user approved implementation"' \
+  '  risk_gates:' \
+  '    requirements_coverage: "none"' \
+  '    plan_review: "none"' \
+  '    rollback_units: "light"' \
+  '    security_review: "none"' \
+  '    behavior_verification: "full"' \
+  '  assets:' \
+  '    - {path: "docs/dev-flow/reviews/demo-verification.md", kind: "verification"}' \
+  '  validation:' \
+  '    last_at: "2026-01-01"' \
+  '    commands:' \
+  '      - "printf validation"' \
+  '    business_diff_fingerprint: "unknown"' \
+  '  accepted_risks: []' \
+  '---' > "$tmp/docs/dev-flow/features/demo/status.md"
 printf '%s\n' '# verification' > "$tmp/docs/dev-flow/reviews/demo-verification.md"
 printf '%s\n' '# manual' '实测：通过' > "$tmp/docs/dev-flow/reviews/demo-manual-test.md"
 printf '%s\n' '### Task 1' '**Depends on:** none' > "$tmp/docs/dev-flow/features/demo/初步实现计划.md"
@@ -105,7 +145,7 @@ git -C "$tmp" add .
 git -C "$tmp" -c user.name='dev-flow test' -c user.email='dev-flow@example.test' commit -qm baseline
 printf '%s\n' 'staged business change' > "$tmp/src/business.js"
 git -C "$tmp" add src/business.js
-fixture_fingerprint=$( { git -C "$tmp" diff --binary -- . ':(exclude).claude/**' ':(exclude)docs/dev-flow/features/**' ':(exclude)docs/dev-flow/reviews/**' ':(exclude)docs/claude-dev-flow-*'; git -C "$tmp" diff --cached --binary -- . ':(exclude).claude/**' ':(exclude)docs/dev-flow/features/**' ':(exclude)docs/dev-flow/reviews/**' ':(exclude)docs/claude-dev-flow-*'; while IFS= read -r file; do if [[ "$file" != .claude/* && "$file" != docs/dev-flow/features/* && "$file" != docs/dev-flow/reviews/* && "$file" != docs/claude-dev-flow-* ]]; then printf 'UNTRACKED %s ' "$file"; git -C "$tmp" hash-object -- "$file"; fi; done < <(git -C "$tmp" -c core.quotePath=false ls-files --others --exclude-standard); } | git -C "$tmp" hash-object --stdin )
+fixture_fingerprint=$(run_in_tmp "$root/dev-flow-fingerprint" docs/dev-flow/features docs/dev-flow/reviews)
 awk -v fp="$fixture_fingerprint" '{ sub(/^    business_diff_fingerprint: ".*"$/, "    business_diff_fingerprint: \"" fp "\""); print }' "$tmp/docs/dev-flow/features/demo/status.md" > "$tmp/docs/dev-flow/features/demo/status.new"
 mv "$tmp/docs/dev-flow/features/demo/status.new" "$tmp/docs/dev-flow/features/demo/status.md"
 
@@ -114,18 +154,21 @@ expect_pass run_feature demo --finish
 set_project_feature_root ../outside
 expect_fail run_feature demo --finish
 set_project_feature_root docs/dev-flow/features
+
 set_status_level M
 update_gate_value requirement_confirmation required false
 update_gate_value implementation_approval required false
 update_gate_value requirement_confirmation status pending
 update_gate_value implementation_approval status pending
 expect_pass run_feature demo --finish
+
 set_status_level L
 update_gate_value requirement_confirmation required true
 update_gate_value implementation_approval required true
 update_gate_value requirement_confirmation status confirmed
 update_gate_value implementation_approval status confirmed
-cp "$tmp/docs/dev-flow/features/demo/status.md" "$tmp/docs/dev-flow/features/demo/status.with-human-gates.md"
+cp "$tmp/docs/dev-flow/features/demo/status.md" "$tmp/docs/dev-flow/features/demo/status.bak"
+
 awk '
   /^  human_gates:$/ { skip=1; next }
   skip && /^  risk_gates:$/ { skip=0 }
@@ -133,22 +176,29 @@ awk '
 ' "$tmp/docs/dev-flow/features/demo/status.md" > "$tmp/docs/dev-flow/features/demo/status.new"
 mv "$tmp/docs/dev-flow/features/demo/status.new" "$tmp/docs/dev-flow/features/demo/status.md"
 expect_fail run_feature demo --finish
-mv "$tmp/docs/dev-flow/features/demo/status.with-human-gates.md" "$tmp/docs/dev-flow/features/demo/status.md"
+cp "$tmp/docs/dev-flow/features/demo/status.bak" "$tmp/docs/dev-flow/features/demo/status.md"
+
 awk '{ sub(/^  current_gate: ".*"$/, "  current_gate: \"unknown-gate\""); print }' "$tmp/docs/dev-flow/features/demo/status.md" > "$tmp/docs/dev-flow/features/demo/status.new"
 mv "$tmp/docs/dev-flow/features/demo/status.new" "$tmp/docs/dev-flow/features/demo/status.md"
 expect_fail run_feature demo --finish
-awk '{ sub(/^  current_gate: ".*"$/, "  current_gate: \"verification-before-completion\""); print }' "$tmp/docs/dev-flow/features/demo/status.md" > "$tmp/docs/dev-flow/features/demo/status.new"
-mv "$tmp/docs/dev-flow/features/demo/status.new" "$tmp/docs/dev-flow/features/demo/status.md"
+cp "$tmp/docs/dev-flow/features/demo/status.bak" "$tmp/docs/dev-flow/features/demo/status.md"
+
 rm "$tmp/docs/dev-flow/reviews/demo-manual-test.md"
 expect_fail run_feature demo --finish
-
 printf '%s\n' '# manual' '实测：通过' > "$tmp/docs/dev-flow/reviews/demo-manual-test.md"
-printf '%s\n' '{"file":"docs/dev-flow/features/demo/status.md","kind":"verification","reason":"fixture"}' '{"file":' > "$tmp/docs/dev-flow/features/demo/context/verify.jsonl"
+
+# Assets: kind must be one of the recognized asset_kinds.
+awk '{ sub(/kind: "verification"/, "kind: \"bogus\""); print }' "$tmp/docs/dev-flow/features/demo/status.md" > "$tmp/docs/dev-flow/features/demo/status.new"
+mv "$tmp/docs/dev-flow/features/demo/status.new" "$tmp/docs/dev-flow/features/demo/status.md"
 expect_fail run_feature demo --finish
-printf '%s\n' '{"file":"docs/dev-flow/features/demo/status.md","kind":"verification","reason":"fixture"}' > "$tmp/docs/dev-flow/features/demo/context/verify.jsonl"
-printf '%s\n' '{"file":"docs/dev-flow/features/demo/status.md","kind":"verification","reason":"fixture"}' >> "$tmp/docs/dev-flow/features/demo/context/verify.jsonl"
+cp "$tmp/docs/dev-flow/features/demo/status.bak" "$tmp/docs/dev-flow/features/demo/status.md"
+
+# Assets: a registered path must exist on disk.
+awk '{ sub(/reviews\/demo-verification\.md/, "reviews/demo-missing.md"); print }' "$tmp/docs/dev-flow/features/demo/status.md" > "$tmp/docs/dev-flow/features/demo/status.new"
+mv "$tmp/docs/dev-flow/features/demo/status.new" "$tmp/docs/dev-flow/features/demo/status.md"
 expect_fail run_feature demo --finish
-printf '%s\n' '{"file":"docs/dev-flow/features/demo/status.md","kind":"verification","reason":"fixture"}' > "$tmp/docs/dev-flow/features/demo/context/verify.jsonl"
+cp "$tmp/docs/dev-flow/features/demo/status.bak" "$tmp/docs/dev-flow/features/demo/status.md"
+
 update_gate_value implementation_approval evidence 'not required'
 expect_fail run_feature demo --finish
 update_gate_value implementation_approval evidence 'user approved implementation'
@@ -163,46 +213,86 @@ printf '%s\n' 'additional business change' > "$tmp/src/business.js"
 expect_fail run_feature demo --finish
 printf '%s\n' 'staged business change' > "$tmp/src/business.js"
 expect_pass run_feature demo --finish
+
 printf '%s\n' 'do not delete' > "$tmp/.claude/sentinel"
-awk '{ print; if ($0 == "  assets:") print "    - docs/dev-flow/features/demo/../../../../.claude/sentinel" }' "$tmp/docs/dev-flow/features/demo/status.md" > "$tmp/docs/dev-flow/features/demo/status.new"
+awk '{ print; if ($0 == "  assets:") print "    - {path: \"docs/dev-flow/features/demo/../../../../.claude/sentinel\", kind: \"spec\"}" }' "$tmp/docs/dev-flow/features/demo/status.md" > "$tmp/docs/dev-flow/features/demo/status.new"
 mv "$tmp/docs/dev-flow/features/demo/status.new" "$tmp/docs/dev-flow/features/demo/status.md"
 expect_fail run_feature demo --finish
 expect_fail run_in_tmp "$finalizer" demo --retention=compact --confirm
 expect_file "$tmp/.claude/sentinel"
-awk '$0 != "    - docs/dev-flow/features/demo/../../../../.claude/sentinel"' "$tmp/docs/dev-flow/features/demo/status.md" > "$tmp/docs/dev-flow/features/demo/status.new"
-mv "$tmp/docs/dev-flow/features/demo/status.new" "$tmp/docs/dev-flow/features/demo/status.md"
+cp "$tmp/docs/dev-flow/features/demo/status.bak" "$tmp/docs/dev-flow/features/demo/status.md"
+
 ln -s "$tmp/.claude" "$tmp/docs/dev-flow/features/demo/unsafe-link"
-awk '{ print; if ($0 == "  assets:") print "    - docs/dev-flow/features/demo/unsafe-link/sentinel" }' "$tmp/docs/dev-flow/features/demo/status.md" > "$tmp/docs/dev-flow/features/demo/status.new"
+awk '{ print; if ($0 == "  assets:") print "    - {path: \"docs/dev-flow/features/demo/unsafe-link/sentinel\", kind: \"spec\"}" }' "$tmp/docs/dev-flow/features/demo/status.md" > "$tmp/docs/dev-flow/features/demo/status.new"
 mv "$tmp/docs/dev-flow/features/demo/status.new" "$tmp/docs/dev-flow/features/demo/status.md"
 expect_fail run_feature demo --finish
 expect_fail run_in_tmp "$finalizer" demo --retention=compact --confirm
 expect_file "$tmp/.claude/sentinel"
-awk '$0 != "    - docs/dev-flow/features/demo/unsafe-link/sentinel"' "$tmp/docs/dev-flow/features/demo/status.md" > "$tmp/docs/dev-flow/features/demo/status.new"
-mv "$tmp/docs/dev-flow/features/demo/status.new" "$tmp/docs/dev-flow/features/demo/status.md"
 rm "$tmp/docs/dev-flow/features/demo/unsafe-link"
+cp "$tmp/docs/dev-flow/features/demo/status.bak" "$tmp/docs/dev-flow/features/demo/status.md"
+
 expect_pass run_in_tmp "$finalizer" demo --retention=compact --confirm
 expect_pass run_feature demo --finish
 
 # --- Risk-minimal fixture setup ---
 mkdir -p "$tmp/docs/dev-flow/features/risk-demo" "$tmp/docs/dev-flow/reviews"
 
-# Create risk-minimal status.md
-printf '%s\n' '---' 'dev_flow_status:' '  schema_version: "2"' '  workflow_version: "0.5.0"' '  feature_id: "risk-demo"' '  level: "S"' '  profile: "risk-minimal"' '  risk_labels: ["security"]' '  risk_evidence:' '    security:' '      mode: "inline"' '      conclusion: "Reviewed token cleanup and denied-path behavior"' '      verification: "docs/dev-flow/reviews/risk-demo-manual-test.md"' '      report: ""' '  current_gate: "verification-before-completion"' '  completed_gates:' '    - verification-before-completion' '  next_action: "finish"' '  auto_continue: false' '  assets:' '    - docs/dev-flow/features/risk-demo/status.md' '  context_manifests:' '    implement: ""' '    review: ""' '    verify: ""' '  human_gates:' '    requirement_confirmation:' '      required: false' '      status: "not required"' '      evidence: "not required"' '    implementation_approval:' '      required: true' '      status: "confirmed"' '      evidence: "user approved risk-minimal path"' '  risk_gates:' '    requirements_coverage: "none"' '    plan_review: "none"' '    rollback_units: "light"' '    security_review: "light"' '    behavior_verification: "light"' '  classification:' '    schema_version: "1"' '    topology: "local"' '    target_files: ["src/business.js"]' '    symbols: ["exampleFunc"]' '    search_required: false' '    evidence_result: "verified"' '    external_references: []' '    scope_note: "Private function fix; no contract change"' '  validation:' '    last_validation_at: "2026-01-01"' '    last_validation_commands:' '      - "printf validation"' '    business_diff_fingerprint: "unknown"' '  accepted_risks: []' '---' > "$tmp/docs/dev-flow/features/risk-demo/status.md"
+printf '%s\n' \
+  '---' \
+  'dev_flow_status:' \
+  '  schema_version: "3"' \
+  '  feature_id: "risk-demo"' \
+  '  level: "S"' \
+  '  profile: "risk-minimal"' \
+  '  risk_labels: ["security"]' \
+  '  risk_evidence:' \
+  '    security:' \
+  '      mode: "inline"' \
+  '      conclusion: "Reviewed token cleanup and denied-path behavior"' \
+  '      verification: "docs/dev-flow/reviews/risk-demo-manual-test.md"' \
+  '      report: ""' \
+  '  classification:' \
+  '    topology: "local"' \
+  '    evidence_result: "verified"' \
+  '    note: "Private function fix; no contract change"' \
+  '  current_gate: "verification-before-completion"' \
+  '  completed_gates:' \
+  '    - verification-before-completion' \
+  '  next_action: "finish"' \
+  '  auto_continue: false' \
+  '  human_gates:' \
+  '    requirement_confirmation:' \
+  '      required: false' \
+  '      status: "pending"' \
+  '      evidence: "not required"' \
+  '    implementation_approval:' \
+  '      required: true' \
+  '      status: "confirmed"' \
+  '      evidence: "user approved risk-minimal path"' \
+  '  risk_gates:' \
+  '    requirements_coverage: "none"' \
+  '    plan_review: "none"' \
+  '    rollback_units: "light"' \
+  '    security_review: "light"' \
+  '    behavior_verification: "light"' \
+  '  assets:' \
+  '    - {path: "docs/dev-flow/reviews/risk-demo-verification.md", kind: "verification"}' \
+  '  validation:' \
+  '    last_at: "2026-01-01"' \
+  '    commands:' \
+  '      - "printf validation"' \
+  '    business_diff_fingerprint: "unknown"' \
+  '  accepted_risks: []' \
+  '---' > "$tmp/docs/dev-flow/features/risk-demo/status.md"
 
-# Create verification report for risk-demo
 printf '%s\n' '# verification' > "$tmp/docs/dev-flow/reviews/risk-demo-verification.md"
-
-# Create manual test for risk-demo
 printf '%s\n' '# manual' '实测：通过' > "$tmp/docs/dev-flow/reviews/risk-demo-manual-test.md"
-
-# Create feature.md and completion.md for finalized state
 printf '%s\n' '# feature' > "$tmp/docs/dev-flow/features/risk-demo/feature.md"
 printf '%s\n' '---' 'dev_flow_completion:' '  feature_id: "risk-demo"' '  level: "S"' '  outcome: "verified"' '  completed_at: "2026-01-01"' '  retention: "compact"' '  risk_labels: ["security"]' '  risk_approval_evidence: "user confirmed risk-minimal path"' '  risk_verification_summary: "manual verification passed"' '  business_diff_fingerprint: ""' '  commits: []' '  pull_request: "none"' '  accepted_risks: []' '---' '# completion' > "$tmp/docs/dev-flow/features/risk-demo/completion.md"
 
-# Set business diff fingerprint for risk-demo
-fixture_fingerprint_risk=$( { git -C "$tmp" diff --binary -- . ':(exclude).claude/**' ':(exclude)docs/dev-flow/features/**' ':(exclude)docs/dev-flow/reviews/**' ':(exclude)docs/claude-dev-flow-*'; git -C "$tmp" diff --cached --binary -- . ':(exclude).claude/**' ':(exclude)docs/dev-flow/features/**' ':(exclude)docs/dev-flow/reviews/**' ':(exclude)docs/claude-dev-flow-*'; while IFS= read -r file; do if [[ "$file" != .claude/* && "$file" != docs/dev-flow/features/* && "$file" != docs/dev-flow/reviews/* && "$file" != docs/claude-dev-flow-* ]]; then printf 'UNTRACKED %s ' "$file"; git -C "$tmp" hash-object -- "$file"; fi; done < <(git -C "$tmp" -c core.quotePath=false ls-files --others --exclude-standard); } | git -C "$tmp" hash-object --stdin )
-awk -v fp="$fixture_fingerprint_risk" '{ sub(/^    business_diff_fingerprint: ".*"$/, "    business_diff_fingerprint: \"" fp "\""); print }' "$tmp/docs/dev-flow/features/risk-demo/status.md" > "$tmp/docs/dev-flow/features/risk-demo/status.fp"
-mv "$tmp/docs/dev-flow/features/risk-demo/status.fp" "$tmp/docs/dev-flow/features/risk-demo/status.md"
+fixture_fingerprint_risk=$(run_in_tmp "$root/dev-flow-fingerprint" docs/dev-flow/features docs/dev-flow/reviews)
+awk -v fp="$fixture_fingerprint_risk" '{ sub(/^    business_diff_fingerprint: ".*"$/, "    business_diff_fingerprint: \"" fp "\""); print }' "$tmp/docs/dev-flow/features/risk-demo/status.md" > "$tmp/docs/dev-flow/features/risk-demo/status.new"
+mv "$tmp/docs/dev-flow/features/risk-demo/status.new" "$tmp/docs/dev-flow/features/risk-demo/status.md"
 
 # Risk-minimal: S + security with correct evidence should PASS
 expect_pass run_feature risk-demo --finish
@@ -210,17 +300,17 @@ expect_pass run_feature risk-demo --finish
 # Every supported label has a concrete minimum-gate contract.
 for label in data money external availability critical_correctness irreversible_consequence; do
   write_risk_variant "$label" "$tmp/docs/dev-flow/features/risk-demo/status.$label.md"
-  expect_pass run_in_tmp node "$root/dev-flow-validate.mjs" risk-contract "$tmp" "docs/dev-flow/features/risk-demo/status.$label.md"
+  expect_pass run_in_tmp node "$root/dev-flow-validate.mjs" status "$tmp" "docs/dev-flow/features/risk-demo/status.$label.md"
   rm "$tmp/docs/dev-flow/features/risk-demo/status.$label.md"
 done
 write_risk_variant data "$tmp/docs/dev-flow/features/risk-demo/status.invalid-data.md"
 awk '{ sub(/^    rollback_units: ".*"$/, "    rollback_units: \"none\""); print }' "$tmp/docs/dev-flow/features/risk-demo/status.invalid-data.md" > "$tmp/docs/dev-flow/features/risk-demo/status.new"
 mv "$tmp/docs/dev-flow/features/risk-demo/status.new" "$tmp/docs/dev-flow/features/risk-demo/status.invalid-data.md"
-expect_fail run_in_tmp node "$root/dev-flow-validate.mjs" risk-contract "$tmp" docs/dev-flow/features/risk-demo/status.invalid-data.md
+expect_fail run_in_tmp node "$root/dev-flow-validate.mjs" status "$tmp" docs/dev-flow/features/risk-demo/status.invalid-data.md
 write_risk_variant external "$tmp/docs/dev-flow/features/risk-demo/status.invalid-external.md"
 awk '{ sub(/^    behavior_verification: ".*"$/, "    behavior_verification: \"none\""); print }' "$tmp/docs/dev-flow/features/risk-demo/status.invalid-external.md" > "$tmp/docs/dev-flow/features/risk-demo/status.new"
 mv "$tmp/docs/dev-flow/features/risk-demo/status.new" "$tmp/docs/dev-flow/features/risk-demo/status.invalid-external.md"
-expect_fail run_in_tmp node "$root/dev-flow-validate.mjs" risk-contract "$tmp" docs/dev-flow/features/risk-demo/status.invalid-external.md
+expect_fail run_in_tmp node "$root/dev-flow-validate.mjs" status "$tmp" docs/dev-flow/features/risk-demo/status.invalid-external.md
 rm "$tmp/docs/dev-flow/features/risk-demo/status.invalid-data.md" "$tmp/docs/dev-flow/features/risk-demo/status.invalid-external.md"
 
 # Risk-minimal: S + security missing implementation_approval should FAIL
@@ -234,8 +324,6 @@ awk -v target="implementation_approval" -v field="status" -v value="pending" '
 ' "$tmp/docs/dev-flow/features/risk-demo/status.md" > "$tmp/docs/dev-flow/features/risk-demo/status.new"
 mv "$tmp/docs/dev-flow/features/risk-demo/status.new" "$tmp/docs/dev-flow/features/risk-demo/status.md"
 expect_fail run_feature risk-demo --finish
-
-# Restore
 cp "$tmp/docs/dev-flow/features/risk-demo/status.bak" "$tmp/docs/dev-flow/features/risk-demo/status.md"
 
 # Risk-minimal: empty risk_labels should FAIL
@@ -244,7 +332,7 @@ mv "$tmp/docs/dev-flow/features/risk-demo/status.new" "$tmp/docs/dev-flow/featur
 expect_fail run_feature risk-demo --finish
 cp "$tmp/docs/dev-flow/features/risk-demo/status.bak" "$tmp/docs/dev-flow/features/risk-demo/status.md"
 
-# Risk-minimal: missing v2 risk_evidence should FAIL
+# Risk-minimal: missing risk_evidence block should FAIL
 awk '
   /^  risk_evidence:$/ { in_evidence=1; next }
   in_evidence && /^  [a-z_]+:/ { in_evidence=0 }
@@ -260,13 +348,31 @@ mv "$tmp/docs/dev-flow/features/risk-demo/status.new" "$tmp/docs/dev-flow/featur
 expect_fail run_feature risk-demo --finish
 cp "$tmp/docs/dev-flow/features/risk-demo/status.bak" "$tmp/docs/dev-flow/features/risk-demo/status.md"
 
+# Assets: kind must be one of the recognized asset_kinds.
+awk '{ sub(/kind: "verification"/, "kind: \"bogus\""); print }' "$tmp/docs/dev-flow/features/risk-demo/status.md" > "$tmp/docs/dev-flow/features/risk-demo/status.new"
+mv "$tmp/docs/dev-flow/features/risk-demo/status.new" "$tmp/docs/dev-flow/features/risk-demo/status.md"
+expect_fail run_in_tmp node "$root/dev-flow-validate.mjs" status "$tmp" docs/dev-flow/features/risk-demo/status.md
+cp "$tmp/docs/dev-flow/features/risk-demo/status.bak" "$tmp/docs/dev-flow/features/risk-demo/status.md"
+
+# Assets: a registered path must exist on disk.
+awk '{ sub(/reviews\/risk-demo-verification\.md/, "reviews/risk-demo-missing.md"); print }' "$tmp/docs/dev-flow/features/risk-demo/status.md" > "$tmp/docs/dev-flow/features/risk-demo/status.new"
+mv "$tmp/docs/dev-flow/features/risk-demo/status.new" "$tmp/docs/dev-flow/features/risk-demo/status.md"
+expect_fail run_in_tmp node "$root/dev-flow-validate.mjs" status "$tmp" docs/dev-flow/features/risk-demo/status.md
+cp "$tmp/docs/dev-flow/features/risk-demo/status.bak" "$tmp/docs/dev-flow/features/risk-demo/status.md"
+
+# Classification: topology must be a recognized value.
+awk '{ sub(/^    topology: ".*"$/, "    topology: \"made-up\""); print }' "$tmp/docs/dev-flow/features/risk-demo/status.md" > "$tmp/docs/dev-flow/features/risk-demo/status.new"
+mv "$tmp/docs/dev-flow/features/risk-demo/status.new" "$tmp/docs/dev-flow/features/risk-demo/status.md"
+expect_fail run_in_tmp node "$root/dev-flow-validate.mjs" status "$tmp" docs/dev-flow/features/risk-demo/status.md
+cp "$tmp/docs/dev-flow/features/risk-demo/status.bak" "$tmp/docs/dev-flow/features/risk-demo/status.md"
+
 # M/L may carry risk labels, but must keep the standard profile.
 awk '{ sub(/^  level: ".*"$/, "  level: \"M\""); sub(/^  profile: ".*"$/, "  profile: \"standard\""); print }' "$tmp/docs/dev-flow/features/risk-demo/status.md" > "$tmp/docs/dev-flow/features/risk-demo/status.standard-m.md"
-expect_pass run_in_tmp node "$root/dev-flow-validate.mjs" risk-contract "$tmp" docs/dev-flow/features/risk-demo/status.standard-m.md
+expect_pass run_in_tmp node "$root/dev-flow-validate.mjs" status "$tmp" docs/dev-flow/features/risk-demo/status.standard-m.md
 awk '{ sub(/^  level: ".*"$/, "  level: \"M\""); print }' "$tmp/docs/dev-flow/features/risk-demo/status.md" > "$tmp/docs/dev-flow/features/risk-demo/status.invalid-m.md"
-expect_fail run_in_tmp node "$root/dev-flow-validate.mjs" risk-contract "$tmp" docs/dev-flow/features/risk-demo/status.invalid-m.md
+expect_fail run_in_tmp node "$root/dev-flow-validate.mjs" status "$tmp" docs/dev-flow/features/risk-demo/status.invalid-m.md
 awk '{ sub(/^  profile: ".*"$/, "  profile: \"standard\""); print }' "$tmp/docs/dev-flow/features/risk-demo/status.md" > "$tmp/docs/dev-flow/features/risk-demo/status.invalid-s.md"
-expect_fail run_in_tmp node "$root/dev-flow-validate.mjs" risk-contract "$tmp" docs/dev-flow/features/risk-demo/status.invalid-s.md
+expect_fail run_in_tmp node "$root/dev-flow-validate.mjs" status "$tmp" docs/dev-flow/features/risk-demo/status.invalid-s.md
 rm "$tmp/docs/dev-flow/features/risk-demo/status.standard-m.md" "$tmp/docs/dev-flow/features/risk-demo/status.invalid-m.md" "$tmp/docs/dev-flow/features/risk-demo/status.invalid-s.md"
 
 # A full required gate must use a real report instead of inline-only evidence.
@@ -298,7 +404,6 @@ git -C "$tmp" add src/business.js
 expect_pass run_feature risk-demo --finish
 
 # Risk-minimal finalized feature check
-cp "$tmp/docs/dev-flow/features/risk-demo/status.md" "$tmp/docs/dev-flow/features/risk-demo/status.bak2"
 rm "$tmp/docs/dev-flow/features/risk-demo/status.md"
 expect_pass run_feature risk-demo --finish
 

@@ -1,5 +1,7 @@
 # 风险标签证据契约实现计划
 
+> 状态：已实施。本文中的 `docs/claude-dev-flow-migration.md`、`docs/claude-dev-flow-post-migration-usage.md` 引用是写作时的文件名，这两个文件已在 0.6 版重构中合并为 `docs/claude-dev-flow-guide.md`（见 `docs/plans/2026-07-12-dev-flow-v0.6-restructure-design.md`）。本文正文不随后续重构改写，作为历史记录保留。
+
 > **使用说明：** 按照 `Depends on` 依赖关系执行。每步使用 checkbox (`- [ ]`) 语法跟踪进度。
 
 **目标：** 让风险标签、风险门禁与最小证据形成可验证的 v2 状态契约，同时保持 `light` 路径不新增独立报告。

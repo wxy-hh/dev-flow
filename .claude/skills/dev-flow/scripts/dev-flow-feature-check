@@ -1,5 +1,8 @@
 #!/usr/bin/env bash
-# Read-only validation for one dev-flow feature.
+# Completion check for one dev-flow feature (status schema v3).
+# Content/schema checks run in dev-flow-validate.mjs; this script adds the
+# workspace checks that need git/find, and stamps .claude/runtime/dev-flow/
+# on a passing --finish so the finish-guard hook can verify freshness.
 set -u
 
 root=$(git rev-parse --show-toplevel 2>/dev/null || pwd)
@@ -27,7 +30,9 @@ if [ -z "$feature_id" ]; then
   exit 2
 fi
 
-validator="$(dirname "$0")/dev-flow-validate.mjs"
+script_dir=$(dirname "$0")
+validator="$script_dir/dev-flow-validate.mjs"
+fingerprint_cmd="$script_dir/dev-flow-fingerprint"
 if ! command -v node >/dev/null 2>&1; then
   printf 'ERROR Node.js is required for dev-flow validation\n' >&2
   exit 2
@@ -50,37 +55,7 @@ warn() { printf 'WARN %s\n' "$1"; warnings=$((warnings + 1)); }
 fail() { printf 'FAIL %s\n' "$1"; failures=$((failures + 1)); }
 
 config_value() {
-  local key=$1
-  awk -v key="$key" '$0 ~ "^[[:space:]]*" key ":" { value=$0; sub("^[^:]*:[[:space:]]*", "", value); gsub(/^"|"$/, "", value); print value; exit }' "$workflow_file"
-}
-
-is_workflow_path() {
-  case "$1" in
-    .claude/*|"$feature_root"/*|"$review_root"/*|docs/claude-dev-flow-*) return 0 ;;
-    *) return 1 ;;
-  esac
-}
-
-business_fingerprint() {
-  {
-    git diff --binary -- . \
-      ':(exclude).claude/**' \
-      ":(exclude)$feature_root/**" \
-      ":(exclude)$review_root/**" \
-      ':(exclude)docs/claude-dev-flow-*'
-    git diff --cached --binary -- . \
-      ':(exclude).claude/**' \
-      ":(exclude)$feature_root/**" \
-      ":(exclude)$review_root/**" \
-      ':(exclude)docs/claude-dev-flow-*'
-    while IFS= read -r file; do
-      [ -z "$file" ] && continue
-      if ! is_workflow_path "$file"; then
-        printf 'UNTRACKED %s ' "$file"
-        git hash-object -- "$file"
-      fi
-    done < <(git -c core.quotePath=false ls-files --others --exclude-standard)
-  } | git hash-object --stdin
+  awk -v key="$1" '$0 ~ "^[[:space:]]*" key ":" { value=$0; sub("^[^:]*:[[:space:]]*", "", value); gsub(/^"|"$/, "", value); print value; exit }' "$workflow_file"
 }
 
 feature_root=$(config_value feature_root)
@@ -102,6 +77,7 @@ status_file="$feature_dir/status.md"
 completion_file="$feature_dir/completion.md"
 feature_file="$feature_dir/feature.md"
 
+# Finalized features: status.md is compacted away, completion.md remains.
 if [ "$finish" = true ] && [ ! -f "$status_file" ] && [ -f "$completion_file" ]; then
   [ -f "$feature_file" ] && pass 'finalized feature has feature.md' || fail 'finalized feature is missing feature.md'
   if rg -q '^  outcome: "(verified|partial)"$' "$completion_file"; then
@@ -143,10 +119,22 @@ if ! node "$validator" asset "$root" "$feature_root" "$review_root" "$status_fil
 fi
 pass 'status.md exists'
 
-if node "$validator" risk-contract "$root" "$status_file"; then
-  pass 'risk contract is valid'
+# Schema, profiles, risk contract, human gates, assets: validated in node.
+finish_flag=""
+[ "$finish" = true ] && finish_flag="--finish"
+status_output=$(node "$validator" status "$root" "$status_file" $finish_flag)
+status_rc=$?
+printf '%s\n' "$status_output"
+passes=$((passes + $(printf '%s\n' "$status_output" | grep -c '^PASS')))
+failures=$((failures + $(printf '%s\n' "$status_output" | grep -c '^FAIL')))
+if [ "$status_rc" -eq 2 ]; then
+  fail 'status.md could not be parsed'
+fi
+
+if rg -q "feature_id: \"$feature_id\"" "$status_file"; then
+  pass 'status feature_id matches'
 else
-  fail 'risk contract is invalid'
+  fail 'status feature_id does not match'
 fi
 
 section() {
@@ -159,80 +147,9 @@ find_report() {
 }
 
 completed_gates=$(section completed_gates next_action | sed -n 's/^    - //p')
-status_assets=$(section assets context_manifests | sed -n 's/^    - //p')
 current_gate=$(sed -n 's/^  current_gate: "\([^"]*\)"$/\1/p' "$status_file")
 next_action=$(sed -n 's/^  next_action: "\([^"]*\)"$/\1/p' "$status_file")
-level=$(sed -n 's/^  level: "\([^"]*\)"$/\1/p' "$status_file")
-profile=$(sed -n 's/^  profile: "\([^"]*\)"$/\1/p' "$status_file")
-risk_labels=$(sed -n 's/^  risk_labels: \[\(.*\)\]$/\1/p' "$status_file")
 
-human_gate_value() {
-  local gate=$1
-  local field=$2
-  awk -v gate="$gate" -v field="$field" '
-    /^  human_gates:$/ { in_human_gates=1; next }
-    in_human_gates && $0 == "    " gate ":" { in_gate=1; next }
-    in_gate && /^    [^ ]/ { exit }
-    in_gate && $0 ~ "^      " field ":" {
-      value=$0
-      sub("^[^:]*:[[:space:]]*", "", value)
-      gsub(/^"|"$/, "", value)
-      print value
-      exit
-    }
-  ' "$status_file"
-}
-
-require_human_gate() {
-  local gate=$1
-  local required status evidence
-  required=$(human_gate_value "$gate" required)
-  status=$(human_gate_value "$gate" status)
-  evidence=$(human_gate_value "$gate" evidence)
-
-  if [ "$required" != true ]; then
-    fail "${gate} is not required for this M/L feature"
-  elif [ "$status" = confirmed ]; then
-    if [ -z "$evidence" ] || [ "$evidence" = 'not required' ]; then
-      fail "${gate} is confirmed but has no evidence"
-    else
-      pass "${gate} is confirmed with evidence"
-    fi
-  elif [ "$status" = skipped ]; then
-    if [ -z "$evidence" ] || [ "$evidence" = 'not required' ]; then
-      fail "${gate} is skipped without accepted-risk evidence"
-    else
-      pass "${gate} is skipped with accepted-risk evidence"
-    fi
-  else
-    fail "${gate} is not confirmed"
-  fi
-}
-
-known_gate() {
-  case "$1" in
-    req-probe|grillme|grilling|writing-plans|requirements-coverage|plan-review|implementation_approval|implementation|rollback-units|security-review|code-review|requesting-code-review|verification-before-completion|finish) return 0 ;;
-    *) return 1 ;;
-  esac
-}
-
-if rg -q "feature_id: \"$feature_id\"" "$status_file"; then pass 'status feature_id matches'; else fail 'status feature_id does not match'; fi
-if rg -q '^dev_flow_status:' "$status_file"; then pass 'status has dev_flow_status'; else fail 'status has no dev_flow_status'; fi
-if [ -n "$current_gate" ] && known_gate "$current_gate"; then pass 'status current_gate is recognized'; else fail 'status current_gate is missing or unknown'; fi
-if [ -n "$next_action" ] && [ "$next_action" != '<next-action>' ]; then pass 'status next_action is recorded'; else fail 'status next_action is missing'; fi
-
-duplicate_gates=$(printf '%s\n' "$completed_gates" | sed '/^$/d' | sort | uniq -d)
-if [ -n "$duplicate_gates" ]; then
-  fail "status completed_gates contains duplicates: $duplicate_gates"
-else
-  pass 'status completed_gates has no duplicates'
-fi
-unknown_gates=$(printf '%s\n' "$completed_gates" | sed '/^$/d' | while IFS= read -r gate; do known_gate "$gate" || printf '%s\n' "$gate"; done)
-if [ -n "$unknown_gates" ]; then
-  fail "status completed_gates contains unknown gates: $unknown_gates"
-else
-  pass 'status completed_gates are recognized'
-fi
 if [ "$current_gate" = verification-before-completion ] || printf '%s\n' "$next_action" | rg -qi 'finish|收尾|完成|合并|提交'; then
   if printf '%s\n' "$completed_gates" | rg -qx 'verification-before-completion'; then
     pass 'finish-oriented status includes completed verification'
@@ -241,84 +158,23 @@ if [ "$current_gate" = verification-before-completion ] || printf '%s\n' "$next_
   fi
 fi
 
-if [ "$finish" = true ]; then
-  case "$level" in
-    L)
-      require_human_gate requirement_confirmation
-      require_human_gate implementation_approval
-      ;;
-    M)
-      if [ "$(human_gate_value requirement_confirmation required)" = true ] || [ "$(human_gate_value implementation_approval required)" = true ]; then
-        require_human_gate requirement_confirmation
-        require_human_gate implementation_approval
-      fi
-      ;;
-    XS|S)
-      if [ "$profile" = "risk-minimal" ]; then
-        require_human_gate implementation_approval
-        if [ -z "$risk_labels" ] || [ "$risk_labels" = "" ]; then
-          fail 'risk-minimal profile requires non-empty risk_labels'
-        else
-          pass 'risk-minimal profile has risk_labels'
-        fi
-        if ! printf '%s\n' "$completed_gates" | rg -qx 'verification-before-completion'; then
-          fail 'risk-minimal feature must complete verification-before-completion'
-        fi
-      else
-        pass 'XS/S feature without risk labels uses lightweight path'
-      fi
-      ;;
-    *) fail 'status level must be M or L for feature completion, or XS/S with risk-minimal profile' ;;
-  esac
-fi
-
-while IFS= read -r asset; do
-  [ -z "$asset" ] && continue
-  if ! node "$validator" asset "$root" "$feature_root" "$review_root" "$asset"; then
-    fail "status asset has an unsafe path: $asset"
-    continue
-  fi
-  if [ -e "$asset" ]; then pass "status asset exists: $asset"; else fail "status asset is missing: $asset"; fi
-done <<< "$status_assets"
-
-manifest_count=0
-for manifest in "$feature_dir"/context/*.jsonl; do
-  [ -f "$manifest" ] || continue
-  manifest_count=$((manifest_count + 1))
-  if ! manifest_files=$(node "$validator" manifest "$root" "$manifest"); then
-    fail "context manifest is invalid: $manifest"
-    continue
-  fi
-  while IFS= read -r file; do
-    [ -z "$file" ] && continue
-    if [[ "$file" == src/* || "$file" == mock/* || "$file" == public/* ]]; then
-      fail "context manifest registers source file: $file"
-    elif [ ! -e "$file" ]; then
-      fail "context manifest registers missing file: $file"
-    else
-      pass "context manifest entry exists: $file"
-    fi
-  done <<< "$manifest_files"
-done
-if [ "$manifest_count" -eq 0 ]; then warn 'feature has no context manifests'; fi
-
+expected_fingerprint=""
 if printf '%s\n' "$completed_gates" | rg -qx 'verification-before-completion'; then
   verification_report=$(find_report verification)
   [ -n "$verification_report" ] && pass 'verification report exists' || fail 'verification gate is completed but report is missing'
-  if rg -q '^    last_validation_at: "(none|unknown)"$' "$status_file"; then fail 'verification has no validation timestamp'; fi
+
   expected_fingerprint=$(sed -n 's/^    business_diff_fingerprint: "\([^"]*\)"$/\1/p' "$status_file")
-  [ -n "$expected_fingerprint" ] || expected_fingerprint=$(sed -n 's/^    diff_stat_hash: "\([^"]*\)"$/\1/p' "$status_file")
   if ! printf '%s\n' "$expected_fingerprint" | rg -q '^[0-9a-f]{40}$'; then
     fail 'business diff fingerprint is missing or not a Git hash'
   else
-    current_fingerprint=$(business_fingerprint)
+    current_fingerprint=$("$fingerprint_cmd" "$feature_root" "$review_root")
     if [ "$expected_fingerprint" = "$current_fingerprint" ]; then
       pass 'business diff fingerprint is fresh'
     else
       fail 'business diff fingerprint is stale'
     fi
   fi
-  if sed -n '/^    last_validation_commands:/,/^  accepted_risks:/p' "$status_file" | rg -q '^      - '; then pass 'validation commands/checks are recorded'; else fail 'validation commands/checks are empty'; fi
+
   behavior=$(sed -n 's/^    behavior_verification: "\([^"]*\)"$/\1/p' "$status_file")
   if [ "$behavior" = full ] && [ "$webapp_testing" = disabled ]; then
     manual_report=$(find_report manual-test)
@@ -367,21 +223,15 @@ if [ -n "$plan_file" ] && rg -q '^### Task ' "$plan_file" && ! rg -q 'Depends on
   warn 'plan has tasks but no explicit dependency relation'
 fi
 
-if [ "$profile" = "risk-minimal" ]; then
-  pass 'risk-minimal profile is active'
-  # Check classification block exists
-  if rg -q '^  classification:' "$status_file"; then
-    pass 'classification block exists'
-  else
-    fail 'risk-minimal profile requires classification block'
-  fi
-  # Validate classification with the new validator subcommand
-  if node "$validator" classification "$root" "$status_file"; then
-    pass 'classification block is valid'
-  else
-    fail 'classification block is invalid'
-  fi
-fi
-
 printf '\nSummary: %s passed, %s warning(s), %s failure(s)\n' "$passes" "$warnings" "$failures"
-[ "$failures" -eq 0 ]
+
+if [ "$failures" -eq 0 ]; then
+  if [ "$finish" = true ] && [ -n "$expected_fingerprint" ]; then
+    stamp_dir=.claude/runtime/dev-flow
+    mkdir -p "$stamp_dir" 2>/dev/null
+    printf 'fingerprint: %s\nchecked_at: %s\n' "$expected_fingerprint" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+      > "$stamp_dir/$feature_id.check-ok" 2>/dev/null || true
+  fi
+  exit 0
+fi
+exit 1

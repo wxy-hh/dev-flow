@@ -10,20 +10,11 @@ passes=0
 root=$(git rev-parse --show-toplevel 2>/dev/null || pwd)
 cd "$root" || exit 2
 
-pass() {
-  printf 'PASS %s\n' "$1"
-  passes=$((passes + 1))
-}
+CONTRACT=".claude/skills/dev-flow/contract.json"
 
-warn() {
-  printf 'WARN %s\n' "$1"
-  warnings=$((warnings + 1))
-}
-
-fail() {
-  printf 'FAIL %s\n' "$1"
-  failures=$((failures + 1))
-}
+pass() { printf 'PASS %s\n' "$1"; passes=$((passes + 1)); }
+warn() { printf 'WARN %s\n' "$1"; warnings=$((warnings + 1)); }
+fail() { printf 'FAIL %s\n' "$1"; failures=$((failures + 1)); }
 
 need_cmd() {
   if command -v "$1" >/dev/null 2>&1; then
@@ -41,16 +32,20 @@ check_file() {
   fi
 }
 
-require_pattern() {
-  local file=$1
-  local pattern=$2
-  local message=$3
+check_exec() {
+  if [ -x "$1" ]; then
+    pass "script is executable: $1"
+  else
+    fail "script is not executable: $1"
+  fi
+}
 
+require_pattern() {
+  local file=$1 pattern=$2 message=$3
   if [ ! -f "$file" ]; then
     fail "$message (file missing: $file)"
     return
   fi
-
   if rg -q -- "$pattern" "$file"; then
     pass "$message"
   else
@@ -59,13 +54,11 @@ require_pattern() {
 }
 
 forbid_pattern() {
-  local pattern=$1
-  local message=$2
+  local pattern=$1 message=$2
   shift 2
-
-  local output
+  local output status
   output=$(rg -n -- "$pattern" "$@" 2>/dev/null)
-  local status=$?
+  status=$?
   if [ "$status" -eq 0 ]; then
     fail "$message"
     printf '%s\n' "$output"
@@ -76,113 +69,74 @@ forbid_pattern() {
   fi
 }
 
+contract_field() {
+  node -e "
+    const c = JSON.parse(require('fs').readFileSync('$CONTRACT', 'utf8'));
+    const v = $1;
+    if (Array.isArray(v)) { v.forEach((x) => console.log(x)); }
+    else if (v && typeof v === 'object') { Object.entries(v).forEach(([k, val]) => console.log(k + '\t' + val)); }
+    else { console.log(v); }
+  " 2>/dev/null
+}
+
 printf '# dev-flow doctor\n\n'
+
+## ---------------------------------------------------------------------
+## 结构：关键文件、可执行脚本、契约可解析、孪生技能已合并、hooks 已注册
+## ---------------------------------------------------------------------
+printf '## 结构\n\n'
 
 need_cmd git
 need_cmd rg
 need_cmd node
 
-check_file ".claude/rules/project-workflow.template.md"
-check_file ".claude/rules/specs/README.md"
-check_file ".claude/skills/dev-flow/SKILL.md"
-check_file ".claude/skills/req-probe/SKILL.md"
-check_file ".claude/skills/dev-flow/scripts/dev-flow-feature-check"
-check_file ".claude/skills/dev-flow/scripts/dev-flow-feature-finalize"
-check_file ".claude/skills/dev-flow/scripts/dev-flow-validate.mjs"
-check_file ".claude/agents/security-reviewer.md"
-check_file ".claude/skills/plan-review/references/review-prompts.md"
-check_file ".claude/skills/subagent-driven-development/scripts/task-brief"
-check_file ".claude/skills/subagent-driven-development/scripts/review-package"
-check_file ".claude/skills/subagent-driven-development/scripts/sdd-workspace"
+for f in \
+  ".claude/rules/project-workflow.template.md" \
+  ".claude/rules/specs/README.md" \
+  "$CONTRACT" \
+  ".claude/skills/dev-flow/SKILL.md" \
+  ".claude/skills/dev-flow/references/protocol.md" \
+  ".claude/skills/dev-flow/references/standard-ml.md" \
+  ".claude/skills/dev-flow/references/risk-gates.md" \
+  ".claude/skills/req-probe/SKILL.md" \
+  ".claude/skills/dev-flow/scripts/dev-flow-feature-check" \
+  ".claude/skills/dev-flow/scripts/dev-flow-feature-finalize" \
+  ".claude/skills/dev-flow/scripts/dev-flow-fingerprint" \
+  ".claude/skills/dev-flow/scripts/dev-flow-validate.mjs" \
+  ".claude/agents/security-reviewer.md" \
+  ".claude/skills/plan-review/references/review-prompts.md" \
+  ".claude/skills/code-review/references/code-reviewer.md" \
+  ".claude/skills/executing-plans/implementer-prompt.md" \
+  ".claude/skills/executing-plans/task-reviewer-prompt.md" \
+  ".claude/skills/executing-plans/references/subagent-mode.md" \
+  ".claude/skills/executing-plans/scripts/task-brief" \
+  ".claude/skills/executing-plans/scripts/review-package" \
+  ".claude/skills/executing-plans/scripts/sdd-workspace" \
+  ".claude/settings.json" \
+  ".claude/hooks/dev-flow-gate-guard.sh" \
+  ".claude/hooks/dev-flow-finish-guard.sh"; do
+  check_file "$f"
+done
 
-if [ -e ".claude/skills/requesting-code-review/req-probe" ]; then
-  fail "req-probe must remain a top-level skill; remove nested .claude/skills/requesting-code-review/req-probe"
+if node -e "JSON.parse(require('fs').readFileSync('$CONTRACT', 'utf8'))" >/dev/null 2>&1; then
+  pass "contract.json parses as valid JSON"
 else
-  pass "req-probe has no nested duplicate under requesting-code-review"
+  fail "contract.json parses as valid JSON"
 fi
 
-require_pattern ".claude/rules/project-workflow.template.md" '^dev_flow:' "project-workflow template has dev_flow config"
-for key in version project_kind package_manager verification openspec git; do
-  require_pattern ".claude/rules/project-workflow.template.md" "${key}:" "project-workflow template has dev_flow.${key}"
-done
-require_pattern ".claude/rules/project-workflow.template.md" 'scoped_spec_root:' "project-workflow template has dev_flow.paths.scoped_spec_root"
-require_pattern ".claude/rules/project-workflow.template.md" 'context/implement\.jsonl' "project-workflow template documents implement context manifest"
-require_pattern ".claude/rules/project-workflow.template.md" 'context/review\.jsonl' "project-workflow template documents review context manifest"
-require_pattern ".claude/rules/project-workflow.template.md" 'context/verify\.jsonl' "project-workflow template documents verify context manifest"
-require_pattern ".claude/rules/project-workflow.template.md" 'dev_flow_status:' "status.md template has dev_flow_status frontmatter"
-require_pattern ".claude/rules/project-workflow.template.md" 'artifacts:' "project-workflow template has artifact retention config"
-require_pattern ".claude/rules/project-workflow.template.md" 'retention: "compact"' "project-workflow template defaults artifact retention to compact"
-for field in \
-  "schema_version" \
-  "feature_id" \
-  "level" \
-  "current_gate" \
-  "next_action" \
-  "auto_continue" \
-  "assets" \
-  "human_gates" \
-  "risk_gates" \
-  "validation" \
-  "accepted_risks" \
-  "profile" \
-  "risk_labels" \
-  "risk_evidence" \
-  "classification"; do
-  require_pattern ".claude/rules/project-workflow.template.md" "${field}:" "dev_flow_status has ${field}"
-done
-for field in \
-  "requirement_confirmation" \
-  "implementation_approval"; do
-  require_pattern ".claude/rules/project-workflow.template.md" "${field}:" "dev_flow_status.human_gates has ${field}"
-done
-require_pattern ".claude/skills/dev-flow/SKILL.md" 'HUMAN GATE 硬协议' "dev-flow documents HUMAN GATE hard protocol"
-require_pattern ".claude/skills/dev-flow/SKILL.md" 'Auto-continue: no.*当前回合必须停止|当前回合必须停止' "dev-flow stops on Auto-continue no"
-require_pattern ".claude/skills/dev-flow/SKILL.md" 'code-review.*不能.*plan-review|plan-review.*不能.*code-review' "dev-flow does not allow code-review to replace plan-review"
-require_pattern ".claude/commands/dev-task.md" '不要用对话里的“实现计划”代替 `writing-plans`' "dev-task routes standard L to writing-plans"
-require_pattern ".claude/commands/dev-task.md" '实现任务列表.*`implementation_approval`' "dev-task blocks implementation todos before approval"
-require_pattern ".claude/commands/dev-task.md" 'dev-flow-feature-check' "dev-task requires feature-check before L finish"
-require_pattern ".claude/skills/dev-flow/SKILL.md" 'writing-plans -> requirements-coverage -> plan-review' "dev-flow fixes standard L pre-implementation gate order"
-require_pattern ".claude/skills/dev-flow/SKILL.md" 'rollback-units.*审计' "dev-flow requires rollback audit after implementation"
-require_pattern ".claude/skills/dev-flow/SKILL.md" '默认不把覆盖矩阵追加到 `context/verify\.jsonl`' "dev-flow keeps coverage out of verify manifest by default"
-require_pattern ".claude/skills/writing-plans/SKILL.md" 'requirement_confirmation\.status.*confirmed' "writing-plans requires confirmed requirement gate"
-require_pattern ".claude/skills/writing-plans/SKILL.md" 'human requirement confirmation required before writing-plans' "writing-plans blocks before requirement confirmation"
-require_pattern ".claude/skills/writing-plans/SKILL.md" '标准 L 默认触发 `requirements_coverage: full`' "writing-plans defaults standard L to requirements coverage"
-require_pattern ".claude/skills/writing-plans/SKILL.md" '不得直接从 `writing-plans` 进入 .*`implementation_approval`' "writing-plans cannot jump directly to implementation approval"
-require_pattern ".claude/skills/writing-plans/SKILL.md" 'Depends on' "writing-plans requires explicit dependency relation"
-require_pattern ".claude/skills/requirements-coverage/SKILL.md" '默认不创建或更新 `context/verify\.jsonl`' "requirements-coverage does not update verify manifest by default"
-require_pattern ".claude/skills/requirements-coverage/SKILL.md" 'Updated manifests' "requirements-coverage separates generated assets from manifest updates"
-require_pattern ".claude/skills/grillme/SKILL.md" '不能 `Auto-continue: yes` 直达 `writing-plans`' "grillme cannot auto-continue to writing-plans in M/L"
-require_pattern ".claude/skills/grilling/SKILL.md" '不得 `Auto-continue: yes` 直达 `writing-plans`|不能 `Auto-continue: yes` 直达 `writing-plans`' "grilling cannot auto-continue to writing-plans in M/L"
-require_pattern ".claude/skills/plan-review/SKILL.md" '不能.*实现后的 `code-review` 替代|实现后的 `code-review`.*不能.*替代' "plan-review is not replaceable by code-review"
-require_pattern ".claude/skills/plan-review/SKILL.md" 'requirements coverage required before plan-review' "plan-review routes missing coverage back to requirements-coverage"
-require_pattern ".claude/skills/plan-review/SKILL.md" 'human implementation approval required after plan-review' "plan-review stops for implementation approval"
-require_pattern ".claude/skills/executing-plans/SKILL.md" 'implementation_approval\.status' "executing-plans checks implementation approval"
-require_pattern ".claude/skills/subagent-driven-development/SKILL.md" 'implementation_approval\.status' "subagent-driven-development checks implementation approval"
-require_pattern "docs/claude-dev-flow-smoke-test.md" 'HUMAN GATE 回归用例' "smoke test covers HUMAN GATE regression"
-require_pattern "docs/claude-dev-flow-smoke-test.md" 'writing-plans 后必须自动进入 `requirements-coverage`' "smoke test covers writing-plans to requirements-coverage regression"
-require_pattern ".claude/rules/project-workflow.template.md" '登录 / 鉴权 / SSO 验证矩阵' "project-workflow template documents auth SSO validation matrix"
-require_pattern ".claude/skills/subagent-driven-development/scripts/sdd-workspace" 'sdd_progress' "sdd-workspace reads dev_flow.paths.sdd_progress"
-require_pattern ".claude/skills/subagent-driven-development/scripts/sdd-workspace" 'runtime_root' "sdd-workspace reads dev_flow.paths.runtime_root"
-
-for field in \
-  "Base SHA" \
-  "Head SHA" \
-  "Working tree dirty" \
-  "Diff stat hash" \
-  "Business diff fingerprint" \
-  "Last validation at" \
-  "Last validation commands" \
-  "Accepted risks"; do
-  require_pattern ".claude/rules/project-workflow.template.md" "${field}:" "status.md template has ${field}"
+for stale_dir in grilling requesting-code-review subagent-driven-development; do
+  if [ -e ".claude/skills/$stale_dir" ]; then
+    fail "merged-away skill directory still present: .claude/skills/$stale_dir"
+  else
+    pass "merged-away skill directory absent: $stale_dir"
+  fi
 done
 
-require_pattern ".claude/rules/project-workflow.template.md" 'risk_labels: \[' "project-workflow template has risk_labels in completion frontmatter"
-require_pattern ".claude/rules/project-workflow.template.md" 'risk_approval_evidence:' "project-workflow template has risk_approval_evidence in completion frontmatter"
-require_pattern ".claude/rules/project-workflow.template.md" 'risk_verification_summary:' "project-workflow template has risk_verification_summary in completion frontmatter"
-require_pattern ".claude/rules/project-workflow.template.md" 'risk-minimal' "project-workflow template documents risk-minimal profile"
-require_pattern ".claude/rules/project-workflow.template.md" 'risk_evidence:' "project-workflow template has risk_evidence contract"
-require_pattern ".claude/rules/project-workflow.template.md" 'mode: "inline\|report"' "project-workflow template documents risk evidence modes"
-require_pattern ".claude/skills/dev-flow/SKILL.md" 'risk_evidence' "dev-flow documents machine-readable risk evidence"
+if [ -f ".claude/settings.json" ] && rg -q 'dev-flow-gate-guard\.sh' ".claude/settings.json" && rg -q 'dev-flow-finish-guard\.sh' ".claude/settings.json"; then
+  pass "settings.json registers both dev-flow hooks"
+else
+  fail "settings.json registers both dev-flow hooks"
+fi
 
 scoped_spec_count=0
 while IFS= read -r spec_index; do
@@ -190,9 +144,117 @@ while IFS= read -r spec_index; do
   require_pattern "$spec_index" '^## Pre-Development Checklist' "scoped spec has Pre-Development Checklist: $spec_index"
   require_pattern "$spec_index" '^## Quality Check' "scoped spec has Quality Check: $spec_index"
 done < <(find .claude/rules/specs -mindepth 2 -maxdepth 2 -name index.md 2>/dev/null | sort)
-if [ "$scoped_spec_count" -eq 0 ]; then
-  pass "no scoped spec index files configured"
+[ "$scoped_spec_count" -eq 0 ] && pass "no scoped spec index files configured"
+
+if git check-ignore -q ".claude/runtime/sdd/.probe" 2>/dev/null; then
+  pass ".claude/runtime is ignored"
+else
+  fail ".claude/runtime is not ignored"
 fi
+
+if git check-ignore -q ".claude/settings.local.json" 2>/dev/null; then
+  pass ".claude/settings.local.json is ignored"
+else
+  fail ".claude/settings.local.json is not ignored"
+fi
+
+script_count=0
+while IFS= read -r script; do
+  script_count=$((script_count + 1))
+  check_exec "$script"
+done < <({ find .claude/skills -path '*/scripts/*' -type f; find .claude/hooks -type f 2>/dev/null; } | sort)
+[ "$script_count" -eq 0 ] && warn "no skill scripts found"
+
+## ---------------------------------------------------------------------
+## 一致性：risk-gates.md 与 contract.json 同步、行数预算、单一版本源、无泄漏
+## ---------------------------------------------------------------------
+printf '\n## 一致性\n\n'
+
+while IFS= read -r label; do
+  [ -z "$label" ] && continue
+  require_pattern ".claude/skills/dev-flow/references/risk-gates.md" "\`${label}\`" "risk-gates.md documents risk label: ${label}"
+done < <(contract_field 'c.risk_labels')
+
+while IFS= read -r line; do
+  [ -z "$line" ] && continue
+  budget_path=${line%%$'\t'*}
+  budget_max=${line##*$'\t'}
+  [ "$budget_path" = "per_downstream_skill_max" ] && continue
+  if [ ! -f "$budget_path" ]; then
+    fail "line budget target missing: $budget_path"
+    continue
+  fi
+  actual=$(wc -l < "$budget_path" | tr -d ' ')
+  if [ "$actual" -le "$budget_max" ]; then
+    pass "line budget: $budget_path ($actual/$budget_max)"
+  else
+    fail "line budget exceeded: $budget_path ($actual/$budget_max)"
+  fi
+done < <(contract_field 'c.line_budgets')
+
+per_skill_max=$(contract_field 'c.line_budgets.per_downstream_skill_max')
+while IFS= read -r skill_file; do
+  [ -z "$skill_file" ] && continue
+  actual=$(wc -l < "$skill_file" | tr -d ' ')
+  if [ "$actual" -le "$per_skill_max" ]; then
+    pass "line budget: $skill_file ($actual/$per_skill_max)"
+  else
+    fail "line budget exceeded: $skill_file ($actual/$per_skill_max)"
+  fi
+done < <(find .claude/skills -mindepth 2 -maxdepth 2 -name SKILL.md ! -path '.claude/skills/dev-flow/*' | sort)
+
+version_output=$(rg -n --glob '!contract.json' -- 'workflow_version:\s*"[0-9]' .claude templates README.md docs 2>/dev/null)
+version_status=$?
+if [ "$version_status" -eq 1 ]; then
+  pass "workflow_version has a single source of truth (contract.json)"
+elif [ "$version_status" -eq 0 ]; then
+  fail "workflow_version is hardcoded outside contract.json"
+  printf '%s\n' "$version_output"
+else
+  fail "workflow_version single-source check failed to run"
+fi
+
+leak_pattern='为当前项目规划时必须使用 Vue|pnpm dev:mock|Cmp-Menu|Cmp-Portal|src/mock|Vue/Vue Router/Pinia API 已自动导入|是否违反 Vue 3|Vue/TS|Vue/TypeScript|Vue 模板|accountType|request\.ts|Vue 性能|placeAnOrder|getProductList'
+leak_output=$(rg -n --glob '!vue3.md' --glob '!**/scripts/dev-flow-doctor' -- "$leak_pattern" \
+  ".claude/agents" ".claude/commands" ".claude/skills" ".claude/rules" 2>/dev/null)
+leak_status=$?
+if [ "$leak_status" -eq 1 ]; then
+  pass "reusable workflow layer has no known source-project leakage"
+elif [ "$leak_status" -eq 0 ]; then
+  fail "reusable workflow layer has no known source-project leakage"
+  printf '%s\n' "$leak_output"
+else
+  fail "reusable workflow layer has no known source-project leakage (search failed)"
+fi
+
+heavy_pattern='Tr[e]llis|task[.]json|workflow[-]state|jo[u]rnal|auto[-]commit|默认创建[ ]task'
+heavy_output=$(rg -n --glob '!**/scripts/dev-flow-doctor' -- "$heavy_pattern" \
+  ".claude/agents" ".claude/commands" ".claude/skills" ".claude/rules" "README.md" "docs" "templates" 2>/dev/null)
+heavy_status=$?
+if [ "$heavy_status" -eq 1 ]; then
+  pass "workflow layer does not introduce heavy workflow concepts"
+elif [ "$heavy_status" -eq 0 ]; then
+  fail "workflow layer does not introduce heavy workflow concepts"
+  printf '%s\n' "$heavy_output"
+else
+  fail "workflow layer does not introduce heavy workflow concepts (search failed)"
+fi
+
+forbid_pattern '至少 3 个|找不到就是你失职' \
+  "plan-review prompts do not incentivize fabricated findings" \
+  ".claude/skills/plan-review/references/review-prompts.md"
+
+if rg -n '^tools: .*"(Write|Edit)"' ".claude/agents/security-reviewer.md" >/dev/null; then
+  fail "security-reviewer is not read-only"
+  rg -n '^tools: .*"(Write|Edit)"' ".claude/agents/security-reviewer.md"
+else
+  pass "security-reviewer is read-only"
+fi
+
+## ---------------------------------------------------------------------
+## 适配层：仅当目标项目已 onboard（存在 project-workflow.md）时检查
+## ---------------------------------------------------------------------
+printf '\n## 适配层\n\n'
 
 if [ -f ".claude/rules/project-workflow.md" ]; then
   require_pattern ".claude/rules/project-workflow.md" '^dev_flow:' "project-workflow.md has dev_flow config"
@@ -210,68 +272,19 @@ else
   warn "missing .claude/rules/project-workflow.md; this is expected in the source migration package, but target projects should run /onboard-dev-flow"
 fi
 
-if rg -n '^tools: .*"(Write|Edit)"' ".claude/agents/security-reviewer.md" >/dev/null; then
-  fail "security-reviewer is not read-only"
-  rg -n '^tools: .*"(Write|Edit)"' ".claude/agents/security-reviewer.md"
-else
-  pass "security-reviewer is read-only"
-fi
+## ---------------------------------------------------------------------
+## 核心不变量：只指向 protocol.md 与 SKILL.md，不再散射到下游技能
+## ---------------------------------------------------------------------
+printf '\n## 核心不变量\n\n'
 
-forbid_pattern '至少 3 个|找不到就是你失职' \
-  "plan-review prompts do not incentivize fabricated findings" \
-  ".claude/skills/plan-review/references/review-prompts.md"
-
-leak_pattern='为当前项目规划时必须使用 Vue|pnpm dev:mock|Cmp-Menu|Cmp-Portal|src/mock|Vue/Vue Router/Pinia API 已自动导入|是否违反 Vue 3|Vue/TS|Vue/TypeScript|Vue 模板|accountType|request\.ts|Vue 性能|placeAnOrder|getProductList'
-leak_output=$(rg -n --glob '!vue3.md' --glob '!**/scripts/dev-flow-doctor' -- "$leak_pattern" \
-  ".claude/agents" ".claude/commands" ".claude/skills" ".claude/rules" 2>/dev/null)
-leak_status=$?
-if [ "$leak_status" -eq 0 ]; then
-  fail "reusable workflow layer has no known source-project leakage"
-  printf '%s\n' "$leak_output"
-elif [ "$leak_status" -eq 1 ]; then
-  pass "reusable workflow layer has no known source-project leakage"
-else
-  fail "reusable workflow layer has no known source-project leakage (search failed)"
-fi
-
-heavy_pattern='Tr[e]llis|task[.]json|workflow[-]state|jo[u]rnal|auto[-]commit|默认创建[ ]task'
-heavy_output=$(rg -n --glob '!**/scripts/dev-flow-doctor' -- "$heavy_pattern" \
-  ".claude/agents" ".claude/commands" ".claude/skills" ".claude/rules" "README.md" "docs" "templates" 2>/dev/null)
-heavy_status=$?
-if [ "$heavy_status" -eq 0 ]; then
-  fail "workflow layer does not introduce heavy workflow concepts"
-  printf '%s\n' "$heavy_output"
-elif [ "$heavy_status" -eq 1 ]; then
-  pass "workflow layer does not introduce heavy workflow concepts"
-else
-  fail "workflow layer does not introduce heavy workflow concepts (search failed)"
-fi
-
-if git check-ignore -q ".claude/runtime/sdd/.probe" 2>/dev/null; then
-  pass ".claude/runtime is ignored"
-else
-  fail ".claude/runtime is not ignored"
-fi
-
-if git check-ignore -q ".claude/settings.local.json" 2>/dev/null; then
-  pass ".claude/settings.local.json is ignored"
-else
-  fail ".claude/settings.local.json is not ignored"
-fi
-
-script_count=0
-while IFS= read -r script; do
-  script_count=$((script_count + 1))
-  if [ -x "$script" ]; then
-    pass "script is executable: $script"
-  else
-    fail "script is not executable: $script"
-  fi
-done < <(find .claude/skills -path '*/scripts/*' -type f | sort)
-
-if [ "$script_count" -eq 0 ]; then
-  warn "no skill scripts found"
-fi
+require_pattern ".claude/skills/dev-flow/references/protocol.md" 'HUMAN GATE 硬协议' "protocol.md documents HUMAN GATE hard protocol"
+require_pattern ".claude/skills/dev-flow/references/protocol.md" '当前回合必须停止' "protocol.md requires stopping the turn on HUMAN GATE/Auto-continue:no"
+require_pattern ".claude/skills/dev-flow/references/protocol.md" '不能由实现后的' "protocol.md keeps plan-review from being replaced by code-review"
+require_pattern ".claude/skills/dev-flow/references/protocol.md" '\[HANDOFF\]' "protocol.md documents the HANDOFF format"
+require_pattern ".claude/skills/dev-flow/references/protocol.md" '资产读取优先级' "protocol.md documents asset read priority"
+require_pattern ".claude/skills/dev-flow/references/protocol.md" 'dev_flow_completion:' "protocol.md documents completion.md frontmatter schema"
+require_pattern ".claude/skills/dev-flow/SKILL.md" '不可回归的三条底线' "dev-flow SKILL.md states the three non-negotiable baselines"
+require_pattern ".claude/skills/dev-flow/SKILL.md" '风险不抬高规模' "dev-flow SKILL.md keeps risk labels from raising scale level"
 
 printf '\nSummary: %s passed, %s warning(s), %s failure(s)\n' "$passes" "$warnings" "$failures"
 

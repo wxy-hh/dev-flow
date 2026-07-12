@@ -89,10 +89,8 @@ model: sonnet
 
 ## 何时不应使用
 
-- 代码需要重构 → 使用 `refactor-cleaner`
-- 需要修改架构 → 使用 `architect`
-- 需要新功能 → 使用 `planner`
-- 测试失败 → 使用 `tdd-guide`
+- 代码需要重构、修改架构或新增功能 → 超出构建错误修复范围，走 dev-flow 分级流程（`writing-plans`/`plan-review`）
+- 测试逻辑失败（非构建/类型错误）→ 使用 `test-driven-development` 或 `verification-before-completion`
 - 安全问题 → 使用 `security-reviewer`
 
 ---

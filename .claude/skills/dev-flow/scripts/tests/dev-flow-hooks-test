@@ -1,0 +1,137 @@
+#!/usr/bin/env bash
+set -u
+
+root=$(cd "$(dirname "$0")/.." && pwd)
+hooks_root=$(cd "$root/../../../hooks" && pwd)
+gate_guard="$hooks_root/dev-flow-gate-guard.sh"
+finish_guard="$hooks_root/dev-flow-finish-guard.sh"
+fingerprint_cmd="$root/dev-flow-fingerprint"
+
+tmp=$(mktemp -d "${TMPDIR:-/tmp}/dev-flow-hooks-test.XXXXXX")
+trap 'rm -rf "$tmp"' EXIT
+
+failures=0
+
+run_hook() {
+  local hook=$1 payload=$2
+  (cd "$tmp" && printf '%s' "$payload" | "$hook")
+}
+
+expect_ask() {
+  local description=$1 hook=$2 payload=$3
+  local output
+  output=$(run_hook "$hook" "$payload")
+  if printf '%s' "$output" | grep -q '"permissionDecision":"ask"'; then
+    printf 'PASS %s\n' "$description"
+  else
+    printf 'FAIL expected ask: %s (got: %s)\n' "$description" "$output"
+    failures=$((failures + 1))
+  fi
+}
+
+expect_allow() {
+  local description=$1 hook=$2 payload=$3
+  local output
+  output=$(run_hook "$hook" "$payload")
+  if [ -z "$output" ]; then
+    printf 'PASS %s\n' "$description"
+  else
+    printf 'FAIL expected allow (empty output): %s (got: %s)\n' "$description" "$output"
+    failures=$((failures + 1))
+  fi
+}
+
+edit_payload() {
+  printf '{"tool_name":"Edit","tool_input":{"file_path":"%s"}}' "$1"
+}
+commit_payload() {
+  printf '{"tool_name":"Bash","tool_input":{"command":"%s"}}' "$1"
+}
+
+set_gate() {
+  local status=$1 required=$2
+  awk -v status="$status" -v required="$required" '
+    $0 == "    implementation_approval:" { in_gate=1; print; next }
+    in_gate && $0 ~ /^    [^ ]/ { in_gate=0 }
+    in_gate && $0 ~ "^      required:" { print "      required: " required; next }
+    in_gate && $0 ~ "^      status:"   { print "      status: \"" status "\""; next }
+    { print }
+  ' "$tmp/docs/dev-flow/features/demo/status.md" > "$tmp/docs/dev-flow/features/demo/status.new"
+  mv "$tmp/docs/dev-flow/features/demo/status.new" "$tmp/docs/dev-flow/features/demo/status.md"
+}
+
+mkdir -p "$tmp/.claude/rules" "$tmp/docs/dev-flow/features/demo" "$tmp/docs/dev-flow/reviews" "$tmp/src"
+git -C "$tmp" init -q
+printf '%s\n' 'dev_flow:' '  paths:' '    feature_root: docs/dev-flow/features' '    review_root: docs/dev-flow/reviews' '  verification:' '    webapp_testing: "disabled"' '  artifacts:' '    retention: "compact"' > "$tmp/.claude/rules/project-workflow.md"
+
+printf '%s\n' \
+  '---' \
+  'dev_flow_status:' \
+  '  schema_version: "3"' \
+  '  feature_id: "demo"' \
+  '  level: "L"' \
+  '  profile: "standard"' \
+  '  human_gates:' \
+  '    requirement_confirmation:' \
+  '      required: true' \
+  '      status: "confirmed"' \
+  '      evidence: "user confirmed"' \
+  '    implementation_approval:' \
+  '      required: true' \
+  '      status: "pending"' \
+  '      evidence: "not required"' \
+  '---' > "$tmp/docs/dev-flow/features/demo/status.md"
+
+printf '%s\n' 'baseline' > "$tmp/src/business.js"
+git -C "$tmp" add .
+git -C "$tmp" -c user.name='dev-flow test' -c user.email='dev-flow@example.test' commit -qm baseline
+
+# --- dev-flow-gate-guard.sh ---
+
+expect_ask "gate-guard asks when implementation_approval is pending" "$gate_guard" "$(edit_payload "$tmp/src/business.js")"
+expect_allow "gate-guard allows edits inside feature_root while pending" "$gate_guard" "$(edit_payload "$tmp/docs/dev-flow/features/demo/status.md")"
+expect_allow "gate-guard allows edits inside .claude while pending" "$gate_guard" "$(edit_payload "$tmp/.claude/rules/project-workflow.md")"
+expect_allow "gate-guard allows when tool_input has no path" "$gate_guard" '{"tool_name":"Edit","tool_input":{}}'
+expect_ask "gate-guard reads notebook_path for NotebookEdit" "$gate_guard" "$(printf '{"tool_name":"NotebookEdit","tool_input":{"notebook_path":"%s"}}' "$tmp/src/business.js")"
+
+set_gate confirmed true
+expect_allow "gate-guard allows business edits once confirmed" "$gate_guard" "$(edit_payload "$tmp/src/business.js")"
+
+set_gate skipped true
+expect_allow "gate-guard allows business edits when skipped" "$gate_guard" "$(edit_payload "$tmp/src/business.js")"
+
+set_gate pending false
+expect_allow "gate-guard allows business edits when gate not required" "$gate_guard" "$(edit_payload "$tmp/src/business.js")"
+
+set_gate pending true
+mv "$tmp/.claude/rules/project-workflow.md" "$tmp/.claude/rules/project-workflow.md.bak"
+expect_allow "gate-guard allows when project is not onboarded" "$gate_guard" "$(edit_payload "$tmp/src/business.js")"
+mv "$tmp/.claude/rules/project-workflow.md.bak" "$tmp/.claude/rules/project-workflow.md"
+
+# --- dev-flow-finish-guard.sh ---
+
+expect_ask "finish-guard asks on git commit with no check-ok stamp" "$finish_guard" "$(commit_payload "git commit -am wip")"
+expect_ask "finish-guard asks on git push with no check-ok stamp" "$finish_guard" "$(commit_payload "git push origin main")"
+expect_ask "finish-guard asks on git merge with no check-ok stamp" "$finish_guard" "$(commit_payload "git merge feature-x")"
+expect_allow "finish-guard allows non-git bash commands" "$finish_guard" "$(commit_payload "ls -la")"
+expect_allow "finish-guard allows git status" "$finish_guard" "$(commit_payload "git status")"
+
+mkdir -p "$tmp/.claude/runtime/dev-flow"
+current_fp=$(cd "$tmp" && "$fingerprint_cmd" docs/dev-flow/features docs/dev-flow/reviews)
+printf 'fingerprint: %s\nchecked_at: 2026-01-01T00:00:00Z\n' "$current_fp" > "$tmp/.claude/runtime/dev-flow/demo.check-ok"
+expect_allow "finish-guard allows git commit once stamp matches" "$finish_guard" "$(commit_payload "git commit -am wip")"
+
+printf '%s\n' 'unstamped business change' > "$tmp/src/business.js"
+expect_ask "finish-guard asks again once business diff changes after stamping" "$finish_guard" "$(commit_payload "git commit -am wip")"
+printf '%s\n' 'baseline' > "$tmp/src/business.js"
+
+printf '%s\n' '# done' > "$tmp/docs/dev-flow/features/demo/completion.md"
+expect_allow "finish-guard allows once feature has completion.md" "$finish_guard" "$(commit_payload "git commit -am wip")"
+rm "$tmp/docs/dev-flow/features/demo/completion.md"
+
+mv "$tmp/.claude/rules/project-workflow.md" "$tmp/.claude/rules/project-workflow.md.bak"
+expect_allow "finish-guard allows when project is not onboarded" "$finish_guard" "$(commit_payload "git commit -am wip")"
+mv "$tmp/.claude/rules/project-workflow.md.bak" "$tmp/.claude/rules/project-workflow.md"
+
+printf '\nSummary: %s failure(s)\n' "$failures"
+[ "$failures" -eq 0 ]

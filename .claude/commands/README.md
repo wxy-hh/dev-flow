@@ -16,7 +16,7 @@
 ## 使用原则
 
 - 小改动走 `/dev-task` 后直接实现和验证，不生成额外文档。
-- XS/S 和默认轻量 M 不因为 `status.md`、context manifest 或局部规范机制而增加流程产物。
+- XS/S 和默认轻量 M 不因为 `status.md` 或局部规范机制而增加流程产物。
 - 迁移到新项目后先运行 `/onboard-dev-flow`，不要直接复用旧项目的 `project-workflow.md`。
 - M/L 级改动交给 `dev-flow` 串联需求、计划、覆盖、审查、回撤和验证。
 - 标准 M/L 和携带风险标签的任务的关键 HUMAN GATE 不能被自动跨过；`code-review` 不能替代实现前 `plan-review`。

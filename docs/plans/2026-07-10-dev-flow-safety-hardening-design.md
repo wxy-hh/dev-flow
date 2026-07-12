@@ -1,5 +1,7 @@
 # dev-flow 最小安全修补设计
 
+> 状态：已实施。JSONL manifest 校验机制已在 0.6 版重构中被 `status.md` 的 `assets` 列表取代（见 `docs/plans/2026-07-12-risk-evidence-contract-implementation-plan.md` 之后的 v0.6 restructure 设计），路径穿越与 feature-id 校验原则保留并迁移到新校验器。本文正文不随后续重构改写，作为历史记录保留。
+
 ## 目标
 
 在不新增任务状态文件、项目配置文件、状态机、hook 或 CI 的前提下，修复当前流程脚本中会造成越界删除、关键门禁漏检和 JSONL 清单静默失效的问题。

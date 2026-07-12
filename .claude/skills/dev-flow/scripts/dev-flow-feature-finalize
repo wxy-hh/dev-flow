@@ -85,11 +85,8 @@ if ! "$checker" "$feature_id" --finish; then
   exit 1
 fi
 
-status_section() {
-  sed -n "/^  $1:/,/^  $2:/p" "$status_file"
-}
-
-assets=$(status_section assets context_manifests | sed -n 's/^    - //p')
+# v3 assets entries look like: - {path: "<repo-path>", kind: "<kind>"}
+assets=$(sed -n "/^  assets:/,/^  validation:/p" "$status_file" | sed -n 's/^    - {path: "\([^"]*\)".*/\1/p')
 manual_report=$(find "$review_root" -maxdepth 1 -type f \( -name "$feature_id-manual-test.md" -o -name "*-$feature_id-manual-test.md" \) -print -quit 2>/dev/null)
 archive_root="$feature_dir/archive/$(date '+%Y%m%d-%H%M%S')"
 
@@ -168,7 +165,16 @@ if [ "$retention" = full ]; then
     mv "$feature_dir/patches" "$archive_root/feature/patches"
   fi
 else
-  rm -rf "$feature_dir/context" "$feature_dir/patches"
+  rm -rf "$feature_dir/patches"
+fi
+
+# status.md is the working ledger, not a listed asset; finalize retires it.
+if [ -f "$status_file" ]; then
+  if [ "$retention" = full ]; then
+    move_to_archive "$status_file"
+  else
+    rm -f "$status_file"
+  fi
 fi
 
 find "$feature_dir" -type d -empty -delete 2>/dev/null || true

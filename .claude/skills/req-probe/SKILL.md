@@ -7,41 +7,26 @@ description: "dev-flow 将需求路由到轻量需求固化时使用，或用户
 
 你是需求分析师。目标：用最少的用户交互，产出最无歧义的《需求说明书.md》。
 
-先读取项目适配层。Claude 环境默认读取 `.claude/rules/project-workflow.md`，从中获取 `<FEATURE_ROOT>` 和 feature-id 规约；写文件前再展开为真实路径。
+先读取项目适配层。Claude 环境默认读取 `.claude/rules/project-workflow.md`，从中获取 `<FEATURE_ROOT>` 和 feature-id 规约。
 
 ## 执行流程
 
 ### 1. 探索项目上下文
 
-- 快速了解当前代码库中与需求相关的文件、模式和已有实现
-- 了解现有架构约束和命名惯例
-- 此阶段不提问，仅收集必要背景信息
+快速了解当前代码库中与需求相关的文件、模式和已有实现，了解现有架构约束和命名惯例。此阶段不提问，仅收集必要背景信息。
 
 ### 2. 选项式递进提问
 
-- 每轮聚焦**一个**最关键的维度；确实需要并列确认时最多 3 个短问题
-- 优先使用宿主提供的结构化提问/选择控件，让用户可以直接点击选项
-- 每个问题给出 **2-3 个选项**；第一个默认是推荐方案，选项标签尾部标记 `（推荐）`
-- 每个问题必须允许自定义回答；如果控件自带 `Other` / 自定义入口，不要再手写额外选项
-- 控件不可用时，退化为短文本选项，不要使用宽表格或重复表格
-- 用户可以：点击选项 / 回复 `Q1A，Q2B` / 回复 `Q1 自定义：...` / 对选项提出修改意见
-- **至少 1 轮、至多 3 轮**提问
-- 已覆盖的维度不再重复提问
-- 每轮必须挖掘用户未明说的**隐含假设**（用户认为理所当然但实际需要明确的约束）
-- 每轮最后必须给出一句回答格式示例，例如：`你可以直接回复：Q1A，Q2B；也可以写 Q2 自定义：...`
+- 每轮聚焦**一个**最关键的维度；确实需要并列确认时最多 3 个短问题。
+- **至少 1 轮、至多 3 轮**提问；已覆盖的维度不再重复提问。
+- 每轮必须挖掘用户未明说的**隐含假设**（用户认为理所当然但实际需要明确的约束）。
+- 优先使用宿主提供的结构化提问/选择控件，让用户可以直接点击选项；控件不可用时退化为下方文本格式。
+- 每个问题给出 **2-3 个互斥选项**，第一个是推荐方案并标记 `（推荐）`，每个选项描述只写影响和取舍（一两句话），不塞长段实现细节。
+- 每个问题必须允许自定义回答；控件自带 `Other`/自定义入口时不再手写额外选项。
+- 不使用 Markdown 宽表格展示问题选项，避免移动端和终端难读；不重复输出同一个问题或表格。
+- 每轮最后必须给出一句回答格式示例。
 
-#### 可点击控件优先规则
-
-在支持结构化用户输入的环境中，优先用可点击控件提问：
-
-- 一次提交 1-3 个短问题。
-- 每个问题只放 2-3 个互斥选项。
-- 推荐选项放第一位，标签写成 `A：xxx（推荐）`。
-- 每个选项描述只写影响和取舍，不写长段实现细节。
-- 依赖长说明的上下文放在控件前的一小段文字里，不塞进选项描述。
-- 控件通常会自动提供自定义回答入口；不要把“其他”伪装成普通选项。
-
-控件不可用时，使用以下文本格式：
+控件不可用时的文本格式：
 
 ```markdown
 ### Q1：<问题>
@@ -64,40 +49,21 @@ C. <备选方案>
 
 ### 3. 输出需求说明书
 
-完成提问后，输出完整《需求说明书.md》到 `<FEATURE_ROOT>/<feature-id>/需求说明书.md`，并创建或更新 `<FEATURE_ROOT>/<feature-id>/status.md`。轻量 L 和标准 M/L 的 `status.md` 必须包含 `dev_flow_status`；标准 M/L 必须把 `human_gates.requirement_confirmation.required` 写为 `true`、`status` 写为 `pending`。context manifest 由后续 `writing-plans` 创建或刷新。
+完成提问后，输出完整《需求说明书.md》到 `<FEATURE_ROOT>/<feature-id>/需求说明书.md`，并创建或更新 `<FEATURE_ROOT>/<feature-id>/status.md`。轻量 L 和标准 M/L 的 `status.md` 必须包含 `dev_flow_status`；标准 M/L 必须把 `human_gates.requirement_confirmation` 设为 `required: true`、`status: pending`。
 
 ### 4. 反向确认
 
-输出末尾必须**复述所有关键边界**，确认无遗漏。
-
-输出后显示：
-
-> ```
-> [HUMAN GATE:requirement_confirmation]
-> 请确认以上需求说明书是否准确完整。确认后进入 grillme / writing-plans；确认前不得写实现计划或源码。
-> [/HUMAN GATE]
-> ```
-
-随后输出 `[HANDOFF]`：
+输出末尾必须**复述所有关键边界**，确认无遗漏，然后输出并停止：
 
 ```text
-[HANDOFF]
-Feature ID: <feature-id>
-Level: <M|L>
-Current gate: req-probe
-Generated assets:
-- <FEATURE_ROOT>/<feature-id>/status.md
-- <FEATURE_ROOT>/<feature-id>/需求说明书.md
-Next skill: grillme
-Next inputs:
-- <FEATURE_ROOT>/<feature-id>/status.md
-- <FEATURE_ROOT>/<feature-id>/需求说明书.md
-Auto-continue: no
-Stop reason: human requirement confirmation required
-[/HANDOFF]
+[HUMAN GATE:requirement_confirmation]
+请确认以上需求说明书是否准确完整。确认后进入 grillme / writing-plans；确认前不得写实现计划或源码。
+[/HUMAN GATE]
 ```
 
-**必须立即停止所有操作**，等待用户发送明确确认指令（如"确认""继续"）后方可推进。后续恢复时，先把 `dev_flow_status.human_gates.requirement_confirmation.status` 更新为 `confirmed`，并把用户确认原话写入 `evidence`；如果用户要求跳过，写为 `skipped` 并同步写入 `accepted_risks`。
+按 `dev-flow/references/protocol.md` 输出 `[HANDOFF]`：`Current gate: req-probe`，`Next skill: grillme`，`Auto-continue: no`，`Stop reason: human requirement confirmation required`。
+
+**必须立即停止所有操作**，等待用户发送明确确认指令（如"确认""继续"）后方可推进。后续恢复时，把 `human_gates.requirement_confirmation.status` 更新为 `confirmed`，用户确认原话写入 `evidence`；用户要求跳过时写为 `skipped` 并同步写入 `accepted_risks`。
 
 ## 五维度覆盖清单（内部检查用，不直接问用户）
 
@@ -108,17 +74,6 @@ Stop reason: human requirement confirmation required
 | 3. 状态与副作用 | token 存储、路由传参、API 调用、状态变更 |
 | 4. 异常与降级 | 错误码、重试策略、降级行为、超时处理 |
 | 5. 非功能约束 | 权限控制、性能要求、兼容性、安全约束 |
-
-## 选项设计规范
-
-- 每轮只给 **1 个维度** 的核心问题；并列问题必须短且互相独立
-- 每个选项是明确的技术/产品方案，包含触发条件、行为和用户影响
-- 用 `（推荐）` 标记 AI 根据上下文判断的最合理选项，且推荐项排在第一位
-- 每个选项描述控制在一两句话内；复杂解释放到选项前的背景说明
-- 不使用 Markdown 宽表格展示问题选项，避免移动端和终端难读
-- 不重复输出同一个问题或同一个表格
-- 每个问题都必须提供自定义回答方式
-- 如果某个维度用户之前已回答，后续轮次不再重复
 
 ## 《需求说明书.md》结构
 
@@ -139,7 +94,6 @@ Stop reason: human requirement confirmation required
 
 - **一次一个问题** — 不轰炸式提问
 - **点击优先** — 能用结构化选择控件时，优先让用户点击选择；不能点击时给短文本格式
-- **选项式驱动** — 给出 2-3 个具体方案供选择，用户可自定义
 - **推荐明确** — 每个问题都要有一个推荐项，并说明推荐理由或影响
 - **挖掘隐含假设** — 找出用户认为理所当然但实际需要明确的约束
 - **YAGNI** — 剔除不必要的功能和过度设计

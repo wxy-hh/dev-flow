@@ -6,7 +6,7 @@ paths:
   - "<review-root>/**"
   - "<plan-root>/**"
 dev_flow:
-  version: "0.5.0"
+  version: "0.6.0"
   project_kind: "<detect>"
   package_manager: "<detect>"
   paths:
@@ -33,6 +33,7 @@ dev_flow:
     codemaps: "<disabled|enabled>"
   artifacts:
     retention: "compact"
+  label_hints: []
   openspec:
     living_baseline: "<false|true>"
   git:
@@ -51,36 +52,15 @@ dev_flow:
 
 ## 结构化配置
 
-`project-workflow.md` 必须保留 frontmatter 中的 `dev_flow` 配置块，并把所有 `<detect...>`、`<none|present>`、`<false|true>` 之类占位符替换成当前项目真实值。Markdown 表格是给人读的说明；`dev_flow` 是给 doctor、onboarding 和后续脚本读取的机器可读锚点。
-
-规则：
-
-- `dev_flow.paths.*` 必须与下方「路径别名」表一致。
-- `dev_flow.verification.*` 必须与下方「项目能力」和「验证配置」一致。
-- 不确定的能力写 `none` 或 `needs-confirmation`，不要猜测。
-- 任何脚本或 doctor 只依赖 `dev_flow` 的稳定字段，不解析长段自然语言。
+`project-workflow.md` 必须保留 frontmatter 中的 `dev_flow` 配置块，并把所有 `<detect...>` 占位符替换成当前项目真实值；`dev_flow.paths.*`/`dev_flow.verification.*` 必须分别与下方「路径别名」「项目能力」「验证配置」保持一致，不确定的能力写 `none` 而不是猜测。`dev_flow` 是给 doctor、onboarding 和后续脚本读取的机器可读锚点，脚本只依赖其稳定字段，不解析自然语言段落。
 
 ## 版本管理边界
 
-当前项目采用：
-
-- 模式：`<local-config|repo-governed>`
-- 说明：`<detect .claude and CLAUDE.md git tracking/ignore state>`
-
-规则：
-
-- 本地配置模式：`.claude/` 和 `CLAUDE.md` 可被忽略，验收以文件内容检查为准。
-- 仓库治理模式：只提交需要共享的治理文件，继续忽略 runtime、本地设置和一次性产物。
+模式：`<local-config|repo-governed>`（`<detect .claude and CLAUDE.md git tracking/ignore state>`）。本地配置模式下 `.claude/` 和 `CLAUDE.md` 可被忽略，验收以文件内容检查为准；仓库治理模式下只提交需要共享的治理文件，继续忽略 runtime、本地设置和一次性产物。
 
 ## 读取顺序
 
-Claude 工作流入口先读取：
-
-1. `.claude/rules/project-workflow.md`
-2. `CLAUDE.md`
-3. 相关源码、已有需求产物和上一段 `[HANDOFF]`
-
-除非用户显式提供路径，不读取其它智能体入口说明作为事实来源。
+Claude 工作流入口依次读取 `.claude/rules/project-workflow.md`、`CLAUDE.md`、相关源码/已有需求产物/上一段 `[HANDOFF]`；除非用户显式提供路径，不把其它智能体入口说明当作事实来源。
 
 ## 路径别名
 
@@ -124,170 +104,24 @@ YYYY-MM-DD-<short-kebab-name>
 | 最终完成报告 | `<FEATURE_ROOT>/<feature-id>/completion.md` |
 | 安全审查 | `<REVIEW_ROOT>/YYYY-MM-DD-<feature-id>-security-review.md` |
 | 子任务台账 | `<SDD_PROGRESS>` |
-| 实现上下文清单 | `<FEATURE_ROOT>/<feature-id>/context/implement.jsonl` |
-| 审查上下文清单 | `<FEATURE_ROOT>/<feature-id>/context/review.jsonl` |
-| 验证上下文清单 | `<FEATURE_ROOT>/<feature-id>/context/verify.jsonl` |
 
-## completion.md frontmatter
+### 资产保留
 
-```yaml
----
-dev_flow_completion:
-  schema_version: "1"
-  feature_id: "<feature-id>"
-  level: "<XS|S|M|L>"
-  outcome: "verified|partial"
-  completed_at: "<timestamp>"
-  retention: "compact|full"
-  risk_labels: []
-  risk_approval_evidence: ""
-  risk_verification_summary: ""
-  business_diff_fingerprint: "<git-hash>"
-  commits: []
-  pull_request: "none"
-  accepted_risks: []
----
-```
+完成收尾后，`dev_flow.artifacts.retention: compact`（默认）只保留 `feature.md`、`completion.md` 和可复用的 `manual-test.md`；取值 `full` 时把需求、计划、覆盖、审查、回撤和验证等中间资产移动到 feature 目录下带时间戳的 `archive/`。`completion.md` frontmatter 字段的唯一来源是 `dev-flow/references/protocol.md`。
 
-risk_labels、risk_approval_evidence、risk_verification_summary 在 risk_labels 非空时为必填。completed_at 填写 ISO 8601 时间戳。
+## 局部规范
 
-## 局部规范和上下文清单
-
-局部规范是可选能力，用于把某个包、模块、页面或技术层的工程约定放到 `<SCOPED_SPEC_ROOT>/<scope>/index.md`。每个 `index.md` 必须包含：
-
-- `Pre-Development Checklist`
-- `Quality Check`
+局部规范是可选能力，用于把某个包、模块、页面或技术层的工程约定放到 `<SCOPED_SPEC_ROOT>/<scope>/index.md`。每个 `index.md` 必须包含 `Pre-Development Checklist` 和 `Quality Check`。
 
 读取规则：
 
 - XS/S 不因为局部规范存在而升级，也不为了读取局部规范创建额外产物。
 - M/L 只有在计划、改动路径或用户输入明确命中某个 scope 时才读取对应局部规范。
-- 找不到匹配 scope 时，不报错；继续使用项目适配层和通用 rules。
+- 找不到匹配 scope 时不报错，继续使用项目适配层和通用 rules。
 
-上下文清单是协作辅助资产，不替代需求、计划、审查报告、验证报告或 `status.md`。JSONL 每行格式：
+## 状态文件
 
-```json
-{"file":"repo-relative-path","kind":"spec|requirement|plan|research|review|verification","reason":"why this file matters"}
-```
-
-规则：
-
-- 只登记需求、计划、局部规范、研究、审查和验证等上下文文件；不要登记源码文件。
-- 轻量 L 和标准 M/L 必须维护 `context/implement.jsonl`、`context/review.jsonl` 和 `context/verify.jsonl`。
-- 轻量 M 只有已经产生落盘需求、计划、审查或验证资产时才维护上下文清单。
-- XS/S 不维护上下文清单。
-- `requirements-coverage` 的主产物是覆盖结论；默认只追加到 `context/review.jsonl` 供 `plan-review` 读取，不追加到 `context/verify.jsonl`。只有覆盖报告新增了后续验证必须读取、且计划或验证脚本里没有的明确验证义务时，才追加到 verify manifest。
-
-## 状态文件规则
-
-标准 M/L、轻量 L 和任何需要跨技能交接的任务，都维护 `<FEATURE_ROOT>/<feature-id>/status.md`。
-
-状态文件至少包含 `dev_flow_status` frontmatter 和人类可读摘要：
-
-```markdown
----
-dev_flow_status:
-  schema_version: "2"
-  workflow_version: "0.5.0"
-  feature_id: "<feature-id>"
-  level: "<XS|S|M|L>"
-  profile: "standard"
-  risk_labels: []
-  risk_evidence: {}
-  classification:
-    schema_version: "1"
-    topology: "local"
-    target_files: []
-    symbols: []
-    search_required: false
-    evidence_result: "not-applicable"
-    external_references: []
-    scope_note: ""
-  current_gate: "<gate-name>"
-  completed_gates: []
-  next_action: "<next-action>"
-  auto_continue: false
-  assets: []
-  context_manifests:
-    implement: "<FEATURE_ROOT>/<feature-id>/context/implement.jsonl"
-    review: "<FEATURE_ROOT>/<feature-id>/context/review.jsonl"
-    verify: "<FEATURE_ROOT>/<feature-id>/context/verify.jsonl"
-  human_gates:
-    requirement_confirmation:
-      required: false
-      status: "pending"
-      evidence: "not required"
-    implementation_approval:
-      required: false
-      status: "pending"
-      evidence: "not required"
-  risk_gates:
-    requirements_coverage: "none"
-    plan_review: "none"
-    rollback_units: "none"
-    security_review: "none"
-    behavior_verification: "none"
-  validation:
-    base_sha: "unknown"
-    head_sha: "unknown"
-    working_tree_dirty: "unknown"
-    diff_stat_hash: "unknown"
-    business_diff_fingerprint: "unknown" # 覆盖未暂存和已暂存的业务改动；排除 dev-flow 资产
-    last_validation_at: "none"
-    last_validation_commands: []
-  accepted_risks: []
----
-
-# <feature-id> 状态
-
-- Level:
-- Profile:
-- Risk labels:
-- Risk evidence:
-- Current gate:
-- Completed gates:
-- Human gates:
-- Next action:
-- Auto-continue:
-- Assets:
-- Last updated:
-- Base SHA:
-- Head SHA:
-- Working tree dirty:
-- Diff stat hash:
-- Business diff fingerprint:
-- Last validation at:
-- Last validation commands:
-- Accepted risks:
-- Classification topology:
-- Classification evidence:
-
-完成收尾后，默认将中间资产压缩为 `feature.md`、`completion.md` 和可复用的 `manual-test.md`。`dev_flow.artifacts.retention: full` 时，把原始需求、计划、覆盖、审查、回撤、验证和 context 资产移动到 feature 目录下的带时间戳 `archive/`；默认 `compact` 不保留这些中间资产。
-```
-
-恢复中断流程时，先读 `status.md`，再读其中列出的资产；`[HANDOFF]` 只作为最近一次对话的辅助线索。
-
-### status.md 更新契约
-
-任何 skill 更新 `status.md` 时遵守以下规则：
-
-- 保留已有 `Completed gates`，只追加新完成的 gate，不删除历史 gate。
-- `Assets` 只追加已经存在或本次明确生成的路径。
-- 每次更新必须设置 `Current gate`、`Next action`、`Auto-continue` 和 `Last updated`。
-- 如果 git 可用，每次更新同时记录 `Base SHA`、`Head SHA`、`Working tree dirty` 和 `Diff stat hash`；没有 git 时写 `unknown` 并说明原因。
-- 验证门禁完成后必须记录 `Last validation at` 和 `Last validation commands`。验证后如果 `Head SHA`、`Working tree dirty` 或 `Diff stat hash` 发生变化，已有验证证据视为过期，完成前必须重新验证。
-- 如果任务包含风险门禁，维护一个 `Risk Gates` 表，列出每个 gate 的 `none` / `light` / `full` 形态和证据路径。
-- 标准 L 默认 `requirements_coverage: "full"`。命中 security 风险标签且计划跨模块或共享状态时，默认 `plan_review: "full"`。
-- 标准 M/L 的 `human_gates.requirement_confirmation` 和 `human_gates.implementation_approval` 必须为 `required: true`。轻量 L 也必须要求边界确认和实现前确认；如果用户一次明确确认边界和轻量 L 路径，可以用同一条用户回复作为两个 gate 的 `evidence`。XS/S 和默认轻量 M 不要求这些 gate。risk-minimal profile（风险 XS/S）必须要求 `implementation_approval` 为 `required: true`。
-- 一旦输出 `[HUMAN GATE:<gate-id>]` 或 `[HANDOFF]` 中 `Auto-continue: no`，当前回合必须停止；不得在同一回合把 `auto_continue: false` 改成 `true` 或继续写计划/源码。
-- 只有用户后续明确确认、继续、接受风险或跳过并接受风险，才能把对应 `human_gates.<gate>.status` 写成 `confirmed` 或 `skipped`，并把原话或接受风险理由写入 `evidence`。
-- 如果验证失败或用户接受风险，在 `Next action` 和 `Accepted risks` 中写清阻塞点或接受风险依据。
-- 同步维护 frontmatter 中的 `dev_flow_status`；机器可读字段和人类可读摘要不一致时，以最新明确验证证据和已有资产为准并立即修正摘要。
-- `risk-minimal` 只适用于带风险标签的 XS/S；`risk-minimal` 必须有非空 `risk_labels`。带风险标签的 M/L 使用 `profile: "standard"`。
-- `risk-minimal` profile 必填：feature_id、level、classification、risk_labels、risk_evidence、风险理由、实现前审批证据、验证记录、accepted_risks。
-- `risk-minimal` profile 不要求：需求说明书、实现计划、context manifest、requirements-coverage。
-- `classification` 字段记录拓扑证据：topology（local|shared-contract|multi-chain|coordinated-rollback）、target_files、symbols、search_required、evidence_result（verified|partial|not-applicable）、external_references、scope_note。
-- v2 状态只要 `risk_labels` 非空，就必须维护 `risk_evidence`。每个标签一项；`mode: "inline"` 需要非空 `conclusion` 和 `verification`，`mode: "report"` 还需要仓库内、非符号链接的 `report` 路径。
+标准 M/L、轻量 L 和任何需要跨技能交接的任务都维护 `<FEATURE_ROOT>/<feature-id>/status.md`。schema、字段取值、更新规则和恢复中断流程的唯一来源是 `dev-flow/references/protocol.md`（「status.md v3 更新契约」「资产读取优先级」两节）与 `contract.json`；本文件不维护副本，也不做双写对账。
 
 ## 项目能力
 
@@ -323,13 +157,9 @@ dev_flow_status:
 
 ## 启用的 Claude agents
 
-启用：
+固定三个：`security-reviewer`、`code-reviewer`、`build-error-resolver`。本节只记录本项目的例外：
 
-- `<detect-enabled-agent>`
-
-当前未启用为默认门禁：
-
-- `<detect-disabled-agent>`：`<reason>`
+- `<detect-not-applicable-agent>`：`<reason，如无构建步骤>`
 
 ## Claude 项目 onboarding
 
@@ -341,7 +171,9 @@ dev_flow_status:
 4. 判断是否存在 OpenSpec、浏览器测试、单元测试、代码映射或文档生成流程。
 5. 判断 git 是否可用，以及 `.claude/` / `CLAUDE.md` 是否被忽略。
 6. 检查是否已有 `<SCOPED_SPEC_ROOT>`；没有也可以保留为空的可选能力。
-7. 写入项目能力、测试策略、OpenSpec 策略、启用 agents、路径别名和三件套路径。
+7. 安装并验证 `.claude/settings.json` 中的 hooks 注册（`dev-flow-gate-guard`、`dev-flow-finish-guard`），确认脚本可执行。
+8. 按目录结构生成 `dev_flow.label_hints` 初始猜测（可选）。
+9. 写入项目能力、测试策略、OpenSpec 策略、启用 agents、路径别名和三件套路径。
 
 ## 验证配置
 
@@ -367,50 +199,18 @@ rg -u -n "<detect-feature-root>|<detect-review-root>|\\.claude/runtime/sdd/progr
 
 ## 高风险门禁
 
-风险标签不提升规模等级；只有 XS/S 携带风险标签时使用 `risk-minimal` profile，M/L 保持 `profile: "standard"`。多个标签取最低门禁的并集：
+风险标签定义、最低门禁映射、gate 形态（none/light/full）、`risk_evidence` 填写方式和登录/鉴权/SSO 验证矩阵的唯一来源是 `dev-flow/references/risk-gates.md`（与 `contract.json` 同步）。风险标签不提升规模等级；本节不复制其内容，只记录本项目的路径→风险提示。
 
-| 标签 | 最低风险门禁 |
-|---|---|
-| `security` | `security_review: light`、`behavior_verification: light` |
-| `data` | `rollback_units: light`、`behavior_verification: light` |
-| `money` | `rollback_units: light`、`behavior_verification: light` |
-| `external` | `behavior_verification: light` |
-| `availability` | `behavior_verification: light` |
-| `critical_correctness` | `behavior_verification: light` |
-| `irreversible_consequence` | `rollback_units: light`、`behavior_verification: light` |
+### label_hints（可选）
 
-每个风险标签都在 `risk_evidence` 中写一项：
+`dev_flow.label_hints` 把项目路径模式映射到建议风险标签，分级时作为提示，不是强制规则，也不能替代实际风险判断：
 
 ```yaml
-risk_evidence:
-  security:
-    mode: "inline|report"
-    conclusion: "审查或验证结论"
-    verification: "命令、检查或可定位引用"
-    report: "<repo-relative-path，report 模式必填>"
+label_hints:
+  - glob: "<detect，如 src/auth/**>"
+    labels: ["security"]
+  - glob: "<detect，如 src/payment/**>"
+    labels: ["money"]
 ```
 
-- `inline`：只写入 `status.md`，不创建独立报告。
-- `report`：`report` 必须指向仓库内现有文件；标签所需任一 gate 为 `full` 时必须使用该模式。
-- 标签对应的最低 gate 不得降为 `none`；项目或任务可以将其升为 `full`。
-
-### 登录 / 鉴权 / SSO 验证矩阵
-
-涉及登录、鉴权、SSO、token/session、权限守卫、HTTP 401/403 或跨系统回跳时，验证计划至少覆盖：
-
-| 路径 | 必查点 |
-|------|--------|
-| SSO 入口 | URL 参数存在、缺失、重复或非法时的处理 |
-| token 交换 | 请求参数、成功返回 token 写入、失败兜底跳转 |
-| 本地登录 | 原 `/login` 独立登录能力不被破坏 |
-| 路由守卫 | 已登录放行、未登录拦截、被动 token 失效后的去向 |
-| HTTP 拦截器 | Authorization 注入、401/403 处理、错误信息不泄露敏感数据 |
-| 显式登出 | 清理登录态、SSO 来源标记和跳转目标符合需求 |
-| 跨系统回跳 | 认证中心地址占位符、回跳循环和来源判断 |
-| 现有登录副作用 | license、门户、菜单、报表或项目已有登录后置流程是否保留 |
-
-计划或验证报告应记录 `/login` 跳转点扫描结果。可按项目语言调整命令，基础扫描示例：
-
-```bash
-rg -n "router\\.(push|replace)\\(['\\\"]/login['\\\"]\\)|window\\.location\\.(href|replace)\\s*=\\s*['\\\"]/login['\\\"]|next\\(['\\\"]/login['\\\"]\\)" src
-```
+onboarding 时按目录结构生成初始猜测；分级发现遗漏时随时补充，不必等待重新 onboarding。

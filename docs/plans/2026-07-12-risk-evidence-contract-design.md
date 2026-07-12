@@ -1,5 +1,7 @@
 # 风险标签证据契约设计
 
+> 状态：已实施。本文定义的风险标签、最低门禁映射和证据契约已收敛进 `.claude/skills/dev-flow/contract.json` 与 `references/risk-gates.md`，是 0.6 版重构（见 `docs/plans/2026-07-12-dev-flow-v0.6-restructure-design.md`）的输入之一。本文正文不随后续重构改写，作为历史记录保留。
+
 ## 目标
 
 修复 `risk-minimal` 的 schema 边界，并让每个风险标签都映射到可机器检查的最低门禁和证据，避免只声明 `security_review: "light"` 就通过完成检查。

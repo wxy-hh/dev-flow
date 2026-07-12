@@ -31,12 +31,12 @@ YYYY-MM-DD-dev-flow-smoke-test
 - 不强制生成需求说明书和实现计划。
 - code-review 可以使用对话内需求摘要、diff、涉及文件和验证证据作为输入。
 - verification-before-completion 能按项目适配层选择验证方式。
-- 不要求生成 `status.md` 或 context manifest。
+- 不要求生成 `status.md`。
 
 ### 通过标准
 
 - 不为了 code-review 被迫补 md 文档。
-- 不为了三件套被迫补流程资产。
+- 不为了走流程被迫补 `status.md` 或其它流程资产。
 - 审查输入里能看到 lightweight context。
 - 验证证据能说明改动是否可信。
 
@@ -50,9 +50,8 @@ YYYY-MM-DD-dev-flow-smoke-test
 
 - 判断为轻量 L。
 - 先输出边界确认卡，并在 `[HUMAN GATE:implementation_approval]` 或等价确认点停止。
-- 用户确认前不生成 `status.md`、context manifest 或业务代码。
-- 用户确认后生成或更新 `<FEATURE_ROOT>/<feature-id>/status.md`。
-- 用户确认后生成或更新 `<FEATURE_ROOT>/<feature-id>/context/{implement,review,verify}.jsonl`。
+- 用户确认前不生成 `status.md` 或业务代码。
+- 用户确认后生成或更新 `<FEATURE_ROOT>/<feature-id>/status.md`，并在其 `assets` 列表中追加本次产生的需求/审查/验证资产。
 - 安全审查为 `light` 或 `full`。
 - 行为验证为 `full`。
 - 回撤证据至少为 `light`。
@@ -60,9 +59,9 @@ YYYY-MM-DD-dev-flow-smoke-test
 
 ### 通过标准
 
-- `status.md` 存在，并包含 `dev_flow_status`、`Risk Gates` 表和每个风险标签对应的 `risk_evidence`。
+- `status.md` frontmatter 的 `dev_flow_status` 存在，并包含 `risk_gates` 字段和每个风险标签对应的 `risk_evidence`。
 - `status.md` 包含 `human_gates`，边界确认和实现前确认有 evidence。
-- context manifest 存在，且只登记需求、计划、规范、审查或验证类文件，不登记源码文件。
+- `assets` 列表存在，且只登记需求、计划、规范、审查或验证类资产（按 `kind` 区分），不登记源码文件。
 - `security-review` 有证据。
 - `behavior-verification` 是 `full`，有 manual-test 或自动化记录。
 - 有 patch 或其它可恢复回撤证据。
@@ -78,7 +77,7 @@ YYYY-MM-DD-dev-flow-smoke-test
 - 需求固化。
 - 需求确认前不得生成实现计划。
 - writing-plans 生成计划。
-- writing-plans 创建或刷新 context manifest。
+- writing-plans 创建或刷新 `status.md` 的 `assets` 列表。
 - requirements-coverage 是否触发由风险维度决定；触发时 `writing-plans` 的 `Next skill` 必须指向 `requirements-coverage`。
 - plan-review 至少以 `light` 形态触发，且发生在实现前。
 - plan-review 后必须停在实现前确认，用户确认前不得写源码。
@@ -90,7 +89,7 @@ YYYY-MM-DD-dev-flow-smoke-test
 - 触发的门禁能读取上一步产物。
 - `status.md` 能记录当前 gate 和下一步。
 - `human_gates.requirement_confirmation` 和 `implementation_approval` 能记录 `confirmed` / `skipped` 以及 evidence。
-- context manifest 能把需求、计划、覆盖结论和后续审查/验证输入串起来。
+- `status.md` 的 `assets` 列表能把需求、计划、覆盖结论和后续审查/验证输入串起来。
 
 ## 验证任务 D：标准 L
 
@@ -103,7 +102,7 @@ YYYY-MM-DD-dev-flow-smoke-test
 - 需求边界确认后再进入计划；确认前不得生成 `初步实现计划.md`。
 - 用户确认需求后必须使用 `writing-plans` 生成正式计划文档；不得用对话里的实现计划替代。
 - writing-plans 后必须自动进入 `requirements-coverage`；覆盖通过后必须自动进入 `plan-review`。
-- requirements-coverage 的主产物是 `<FEATURE_ROOT>/<feature-id>/requirements-coverage.md`；默认只追加 `context/review.jsonl`，不追加 `context/verify.jsonl`。
+- requirements-coverage 的主产物是 `<FEATURE_ROOT>/<feature-id>/requirements-coverage.md`；默认只把该产物以 `kind: review` 追加进 `status.md` 的 `assets` 列表，不追加 `kind: verification` 资产。
 - plan-review、rollback-units 按风险维度触发。
 - plan-review 产物必须早于第一处源码修改；实现后的 code-review 不能替代 plan-review。
 - 实现前必须在 `[HUMAN GATE:implementation_approval]` 停下。
@@ -116,12 +115,12 @@ YYYY-MM-DD-dev-flow-smoke-test
 - 阻塞缺口会停下。
 - writing-plans 后没有用户追问也会进入 requirements-coverage。
 - requirements-coverage 通过后没有用户追问也会进入 plan-review。
-- coverage 不把 `context/verify.jsonl` 当作默认副作用更新。
+- coverage 不会把 `kind: verification` 资产当作默认副作用写入 `assets`。
 - CRITICAL/HIGH 计划审查问题会停下。
 - 实现前有明确回撤边界。
 - `Auto-continue: no` 后同一回合没有继续写计划或源码。
 - 验证报告能证明关键路径。
-- feature-check 能拦截缺失验证报告、空命令、空实测、rollback `pending`、不存在资产和 manifest 源码条目。
+- feature-check 能拦截缺失验证报告、空命令、空实测、rollback `pending`、不存在资产和 `assets` 里登记的源码条目。
 - compact 收尾只留下 `feature.md`、`completion.md` 和可复用手测；full 收尾将原始资产移动到带时间戳 archive。
 
 ## 必查文件
@@ -130,9 +129,6 @@ YYYY-MM-DD-dev-flow-smoke-test
 
 ```text
 <FEATURE_ROOT>/<feature-id>/status.md
-<FEATURE_ROOT>/<feature-id>/context/implement.jsonl
-<FEATURE_ROOT>/<feature-id>/context/review.jsonl
-<FEATURE_ROOT>/<feature-id>/context/verify.jsonl
 <FEATURE_ROOT>/<feature-id>/rollback-units.md
 <REVIEW_ROOT>/YYYY-MM-DD-<feature-id>-manual-test.md
 <REVIEW_ROOT>/YYYY-MM-DD-<feature-id>-verification.md
@@ -184,12 +180,12 @@ YYYY-MM-DD-dev-flow-smoke-test
 .claude/skills/dev-flow/scripts/dev-flow-feature-check <feature-id> --finish
 ```
 
-至少准备一组应失败的 fixture：verification report 缺失、`last_validation_commands` 为空、manual-test 只有模板、rollback 清单含 `pending`、context manifest 登记源码、status 引用不存在资产、风险标签缺 `risk_evidence` 或把最低 gate 写成 `none`。每组都必须返回非零退出码。
+至少准备一组应失败的 fixture：verification report 缺失、`validation.commands` 为空、manual-test 只有模板、rollback 清单含 `pending`、`assets` 登记源码文件、status 引用不存在资产、风险标签缺 `risk_evidence` 或把最低 gate 写成 `none`。每组都必须返回非零退出码。
 
 再使用 `.claude/rules/project-workflow.md` 中的文档和技能检查命令。至少确认：
 
-- `project-workflow.md` 包含已填充的 `dev_flow` 配置。
-- `project-workflow.md` 包含 `scoped_spec_root`、context manifest 路径、`risk_evidence` 和 `dev_flow_status` 结构。
+- `project-workflow.md` 包含已填充的 `dev_flow` 配置，含 `scoped_spec_root`。
+- `risk_evidence` 和 `dev_flow_status` 的字段结构以 `dev-flow/references/protocol.md` 和 `risk-gates.md` 为唯一来源，`project-workflow.md` 未重复维护副本。
 - 没有旧项目路径或命令残留。
 - 没有 `.agents/runtime` 之类跨智能体路径漂移。
 - 没有直接依赖旧项目的包管理器、测试命令或目录结构。
@@ -228,7 +224,7 @@ YYYY-MM-DD-dev-flow-smoke-test
 - human gates:
 - manual-test:
 - verification:
-- context manifest:
+- assets 列表:
 - rollback evidence:
 
 ## 需要修正
@@ -239,4 +235,4 @@ YYYY-MM-DD-dev-flow-smoke-test
 
 smoke test 通过后，用一个真实 M 级任务试跑；再用一个轻量 L 或标准 L 任务验证安全审查、行为验证和回撤证据。不要在 smoke test 失败时直接开始真实高风险任务。
 
-通过后按 [迁移后使用说明](./claude-dev-flow-post-migration-usage.md) 进入日常开发流程。
+通过后按 [使用指南](./claude-dev-flow-guide.md) 进入日常开发流程。
