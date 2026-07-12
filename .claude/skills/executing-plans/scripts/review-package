@@ -3,6 +3,9 @@
 # 审查者一次读取该文件即可完成任务级审查。
 # 使用记录的任务 BASE（而不是 HEAD~1）可以保留多提交任务的完整差异。
 #
+# 除 BASE..HEAD 的已提交 diff 外，还附加当前工作区的 staged / unstaged /
+# untracked 清单，满足 v0.7「完整审查输入」要求。
+#
 # 用法：review-package BASE HEAD [OUTFILE]
 # 默认 OUTFILE：项目适配层配置的 SDD workspace，或 <repo-root>/.claude/runtime/sdd/review-<base7>..<head7>.diff
 # 按提交范围命名，修复后复审会生成新的文件。
@@ -37,7 +40,19 @@ fi
   echo
   echo "## 差异"
   git diff -U10 "${base}..${head}"
+  echo
+  echo "## 工作区未提交改动"
+  echo
+  echo "### staged"
+  git diff --cached --stat || true
+  echo
+  echo "### unstaged"
+  git diff --stat || true
+  echo
+  echo "### untracked"
+  git -c core.quotePath=false ls-files --others --exclude-standard || true
 } > "$out"
 
 commits=$(git rev-list --count "${base}..${head}")
-echo "已写入 ${out}: ${commits} 个提交，$(wc -c < "$out" | tr -d ' ') 字节"
+bytes=$(wc -c < "$out" | tr -d ' ')
+echo "已写入 ${out}: ${commits} 个提交，${bytes} 字节"

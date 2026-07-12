@@ -8,6 +8,14 @@
 
 ## 每个任务的流程
 
+### 0. 调度可并行任务
+
+```bash
+<SKILL_ROOT>/executing-plans/scripts/task-schedule <PLAN_FILE> --done <completed-ids> --json
+```
+
+只派发 `ready` 列表中的任务；`Writes` 重叠或缺少 `Writes` 的任务不得并行。Phase 0 独占，集成检查通过后再派叶子任务。命令名是 `task-schedule`，不要使用已废弃的 `sdd-schedule`。
+
 ### 1. 生成任务简报
 
 ```bash

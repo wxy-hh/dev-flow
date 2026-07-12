@@ -28,7 +28,7 @@
    - 项目类型：Vue、React、Next、Node backend、monorepo 或其它。
    - 是否已有 `.claude/rules/specs/<scope>/index.md` 局部规范；没有也可以保留为空能力。
 3. 根据检测结果生成或更新 `.claude/rules/project-workflow.md`，并填充 frontmatter 中的 `dev_flow` 结构化配置。
-4. 确认 `.claude/settings.json` 已注册 `dev-flow-gate-guard`、`dev-flow-finish-guard` 两个 hooks，`.claude/hooks/*` 可执行；缺失可执行位时补上而不是跳过。按项目目录结构（如 `src/auth/**`、`src/payment/**`）生成 `dev_flow.label_hints` 初始猜测，没有明显敏感路径时留空数组。
+4. 确认 `.claude/settings.json` 已注册 `dev-flow-gate-guard`、`dev-flow-finish-guard` 两个 hooks，`.claude/hooks/*` 可执行；缺失可执行位时补上而不是跳过。按项目目录结构（如 `src/auth/**`、`src/payment/**`）生成 `dev_flow.label_hints` 初始猜测，没有明显敏感路径时留空数组。写入 `enforcement_mode: strict`（新项目）与非空 `protected_write_roots`（如 `src/**` / `apps/**` / `packages/**`）。
 5. 输出适配摘要：
    - 验证命令矩阵。
    - test strategy。
@@ -36,11 +36,12 @@
    - scoped spec 路径。
    - label_hints 初始猜测。
    - hooks 注册状态。
+   - enforcement_mode / protected_write_roots。
    - HUMAN GATE 字段和标准 M/L 停顿边界。
    - 启用 / 禁用 agents。
    - 版本管理边界。
    - 资产保留策略，默认 `dev_flow.artifacts.retention: compact`。
-6. 运行 `.claude/skills/dev-flow/scripts/dev-flow-doctor` 做静态自检。
+6. 运行 `.claude/skills/dev-flow/scripts/dev-flow-doctor --preflight` 做本地安装完整性检查；完整 doctor 可选。
 7. 如果用户传入 `--smoke-test`，按 `docs/claude-dev-flow-smoke-test.md` 跑迁移后 smoke test。
 
 ## 输出要求

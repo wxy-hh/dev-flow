@@ -1,0 +1,305 @@
+#!/usr/bin/env bash
+# Upgrade a target project's managed dev-flow layer from this source package.
+#
+# Usage (run from the migration-package / source repo):
+#   dev-flow-upgrade --target <absolute-repo> --check
+#   dev-flow-upgrade --target <absolute-repo> --apply
+#
+# --check compares source manifest to target; --apply builds a candidate in a
+# temp dir, backs up replaced managed files, merges settings hooks, preserves
+# unmanaged content, runs preflight, then switches. Failures restore backup.
+set -euo pipefail
+
+source_root=$(git rev-parse --show-toplevel 2>/dev/null || pwd)
+cd "$source_root" || exit 2
+
+target=""
+mode=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --target) target=$2; shift 2 ;;
+    --check) mode=check; shift ;;
+    --apply) mode=apply; shift ;;
+    --help|-h)
+      echo "Usage: dev-flow-upgrade --target <absolute-repo> --check|--apply"
+      exit 0
+      ;;
+    *) echo "unknown arg: $1" >&2; exit 2 ;;
+  esac
+done
+
+if [ -z "$target" ] || [ -z "$mode" ]; then
+  echo "Usage: dev-flow-upgrade --target <absolute-repo> --check|--apply" >&2
+  exit 2
+fi
+if [ ! -d "$target" ]; then
+  echo "ERROR target is not a directory: $target" >&2
+  exit 2
+fi
+# require absolute
+case "$target" in
+  /*) ;;
+  *) echo "ERROR --target must be an absolute path" >&2; exit 2 ;;
+esac
+
+script_dir=$(cd "$(dirname "$0")" && pwd)
+manifest_cmd="$script_dir/dev-flow-manifest"
+doctor_cmd="$script_dir/dev-flow-doctor"
+source_manifest="$source_root/.claude/dev-flow.manifest.json"
+
+if [ ! -f "$source_manifest" ]; then
+  echo "source manifest missing; building..."
+  "$manifest_cmd" build --out "$source_manifest"
+fi
+
+sha256_file() {
+  if command -v shasum >/dev/null 2>&1; then
+    shasum -a 256 "$1" | awk '{print $1}'
+  else
+    sha256sum "$1" | awk '{print $1}'
+  fi
+}
+
+check() {
+  node -e '
+    const fs=require("fs");
+    const path=require("path");
+    const crypto=require("crypto");
+    const sourceManifest=process.argv[1];
+    const targetRoot=process.argv[2];
+    const m=JSON.parse(fs.readFileSync(sourceManifest,"utf8"));
+    let drift=0;
+    let missing=0;
+    let ok=0;
+    for (const f of m.files) {
+      const tp=path.join(targetRoot, f.path);
+      if (!fs.existsSync(tp)) {
+        console.log("MISSING " + f.path);
+        missing++;
+        continue;
+      }
+      const hash=crypto.createHash("sha256").update(fs.readFileSync(tp)).digest("hex");
+      if (hash !== f.sha256) {
+        if (f.strategy === "merge-hooks" && f.path.endsWith("settings.json")) {
+          const text = fs.readFileSync(tp, "utf8");
+          if (/dev-flow-gate-guard/.test(text) && /dev-flow-finish-guard/.test(text)) {
+            console.log("MERGED " + f.path + " (hooks present)");
+            ok++;
+          } else {
+            console.log("DRIFT " + f.path);
+            drift++;
+          }
+        } else {
+          console.log("DRIFT " + f.path);
+          drift++;
+        }
+      } else {
+        ok++;
+      }
+    }
+    for (const d of m.deprecated_paths || []) {
+      const tp=path.join(targetRoot, d);
+      if (fs.existsSync(tp)) console.log("DEPRECATED_PRESENT " + d);
+    }
+    // project-workflow.md must remain unmanaged
+    if (fs.existsSync(path.join(targetRoot, ".claude/rules/project-workflow.md"))) {
+      console.log("KEEP project-workflow.md (unmanaged)");
+    }
+    console.log(`Summary: ok=${ok} drift=${drift} missing=${missing}`);
+    process.exit(drift + missing > 0 ? 1 : 0);
+  ' "$source_manifest" "$target"
+}
+
+apply() {
+  local backup stamp candidate
+  stamp=$(date -u +%Y%m%dT%H%M%SZ)
+  backup="$target/.claude/runtime/dev-flow/upgrade-backup-$stamp"
+  candidate=$(mktemp -d "${TMPDIR:-/tmp}/dev-flow-upgrade.XXXXXX")
+  mkdir -p "$backup"
+
+  echo "Building candidate from source managed files..."
+  node -e '
+    const fs=require("fs");
+    const path=require("path");
+    const m=JSON.parse(fs.readFileSync(process.argv[1],"utf8"));
+    const sourceRoot=process.argv[2];
+    const candidate=process.argv[3];
+    for (const f of m.files) {
+      const src=path.join(sourceRoot, f.path);
+      const dest=path.join(candidate, f.path);
+      fs.mkdirSync(path.dirname(dest), {recursive:true});
+      fs.copyFileSync(src, dest);
+    }
+    // also copy manifest into candidate
+    fs.mkdirSync(path.join(candidate, ".claude"), {recursive:true});
+    fs.copyFileSync(process.argv[1], path.join(candidate, ".claude/dev-flow.manifest.json"));
+    console.log("candidate files: " + m.files.length);
+  ' "$source_manifest" "$source_root" "$candidate"
+
+  # Merge settings.json hooks if target has custom settings
+  if [ -f "$target/.claude/settings.json" ]; then
+    node -e '
+      const fs=require("fs");
+      const path=require("path");
+      const targetSettings=path.join(process.argv[1], ".claude/settings.json");
+      const candidateSettings=path.join(process.argv[2], ".claude/settings.json");
+      const t=JSON.parse(fs.readFileSync(targetSettings,"utf8"));
+      const c=JSON.parse(fs.readFileSync(candidateSettings,"utf8"));
+      const tHooks=(t.hooks&&t.hooks.PreToolUse)||[];
+      const cHooks=(c.hooks&&c.hooks.PreToolUse)||[];
+      // drop old dev-flow hooks from target, keep others
+      const kept=tHooks.filter(h => {
+        const cmd=(h.hooks&&h.hooks[0]&&h.hooks[0].command)||"";
+        return !/dev-flow-(gate|finish)-guard/.test(cmd);
+      });
+      t.hooks=t.hooks||{};
+      t.hooks.PreToolUse=[...kept, ...cHooks];
+      fs.writeFileSync(candidateSettings, JSON.stringify(t, null, 2) + "\n");
+      console.log("merged settings.json PreToolUse hooks");
+    ' "$target" "$candidate"
+  fi
+
+  # Backup managed files that will be replaced
+  node -e '
+    const fs=require("fs");
+    const path=require("path");
+    const m=JSON.parse(fs.readFileSync(process.argv[1],"utf8"));
+    const targetRoot=process.argv[2];
+    const backup=process.argv[3];
+    for (const f of m.files) {
+      const tp=path.join(targetRoot, f.path);
+      if (!fs.existsSync(tp)) continue;
+      const bp=path.join(backup, f.path);
+      fs.mkdirSync(path.dirname(bp), {recursive:true});
+      fs.copyFileSync(tp, bp);
+    }
+    // also backup existing manifest
+    const tm=path.join(targetRoot, ".claude/dev-flow.manifest.json");
+    if (fs.existsSync(tm)) {
+      const bp=path.join(backup, ".claude/dev-flow.manifest.json");
+      fs.mkdirSync(path.dirname(bp), {recursive:true});
+      fs.copyFileSync(tm, bp);
+    }
+    // backup deprecated paths if present (for restore)
+    function copyDir(src, dest) {
+      fs.mkdirSync(dest, {recursive:true});
+      for (const ent of fs.readdirSync(src, {withFileTypes:true})) {
+        const s=path.join(src, ent.name);
+        const d=path.join(dest, ent.name);
+        if (ent.isDirectory()) copyDir(s, d);
+        else fs.copyFileSync(s, d);
+      }
+    }
+    for (const d of m.deprecated_paths || []) {
+      const tp=path.join(targetRoot, d);
+      if (fs.existsSync(tp)) {
+        copyDir(tp, path.join(backup, d));
+      }
+    }
+    console.log("backup at " + backup);
+  ' "$source_manifest" "$target" "$backup"
+
+  restore() {
+    echo "Restoring backup..."
+    node -e '
+      const fs=require("fs");
+      const path=require("path");
+      function walk(dir, base, acc=[]) {
+        if (!fs.existsSync(dir)) return acc;
+        for (const ent of fs.readdirSync(dir, {withFileTypes:true})) {
+          const p=path.join(dir, ent.name);
+          if (ent.isDirectory()) walk(p, base, acc);
+          else acc.push(path.relative(base, p));
+        }
+        return acc;
+      }
+      const backup=process.argv[1];
+      const targetRoot=process.argv[2];
+      for (const rel of walk(backup, backup)) {
+        const src=path.join(backup, rel);
+        const dest=path.join(targetRoot, rel);
+        fs.mkdirSync(path.dirname(dest), {recursive:true});
+        fs.copyFileSync(src, dest);
+      }
+      console.log("restore complete");
+    ' "$backup" "$target"
+  }
+
+  # Copy candidate managed files into target
+  if ! node -e '
+    const fs=require("fs");
+    const path=require("path");
+    const m=JSON.parse(fs.readFileSync(process.argv[1],"utf8"));
+    const candidate=process.argv[2];
+    const targetRoot=process.argv[3];
+    for (const f of m.files) {
+      const src=path.join(candidate, f.path);
+      const dest=path.join(targetRoot, f.path);
+      fs.mkdirSync(path.dirname(dest), {recursive:true});
+      fs.copyFileSync(src, dest);
+      // preserve executable bit for scripts/hooks
+      try {
+        const mode=fs.statSync(src).mode;
+        fs.chmodSync(dest, mode);
+      } catch {}
+    }
+    fs.copyFileSync(path.join(candidate, ".claude/dev-flow.manifest.json"),
+      path.join(targetRoot, ".claude/dev-flow.manifest.json"));
+    // Refresh settings.json hash in target manifest after merge-hooks
+    const settingsPath = path.join(targetRoot, ".claude/settings.json");
+    const manifestPath = path.join(targetRoot, ".claude/dev-flow.manifest.json");
+    if (fs.existsSync(settingsPath) && fs.existsSync(manifestPath)) {
+      const crypto = require("crypto");
+      const hash = crypto.createHash("sha256").update(fs.readFileSync(settingsPath)).digest("hex");
+      const mm = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
+      for (const f of mm.files || []) {
+        if (f.path === ".claude/settings.json") f.sha256 = hash;
+      }
+      fs.writeFileSync(manifestPath, JSON.stringify(mm, null, 2) + "\n");
+    }
+    // upgrade defaults: if project-workflow exists and lacks enforcement_mode, set ask
+    const pw=path.join(targetRoot, ".claude/rules/project-workflow.md");
+    if (fs.existsSync(pw)) {
+      let text=fs.readFileSync(pw, "utf8");
+      if (!/enforcement_mode:/.test(text)) {
+        if (/^dev_flow:\s*$/m.test(text)) {
+          text=text.replace(/^dev_flow:\s*$/m, "dev_flow:\n  enforcement_mode: \"ask\"\n  protected_write_roots: []");
+        } else {
+          text="dev_flow:\n  enforcement_mode: \"ask\"\n  protected_write_roots: []\n" + text;
+        }
+        fs.writeFileSync(pw, text);
+        console.log("set enforcement_mode: ask on existing project-workflow.md");
+      }
+    }
+        for (const d of m.deprecated_paths || []) {
+      const tp=path.join(targetRoot, d);
+      if (fs.existsSync(tp)) {
+        fs.rmSync(tp, {recursive:true, force:true});
+        console.log("removed deprecated " + d);
+      }
+    }
+    console.log("applied managed files");
+  ' "$source_manifest" "$candidate" "$target"; then
+    restore
+    rm -rf "$candidate"
+    exit 1
+  fi
+
+  # preflight on target (before removing deprecated paths)
+  if ! (cd "$target" && "$doctor_cmd" --preflight); then
+    echo "ERROR preflight failed after apply; restoring"
+    restore
+    rm -rf "$candidate"
+    exit 1
+  fi
+
+
+  rm -rf "$candidate"
+  echo "Upgrade applied. Backup: $backup"
+  echo "project-workflow.md and custom unmanaged skills were preserved."
+}
+
+case "$mode" in
+  check) check ;;
+  apply) apply ;;
+esac

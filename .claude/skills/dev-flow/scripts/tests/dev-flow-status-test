@@ -1,0 +1,343 @@
+#!/usr/bin/env bash
+# Tests for dev-flow-status.mjs and partial / gate_evidence validation.
+set -u
+
+root=$(cd "$(dirname "$0")/.." && pwd)
+status_cli="$root/dev-flow-status.mjs"
+validator="$root/dev-flow-validate.mjs"
+checker="$root/dev-flow-feature-check"
+tmp=$(mktemp -d "${TMPDIR:-/tmp}/dev-flow-status.XXXXXX")
+trap 'rm -rf "$tmp"' EXIT
+
+failures=0
+run() {
+  if [ "${DEBUG:-0}" = 1 ]; then
+    "$@"
+  else
+    "$@" >/dev/null 2>&1
+  fi
+}
+run_in_tmp() {
+  (cd "$tmp" && "$@")
+}
+expect_pass() {
+  if run "$@"; then
+    printf 'PASS %s\n' "$*"
+  else
+    printf 'FAIL expected pass: %s\n' "$*"
+    failures=$((failures + 1))
+  fi
+}
+expect_fail() {
+  if run "$@"; then
+    printf 'FAIL expected failure: %s\n' "$*"
+    failures=$((failures + 1))
+  else
+    printf 'PASS expected failure: %s\n' "$*"
+  fi
+}
+expect_file() {
+  if [ -f "$1" ]; then
+    printf 'PASS file exists: %s\n' "$1"
+  else
+    printf 'FAIL expected file: %s\n' "$1"
+    failures=$((failures + 1))
+  fi
+}
+expect_contains() {
+  if rg -q -- "$2" "$1"; then
+    printf 'PASS contains %s in %s\n' "$2" "$1"
+  else
+    printf 'FAIL expected %s in %s\n' "$2" "$1"
+    failures=$((failures + 1))
+  fi
+}
+expect_not_contains() {
+  if rg -q -- "$2" "$1"; then
+    printf 'FAIL did not expect %s in %s\n' "$2" "$1"
+    failures=$((failures + 1))
+  else
+    printf 'PASS absent %s in %s\n' "$2" "$1"
+  fi
+}
+
+mkdir -p "$tmp/.claude/rules" "$tmp/docs/dev-flow/features" "$tmp/docs/dev-flow/reviews" "$tmp/src"
+git -C "$tmp" init -q
+printf '%s\n' \
+  'dev_flow:' \
+  '  paths:' \
+  '    feature_root: docs/dev-flow/features' \
+  '    review_root: docs/dev-flow/reviews' \
+  '  verification:' \
+  '    webapp_testing: "disabled"' \
+  '  artifacts:' \
+  '    retention: "compact"' \
+  '  enforcement_mode: "ask"' \
+  '  protected_write_roots:' \
+  '    - "src/**"' \
+  > "$tmp/.claude/rules/project-workflow.md"
+printf '%s\n' 'baseline' > "$tmp/src/business.js"
+git -C "$tmp" add .
+git -C "$tmp" -c user.name='dev-flow test' -c user.email='dev-flow@example.test' commit -qm baseline
+
+# --- authorize (XS/S, no status.md) ---
+expect_pass run_in_tmp node "$status_cli" authorize --level S --note 'small fix'
+expect_file "$tmp/.claude/runtime/dev-flow/write-authorization.json"
+expect_contains "$tmp/.claude/runtime/dev-flow/write-authorization.json" '"state": "classified"'
+expect_fail run_in_tmp node "$status_cli" authorize --level M
+expect_fail run_in_tmp node "$status_cli" authorize --level S --profile standard
+
+# --- init three profiles ---
+expect_pass run_in_tmp node "$status_cli" init demo-standard --level L --profile standard \
+  --topology multi-chain --evidence-result verified --note 'standard L'
+expect_file "$tmp/docs/dev-flow/features/demo-standard/status.md"
+expect_pass run_in_tmp node "$validator" status "$tmp" docs/dev-flow/features/demo-standard/status.md
+expect_contains "$tmp/.claude/runtime/dev-flow/write-authorization.json" '"state": "approval-pending"'
+expect_contains "$tmp/.claude/runtime/dev-flow/write-authorization.json" 'demo-standard'
+
+expect_pass run_in_tmp node "$status_cli" init demo-risk --level S --profile risk-minimal \
+  --topology local --evidence-result verified --risk-labels security --note 'risk xs'
+expect_pass run_in_tmp node "$validator" status "$tmp" docs/dev-flow/features/demo-risk/status.md
+expect_fail run_in_tmp node "$status_cli" init demo-risk --level S --profile risk-minimal \
+  --topology local --evidence-result verified --risk-labels security
+
+expect_pass run_in_tmp node "$status_cli" init demo-light-l --level L --profile standard \
+  --topology local --evidence-result partial --lightweight-l --note 'light L'
+expect_contains "$tmp/docs/dev-flow/features/demo-light-l/status.md" 'required: false'
+expect_pass run_in_tmp node "$validator" status "$tmp" docs/dev-flow/features/demo-light-l/status.md
+
+# illegal args leave files alone
+before=$(wc -c < "$tmp/docs/dev-flow/features/demo-standard/status.md")
+expect_fail run_in_tmp node "$status_cli" init bad --level X --profile standard \
+  --topology local --evidence-result verified
+after=$(wc -c < "$tmp/docs/dev-flow/features/demo-standard/status.md")
+if [ "$before" = "$after" ]; then
+  printf 'PASS illegal init does not alter existing status\n'
+else
+  printf 'FAIL illegal init altered existing status\n'
+  failures=$((failures + 1))
+fi
+
+# --- confirm-human / activate ---
+expect_fail run_in_tmp node "$status_cli" confirm-human demo-standard implementation_approval \
+  --status confirmed --evidence 'not required'
+expect_pass run_in_tmp node "$status_cli" confirm-human demo-standard requirement_confirmation \
+  --status confirmed --evidence 'user confirmed requirements'
+expect_pass run_in_tmp node "$status_cli" confirm-human demo-standard implementation_approval \
+  --status confirmed --evidence 'user approved implementation'
+expect_contains "$tmp/.claude/runtime/dev-flow/write-authorization.json" '"state": "approved"'
+
+expect_pass run_in_tmp node "$status_cli" activate demo-risk
+expect_contains "$tmp/.claude/runtime/dev-flow/write-authorization.json" 'demo-risk'
+
+# --- add-asset ---
+printf '%s\n' '# plan' '## Requirements coverage' '- ok' > "$tmp/docs/dev-flow/features/demo-standard/初步实现计划.md"
+expect_pass run_in_tmp node "$status_cli" add-asset demo-standard \
+  --path docs/dev-flow/features/demo-standard/初步实现计划.md --kind plan
+expect_fail run_in_tmp node "$status_cli" add-asset demo-standard \
+  --path 'docs/dev-flow/features/demo-standard/初步实现计划.md#Requirements coverage' --kind plan
+expect_fail run_in_tmp node "$status_cli" add-asset demo-standard \
+  --path src/business.js --kind plan
+expect_fail run_in_tmp node "$status_cli" add-asset demo-standard \
+  --path docs/dev-flow/features/demo-standard/missing.md --kind plan
+
+# --- complete-gate with gate_evidence ---
+expect_pass run_in_tmp node "$status_cli" complete-gate demo-standard requirements-coverage \
+  --evidence-file docs/dev-flow/features/demo-standard/初步实现计划.md \
+  --heading 'Requirements coverage'
+expect_contains "$tmp/docs/dev-flow/features/demo-standard/status.md" 'gate_evidence:'
+expect_contains "$tmp/docs/dev-flow/features/demo-standard/status.md" 'Requirements coverage'
+expect_fail run_in_tmp node "$status_cli" complete-gate demo-standard requirements-coverage \
+  --evidence-file docs/dev-flow/features/demo-standard/初步实现计划.md \
+  --heading 'Requirements coverage'
+# missing heading
+printf '%s\n' '# other plan' > "$tmp/docs/dev-flow/features/demo-standard/other.md"
+expect_fail run_in_tmp node "$status_cli" complete-gate demo-standard plan-review \
+  --evidence-file docs/dev-flow/features/demo-standard/other.md \
+  --heading 'Requirements coverage'
+
+# --- record-validation ---
+expect_pass run_in_tmp node "$status_cli" record-validation demo-standard --command 'printf validation'
+expect_contains "$tmp/docs/dev-flow/features/demo-standard/status.md" 'printf validation'
+
+# --- accept-risk + partial acceptance ---
+expect_pass run_in_tmp node "$status_cli" accept-risk demo-standard \
+  --id AR-001 --step MT-002 --reason 'env unavailable' --evidence 'user: accept risk for MT-002'
+expect_file "$tmp/docs/dev-flow/reviews/demo-standard-partial-acceptance.md"
+expect_contains "$tmp/docs/dev-flow/reviews/demo-standard-partial-acceptance.md" 'AR-001'
+expect_contains "$tmp/docs/dev-flow/features/demo-standard/status.md" 'AR-001'
+
+# --- repair does not invent facts ---
+pending_before=$(rg -c 'pending' "$tmp/docs/dev-flow/features/demo-risk/status.md" || true)
+expect_pass run_in_tmp node "$status_cli" repair demo-risk
+pending_after=$(rg -c 'pending' "$tmp/docs/dev-flow/features/demo-risk/status.md" || true)
+if [ "$pending_before" = "$pending_after" ]; then
+  printf 'PASS repair preserves pending semantics\n'
+else
+  printf 'FAIL repair changed pending count (%s -> %s)\n' "$pending_before" "$pending_after"
+  failures=$((failures + 1))
+fi
+expect_not_contains "$tmp/docs/dev-flow/features/demo-risk/status.md" 'AR-'
+
+# --- partial tri-party validation via finish ---
+# Build a finishable fixture with structured manual-test steps
+mkdir -p "$tmp/docs/dev-flow/features/partial-demo" "$tmp/docs/dev-flow/reviews"
+printf '%s\n' \
+  '---' \
+  'dev_flow_status:' \
+  '  schema_version: "3"' \
+  '  feature_id: "partial-demo"' \
+  '  level: "L"' \
+  '  profile: "standard"' \
+  '  risk_labels: []' \
+  '  risk_evidence: {}' \
+  '  classification:' \
+  '    topology: "local"' \
+  '    evidence_result: "verified"' \
+  '    note: "fixture"' \
+  '  current_gate: "verification-before-completion"' \
+  '  completed_gates:' \
+  '    - verification-before-completion' \
+  '  next_action: "finish"' \
+  '  auto_continue: false' \
+  '  human_gates:' \
+  '    requirement_confirmation:' \
+  '      required: true' \
+  '      status: "confirmed"' \
+  '      evidence: "user confirmed"' \
+  '    implementation_approval:' \
+  '      required: true' \
+  '      status: "confirmed"' \
+  '      evidence: "user approved"' \
+  '  risk_gates:' \
+  '    requirements_coverage: "none"' \
+  '    plan_review: "none"' \
+  '    rollback_units: "none"' \
+  '    security_review: "none"' \
+  '    behavior_verification: "full"' \
+  '  assets:' \
+  '    - {path: "docs/dev-flow/reviews/partial-demo-verification.md", kind: "verification"}' \
+  '    - {path: "docs/dev-flow/reviews/partial-demo-manual-test.md", kind: "verification"}' \
+  '  validation:' \
+  '    last_at: "2026-01-01"' \
+  '    commands:' \
+  '      - "printf validation"' \
+  '    business_diff_fingerprint: "unknown"' \
+  '  accepted_risks: []' \
+  '---' > "$tmp/docs/dev-flow/features/partial-demo/status.md"
+printf '%s\n' '# verification' > "$tmp/docs/dev-flow/reviews/partial-demo-verification.md"
+printf '%s\n' \
+  '---' \
+  'manual_test_steps:' \
+  '  - id: MT-001' \
+  '    result: passed' \
+  '    risk_id: null' \
+  '    observed: "ok"' \
+  '    evidence: "screenshot-1"' \
+  '  - id: MT-002' \
+  '    result: skipped' \
+  '    risk_id: AR-010' \
+  '    observed: "env unavailable"' \
+  '    evidence: "user accepted"' \
+  '---' \
+  '# manual' > "$tmp/docs/dev-flow/reviews/partial-demo-manual-test.md"
+
+# missing AR acceptance -> fail
+expect_fail run_in_tmp node "$validator" status "$tmp" docs/dev-flow/features/partial-demo/status.md --finish
+
+# accept risk via CLI
+# Fix fingerprint first for feature-check path later
+fixture_fp=$(run_in_tmp "$root/dev-flow-fingerprint" docs/dev-flow/features docs/dev-flow/reviews)
+awk -v fp="$fixture_fp" '{ sub(/^    business_diff_fingerprint: ".*"$/, "    business_diff_fingerprint: \"" fp "\""); print }' \
+  "$tmp/docs/dev-flow/features/partial-demo/status.md" > "$tmp/docs/dev-flow/features/partial-demo/status.new"
+mv "$tmp/docs/dev-flow/features/partial-demo/status.new" "$tmp/docs/dev-flow/features/partial-demo/status.md"
+
+expect_pass run_in_tmp node "$status_cli" accept-risk partial-demo \
+  --id AR-010 --step MT-002 --reason 'env' --evidence 'user: accept AR-010'
+expect_pass run_in_tmp node "$validator" status "$tmp" docs/dev-flow/features/partial-demo/status.md --finish
+expect_pass run_in_tmp "$checker" partial-demo --finish
+if [ -f "$tmp/.claude/runtime/dev-flow/partial-demo.check-ok" ]; then
+  expect_contains "$tmp/.claude/runtime/dev-flow/partial-demo.check-ok" 'outcome: partial'
+else
+  printf 'FAIL missing check-ok stamp for partial-demo\n'
+  failures=$((failures + 1))
+fi
+
+# failed step -> fail
+sed -i.bak 's/result: passed/result: failed/' "$tmp/docs/dev-flow/reviews/partial-demo-manual-test.md"
+expect_fail run_in_tmp node "$validator" status "$tmp" docs/dev-flow/features/partial-demo/status.md --finish
+sed -i.bak 's/result: failed/result: passed/' "$tmp/docs/dev-flow/reviews/partial-demo-manual-test.md"
+
+# pending/empty result -> fail
+sed -i.bak 's/result: passed/result: pending/' "$tmp/docs/dev-flow/reviews/partial-demo-manual-test.md"
+expect_fail run_in_tmp node "$validator" status "$tmp" docs/dev-flow/features/partial-demo/status.md --finish
+sed -i.bak 's/result: pending/result: passed/' "$tmp/docs/dev-flow/reviews/partial-demo-manual-test.md"
+
+# skipped without risk_id -> fail
+sed -i.bak 's/risk_id: AR-010/risk_id: null/' "$tmp/docs/dev-flow/reviews/partial-demo-manual-test.md"
+expect_fail run_in_tmp node "$validator" status "$tmp" docs/dev-flow/features/partial-demo/status.md --finish
+sed -i.bak 's/risk_id: null/risk_id: AR-010/' "$tmp/docs/dev-flow/reviews/partial-demo-manual-test.md"
+# restore second occurrence carefully - the first null is MT-001; re-write file cleanly
+printf '%s\n' \
+  '---' \
+  'manual_test_steps:' \
+  '  - id: MT-001' \
+  '    result: passed' \
+  '    risk_id: null' \
+  '    observed: "ok"' \
+  '    evidence: "screenshot-1"' \
+  '  - id: MT-002' \
+  '    result: skipped' \
+  '    risk_id: AR-010' \
+  '    observed: "env unavailable"' \
+  '    evidence: "user accepted"' \
+  '---' \
+  '# manual' > "$tmp/docs/dev-flow/reviews/partial-demo-manual-test.md"
+expect_pass run_in_tmp node "$validator" status "$tmp" docs/dev-flow/features/partial-demo/status.md --finish
+
+# verified path: all passed, no AR
+printf '%s\n' \
+  '---' \
+  'manual_test_steps:' \
+  '  - id: MT-001' \
+  '    result: passed' \
+  '    risk_id: null' \
+  '    observed: "ok"' \
+  '    evidence: "screenshot-1"' \
+  '---' \
+  '# manual' > "$tmp/docs/dev-flow/reviews/partial-demo-manual-test.md"
+# clear accepted risks and partial-acceptance without breaking frontmatter
+node -e '
+  const fs = require("fs");
+  const p = process.argv[1];
+  let c = fs.readFileSync(p, "utf8");
+  c = c.replace(/^  accepted_risks:\n(?:    - .*\n)*/m, "  accepted_risks: []\n");
+  c = c.replace(/^  accepted_risks: \[.*\]$/m, "  accepted_risks: []");
+  fs.writeFileSync(p, c);
+' "$tmp/docs/dev-flow/features/partial-demo/status.md"
+rm -f "$tmp/docs/dev-flow/reviews/partial-demo-partial-acceptance.md"
+if ! rg -q '^---$' "$tmp/docs/dev-flow/features/partial-demo/status.md"; then
+  printf 'FAIL partial-demo status lost frontmatter terminator\n'
+  failures=$((failures + 1))
+fi
+expect_pass run_in_tmp node "$validator" status "$tmp" docs/dev-flow/features/partial-demo/status.md --finish
+expect_pass run_in_tmp "$checker" partial-demo --finish
+expect_contains "$tmp/.claude/runtime/dev-flow/partial-demo.check-ok" 'outcome: verified'
+
+# gate_evidence heading uniqueness
+printf '%s\n' '# plan' '## Requirements coverage' '## Requirements coverage' > "$tmp/docs/dev-flow/features/demo-standard/dup.md"
+# inject bad gate_evidence via direct edit then validate
+awk '
+  /^  accepted_risks:/ {
+    print "  gate_evidence:"
+    print "    requirements_coverage:"
+    print "      path: \"docs/dev-flow/features/demo-standard/dup.md\""
+    print "      heading: \"Requirements coverage\""
+  }
+  { print }
+' "$tmp/docs/dev-flow/features/demo-standard/status.md" > "$tmp/docs/dev-flow/features/demo-standard/status.new"
+mv "$tmp/docs/dev-flow/features/demo-standard/status.new" "$tmp/docs/dev-flow/features/demo-standard/status.md"
+expect_fail run_in_tmp node "$validator" status "$tmp" docs/dev-flow/features/demo-standard/status.md
+
+printf '\nSummary: %s failure(s)\n' "$failures"
+[ "$failures" -eq 0 ]

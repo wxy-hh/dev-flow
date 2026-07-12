@@ -131,3 +131,10 @@ templates/
 **想跳过某个门禁**：XS/S 默认轻量不强行生成文档；标准 M/L 跳过需求确认/计划审查/实现前确认/回撤/安全审查需要说明风险，L 级跳过高风险门禁必须用户明确确认并写入 `accepted_risks`。
 
 **可以让 Claude 直接提交吗**：默认不提交；用户明确要求后才执行 `git add`/`git commit`；push/合并/删除分支/丢弃改动必须二次确认。
+
+## status CLI 与 partial（v0.7）
+
+所有 `status.md` 创建/更新走 `dev-flow-status` CLI，禁止手改机器字段。无风险 XS/S 用 `authorize`；M/L 与风险 XS/S 用 `init` + `confirm-human`。`outcome: partial` 允许正常 Git 操作，但 completion / check-ok stamp / 收尾文案必须为 partial，禁止写「验证通过」。详情见 `dev-flow/references/status-cli.md` 与 `partial-verification.md`。
+
+受管文件升级使用源仓中的 `dev-flow-upgrade --target <abs> --check|--apply`，不要手工半份拷贝 skill。
+

@@ -10,6 +10,14 @@ passes=0
 root=$(git rev-parse --show-toplevel 2>/dev/null || pwd)
 cd "$root" || exit 2
 
+PREFLIGHT=false
+for arg in "$@"; do
+  case "$arg" in
+    --preflight) PREFLIGHT=true ;;
+    --help|-h) printf 'Usage: %s [--preflight]\n' "$0"; exit 0 ;;
+  esac
+done
+
 CONTRACT=".claude/skills/dev-flow/contract.json"
 
 pass() { printf 'PASS %s\n' "$1"; passes=$((passes + 1)); }
@@ -111,7 +119,13 @@ for f in \
   ".claude/skills/executing-plans/references/subagent-mode.md" \
   ".claude/skills/executing-plans/scripts/task-brief" \
   ".claude/skills/executing-plans/scripts/review-package" \
+  ".claude/skills/executing-plans/scripts/task-schedule" \
   ".claude/skills/executing-plans/scripts/sdd-workspace" \
+  ".claude/skills/dev-flow/scripts/dev-flow-status.mjs" \
+  ".claude/skills/dev-flow/scripts/dev-flow-manifest" \
+  ".claude/skills/dev-flow/scripts/dev-flow-upgrade" \
+  ".claude/skills/dev-flow/references/status-cli.md" \
+  ".claude/skills/dev-flow/references/partial-verification.md" \
   ".claude/settings.json" \
   ".claude/hooks/dev-flow-gate-guard.sh" \
   ".claude/hooks/dev-flow-finish-guard.sh"; do
@@ -146,6 +160,90 @@ while IFS= read -r spec_index; do
 done < <(find .claude/rules/specs -mindepth 2 -maxdepth 2 -name index.md 2>/dev/null | sort)
 [ "$scoped_spec_count" -eq 0 ] && pass "no scoped spec index files configured"
 
+script_count=0
+while IFS= read -r script; do
+  script_count=$((script_count + 1))
+  check_exec "$script"
+done < <({ find .claude/skills -path '*/scripts/*' -type f; find .claude/hooks -type f 2>/dev/null; } | sort)
+[ "$script_count" -eq 0 ] && warn "no skill scripts found"
+
+## ---------------------------------------------------------------------
+## preflight：本地安装完整性（不比较源包）
+## ---------------------------------------------------------------------
+if [ "$PREFLIGHT" = true ]; then
+  printf '\n## preflight\n\n'
+
+  MANIFEST=".claude/dev-flow.manifest.json"
+  if [ -f "$MANIFEST" ]; then
+    if .claude/skills/dev-flow/scripts/dev-flow-manifest verify --manifest "$MANIFEST" >/tmp/dev-flow-manifest-verify.out 2>&1; then
+      pass "managed manifest hashes match local files"
+    else
+      fail "managed manifest hashes match local files"
+      cat /tmp/dev-flow-manifest-verify.out 2>/dev/null | head -20
+    fi
+  else
+    warn "no .claude/dev-flow.manifest.json (expected after v0.7 upgrade/onboarding)"
+  fi
+
+  if [ -f ".claude/settings.json" ] && rg -q 'dev-flow-gate-guard\.sh' ".claude/settings.json" && rg -q 'dev-flow-finish-guard\.sh' ".claude/settings.json"; then
+    pass "hooks registered in settings.json"
+  else
+    fail "hooks registered in settings.json"
+  fi
+  for h in .claude/hooks/dev-flow-gate-guard.sh .claude/hooks/dev-flow-finish-guard.sh; do
+    check_exec "$h"
+  done
+
+  if [ -f ".claude/rules/project-workflow.md" ]; then
+    require_pattern ".claude/rules/project-workflow.md" '^dev_flow:' "project-workflow.md has dev_flow config"
+    forbid_pattern '<detect|<none\|present>|<false\|true>|<local-config\|repo-governed>|<required-for-L-behavior\|optional\|custom>|<disabled\|enabled>' \
+      "project-workflow.md has no unresolved config placeholders" \
+      ".claude/rules/project-workflow.md"
+    mode=$(awk '/^[[:space:]]*enforcement_mode:/ { v=$0; sub(/^[^:]*:[[:space:]]*/, "", v); gsub(/^"|"$/, "", v); print v; exit }' ".claude/rules/project-workflow.md")
+    [ -z "$mode" ] && mode=off
+    if [ "$mode" = strict ]; then
+      roots=$(awk '
+        /^[[:space:]]*protected_write_roots:[[:space:]]*$/ { in_block=1; next }
+        in_block && /^[[:space:]]*-[[:space:]]+/ { print; next }
+        in_block && /^[[:space:]]*[a-z_]+:/ { exit }
+        /^[[:space:]]*protected_write_roots:[[:space:]]*\[/ { print; exit }
+      ' ".claude/rules/project-workflow.md")
+      if [ -z "$roots" ] || [ "$roots" = "[]" ] || [ "$roots" = "protected_write_roots: []" ]; then
+        fail "strict enforcement_mode requires non-empty protected_write_roots"
+      else
+        unsafe=false
+        while IFS= read -r line; do
+          [ -z "$line" ] && continue
+          case "$line" in
+            *..*|*//*) unsafe=true ;;
+          esac
+        done <<< "$roots"
+        if [ "$unsafe" = true ]; then
+          fail "protected_write_roots contains unsafe patterns"
+        else
+          pass "strict mode has non-empty safe protected_write_roots"
+        fi
+      fi
+    else
+      pass "enforcement_mode is $mode (strict root check skipped)"
+    fi
+  else
+    warn "project-workflow.md missing for preflight (ok in source migration package; target projects need /onboard-dev-flow)"
+  fi
+
+  for stale_dir in grilling requesting-code-review subagent-driven-development; do
+    if [ -e ".claude/skills/$stale_dir" ]; then
+      fail "merged-away skill directory still present: $stale_dir"
+    else
+      pass "merged-away skill directory absent: $stale_dir"
+    fi
+  done
+
+  printf '\nSummary: %s passed, %s warning(s), %s failure(s)\n' "$passes" "$warnings" "$failures"
+  [ "$failures" -eq 0 ]
+  exit $?
+fi
+
 if git check-ignore -q ".claude/runtime/sdd/.probe" 2>/dev/null; then
   pass ".claude/runtime is ignored"
 else
@@ -157,13 +255,6 @@ if git check-ignore -q ".claude/settings.local.json" 2>/dev/null; then
 else
   fail ".claude/settings.local.json is not ignored"
 fi
-
-script_count=0
-while IFS= read -r script; do
-  script_count=$((script_count + 1))
-  check_exec "$script"
-done < <({ find .claude/skills -path '*/scripts/*' -type f; find .claude/hooks -type f 2>/dev/null; } | sort)
-[ "$script_count" -eq 0 ] && warn "no skill scripts found"
 
 ## ---------------------------------------------------------------------
 ## 一致性：risk-gates.md 与 contract.json 同步、行数预算、单一版本源、无泄漏

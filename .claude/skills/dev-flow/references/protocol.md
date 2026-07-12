@@ -91,13 +91,17 @@ Stop reason: <only when Auto-continue is no>
 ## status.md v3 更新契约
 
 - `schema_version` 固定 `"3"`；字段取值见 contract.json 的 `asset_kinds`/`risk_labels`/`risk_gates`/`classification_topologies`/`classification_evidence_results`。
+- **所有 status 创建/更新只通过** `dev-flow-status` CLI（`init`/`authorize`/`activate`/`add-asset`/`complete-gate`/`confirm-human`/`record-validation`/`accept-risk`/`repair`）；写后自动跑 validator，失败恢复原文件。`repair` 只重排确定性字段，不生成审批/验证/风险接受事实。
 - 保留已有 `completed_gates`，只追加新完成 gate，不删除历史。
-- `assets` 只追加已存在或本次明确生成的路径，每项 `{path, kind}`，`kind` 取值见 contract.json `asset_kinds`。
+- `assets` 只追加已存在或本次明确生成的真实路径，每项 `{path, kind}`，禁止 `path#heading`。
+- 可选 `gate_evidence`（仍为 schema v3）：`requirements_coverage: light` 且证据在计划内嵌章节时，`complete-gate` 写入 `path` + 唯一 `heading`；validator 校验文件存在、位于 feature/review 根、标题恰好一次。
 - 每次更新设置 `current_gate`、`next_action`、`auto_continue`。
-- 验证门禁完成后记录 `validation.last_at` 和 `validation.commands`；`business_diff_fingerprint` 用 `dev-flow-fingerprint` 脚本重新计算并写入。
+- 验证门禁完成后用 `record-validation` 记录 `validation.last_at`/`commands`，并刷新 `business_diff_fingerprint`。
 - 携带风险标签时，`risk_evidence` 每个标签一项（`mode`/`conclusion`/`verification`/`report`），对应最低 gate 升为 `full` 时必须用 `report` 模式。
 - `risk-minimal` 只适用于带风险标签且 `risk_labels` 非空的 XS/S；带风险标签的 M/L 用 `profile: "standard"`。
-- 只有用户明确确认、继续、接受风险或跳过并接受风险，才能把 `human_gates.<gate>.status` 写为 `confirmed`/`skipped`，理由写入 `evidence`。
+- 只有用户明确确认、继续、接受风险或跳过并接受风险，才能 `confirm-human` 把 `human_gates.<gate>.status` 写为 `confirmed`/`skipped`，理由写入 `evidence`。
+- `accepted_risks` 仅保存已接受的 `AR-xxx`；partial 三方一致规则见 `partial-verification.md`（手测步骤、`accepted_risks`、partial-acceptance）。
+- 写入门禁与 `write-authorization.json` 见 `status-cli.md`。
 
 ## completion.md frontmatter
 
@@ -120,4 +124,4 @@ dev_flow_completion:
 ---
 ```
 
-`risk_labels` 非空时，`risk_approval_evidence` 和 `risk_verification_summary` 必填。
+`dev_flow_completion.schema_version` 恒为 `"1"`，是独立 schema（不是 status v3）。`risk_labels` 非空时，`risk_approval_evidence` 和 `risk_verification_summary` 必填。`outcome: partial` 时必须列出已接受风险且不得写成「验证通过」。

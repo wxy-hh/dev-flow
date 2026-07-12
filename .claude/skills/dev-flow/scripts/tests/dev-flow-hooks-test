@@ -7,7 +7,7 @@ gate_guard="$hooks_root/dev-flow-gate-guard.sh"
 finish_guard="$hooks_root/dev-flow-finish-guard.sh"
 fingerprint_cmd="$root/dev-flow-fingerprint"
 
-tmp=$(mktemp -d "${TMPDIR:-/tmp}/dev-flow-hooks-test.XXXXXX")
+tmp=$(mktemp -d "${TMPDIR:-/tmp}/dev-flow-hooks.XXXXXX")
 trap 'rm -rf "$tmp"' EXIT
 
 failures=0
@@ -17,17 +17,20 @@ run_hook() {
   (cd "$tmp" && printf '%s' "$payload" | "$hook")
 }
 
-expect_ask() {
-  local description=$1 hook=$2 payload=$3
+expect_decision() {
+  local description=$1 hook=$2 payload=$3 decision=$4
   local output
   output=$(run_hook "$hook" "$payload")
-  if printf '%s' "$output" | grep -q '"permissionDecision":"ask"'; then
+  if printf '%s' "$output" | grep -q "\"permissionDecision\":\"$decision\""; then
     printf 'PASS %s\n' "$description"
   else
-    printf 'FAIL expected ask: %s (got: %s)\n' "$description" "$output"
+    printf 'FAIL expected %s: %s (got: %s)\n' "$decision" "$description" "$output"
     failures=$((failures + 1))
   fi
 }
+
+expect_ask() { expect_decision "$1" "$2" "$3" ask; }
+expect_deny() { expect_decision "$1" "$2" "$3" deny; }
 
 expect_allow() {
   local description=$1 hook=$2 payload=$3
@@ -48,67 +51,118 @@ commit_payload() {
   printf '{"tool_name":"Bash","tool_input":{"command":"%s"}}' "$1"
 }
 
-set_gate() {
-  local status=$1 required=$2
-  awk -v status="$status" -v required="$required" '
-    $0 == "    implementation_approval:" { in_gate=1; print; next }
-    in_gate && $0 ~ /^    [^ ]/ { in_gate=0 }
-    in_gate && $0 ~ "^      required:" { print "      required: " required; next }
-    in_gate && $0 ~ "^      status:"   { print "      status: \"" status "\""; next }
-    { print }
-  ' "$tmp/docs/dev-flow/features/demo/status.md" > "$tmp/docs/dev-flow/features/demo/status.new"
-  mv "$tmp/docs/dev-flow/features/demo/status.new" "$tmp/docs/dev-flow/features/demo/status.md"
+write_workflow() {
+  local mode=$1
+  printf '%s\n' \
+    'dev_flow:' \
+    '  paths:' \
+    '    feature_root: docs/dev-flow/features' \
+    '    review_root: docs/dev-flow/reviews' \
+    '  verification:' \
+    '    webapp_testing: "disabled"' \
+    '  artifacts:' \
+    '    retention: "compact"' \
+    "  enforcement_mode: \"$mode\"" \
+    '  protected_write_roots:' \
+    '    - "src/**"' \
+    > "$tmp/.claude/rules/project-workflow.md"
 }
 
-mkdir -p "$tmp/.claude/rules" "$tmp/docs/dev-flow/features/demo" "$tmp/docs/dev-flow/reviews" "$tmp/src"
-git -C "$tmp" init -q
-printf '%s\n' 'dev_flow:' '  paths:' '    feature_root: docs/dev-flow/features' '    review_root: docs/dev-flow/reviews' '  verification:' '    webapp_testing: "disabled"' '  artifacts:' '    retention: "compact"' > "$tmp/.claude/rules/project-workflow.md"
+write_auth() {
+  local state=$1
+  mkdir -p "$tmp/.claude/runtime/dev-flow"
+  printf '%s\n' \
+    '{' \
+    '  "feature_id": "demo",' \
+    '  "level": "L",' \
+    '  "profile": "standard",' \
+    "  \"state\": \"$state\"," \
+    '  "protected_roots": ["src/**"],' \
+    '  "created_at": "2026-01-01T00:00:00Z",' \
+    '  "approved_at": null' \
+    '}' > "$tmp/.claude/runtime/dev-flow/write-authorization.json"
+}
 
+mkdir -p "$tmp/.claude/rules" "$tmp/docs/dev-flow/features/demo" "$tmp/docs/dev-flow/reviews" "$tmp/src" "$tmp/notes"
+git -C "$tmp" init -q
+write_workflow ask
+printf '%s\n' 'baseline' > "$tmp/src/business.js"
+printf '%s\n' 'note' > "$tmp/notes/readme.txt"
+git -C "$tmp" add .
+git -C "$tmp" -c user.name='dev-flow test' -c user.email='dev-flow@example.test' commit -qm baseline
+
+# --- Model A: protected roots + authorization ---
+
+# No auth, ask mode: protected path asks; unprotected allows; process paths allow.
+expect_ask "ask mode: no auth asks on protected src path" "$gate_guard" "$(edit_payload "$tmp/src/business.js")"
+expect_allow "ask mode: no auth allows unprotected notes path" "$gate_guard" "$(edit_payload "$tmp/notes/readme.txt")"
+expect_allow "ask mode: allows feature_root writes without auth" "$gate_guard" "$(edit_payload "$tmp/docs/dev-flow/features/demo/status.md")"
+expect_allow "ask mode: allows .claude writes without auth" "$gate_guard" "$(edit_payload "$tmp/.claude/rules/project-workflow.md")"
+expect_allow "gate-guard allows when tool_input has no path" "$gate_guard" '{"tool_name":"Edit","tool_input":{}}'
+expect_ask "gate-guard reads notebook_path for NotebookEdit" "$gate_guard" "$(printf '{"tool_name":"NotebookEdit","tool_input":{"notebook_path":"%s"}}' "$tmp/src/business.js")"
+
+write_auth approval-pending
+expect_ask "ask mode: approval-pending asks on protected path" "$gate_guard" "$(edit_payload "$tmp/src/business.js")"
+expect_allow "ask mode: approval-pending still allows process paths" "$gate_guard" "$(edit_payload "$tmp/docs/dev-flow/features/demo/status.md")"
+
+write_auth approved
+expect_allow "ask mode: approved allows protected path" "$gate_guard" "$(edit_payload "$tmp/src/business.js")"
+
+write_auth classified
+expect_allow "ask mode: classified (XS/S) allows protected path" "$gate_guard" "$(edit_payload "$tmp/src/business.js")"
+
+write_auth closed
+expect_ask "ask mode: closed auth asks on protected path" "$gate_guard" "$(edit_payload "$tmp/src/business.js")"
+
+# strict mode
+write_workflow strict
+rm -f "$tmp/.claude/runtime/dev-flow/write-authorization.json"
+expect_deny "strict mode: no auth denies protected path" "$gate_guard" "$(edit_payload "$tmp/src/business.js")"
+expect_allow "strict mode: no auth allows unprotected path" "$gate_guard" "$(edit_payload "$tmp/notes/readme.txt")"
+expect_allow "strict mode: allows .claude path" "$gate_guard" "$(edit_payload "$tmp/.claude/rules/project-workflow.md")"
+
+write_auth approval-pending
+expect_deny "strict mode: approval-pending denies protected path" "$gate_guard" "$(edit_payload "$tmp/src/business.js")"
+write_auth approved
+expect_allow "strict mode: approved allows protected path" "$gate_guard" "$(edit_payload "$tmp/src/business.js")"
+write_auth classified
+expect_allow "strict mode: classified allows protected path" "$gate_guard" "$(edit_payload "$tmp/src/business.js")"
+
+# off mode
+write_workflow off
+rm -f "$tmp/.claude/runtime/dev-flow/write-authorization.json"
+expect_allow "off mode: always allows protected path" "$gate_guard" "$(edit_payload "$tmp/src/business.js")"
+
+# empty protected roots => allow even in ask/strict (doctor will fail preflight for strict)
+write_workflow strict
+printf '%s\n' \
+  'dev_flow:' \
+  '  paths:' \
+  '    feature_root: docs/dev-flow/features' \
+  '    review_root: docs/dev-flow/reviews' \
+  '  verification:' \
+  '    webapp_testing: "disabled"' \
+  '  artifacts:' \
+  '    retention: "compact"' \
+  '  enforcement_mode: "strict"' \
+  '  protected_write_roots: []' \
+  > "$tmp/.claude/rules/project-workflow.md"
+expect_allow "strict with empty protected roots allows (no false deny-all)" "$gate_guard" "$(edit_payload "$tmp/src/business.js")"
+
+# not onboarded
+rm -f "$tmp/.claude/rules/project-workflow.md"
+expect_allow "gate-guard allows when project is not onboarded" "$gate_guard" "$(edit_payload "$tmp/src/business.js")"
+write_workflow ask
+
+# --- dev-flow-finish-guard.sh ---
+mkdir -p "$tmp/docs/dev-flow/features/demo"
 printf '%s\n' \
   '---' \
   'dev_flow_status:' \
   '  schema_version: "3"' \
   '  feature_id: "demo"' \
   '  level: "L"' \
-  '  profile: "standard"' \
-  '  human_gates:' \
-  '    requirement_confirmation:' \
-  '      required: true' \
-  '      status: "confirmed"' \
-  '      evidence: "user confirmed"' \
-  '    implementation_approval:' \
-  '      required: true' \
-  '      status: "pending"' \
-  '      evidence: "not required"' \
   '---' > "$tmp/docs/dev-flow/features/demo/status.md"
-
-printf '%s\n' 'baseline' > "$tmp/src/business.js"
-git -C "$tmp" add .
-git -C "$tmp" -c user.name='dev-flow test' -c user.email='dev-flow@example.test' commit -qm baseline
-
-# --- dev-flow-gate-guard.sh ---
-
-expect_ask "gate-guard asks when implementation_approval is pending" "$gate_guard" "$(edit_payload "$tmp/src/business.js")"
-expect_allow "gate-guard allows edits inside feature_root while pending" "$gate_guard" "$(edit_payload "$tmp/docs/dev-flow/features/demo/status.md")"
-expect_allow "gate-guard allows edits inside .claude while pending" "$gate_guard" "$(edit_payload "$tmp/.claude/rules/project-workflow.md")"
-expect_allow "gate-guard allows when tool_input has no path" "$gate_guard" '{"tool_name":"Edit","tool_input":{}}'
-expect_ask "gate-guard reads notebook_path for NotebookEdit" "$gate_guard" "$(printf '{"tool_name":"NotebookEdit","tool_input":{"notebook_path":"%s"}}' "$tmp/src/business.js")"
-
-set_gate confirmed true
-expect_allow "gate-guard allows business edits once confirmed" "$gate_guard" "$(edit_payload "$tmp/src/business.js")"
-
-set_gate skipped true
-expect_allow "gate-guard allows business edits when skipped" "$gate_guard" "$(edit_payload "$tmp/src/business.js")"
-
-set_gate pending false
-expect_allow "gate-guard allows business edits when gate not required" "$gate_guard" "$(edit_payload "$tmp/src/business.js")"
-
-set_gate pending true
-mv "$tmp/.claude/rules/project-workflow.md" "$tmp/.claude/rules/project-workflow.md.bak"
-expect_allow "gate-guard allows when project is not onboarded" "$gate_guard" "$(edit_payload "$tmp/src/business.js")"
-mv "$tmp/.claude/rules/project-workflow.md.bak" "$tmp/.claude/rules/project-workflow.md"
-
-# --- dev-flow-finish-guard.sh ---
 
 expect_ask "finish-guard asks on git commit with no check-ok stamp" "$finish_guard" "$(commit_payload "git commit -am wip")"
 expect_ask "finish-guard asks on git push with no check-ok stamp" "$finish_guard" "$(commit_payload "git push origin main")"
@@ -118,8 +172,12 @@ expect_allow "finish-guard allows git status" "$finish_guard" "$(commit_payload 
 
 mkdir -p "$tmp/.claude/runtime/dev-flow"
 current_fp=$(cd "$tmp" && "$fingerprint_cmd" docs/dev-flow/features docs/dev-flow/reviews)
-printf 'fingerprint: %s\nchecked_at: 2026-01-01T00:00:00Z\n' "$current_fp" > "$tmp/.claude/runtime/dev-flow/demo.check-ok"
+printf 'fingerprint: %s\noutcome: verified\nchecked_at: 2026-01-01T00:00:00Z\n' "$current_fp" > "$tmp/.claude/runtime/dev-flow/demo.check-ok"
 expect_allow "finish-guard allows git commit once stamp matches" "$finish_guard" "$(commit_payload "git commit -am wip")"
+
+# partial stamp also allows git ops
+printf 'fingerprint: %s\noutcome: partial\nchecked_at: 2026-01-01T00:00:00Z\n' "$current_fp" > "$tmp/.claude/runtime/dev-flow/demo.check-ok"
+expect_allow "finish-guard allows git commit with partial outcome stamp" "$finish_guard" "$(commit_payload "git commit -am wip")"
 
 printf '%s\n' 'unstamped business change' > "$tmp/src/business.js"
 expect_ask "finish-guard asks again once business diff changes after stamping" "$finish_guard" "$(commit_payload "git commit -am wip")"

@@ -432,12 +432,84 @@ function validateStatus(root, statusPath, finish) {
   } else {
     let assetsOk = true;
     for (const asset of assets) {
+      if (asset.path.includes('#')) {
+        failCheck(`asset path must not use path#heading form: ${asset.path}`);
+        assetsOk = false;
+        continue;
+      }
       if (!contract.asset_kinds.includes(asset.kind)) { failCheck(`asset ${asset.path} has unknown kind: ${asset.kind}`); assetsOk = false; continue; }
       const assetPath = repositoryPath(absoluteRoot, asset.path, `asset ${asset.path}`);
       rejectSymlinks(absoluteRoot, assetPath, `asset ${asset.path}`);
       if (!fs.existsSync(assetPath)) { failCheck(`asset is registered but missing: ${asset.path}`); assetsOk = false; }
     }
     if (assetsOk) pass('registered assets exist and have valid kinds');
+  }
+
+  // accepted_risks (optional list of AR-xxx ids)
+  const acceptedRisks = parseStringList(lines, 'accepted_risks', 'accepted_risks') ?? [];
+  const badAr = acceptedRisks.filter((id) => !/^AR-[A-Za-z0-9_-]+$/.test(id));
+  if (badAr.length > 0) {
+    failCheck(`accepted_risks entries must look like AR-xxx: ${badAr.join(', ')}`);
+  } else if (acceptedRisks.length > 0) {
+    pass('accepted_risks ids are well-formed');
+  }
+
+  // optional gate_evidence (schema v3 optional block)
+  const gateEvidence = parseGateEvidence(lines);
+  if (gateEvidence !== undefined) {
+    let geOk = true;
+    for (const [gateName, evidence] of Object.entries(gateEvidence)) {
+      if (!evidence.path || !evidence.heading) {
+        failCheck(`gate_evidence.${gateName} requires path and heading`);
+        geOk = false;
+        continue;
+      }
+      if (evidence.path.includes('#')) {
+        failCheck(`gate_evidence.${gateName}.path must not use path#heading form`);
+        geOk = false;
+        continue;
+      }
+      if (
+        typeof evidence.path !== 'string' ||
+        evidence.path.length === 0 ||
+        path.isAbsolute(evidence.path) ||
+        evidence.path.includes('\\') ||
+        hasTraversal(evidence.path)
+      ) {
+        failCheck(`gate_evidence.${gateName}.path must be a traversal-free repository-relative path`);
+        geOk = false;
+        continue;
+      }
+      const evidenceAbs = path.resolve(absoluteRoot, evidence.path);
+      if (!isInside(absoluteRoot, evidenceAbs)) {
+        failCheck(`gate_evidence.${gateName}.path escapes the repository`);
+        geOk = false;
+        continue;
+      }
+      try {
+        rejectSymlinks(absoluteRoot, evidenceAbs, `gate_evidence.${gateName}.path`);
+      } catch {
+        failCheck(`gate_evidence.${gateName}.path is unsafe`);
+        geOk = false;
+        continue;
+      }
+      if (!fs.existsSync(evidenceAbs)) {
+        failCheck(`gate_evidence.${gateName}.path does not exist: ${evidence.path}`);
+        geOk = false;
+        continue;
+      }
+      const headingRe = new RegExp(
+        `^#{1,6}\\s+${evidence.heading.replace(/[.*+?^${}()|[\\]\\\\]/g, '\\$&')}\\s*$`,
+        'gm',
+      );
+      const content = fs.readFileSync(evidenceAbs, 'utf8');
+      const matches = content.match(headingRe) || [];
+      if (matches.length !== 1) {
+        failCheck(`gate_evidence.${gateName}.heading must appear exactly once (found ${matches.length})`);
+        geOk = false;
+      }
+    }
+    if (geOk && Object.keys(gateEvidence).length > 0) pass('gate_evidence is valid');
   }
 
   // validation block
@@ -516,9 +588,220 @@ function validateStatus(root, statusPath, finish) {
         failCheck('business_diff_fingerprint is missing or not a Git hash');
       }
     }
+
+    // partial / verified outcome from manual-test steps when present
+    validatePartialContract(absoluteRoot, featureId, acceptedRisks, assets);
   }
 
   return finishChecks();
+}
+
+function parseGateEvidence(lines) {
+  const block = blockLines(lines, 'gate_evidence');
+  if (block === undefined) return undefined;
+  const map = {};
+  let current;
+  for (const line of block) {
+    if (line.trim() === '') continue;
+    const entry = line.match(/^    ([a-z_]+):\s*$/);
+    if (entry) {
+      current = entry[1];
+      if (Object.hasOwn(map, current)) fail(`gate_evidence has duplicate entry: ${current}`);
+      map[current] = {};
+      continue;
+    }
+    const field = line.match(/^      (path|heading):\s*(.*)$/);
+    if (!field || !current) fail(`gate_evidence has unsupported syntax: ${line}`);
+    if (Object.hasOwn(map[current], field[1])) fail(`gate_evidence.${current} has duplicate ${field[1]}`);
+    map[current][field[1]] = unquote(field[2]);
+  }
+  return map;
+}
+
+/**
+ * Parse manual_test_steps from frontmatter or a 7-column markdown table.
+ * Returns { steps, source } or null when no manual-test asset is registered.
+ */
+function loadManualTestSteps(root, assets) {
+  const manualAssets = assets.filter((a) => /manual-test/.test(a.path));
+  if (manualAssets.length === 0) return null;
+  const file = path.resolve(root, manualAssets[0].path);
+  if (!fs.existsSync(file)) return { steps: null, error: `manual-test missing: ${manualAssets[0].path}` };
+  const content = fs.readFileSync(file, 'utf8');
+
+  // Prefer YAML frontmatter / sidecar-style list
+  const fm = content.match(/^---\r?\n([\s\S]*?)\r?\n---/);
+  if (fm) {
+    const steps = [];
+    const body = fm[1].split(/\r?\n/);
+    let inSteps = false;
+    let current = null;
+    for (const line of body) {
+      if (/^manual_test_steps:\s*$/.test(line)) {
+        inSteps = true;
+        continue;
+      }
+      if (inSteps) {
+        const start = line.match(/^  - id:\s*(.+)$/);
+        if (start) {
+          if (current) steps.push(current);
+          current = { id: unquote(start[1]), result: null, risk_id: null, observed: '', evidence: '' };
+          continue;
+        }
+        if (current) {
+          const field = line.match(/^    (result|risk_id|observed|evidence):\s*(.*)$/);
+          if (field) {
+            let value = unquote(field[2]);
+            if (value === 'null' || value === '~' || value === '') value = null;
+            current[field[1]] = value;
+            continue;
+          }
+        }
+        if (/^[a-z_]+:/.test(line) && !/^\s/.test(line)) {
+          inSteps = false;
+        }
+      }
+    }
+    if (current) steps.push(current);
+    if (steps.length > 0) return { steps, source: 'frontmatter' };
+  }
+
+  // Fallback: 7-column table
+  // | ID | 操作 | 预期 | 结果 | 实测 | 证据 | 风险 ID |
+  const steps = [];
+  for (const line of content.split(/\r?\n/)) {
+    if (!line.trim().startsWith('|')) continue;
+    if (/^\|\s*-+/.test(line)) continue;
+    if (/ID|操作|预期|结果/.test(line) && /实测|证据|风险/.test(line)) continue;
+    const cells = line.split('|').slice(1, -1).map((c) => c.trim());
+    if (cells.length < 7) continue;
+    const [id, , , result, observed, evidence, riskId] = cells;
+    if (!id || id === 'ID') continue;
+    steps.push({
+      id,
+      result: result || null,
+      risk_id: !riskId || riskId === '-' || riskId.toLowerCase() === 'null' ? null : riskId,
+      observed: observed || '',
+      evidence: evidence || '',
+    });
+  }
+  if (steps.length === 0) return { steps: null, error: 'manual-test has no structured steps or parsable table' };
+  return { steps, source: 'table' };
+}
+
+function loadPartialAcceptanceIds(root, featureId, assets) {
+  const candidates = [
+    ...assets.filter((a) => /partial-acceptance/.test(a.path)).map((a) => path.resolve(root, a.path)),
+  ];
+  // Also look beside review assets for <feature-id>-partial-acceptance.md
+  for (const asset of assets) {
+    const dir = path.dirname(path.resolve(root, asset.path));
+    candidates.push(path.join(dir, `${featureId}-partial-acceptance.md`));
+  }
+  const seen = new Set();
+  const ids = new Set();
+  let foundFile = false;
+  for (const file of candidates) {
+    if (seen.has(file)) continue;
+    seen.add(file);
+    if (!fs.existsSync(file)) continue;
+    foundFile = true;
+    const content = fs.readFileSync(file, 'utf8');
+    for (const match of content.matchAll(/^##\s+(AR-[A-Za-z0-9_-]+)\s*$/gm)) {
+      ids.add(match[1]);
+    }
+  }
+  return { foundFile, ids };
+}
+
+function validatePartialContract(root, featureId, acceptedRisks, assets) {
+  const loaded = loadManualTestSteps(root, assets ?? []);
+  if (loaded === null) {
+    // No manual-test asset: if accepted_risks non-empty, still require partial-acceptance
+    if (acceptedRisks.length > 0) {
+      const { foundFile, ids } = loadPartialAcceptanceIds(root, featureId, assets ?? []);
+      if (!foundFile) {
+        failCheck('accepted_risks is non-empty but partial-acceptance file is missing');
+      } else {
+        for (const id of acceptedRisks) {
+          if (!ids.has(id)) failCheck(`accepted risk ${id} is missing from partial-acceptance`);
+        }
+      }
+    }
+    return;
+  }
+  if (loaded.error) {
+    failCheck(loaded.error);
+    return;
+  }
+  const steps = loaded.steps;
+  const allowed = new Set(['passed', 'failed', 'skipped']);
+  let hasFailed = false;
+  let hasPending = false;
+  const skippedRisks = [];
+  for (const step of steps) {
+    const result = (step.result || '').toLowerCase();
+    if (!result || result === 'pending' || result === '待执行' || result === '_待执行_') {
+      failCheck(`manual-test step ${step.id} has pending/empty result`);
+      hasPending = true;
+      continue;
+    }
+    if (!allowed.has(result)) {
+      failCheck(`manual-test step ${step.id} has invalid result: ${step.result}`);
+      continue;
+    }
+    if (result === 'failed') {
+      failCheck(`manual-test step ${step.id} failed`);
+      hasFailed = true;
+    }
+    if (result === 'skipped') {
+      if (!step.risk_id || !/^AR-[A-Za-z0-9_-]+$/.test(step.risk_id)) {
+        failCheck(`skipped step ${step.id} requires risk_id AR-xxx`);
+      } else {
+        skippedRisks.push(step.risk_id);
+      }
+    }
+  }
+  if (hasFailed || hasPending) return;
+
+  const uniqueSkipped = [...new Set(skippedRisks)];
+  const acceptedSet = new Set(acceptedRisks);
+  for (const id of uniqueSkipped) {
+    if (!acceptedSet.has(id)) failCheck(`skipped step risk ${id} is not in accepted_risks`);
+  }
+  for (const id of acceptedRisks) {
+    if (!uniqueSkipped.includes(id)) {
+      failCheck(`accepted risk ${id} is not referenced by any skipped step`);
+    }
+  }
+
+  if (uniqueSkipped.length > 0) {
+    const { foundFile, ids } = loadPartialAcceptanceIds(root, featureId, assets ?? []);
+    if (!foundFile) {
+      failCheck('partial outcome requires partial-acceptance file');
+    } else {
+      for (const id of uniqueSkipped) {
+        if (!ids.has(id)) failCheck(`partial-acceptance is missing ${id}`);
+      }
+      for (const id of ids) {
+        if (!uniqueSkipped.includes(id)) {
+          failCheck(`partial-acceptance has extra ${id} not referenced by skipped steps`);
+        }
+      }
+      pass('partial verification tri-party contract is consistent');
+    }
+  } else if (acceptedRisks.length === 0) {
+    // verified path: no AR, no partial-acceptance required
+    const { foundFile } = loadPartialAcceptanceIds(root, featureId, assets ?? []);
+    if (foundFile) {
+      // Allow empty/closed file; only fail if it still lists open ARs
+      const { ids } = loadPartialAcceptanceIds(root, featureId, assets ?? []);
+      if (ids.size > 0) {
+        failCheck('verified outcome cannot retain open partial-acceptance AR entries');
+      }
+    }
+    pass('manual-test steps are all passed (verified)');
+  }
 }
 
 function finishChecks() {

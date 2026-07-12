@@ -8,6 +8,8 @@ smoke test 不修改业务代码，只生成流程产物和验证报告。
 
 ## 前置条件
 
+- 已运行 `dev-flow-doctor --preflight`（本地安装完整性）。
+
 - 已复制 Claude dev-flow 迁移包。
 - 已运行 `/onboard-dev-flow`。
 - 已生成 `.claude/rules/project-workflow.md`。

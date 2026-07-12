@@ -50,6 +50,7 @@ fi
 passes=0
 warnings=0
 failures=0
+outcome=verified
 pass() { printf 'PASS %s\n' "$1"; passes=$((passes + 1)); }
 warn() { printf 'WARN %s\n' "$1"; warnings=$((warnings + 1)); }
 fail() { printf 'FAIL %s\n' "$1"; failures=$((failures + 1)); }
@@ -180,14 +181,39 @@ if printf '%s\n' "$completed_gates" | rg -qx 'verification-before-completion'; t
     manual_report=$(find_report manual-test)
     if [ -z "$manual_report" ]; then
       fail 'full behavior verification requires manual-test when webapp-testing is disabled'
-    elif rg -q '实测|实际结果|actual|observed' "$manual_report"; then
+    elif rg -q '实测|实际结果|actual|observed|manual_test_steps|结果' "$manual_report"; then
       pass 'manual-test contains observed results'
     else
       fail 'manual-test has no observed results'
     fi
   fi
+
+  # Derive outcome for the check-ok stamp: partial when accepted_risks non-empty
+  # or a partial-acceptance file exists with open AR entries; else verified.
+  outcome=verified
+  accepted_risks_inline=$(sed -n 's/^  accepted_risks: \[\(.*\)\]$/\1/p' "$status_file")
+  if [ -n "$accepted_risks_inline" ]; then
+    outcome=partial
+  elif rg -q '^  accepted_risks:$' "$status_file"; then
+    if sed -n '/^  accepted_risks:/,/^  [a-z_]/p' "$status_file" | rg -q '^    - '; then
+      outcome=partial
+    fi
+  fi
+  partial_acceptance=$(find "$review_root" -maxdepth 1 -type f \( -name "$feature_id-partial-acceptance.md" -o -name "*-$feature_id-partial-acceptance.md" \) -print -quit 2>/dev/null)
+  if [ -n "$partial_acceptance" ] && rg -q '^## AR-' "$partial_acceptance"; then
+    outcome=partial
+  fi
+  if [ "$outcome" = verified ] && [ -n "$partial_acceptance" ] && rg -q '^## AR-' "$partial_acceptance"; then
+    fail 'verified outcome cannot retain open partial-acceptance AR entries'
+  fi
+  if [ "$outcome" = partial ]; then
+    pass "feature outcome is partial (accepted risks recorded)"
+  else
+    pass "feature outcome is verified"
+  fi
 else
   warn 'verification-before-completion is not marked completed'
+  outcome=verified
 fi
 
 rollback=$(sed -n 's/^    rollback_units: "\([^"]*\)"$/\1/p' "$status_file")
@@ -229,7 +255,8 @@ if [ "$failures" -eq 0 ]; then
   if [ "$finish" = true ] && [ -n "$expected_fingerprint" ]; then
     stamp_dir=.claude/runtime/dev-flow
     mkdir -p "$stamp_dir" 2>/dev/null
-    printf 'fingerprint: %s\nchecked_at: %s\n' "$expected_fingerprint" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+    printf 'fingerprint: %s\noutcome: %s\nchecked_at: %s\n' \
+      "$expected_fingerprint" "${outcome:-verified}" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
       > "$stamp_dir/$feature_id.check-ok" 2>/dev/null || true
   fi
   exit 0

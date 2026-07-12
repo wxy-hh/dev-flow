@@ -1,0 +1,151 @@
+#!/usr/bin/env bash
+# Build or verify .claude/dev-flow.manifest.json for managed workflow files.
+# Usage:
+#   dev-flow-manifest build [--out .claude/dev-flow.manifest.json]
+#   dev-flow-manifest verify [--manifest .claude/dev-flow.manifest.json]
+set -euo pipefail
+
+root=$(git rev-parse --show-toplevel 2>/dev/null || pwd)
+cd "$root" || exit 2
+
+cmd=${1:-}
+if [ $# -gt 0 ]; then shift; fi
+out=".claude/dev-flow.manifest.json"
+manifest="$out"
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --out)
+      out=$2
+      shift 2
+      ;;
+    --manifest)
+      manifest=$2
+      shift 2
+      ;;
+    *)
+      echo "unknown arg: $1" >&2
+      exit 2
+      ;;
+  esac
+done
+
+sha256_file() {
+  if command -v shasum >/dev/null 2>&1; then
+    shasum -a 256 "$1" | awk '{print $1}'
+  else
+    sha256sum "$1" | awk '{print $1}'
+  fi
+}
+
+list_managed() {
+  find .claude/skills .claude/commands .claude/hooks .claude/agents .claude/rules \
+    -type f 2>/dev/null \
+    | sed 's|^\./||' \
+    | grep -v '/evals/' \
+    | grep -v 'project-workflow.md$' \
+    | grep -v 'settings.local.json$' \
+    | grep -v '\.bak$' \
+    | sort -u
+  if [ -f .claude/settings.json ]; then
+    echo .claude/settings.json
+  fi
+}
+
+build() {
+  local version
+  version=$(node -e 'console.log(JSON.parse(require("fs").readFileSync(".claude/skills/dev-flow/contract.json","utf8")).workflow_version)')
+  local tmp
+  tmp=$(mktemp)
+  {
+    list_managed | while IFS= read -r p; do
+      [ -f "$p" ] || continue
+      hash=$(sha256_file "$p")
+      strategy=replace
+      if [ "$p" = ".claude/settings.json" ]; then
+        strategy=merge-hooks
+      fi
+      printf '%s\t%s\t%s\n' "$p" "$hash" "$strategy"
+    done
+  } > "$tmp"
+
+  node -e '
+    const fs = require("fs");
+    const out = process.argv[1];
+    const version = process.argv[2];
+    const rows = fs.readFileSync(process.argv[3], "utf8").trim().split(/\n/).filter(Boolean);
+    const files = rows.map((line) => {
+      const [path, sha256, strategy] = line.split("\t");
+      return { path, sha256, strategy };
+    });
+    const manifest = {
+      schema_version: "1",
+      workflow_version: version,
+      generated_at: new Date().toISOString().replace(/\.\d{3}Z$/, "Z"),
+      files,
+      deprecated_paths: [
+        ".claude/skills/grilling",
+        ".claude/skills/requesting-code-review",
+        ".claude/skills/subagent-driven-development",
+      ],
+    };
+    fs.mkdirSync(require("path").dirname(out), { recursive: true });
+    fs.writeFileSync(out, JSON.stringify(manifest, null, 2) + "\n");
+    console.log(`wrote ${out} (${files.length} files, workflow_version ${version})`);
+  ' "$out" "$version" "$tmp"
+  rm -f "$tmp"
+}
+
+verify() {
+  node -e '
+    const fs = require("fs");
+    const crypto = require("crypto");
+    const manifestPath = process.argv[1];
+    if (!fs.existsSync(manifestPath)) {
+      console.error("FAIL missing manifest: " + manifestPath);
+      process.exit(1);
+    }
+    const m = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
+    let failures = 0;
+    for (const f of m.files || []) {
+      if (!fs.existsSync(f.path)) {
+        console.log("FAIL missing managed file: " + f.path);
+        failures += 1;
+        continue;
+      }
+      const hash = crypto.createHash("sha256").update(fs.readFileSync(f.path)).digest("hex");
+      if (hash !== f.sha256) {
+        if (f.strategy === "merge-hooks") {
+          console.log("WARN merge-hooks hash differs (expected after settings merge): " + f.path);
+        } else {
+          console.log("FAIL hash mismatch: " + f.path);
+          failures += 1;
+        }
+      } else {
+        console.log("PASS " + f.path);
+      }
+    }
+    for (const d of m.deprecated_paths || []) {
+      if (fs.existsSync(d)) {
+        console.log("FAIL deprecated path still present: " + d);
+        failures += 1;
+      } else {
+        console.log("PASS deprecated absent: " + d);
+      }
+    }
+    console.log("Summary: " + failures + " failure(s)");
+    process.exit(failures === 0 ? 0 : 1);
+  ' "$manifest"
+}
+
+case "$cmd" in
+  build)
+    build
+    ;;
+  verify)
+    verify
+    ;;
+  *)
+    echo "Usage: dev-flow-manifest build|verify" >&2
+    exit 2
+    ;;
+esac

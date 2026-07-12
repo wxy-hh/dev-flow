@@ -77,6 +77,21 @@ Claude 工作流入口依次读取 `.claude/rules/project-workflow.md`、`CLAUDE
 | `<PLAN_ROOT>` | `<detect-plan-root>` | 设计和计划类文档目录 |
 | `<SCOPED_SPEC_ROOT>` | `.claude/rules/specs` | 可选的局部工程规范目录 |
 
+## 写入门禁
+
+`dev_flow` frontmatter 必须包含：
+
+```yaml
+enforcement_mode: "<strict|ask|off>"   # 新项目默认 strict；旧项目升级默认 ask
+protected_write_roots:
+  - "<detect，如 src/** 或 apps/** 或 packages/**>"
+```
+
+- 模型 A：默认放行；仅命中 `protected_write_roots` 的业务路径才套用 off/ask/strict。
+- 永远不拦：`.claude/**`、`<FEATURE_ROOT>/**`、`<REVIEW_ROOT>/**`、`openspec/**`。
+- 授权文件：`.claude/runtime/dev-flow/write-authorization.json`（每 worktree 一份）。细则见 `dev-flow/references/status-cli.md`。
+- `strict` 且 roots 为空或不安全时，`dev-flow-doctor --preflight` 失败。
+
 ## Feature ID
 
 新功能默认使用：
@@ -121,7 +136,7 @@ YYYY-MM-DD-<short-kebab-name>
 
 ## 状态文件
 
-标准 M/L、轻量 L 和任何需要跨技能交接的任务都维护 `<FEATURE_ROOT>/<feature-id>/status.md`。schema、字段取值、更新规则和恢复中断流程的唯一来源是 `dev-flow/references/protocol.md`（「status.md v3 更新契约」「资产读取优先级」两节）与 `contract.json`；本文件不维护副本，也不做双写对账。
+标准 M/L、轻量 L 和任何需要跨技能交接的任务都维护 `<FEATURE_ROOT>/<feature-id>/status.md`。schema、字段取值、更新规则和恢复中断流程的唯一来源是 `dev-flow/references/protocol.md` 与 `contract.json`；**创建与更新一律使用** `dev-flow-status` CLI，本文件不维护字段副本。
 
 ## 项目能力
 
@@ -172,8 +187,10 @@ YYYY-MM-DD-<short-kebab-name>
 5. 判断 git 是否可用，以及 `.claude/` / `CLAUDE.md` 是否被忽略。
 6. 检查是否已有 `<SCOPED_SPEC_ROOT>`；没有也可以保留为空的可选能力。
 7. 安装并验证 `.claude/settings.json` 中的 hooks 注册（`dev-flow-gate-guard`、`dev-flow-finish-guard`），确认脚本可执行。
-8. 按目录结构生成 `dev_flow.label_hints` 初始猜测（可选）。
-9. 写入项目能力、测试策略、OpenSpec 策略、启用 agents、路径别名和 feature/review 等资产路径。
+8. 写入 `enforcement_mode`（新项目 `strict`）与 `protected_write_roots`（按源码根目录 glob，如 `src/**`）。
+9. 按目录结构生成 `dev_flow.label_hints` 初始猜测（可选）。
+10. 写入项目能力、测试策略、OpenSpec 策略、启用 agents、路径别名和 feature/review 等资产路径。
+11. 运行 `dev-flow-doctor --preflight` 确认本地安装完整性。
 
 ## 验证配置
 

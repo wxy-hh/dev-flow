@@ -1,0 +1,332 @@
+{
+  "schema_version": "1",
+  "workflow_version": "0.7.0",
+  "generated_at": "2026-07-12T15:33:36Z",
+  "files": [
+    {
+      "path": ".claude/agents/build-error-resolver.md",
+      "sha256": "07c6209b8df3b915535e40aedd08807b4bd6f7b08d488f05ac8bdb338d178092",
+      "strategy": "replace"
+    },
+    {
+      "path": ".claude/agents/code-reviewer.md",
+      "sha256": "7272cfe38a4a7cf30d8aa0b061360dfc2cd138f56b4c14570dc97cd8339dbe26",
+      "strategy": "replace"
+    },
+    {
+      "path": ".claude/agents/security-reviewer.md",
+      "sha256": "18db33f91e8f039c251194af90e4712b35ca3f4ac20b0ed2b13085a60090e37c",
+      "strategy": "replace"
+    },
+    {
+      "path": ".claude/commands/commit.md",
+      "sha256": "d7a8e87293d558e4376b13033eafc972923f2c0ac23e1c486fbcdfcf9b318af1",
+      "strategy": "replace"
+    },
+    {
+      "path": ".claude/commands/dev-task.md",
+      "sha256": "4eff3702559df2b5d2694b2262a6c8ae71348a62ce5d230ff9a4ac0ebf81a968",
+      "strategy": "replace"
+    },
+    {
+      "path": ".claude/commands/finish.md",
+      "sha256": "306389b7c14fb745a6d836db25cd54f7f312ce0ac7640c481b9aff15106f4676",
+      "strategy": "replace"
+    },
+    {
+      "path": ".claude/commands/fix-build.md",
+      "sha256": "5c48e08bc4a97307f0f7b4672e2769913a2f4c91729a58ab01fe4af4c4d7d6d7",
+      "strategy": "replace"
+    },
+    {
+      "path": ".claude/commands/onboard-dev-flow.md",
+      "sha256": "06a08fa99686dc7459b04c7863e89be912d516f23a575230ab100bf26594b485",
+      "strategy": "replace"
+    },
+    {
+      "path": ".claude/commands/README.md",
+      "sha256": "a04c5bace1bb49af77cf9eb7df7d8aab71cdf0b49979f73582d8ac6090298579",
+      "strategy": "replace"
+    },
+    {
+      "path": ".claude/commands/review-diff.md",
+      "sha256": "b6290f855e60041bd8a22d2fdf2967499c52481846cfb1f8d9fb07b636de9eee",
+      "strategy": "replace"
+    },
+    {
+      "path": ".claude/hooks/dev-flow-finish-guard.sh",
+      "sha256": "e28c6ab48621284d33b965d42a189a594aa21089bbd3cb954f6870e2b68365f5",
+      "strategy": "replace"
+    },
+    {
+      "path": ".claude/hooks/dev-flow-gate-guard.sh",
+      "sha256": "8d71d4d8069d7d3ecc1154283c40c58551cadecef9c447f73e5919b597dbbe77",
+      "strategy": "replace"
+    },
+    {
+      "path": ".claude/rules/git-workflow.md",
+      "sha256": "fffc70bd532b9daf14004cc56f5651e9c866959c08f07c7090fd4591a71c8516",
+      "strategy": "replace"
+    },
+    {
+      "path": ".claude/rules/project-workflow.template.md",
+      "sha256": "1c1d3600ebbedd3c635a6875f0cb407168f94bcf90aa0c2be995c2a8d2f277f4",
+      "strategy": "replace"
+    },
+    {
+      "path": ".claude/rules/README.md",
+      "sha256": "c501f66b85fe550b04d0231a4610569395ee452ffed9e6eacc8596dc70ac8f44",
+      "strategy": "replace"
+    },
+    {
+      "path": ".claude/rules/security.md",
+      "sha256": "fbd18f0956bcda83679b7e0e88c98f069917c118a141e88335b7251d46b7d50b",
+      "strategy": "replace"
+    },
+    {
+      "path": ".claude/rules/specs/README.md",
+      "sha256": "349c18053c988188f92277e700fcbbef692d0a87a18551b91b89ad41feaaa565",
+      "strategy": "replace"
+    },
+    {
+      "path": ".claude/rules/vue3.md",
+      "sha256": "15bbbaec866de3cdaac85c8cd7f53ca43ecdc3353563cf719d0d00f85347c31d",
+      "strategy": "replace"
+    },
+    {
+      "path": ".claude/skills/code-review/references/code-reviewer.md",
+      "sha256": "a58ceb4dee2454656a12e22e2e374f24c731419ad503b225b8f473018c6f622a",
+      "strategy": "replace"
+    },
+    {
+      "path": ".claude/skills/code-review/SKILL.md",
+      "sha256": "22c4e72e7a1802c41611d8fa9ef416bc780c722a467158c1eebaf310b5ee6fed",
+      "strategy": "replace"
+    },
+    {
+      "path": ".claude/skills/dev-flow/contract.json",
+      "sha256": "4f2d79a2703f2929799726d29c4eba531729994177e4bd1f122465c3cbca7f7c",
+      "strategy": "replace"
+    },
+    {
+      "path": ".claude/skills/dev-flow/references/partial-verification.md",
+      "sha256": "20e6881454d0b305c4dced6acd4832c66905ab87ecdc40da5e9df51882dcb282",
+      "strategy": "replace"
+    },
+    {
+      "path": ".claude/skills/dev-flow/references/protocol.md",
+      "sha256": "9bc37b40ae8711ff961a15ae64985f43a81d132c8e67b6b5001ca86e5396cf24",
+      "strategy": "replace"
+    },
+    {
+      "path": ".claude/skills/dev-flow/references/risk-gates.md",
+      "sha256": "11999e978234ff3d35314e2648467f291118ed52b5245e2cf3554d2627ca4694",
+      "strategy": "replace"
+    },
+    {
+      "path": ".claude/skills/dev-flow/references/standard-ml.md",
+      "sha256": "c22fa154f3d011846f65bccbb7d33dd1a315fe337a49a5f667a8d2b0f48acaa8",
+      "strategy": "replace"
+    },
+    {
+      "path": ".claude/skills/dev-flow/references/status-cli.md",
+      "sha256": "a3182e90df29a732df681af00c316c0ab53a8614d205de946324600371b7b26e",
+      "strategy": "replace"
+    },
+    {
+      "path": ".claude/skills/dev-flow/scripts/dev-flow-doctor",
+      "sha256": "42baa6e88f646377251a4b1f4877ac2a9e3a1baf75d495e43518e6a160bc7dcc",
+      "strategy": "replace"
+    },
+    {
+      "path": ".claude/skills/dev-flow/scripts/dev-flow-feature-check",
+      "sha256": "7bafe471fb7fdbd1a7f80c9362c7caefcb27542e3030584ce26fba75fe229d9a",
+      "strategy": "replace"
+    },
+    {
+      "path": ".claude/skills/dev-flow/scripts/dev-flow-feature-finalize",
+      "sha256": "f012a37186b1e46708b32212c17fe3b9bf0df1d5e4510448f9e968648b3b4309",
+      "strategy": "replace"
+    },
+    {
+      "path": ".claude/skills/dev-flow/scripts/dev-flow-fingerprint",
+      "sha256": "2d8448e643ecd5062a8533a293d9e536d95e701aab6b31acabea2de89f62a914",
+      "strategy": "replace"
+    },
+    {
+      "path": ".claude/skills/dev-flow/scripts/dev-flow-manifest",
+      "sha256": "6bdd7875396d72a28b52cc81502c86fbc43ffb0983f5c01c22e5903cb23f453e",
+      "strategy": "replace"
+    },
+    {
+      "path": ".claude/skills/dev-flow/scripts/dev-flow-status.mjs",
+      "sha256": "cea207eb6834042ff87df1d1ea6283a7f0860c5a52d67400df7c13bbc36b5c11",
+      "strategy": "replace"
+    },
+    {
+      "path": ".claude/skills/dev-flow/scripts/dev-flow-upgrade",
+      "sha256": "6df847a2cd383778bef1321c2efd29d4a602c9133b79647acd2bb91feb900e5f",
+      "strategy": "replace"
+    },
+    {
+      "path": ".claude/skills/dev-flow/scripts/dev-flow-validate.mjs",
+      "sha256": "04642730f578182630adc0bb78405df61cbdb0e3dc191837a4f8132e70d56ff7",
+      "strategy": "replace"
+    },
+    {
+      "path": ".claude/skills/dev-flow/scripts/tests/dev-flow-feature-check-test",
+      "sha256": "5fe487cbd09154589dab05698331d00370649aebdf5f68afd978a912e069356d",
+      "strategy": "replace"
+    },
+    {
+      "path": ".claude/skills/dev-flow/scripts/tests/dev-flow-hooks-test",
+      "sha256": "abfcc617464148dd59b9911ba5cbed175ebf6a326570391185927d9e6e818c88",
+      "strategy": "replace"
+    },
+    {
+      "path": ".claude/skills/dev-flow/scripts/tests/dev-flow-status-test",
+      "sha256": "552ee49a042acbbb2d08650627e416c660685d6e48e83face13f3438bdee389d",
+      "strategy": "replace"
+    },
+    {
+      "path": ".claude/skills/dev-flow/scripts/tests/dev-flow-upgrade-test",
+      "sha256": "f2a87b0946091aa3b59152d92f1ff7aff65837c94d74e650e0f67467193c5649",
+      "strategy": "replace"
+    },
+    {
+      "path": ".claude/skills/dev-flow/SKILL.md",
+      "sha256": "bf9fb596d9d6a5da63c47eead5e7f773342e3289ef384e796115a34bf12e2233",
+      "strategy": "replace"
+    },
+    {
+      "path": ".claude/skills/executing-plans/implementer-prompt.md",
+      "sha256": "90e1829a8a2c07a38a2ab9a306613b8154cdc0fd14488441e314628cb8dff16b",
+      "strategy": "replace"
+    },
+    {
+      "path": ".claude/skills/executing-plans/references/subagent-mode.md",
+      "sha256": "9a67fab84f018577871da296d20746d901045951ac493387e71b4ddfd7512459",
+      "strategy": "replace"
+    },
+    {
+      "path": ".claude/skills/executing-plans/scripts/review-package",
+      "sha256": "04d01e3b4110b43dd6a5f64ab30d87e12c39019f34c95e996d1a6900560274b7",
+      "strategy": "replace"
+    },
+    {
+      "path": ".claude/skills/executing-plans/scripts/sdd-workspace",
+      "sha256": "3e01ba6dd378fafd0d6cd90fd253c51f0b25073287c9148d421e7ec51ec3f3b8",
+      "strategy": "replace"
+    },
+    {
+      "path": ".claude/skills/executing-plans/scripts/task-brief",
+      "sha256": "c0189f2523a3f743f5c8eb58ba9e4ded9b02783a09aaeeaa159efaf9eb3b57c7",
+      "strategy": "replace"
+    },
+    {
+      "path": ".claude/skills/executing-plans/scripts/task-schedule",
+      "sha256": "c4b34954ce480c118864654487a957d91799171c1f375a00bcc2473f4552e929",
+      "strategy": "replace"
+    },
+    {
+      "path": ".claude/skills/executing-plans/SKILL.md",
+      "sha256": "f3a26a5d614719aa6c800f4551a1343bc951fd8838c6bae7951679d28a917049",
+      "strategy": "replace"
+    },
+    {
+      "path": ".claude/skills/executing-plans/task-reviewer-prompt.md",
+      "sha256": "515f70fa830dccf10ce94a64be7a68998007fddc5b671c03a744e22cceb00745",
+      "strategy": "replace"
+    },
+    {
+      "path": ".claude/skills/finishing-a-development-branch/SKILL.md",
+      "sha256": "93c627c8e6735413fb4ba44631e2de7c82f2238dd1b1048486c07e215abb2c70",
+      "strategy": "replace"
+    },
+    {
+      "path": ".claude/skills/grillme/SKILL.md",
+      "sha256": "e42c737981b3d26fd8e3fe3210dd28d530b8920361209ce6a0b2e9d41bf658f8",
+      "strategy": "replace"
+    },
+    {
+      "path": ".claude/skills/openspec/SKILL.md",
+      "sha256": "a0b9a6884bf6ce5ad1d5946744f87ed67c4d198bc58a5be74dc0cd79483344ca",
+      "strategy": "replace"
+    },
+    {
+      "path": ".claude/skills/plan-review/references/review-prompts.md",
+      "sha256": "2a0ffefb1cc5e4b80c03d0155b2db2fa70580f97dadb968abf8d965da6df5808",
+      "strategy": "replace"
+    },
+    {
+      "path": ".claude/skills/plan-review/SKILL.md",
+      "sha256": "b5a975b185ac36f4dd8602770fb73730690cf47d4d24ef1979c65ff2ef882e0d",
+      "strategy": "replace"
+    },
+    {
+      "path": ".claude/skills/req-probe/SKILL.md",
+      "sha256": "9eeedebf6891df9ccd1b7bc816c59d41b8fa5a482ce207f7dcbe49347ff39761",
+      "strategy": "replace"
+    },
+    {
+      "path": ".claude/skills/requirements-coverage/agents/openai.yaml",
+      "sha256": "1e2e473829384a830e2bbaf1a5c63c997d14da3b6300fdb21f6a3af72d05cc62",
+      "strategy": "replace"
+    },
+    {
+      "path": ".claude/skills/requirements-coverage/SKILL.md",
+      "sha256": "311e1331d93ca2b2d69d6598ee28d22beb4eaa65a10d372f0d040aee6b1f5406",
+      "strategy": "replace"
+    },
+    {
+      "path": ".claude/skills/rollback-units/agents/openai.yaml",
+      "sha256": "c995d6da00669da1694fcb03cdb2d5afdc3eb5bf9d057aa7839598d27ef4284b",
+      "strategy": "replace"
+    },
+    {
+      "path": ".claude/skills/rollback-units/SKILL.md",
+      "sha256": "d85a99723f298b13210f06190cc62dbf51a826413f490979cabe6ea5d83261a8",
+      "strategy": "replace"
+    },
+    {
+      "path": ".claude/skills/test-driven-development/SKILL.md",
+      "sha256": "310623e55ebc735d76448bba123c3aa406136cc380c5ac589618a69ab203d6cd",
+      "strategy": "replace"
+    },
+    {
+      "path": ".claude/skills/test-driven-development/testing-anti-patterns.md",
+      "sha256": "aec5c4a85bb7d0e9de7790dfcee8e283305576c50671b9cb2c22f8a62bbf2106",
+      "strategy": "replace"
+    },
+    {
+      "path": ".claude/skills/using-git-worktrees/SKILL.md",
+      "sha256": "ac536e149bbf247f8fdac7f4a0c2e8a2c149fb868dbe08f95cff76087b2ba5a8",
+      "strategy": "replace"
+    },
+    {
+      "path": ".claude/skills/verification-before-completion/SKILL.md",
+      "sha256": "82a5e56f8a66d05db858e158f6993620d5890b9e78238a0ee0679549da5666e9",
+      "strategy": "replace"
+    },
+    {
+      "path": ".claude/skills/writing-plans/plan-document-reviewer-prompt.md",
+      "sha256": "aa728b96aad603c8be28875a4305637f6c984aa81ffcadcb13e743202fa2a0c7",
+      "strategy": "replace"
+    },
+    {
+      "path": ".claude/skills/writing-plans/SKILL.md",
+      "sha256": "b04196e30972c5d89bb8da385077fb7eb0aead904cf1208016c030db7e49cf3d",
+      "strategy": "replace"
+    },
+    {
+      "path": ".claude/settings.json",
+      "sha256": "b564a608896cab69ddddb5ab160250c55a4fbc065ca556e27014dcbd36a859f2",
+      "strategy": "merge-hooks"
+    }
+  ],
+  "deprecated_paths": [
+    ".claude/skills/grilling",
+    ".claude/skills/requesting-code-review",
+    ".claude/skills/subagent-driven-development"
+  ]
+}

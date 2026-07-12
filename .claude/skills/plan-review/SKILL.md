@@ -16,6 +16,7 @@ description: 多维度独立审查计划，查漏补缺后再执行。已有 req
 - 不替代 `code-review`，也不能被实现后的 `code-review` 替代；本技能只做实现前计划审查。
 - 不只依赖当前对话。优先读取用户显式路径和上一步 `[HANDOFF]`，再按约定目录查找文件。
 - CRITICAL/HIGH 是实现前阻塞项；必须修复、反驳，或由用户明确接受风险后才能继续。
+- 与 Locked Decision Log 冲突时只能标记 `scope-conflict` 并停下请求用户决定，不得自行改写已锁定决策。
 - 标准 M/L 无论 `light` 还是 `full`，都必须在第一处业务源码修改前完成本门禁。
 - L 级审查报告必须保存到 `<REVIEW_ROOT>/YYYY-MM-DD-<feature-id>-plan-review.md`。
 
