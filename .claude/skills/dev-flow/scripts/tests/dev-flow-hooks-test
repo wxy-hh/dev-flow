@@ -172,20 +172,80 @@ expect_allow "finish-guard allows git status" "$finish_guard" "$(commit_payload 
 
 mkdir -p "$tmp/.claude/runtime/dev-flow"
 current_fp=$(cd "$tmp" && "$fingerprint_cmd" docs/dev-flow/features docs/dev-flow/reviews)
-printf 'fingerprint: %s\noutcome: verified\nchecked_at: 2026-01-01T00:00:00Z\n' "$current_fp" > "$tmp/.claude/runtime/dev-flow/demo.check-ok"
+workflow_version=$(node "$root/dev-flow-policy.mjs" version)
+printf 'workflow_version: %s\nfingerprint: %s\noutcome: verified\nchecked_at: 2026-01-01T00:00:00Z\n' \
+  "$workflow_version" "$current_fp" > "$tmp/.claude/runtime/dev-flow/demo.check-ok"
 expect_allow "finish-guard allows git commit once stamp matches" "$finish_guard" "$(commit_payload "git commit -am wip")"
 
-# partial stamp also allows git ops
-printf 'fingerprint: %s\noutcome: partial\nchecked_at: 2026-01-01T00:00:00Z\n' "$current_fp" > "$tmp/.claude/runtime/dev-flow/demo.check-ok"
+# v0.7 stamps lack workflow_version and are always stale under v0.8+
+printf 'fingerprint: %s\noutcome: verified\nchecked_at: 2026-01-01T00:00:00Z\n' "$current_fp" \
+  > "$tmp/.claude/runtime/dev-flow/demo.check-ok"
+expect_ask "finish-guard asks when stamp lacks workflow_version (v0.7)" \
+  "$finish_guard" "$(commit_payload "git commit -am wip")"
+
+printf 'workflow_version: 0.7.0\nfingerprint: %s\noutcome: verified\nchecked_at: 2026-01-01T00:00:00Z\n' \
+  "$current_fp" > "$tmp/.claude/runtime/dev-flow/demo.check-ok"
+expect_ask "finish-guard asks when stamp workflow_version mismatches" \
+  "$finish_guard" "$(commit_payload "git commit -am wip")"
+
+# partial stamp also allows git ops when version matches
+printf 'workflow_version: %s\nfingerprint: %s\noutcome: partial\nchecked_at: 2026-01-01T00:00:00Z\n' \
+  "$workflow_version" "$current_fp" > "$tmp/.claude/runtime/dev-flow/demo.check-ok"
 expect_allow "finish-guard allows git commit with partial outcome stamp" "$finish_guard" "$(commit_payload "git commit -am wip")"
 
 printf '%s\n' 'unstamped business change' > "$tmp/src/business.js"
 expect_ask "finish-guard asks again once business diff changes after stamping" "$finish_guard" "$(commit_payload "git commit -am wip")"
 printf '%s\n' 'baseline' > "$tmp/src/business.js"
 
-printf '%s\n' '# done' > "$tmp/docs/dev-flow/features/demo/completion.md"
-expect_allow "finish-guard allows once feature has completion.md" "$finish_guard" "$(commit_payload "git commit -am wip")"
-rm "$tmp/docs/dev-flow/features/demo/completion.md"
+# Re-stamp after business diff restored so fingerprint matches again.
+current_fp=$(cd "$tmp" && "$fingerprint_cmd" docs/dev-flow/features docs/dev-flow/reviews)
+printf 'workflow_version: %s\nfingerprint: %s\noutcome: verified\nchecked_at: 2026-01-01T00:00:00Z\n' \
+  "$workflow_version" "$current_fp" > "$tmp/.claude/runtime/dev-flow/demo.check-ok"
+
+# verified-unfinalized (not now): status + completion + fresh stamp → still ask
+printf '%s\n' \
+  '---' \
+  'dev_flow_completion:' \
+  '  retention: "compact"' \
+  '  outcome: "verified"' \
+  "  workflow_version: \"$workflow_version\"" \
+  '---' \
+  '# done' > "$tmp/docs/dev-flow/features/demo/completion.md"
+expect_ask "finish-guard asks on verified-unfinalized (status+completion+stamp)" \
+  "$finish_guard" "$(commit_payload "git commit -am wip")"
+expect_ask "finish-guard asks on git push while verified-unfinalized" \
+  "$finish_guard" "$(commit_payload "git push origin main")"
+
+# stamp retained across not-now (do not remove check-ok)
+assert_file_exists() {
+  if [ -f "$1" ]; then
+    printf 'PASS file exists: %s\n' "$1"
+  else
+    printf 'FAIL file missing: %s\n' "$1"
+    failures=$((failures + 1))
+  fi
+}
+assert_file_exists "$tmp/.claude/runtime/dev-flow/demo.check-ok"
+
+# true finalized: status removed → allow even if completion remains
+rm -f "$tmp/docs/dev-flow/features/demo/status.md"
+expect_allow "finish-guard allows once feature is finalized (no status.md)" \
+  "$finish_guard" "$(commit_payload "git commit -am wip")"
+
+# restore in-progress feature for remaining checks
+printf '%s\n' \
+  '---' \
+  'dev_flow_status:' \
+  '  schema_version: "3"' \
+  '  feature_id: "demo"' \
+  '  level: "L"' \
+  '---' > "$tmp/docs/dev-flow/features/demo/status.md"
+rm -f "$tmp/docs/dev-flow/features/demo/completion.md"
+current_fp=$(cd "$tmp" && "$fingerprint_cmd" docs/dev-flow/features docs/dev-flow/reviews)
+printf 'workflow_version: %s\nfingerprint: %s\noutcome: verified\nchecked_at: 2026-01-01T00:00:00Z\n' \
+  "$workflow_version" "$current_fp" > "$tmp/.claude/runtime/dev-flow/demo.check-ok"
+expect_allow "finish-guard allows verified-but-not-yet-final-assets (status+stamp, no completion)" \
+  "$finish_guard" "$(commit_payload "git commit -am wip")"
 
 mv "$tmp/.claude/rules/project-workflow.md" "$tmp/.claude/rules/project-workflow.md.bak"
 expect_allow "finish-guard allows when project is not onboarded" "$finish_guard" "$(commit_payload "git commit -am wip")"

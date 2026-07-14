@@ -1,20 +1,28 @@
 #!/usr/bin/env node
 /**
- * Atomic status / write-authorization CLI for dev-flow.
+ * Layer 2: sole status/authorization writer for dev-flow.
  * All status.md mutations go through this tool; after each write the
  * validator re-checks the file and the previous content is restored on failure.
+ *
+ * Calls Layer 0 (policy, fingerprint) and Layer 1 (validator) only.
+ * Must not call feature-check or feature-finalize. Must not write check-ok stamps.
  *
  * Usage:
  *   dev-flow-status authorize --level <XS|S> [--note <text>]
  *   dev-flow-status init <feature-id> --level <XS|S|M|L> --profile <profile> \
- *     --topology <topology> --evidence-result <result> [--note <text>] [--risk-labels a,b]
+ *     --topology <topology> --evidence-result <result> [--note <text>] [--risk-labels a,b] [--lightweight-l]
  *   dev-flow-status activate <feature-id>
  *   dev-flow-status add-asset <feature-id> --path <repo-path> --kind <kind>
  *   dev-flow-status complete-gate <feature-id> <gate> \
  *     [--evidence-file <repo-path> --heading <markdown-heading>]
+ *   dev-flow-status promote-gate <feature-id> <risk-gate> --to <light|full> --reason <text>
+ *   dev-flow-status record-risk-evidence <feature-id> <label> \
+ *     [--mode <inline|report>] [--conclusion <text>] [--verification <text>] [--report <path>]
  *   dev-flow-status confirm-human <feature-id> <gate> \
  *     --status <confirmed|skipped> --evidence <user-evidence>
  *   dev-flow-status record-validation <feature-id> --command <command>
+ *   dev-flow-status complete-verification <feature-id> --command <command> \
+ *     [--report <path>] [--manual-test <path>]
  *   dev-flow-status accept-risk <feature-id> --id <AR-xxx> \
  *     --step <manual-test-step-id> --reason <reason> --evidence <user-evidence>
  *   dev-flow-status repair <feature-id>
@@ -24,11 +32,16 @@ import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { createHash } from 'node:crypto';
+import {
+  canonicalCompletedGate,
+  codeReviewObligation,
+  deriveRoute,
+  gateRank,
+  loadContract,
+} from './dev-flow-policy.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const contract = JSON.parse(
-  fs.readFileSync(path.join(__dirname, '../contract.json'), 'utf8'),
-);
+const contract = loadContract();
 const validator = path.join(__dirname, 'dev-flow-validate.mjs');
 
 function fail(message, code = 2) {
@@ -244,9 +257,17 @@ function statusAbs(root, workflow, featureId) {
   return path.join(root, statusPath(workflow, featureId));
 }
 
-function runValidatorStatus(root, relativeStatusPath, finish = false) {
+function runValidatorStatus(root, relativeStatusPath, stage = 'current') {
   const args = [validator, 'status', root, relativeStatusPath];
-  if (finish) args.push('--finish');
+  if (stage !== 'current') args.push('--stage', stage);
+  const result = spawnSync(process.execPath, args, { encoding: 'utf8' });
+  if (result.stdout) process.stdout.write(result.stdout);
+  if (result.stderr) process.stderr.write(result.stderr);
+  return result.status ?? 2;
+}
+
+function runValidatorFeature(root, featureId, stage) {
+  const args = [validator, 'feature', root, featureId, '--stage', stage];
   const result = spawnSync(process.execPath, args, { encoding: 'utf8' });
   if (result.stdout) process.stdout.write(result.stdout);
   if (result.stderr) process.stderr.write(result.stderr);
@@ -272,21 +293,6 @@ function atomicWriteText(filePath, content, validate) {
     else fs.writeFileSync(filePath, previous, 'utf8');
     throw error;
   }
-}
-
-function emptyRiskGates() {
-  return Object.fromEntries(contract.risk_gates.map((gate) => [gate, 'none']));
-}
-
-function riskGatesForLabels(labels) {
-  const gates = emptyRiskGates();
-  const rank = Object.fromEntries(contract.gate_levels.map((name, index) => [name, index]));
-  for (const label of labels) {
-    for (const [gate, minimum] of Object.entries(contract.minimum_risk_gates[label] ?? {})) {
-      if (!gates[gate] || rank[gates[gate]] < rank[minimum]) gates[gate] = minimum;
-    }
-  }
-  return gates;
 }
 
 function renderRiskEvidence(labels) {
@@ -540,8 +546,12 @@ function loadStatusModel(root, workflow, featureId) {
     level: topLevelValue(body, 'level'),
     profile: topLevelValue(body, 'profile'),
     labels: parseStringList(body, 'risk_labels') ?? [],
-    completedGates: parseStringList(body, 'completed_gates') ?? [],
-    currentGate: topLevelValue(body, 'current_gate'),
+    completedGates: (parseStringList(body, 'completed_gates') ?? []).map(
+      (gate) => canonicalCompletedGate(contract, gate) ?? gate,
+    ),
+    currentGate:
+      canonicalCompletedGate(contract, topLevelValue(body, 'current_gate')) ??
+      topLevelValue(body, 'current_gate'),
     nextAction: topLevelValue(body, 'next_action'),
     humanGates: parseNestedMap(body, 'human_gates'),
     riskGates: parseFlatBlock(body, 'risk_gates'),
@@ -659,9 +669,16 @@ function rebuildFromModel(model) {
   return body;
 }
 
-function saveModel(root, model) {
+function saveModel(root, model, { stage = 'current' } = {}) {
   const content = rebuildFromModel(model);
-  atomicWriteText(model.absolute, content, () => runValidatorStatus(root, model.relative) === 0);
+  atomicWriteText(model.absolute, content, () => {
+    if (runValidatorStatus(root, model.relative, stage) !== 0) return false;
+    // Finish writes also re-check the active feature contract (never stamps check-ok).
+    if (stage === 'finish' && runValidatorFeature(root, model.featureId, 'active') !== 0) {
+      return false;
+    }
+    return true;
+  });
 }
 
 function partialAcceptancePath(workflow, featureId) {
@@ -696,6 +713,81 @@ function headingCount(filePath, heading) {
   const re = new RegExp(`^#{1,6}\\s+${heading.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*$`, 'm');
   const matches = content.match(new RegExp(re.source, 'gm'));
   return matches ? matches.length : 0;
+}
+
+function gateEvidenceKey(gate) {
+  return String(gate).replace(/-/g, '_');
+}
+
+function normalizeRiskGateName(gate) {
+  const snake = String(gate).replace(/-/g, '_');
+  if (contract.risk_gates.includes(snake)) return snake;
+  return null;
+}
+
+function isRequiredFlag(value) {
+  return value === true || value === 'true';
+}
+
+function humanGateSatisfied(gate) {
+  return gate?.status === 'confirmed' || gate?.status === 'skipped';
+}
+
+function requiredHumanGatesSatisfied(model) {
+  for (const name of contract.human_gates) {
+    const gate = model.humanGates[name] || {};
+    if (isRequiredFlag(gate.required) && !humanGateSatisfied(gate)) return false;
+  }
+  return true;
+}
+
+function assertApprovalUpstream(model, gate) {
+  // implementation_approval may not be confirmed/skipped while a required
+  // requirement_confirmation is still pending.
+  if (gate !== 'implementation_approval') return;
+  const req = model.humanGates.requirement_confirmation || {};
+  if (isRequiredFlag(req.required) && !humanGateSatisfied(req)) {
+    fail(
+      'cannot confirm/skip implementation_approval while required requirement_confirmation is still pending',
+      1,
+    );
+  }
+}
+
+function computeFingerprint(root, workflow) {
+  const fingerprintCmd = path.join(__dirname, 'dev-flow-fingerprint');
+  if (!fs.existsSync(fingerprintCmd)) fail('dev-flow-fingerprint is missing', 1);
+  const result = spawnSync(fingerprintCmd, [workflow.featureRoot, workflow.reviewRoot], {
+    cwd: root,
+    encoding: 'utf8',
+  });
+  if (result.status !== 0) {
+    if (result.stderr) process.stderr.write(result.stderr);
+    fail('failed to compute business diff fingerprint', 1);
+  }
+  const hash = result.stdout.trim();
+  if (!/^[0-9a-f]{40}$/.test(hash)) fail(`invalid fingerprint: ${hash}`, 1);
+  return hash;
+}
+
+function registerAsset(model, assetPath, kind) {
+  if (model.assets.some((a) => a.path === assetPath)) return;
+  model.assets.push({ path: assetPath, kind });
+}
+
+function assertEvidenceFile(root, workflow, evidencePath, heading) {
+  if (evidencePath.includes('#')) fail('gate evidence path must not contain #');
+  repositoryPath(root, evidencePath, 'evidence file');
+  const abs = path.join(root, evidencePath);
+  if (!fs.existsSync(abs)) fail(`evidence file does not exist: ${evidencePath}`, 1);
+  if (!isInside(workflow.featureRootAbs, abs) && !isInside(workflow.reviewRootAbs, abs)) {
+    fail(`evidence file is outside feature/review roots: ${evidencePath}`, 1);
+  }
+  const count = headingCount(abs, heading);
+  if (count !== 1) {
+    fail(`heading ${JSON.stringify(heading)} must appear exactly once (found ${count})`, 1);
+  }
+  return abs;
 }
 
 // ---------- commands ----------
@@ -759,43 +851,20 @@ function cmdInit(root, workflow, featureId, flags) {
   const absolute = statusAbs(root, workflow, featureId);
   if (fs.existsSync(absolute)) fail(`status already exists: ${statusPath(workflow, featureId)}`, 1);
 
-  const riskGates = riskGatesForLabels(labels);
-  if (profile === 'standard' && level === 'M') {
-    if (riskGates.plan_review === 'none') riskGates.plan_review = 'light';
-  }
-  if (profile === 'standard' && level === 'L') {
-    if (riskGates.requirements_coverage === 'none') riskGates.requirements_coverage = 'full';
-    if (riskGates.plan_review === 'none') riskGates.plan_review = 'light';
-    if (riskGates.behavior_verification === 'none') riskGates.behavior_verification = 'full';
-  }
-
-  const humanGates = {
-    requirement_confirmation: {
-      required: profile === 'standard' && (level === 'M' || level === 'L') && !(level === 'L' && flags['lightweight-l']),
+  const route = deriveRoute(contract, {
+    level,
+    profile,
+    riskLabels: labels,
+    lightweightL: Boolean(flags['lightweight-l']),
+  });
+  const humanGates = {};
+  for (const gate of contract.human_gates) {
+    const required = route.humanGates[gate]?.required === true;
+    humanGates[gate] = {
+      required,
       status: 'pending',
       evidence: 'not required',
-    },
-    implementation_approval: {
-      required: true,
-      status: 'pending',
-      evidence: 'not required',
-    },
-  };
-  // Lightweight L: only implementation_approval
-  if (level === 'L' && flags['lightweight-l']) {
-    humanGates.requirement_confirmation.required = false;
-  }
-  // Standard M/L both gates; risk-minimal only impl approval
-  if (profile === 'risk-minimal') {
-    humanGates.requirement_confirmation.required = false;
-  }
-  if (profile === 'standard' && level === 'M') {
-    humanGates.requirement_confirmation.required = true;
-    humanGates.implementation_approval.required = true;
-  }
-  if (profile === 'standard' && level === 'L' && !flags['lightweight-l']) {
-    humanGates.requirement_confirmation.required = true;
-    humanGates.implementation_approval.required = true;
+    };
   }
 
   const content = renderStatus({
@@ -806,13 +875,10 @@ function cmdInit(root, workflow, featureId, flags) {
     topology,
     evidenceResult,
     note: flags.note || '',
-    currentGate: profile === 'risk-minimal' ? 'implementation_approval' : 'req-probe',
-    nextAction:
-      profile === 'risk-minimal'
-        ? 'await implementation_approval'
-        : 'clarify requirements',
+    currentGate: route.initialCurrentGate,
+    nextAction: route.initialNextAction,
     humanGates,
-    riskGates,
+    riskGates: route.riskGates,
     assets: [],
     acceptedRisks: [],
     gateEvidence: {},
@@ -843,12 +909,14 @@ function cmdInit(root, workflow, featureId, flags) {
 function cmdActivate(root, workflow, featureId) {
   validateFeatureId(featureId);
   const model = loadStatusModel(root, workflow, featureId);
-  const impl = model.humanGates.implementation_approval || {};
-  const required = impl.required === true || impl.required === 'true';
-  const status = impl.status;
+  // Approval-stage: required human gates and route-required upstream process
+  // gates must all pass the same validator used by confirm-human.
   let state = 'approval-pending';
   let approvedAt = null;
-  if (!required || status === 'confirmed' || status === 'skipped') {
+  if (
+    requiredHumanGatesSatisfied(model) &&
+    runValidatorStatus(root, model.relative, 'approval') === 0
+  ) {
     state = 'approved';
     approvedAt = nowIso();
   }
@@ -893,62 +961,198 @@ function cmdAddAsset(root, workflow, featureId, flags) {
 
 function cmdCompleteGate(root, workflow, featureId, gate, flags) {
   validateFeatureId(featureId);
-  if (!contract.known_gates.includes(gate) && !contract.risk_gates.includes(gate)) {
-    if (!/^[a-z][a-z0-9_-]*$/.test(gate)) fail(`unknown gate: ${gate}`);
+  const canonicalGate = canonicalCompletedGate(contract, gate);
+  if (!canonicalGate) fail(`unknown gate: ${gate}`);
+  if (contract.human_gates.includes(canonicalGate)) {
+    fail(`${canonicalGate} must be updated with confirm-human`, 1);
   }
-  // Normalize risk-gate snake names used as skill gates when needed.
+  if (canonicalGate === 'verification-before-completion') {
+    fail('verification-before-completion must be updated with complete-verification', 1);
+  }
   const model = loadStatusModel(root, workflow, featureId);
-  if (model.completedGates.includes(gate)) fail(`gate already completed: ${gate}`, 1);
+  if (model.completedGates.includes(canonicalGate)) {
+    fail(`gate already completed: ${canonicalGate}`, 1);
+  }
 
-  if (gate === 'requirements-coverage' || gate === 'requirements_coverage') {
-    const coverageLevel = model.riskGates.requirements_coverage || 'none';
-    if (flags['evidence-file'] || flags.heading) {
-      if (!flags['evidence-file'] || !flags.heading) {
-        fail('gate evidence requires both --evidence-file and --heading');
-      }
-      const evidencePath = flags['evidence-file'];
-      if (evidencePath.includes('#')) fail('gate evidence path must not contain #');
-      repositoryPath(root, evidencePath, 'evidence file');
-      const abs = path.join(root, evidencePath);
-      if (!fs.existsSync(abs)) fail(`evidence file does not exist: ${evidencePath}`, 1);
-      if (!isInside(workflow.featureRootAbs, abs) && !isInside(workflow.reviewRootAbs, abs)) {
-        fail(`evidence file is outside feature/review roots: ${evidencePath}`, 1);
-      }
-      const count = headingCount(abs, flags.heading);
-      if (count !== 1) {
-        fail(`heading ${JSON.stringify(flags.heading)} must appear exactly once (found ${count})`, 1);
-      }
-      model.gateEvidence = model.gateEvidence || {};
-      model.gateEvidence.requirements_coverage = {
-        path: evidencePath,
-        heading: flags.heading,
-      };
-    } else if (coverageLevel === 'light') {
-      const hasCoverageAsset = model.assets.some((a) => /requirements-coverage/.test(a.path));
-      if (!hasCoverageAsset) {
-        fail('light requirements-coverage requires --evidence-file and --heading, or a coverage asset', 1);
-      }
-    }
-  } else if (flags['evidence-file'] || flags.heading) {
-    // Generic path/heading evidence only for requirements_coverage in v0.7.
+  const isCoverage = canonicalGate === 'requirements-coverage';
+  const hasEvidenceFlags = Boolean(flags['evidence-file'] || flags.heading);
+
+  if (hasEvidenceFlags) {
     if (!flags['evidence-file'] || !flags.heading) {
       fail('gate evidence requires both --evidence-file and --heading');
     }
     const evidencePath = flags['evidence-file'];
-    repositoryPath(root, evidencePath, 'evidence file');
-    const abs = path.join(root, evidencePath);
-    if (!fs.existsSync(abs)) fail(`evidence file does not exist: ${evidencePath}`, 1);
-    const count = headingCount(abs, flags.heading);
-    if (count !== 1) {
-      fail(`heading ${JSON.stringify(flags.heading)} must appear exactly once (found ${count})`, 1);
+    assertEvidenceFile(root, workflow, evidencePath, flags.heading);
+    model.gateEvidence = model.gateEvidence || {};
+    model.gateEvidence[gateEvidenceKey(canonicalGate)] = {
+      path: evidencePath,
+      heading: flags.heading,
+    };
+  } else if (isCoverage) {
+    const coverageLevel = model.riskGates.requirements_coverage || 'none';
+    if (coverageLevel === 'light') {
+      const hasCoverageAsset = model.assets.some((a) => /requirements-coverage/.test(a.path));
+      if (!hasCoverageAsset) {
+        fail(
+          'light requirements-coverage requires --evidence-file and --heading, or a coverage asset',
+          1,
+        );
+      }
     }
   }
 
-  model.completedGates.push(gate);
-  model.currentGate = gate;
-  model.nextAction = `after ${gate}`;
+  model.completedGates.push(canonicalGate);
+  model.currentGate = canonicalGate;
+  model.nextAction = `after ${canonicalGate}`;
   saveModel(root, model);
-  process.stdout.write(`completed gate ${gate}\n`);
+  process.stdout.write(`completed gate ${canonicalGate}\n`);
+}
+
+function cmdPromoteGate(root, workflow, featureId, gate, flags) {
+  validateFeatureId(featureId);
+  const riskGate = normalizeRiskGateName(gate);
+  if (!riskGate) {
+    fail(
+      `promote-gate only accepts contract risk gates (${contract.risk_gates.join(', ')}); got: ${gate}`,
+    );
+  }
+  const to = flags.to;
+  if (!['light', 'full'].includes(to)) fail('promote-gate --to must be light or full');
+  const reason = flags.reason;
+  if (!reason || !String(reason).trim()) fail('promote-gate requires --reason');
+
+  const model = loadStatusModel(root, workflow, featureId);
+  const current = model.riskGates[riskGate] || 'none';
+  const rank = gateRank(contract);
+  if (rank[to] < rank[current]) {
+    fail(`cannot downgrade risk gate ${riskGate} from ${current} to ${to}`, 1);
+  }
+  if (rank[to] === rank[current]) {
+    fail(`risk gate ${riskGate} is already ${current}`, 1);
+  }
+  model.riskGates[riskGate] = to;
+  const promotionNote = `promote ${riskGate} ${current}->${to}: ${String(reason).trim()}`;
+  model.classification.note = [model.classification.note, promotionNote]
+    .filter((value) => value && String(value).trim())
+    .join(' | ');
+  model.nextAction = `promoted ${riskGate} to ${to}`;
+  saveModel(root, model);
+  process.stdout.write(`promoted ${riskGate}: ${current} -> ${to}\n`);
+  process.stdout.write(`reason: ${reason}\n`);
+}
+
+function cmdRecordRiskEvidence(root, workflow, featureId, label, flags) {
+  validateFeatureId(featureId);
+  if (!contract.risk_labels.includes(label)) {
+    fail(`unknown risk label: ${label}`);
+  }
+  const model = loadStatusModel(root, workflow, featureId);
+  if (!model.labels.includes(label)) {
+    fail(`feature does not declare risk label: ${label}`, 1);
+  }
+  const entry = model.riskEvidence[label] || {
+    mode: 'inline',
+    conclusion: 'pending',
+    verification: 'pending',
+    report: '',
+  };
+  if (flags.mode !== undefined) {
+    if (!contract.evidence_modes.includes(flags.mode)) {
+      fail(`--mode must be one of: ${contract.evidence_modes.join(', ')}`);
+    }
+    entry.mode = flags.mode;
+  }
+  if (flags.conclusion !== undefined) entry.conclusion = String(flags.conclusion);
+  if (flags.verification !== undefined) entry.verification = String(flags.verification);
+  if (flags.report !== undefined) {
+    const reportPath = String(flags.report);
+    if (reportPath) {
+      const abs = repositoryPath(root, reportPath, 'risk evidence report');
+      if (!fs.existsSync(abs)) fail(`risk evidence report does not exist: ${reportPath}`, 1);
+      if (!isInside(workflow.featureRootAbs, abs) && !isInside(workflow.reviewRootAbs, abs)) {
+        fail(`risk evidence report is outside feature/review roots: ${reportPath}`, 1);
+      }
+      if (!fs.statSync(abs).isFile()) fail(`risk evidence report is not a file: ${reportPath}`, 1);
+    }
+    entry.report = reportPath;
+  }
+  if (entry.mode === 'report' && (!entry.report || !String(entry.report).trim())) {
+    fail('report mode requires --report <path>', 1);
+  }
+  model.riskEvidence[label] = entry;
+  saveModel(root, model);
+  process.stdout.write(`recorded risk evidence for ${label}\n`);
+}
+
+function cmdCompleteVerification(root, workflow, featureId, flags) {
+  validateFeatureId(featureId);
+  const command = flags.command;
+  if (!command || !String(command).trim()) fail('complete-verification requires --command');
+
+  const model = loadStatusModel(root, workflow, featureId);
+
+  // Optional report / manual-test paths must exist when provided.
+  if (flags.report) {
+    const reportPath = String(flags.report);
+    repositoryPath(root, reportPath, 'verification report');
+    const abs = path.join(root, reportPath);
+    if (!fs.existsSync(abs)) fail(`verification report does not exist: ${reportPath}`, 1);
+    if (!isInside(workflow.featureRootAbs, abs) && !isInside(workflow.reviewRootAbs, abs)) {
+      fail(`verification report is outside feature/review roots: ${reportPath}`, 1);
+    }
+    registerAsset(model, reportPath, 'verification');
+  }
+  if (flags['manual-test']) {
+    const manualPath = String(flags['manual-test']);
+    repositoryPath(root, manualPath, 'manual-test report');
+    const abs = path.join(root, manualPath);
+    if (!fs.existsSync(abs)) fail(`manual-test report does not exist: ${manualPath}`, 1);
+    if (!isInside(workflow.featureRootAbs, abs) && !isInside(workflow.reviewRootAbs, abs)) {
+      fail(`manual-test report is outside feature/review roots: ${manualPath}`, 1);
+    }
+    registerAsset(model, manualPath, 'verification');
+  }
+
+  // Route-derived code-review obligation (not a risk_gates field).
+  const obligation = codeReviewObligation(contract, {
+    level: model.level,
+    profile: model.profile,
+    humanGates: model.humanGates,
+  });
+  if (obligation.required) {
+    if (!model.completedGates.includes('code-review')) {
+      fail('complete-verification requires completed_gates to include code-review', 1);
+    }
+    const evidence = model.gateEvidence?.code_review;
+    if (!evidence?.path || !evidence?.heading) {
+      fail(
+        'complete-verification requires gate_evidence.code_review with path and heading',
+        1,
+      );
+    }
+    const abs = path.join(root, evidence.path);
+    if (!fs.existsSync(abs)) {
+      fail(`code-review evidence file does not exist: ${evidence.path}`, 1);
+    }
+  }
+
+  const fingerprint = computeFingerprint(root, workflow);
+  const commands = Array.isArray(model.validation.commands) ? model.validation.commands : [];
+  commands.push(String(command));
+  model.validation.commands = commands;
+  model.validation.last_at = nowIso();
+  model.validation.business_diff_fingerprint = fingerprint;
+
+  if (!model.completedGates.includes('verification-before-completion')) {
+    model.completedGates.push('verification-before-completion');
+  }
+  model.currentGate = 'verification-before-completion';
+  model.nextAction = 'finish';
+
+  // Atomic write + finish validation; restore on failure. Never writes check-ok.
+  saveModel(root, model, { stage: 'finish' });
+  process.stdout.write(`completed verification for ${featureId}\n`);
+  process.stdout.write(`business_diff_fingerprint: ${fingerprint}\n`);
 }
 
 function cmdConfirmHuman(root, workflow, featureId, gate, flags) {
@@ -968,15 +1172,18 @@ function cmdConfirmHuman(root, workflow, featureId, gate, flags) {
 
   const model = loadStatusModel(root, workflow, featureId);
   if (!model.humanGates[gate]) fail(`status is missing human_gates.${gate}`, 1);
+  assertApprovalUpstream(model, gate);
   model.humanGates[gate].status = status;
   model.humanGates[gate].evidence = evidence;
   if (!model.completedGates.includes(gate)) model.completedGates.push(gate);
   model.currentGate = gate;
   model.nextAction = status === 'confirmed' ? `after ${gate}` : `skipped ${gate}`;
-  saveModel(root, model);
+  saveModel(root, model, {
+    stage: gate === 'implementation_approval' ? 'approval' : 'current',
+  });
 
-  // Sync write-authorization when implementation_approval is satisfied.
-  if (gate === 'implementation_approval') {
+  // Sync write-authorization only when every required human gate is satisfied.
+  if (gate === 'implementation_approval' && requiredHumanGatesSatisfied(model)) {
     const auth = readAuth(root);
     if (auth && auth.feature_id === featureId) {
       auth.state = 'approved';
@@ -1066,9 +1273,14 @@ function usage() {
   dev-flow-status add-asset <feature-id> --path <repo-path> --kind <kind>
   dev-flow-status complete-gate <feature-id> <gate> \\
     [--evidence-file <repo-path> --heading <markdown-heading>]
+  dev-flow-status promote-gate <feature-id> <risk-gate> --to <light|full> --reason <text>
+  dev-flow-status record-risk-evidence <feature-id> <label> \\
+    [--mode <inline|report>] [--conclusion <text>] [--verification <text>] [--report <path>]
   dev-flow-status confirm-human <feature-id> <gate> \\
     --status <confirmed|skipped> --evidence <user-evidence>
   dev-flow-status record-validation <feature-id> --command <command>
+  dev-flow-status complete-verification <feature-id> --command <command> \\
+    [--report <path>] [--manual-test <path>]
   dev-flow-status accept-risk <feature-id> --id <AR-xxx> \\
     --step <manual-test-step-id> --reason <reason> --evidence <user-evidence>
   dev-flow-status repair <feature-id>
@@ -1105,6 +1317,16 @@ function main() {
       if (!positional[1] || !positional[2]) fail('complete-gate requires <feature-id> <gate>');
       cmdCompleteGate(root, workflow, positional[1], positional[2], flags);
       break;
+    case 'promote-gate':
+      if (!positional[1] || !positional[2]) fail('promote-gate requires <feature-id> <risk-gate>');
+      cmdPromoteGate(root, workflow, positional[1], positional[2], flags);
+      break;
+    case 'record-risk-evidence':
+      if (!positional[1] || !positional[2]) {
+        fail('record-risk-evidence requires <feature-id> <label>');
+      }
+      cmdRecordRiskEvidence(root, workflow, positional[1], positional[2], flags);
+      break;
     case 'confirm-human':
       if (!positional[1] || !positional[2]) fail('confirm-human requires <feature-id> <gate>');
       cmdConfirmHuman(root, workflow, positional[1], positional[2], flags);
@@ -1112,6 +1334,10 @@ function main() {
     case 'record-validation':
       if (!positional[1]) fail('record-validation requires <feature-id>');
       cmdRecordValidation(root, workflow, positional[1], flags);
+      break;
+    case 'complete-verification':
+      if (!positional[1]) fail('complete-verification requires <feature-id>');
+      cmdCompleteVerification(root, workflow, positional[1], flags);
       break;
     case 'accept-risk':
       if (!positional[1]) fail('accept-risk requires <feature-id>');

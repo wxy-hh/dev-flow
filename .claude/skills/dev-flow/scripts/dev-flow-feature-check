@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
-# Completion check for one dev-flow feature (status schema v3).
+# Layer 2: sole check-ok stamp writer for one dev-flow feature.
 # Content/schema checks run in dev-flow-validate.mjs; this script adds the
 # workspace checks that need git/find, and stamps .claude/runtime/dev-flow/
 # on a passing --finish so the finish-guard hook can verify freshness.
+# Calls Layer 0 (fingerprint, policy version) and Layer 1 (validator) only.
+# Must not call dev-flow-status or dev-flow-feature-finalize.
 set -u
 
 root=$(git rev-parse --show-toplevel 2>/dev/null || pwd)
@@ -33,6 +35,7 @@ fi
 script_dir=$(dirname "$0")
 validator="$script_dir/dev-flow-validate.mjs"
 fingerprint_cmd="$script_dir/dev-flow-fingerprint"
+policy_cmd="$script_dir/dev-flow-policy.mjs"
 if ! command -v node >/dev/null 2>&1; then
   printf 'ERROR Node.js is required for dev-flow validation\n' >&2
   exit 2
@@ -76,32 +79,17 @@ fi
 feature_dir="$feature_root/$feature_id"
 status_file="$feature_dir/status.md"
 completion_file="$feature_dir/completion.md"
-feature_file="$feature_dir/feature.md"
 
 # Finalized features: status.md is compacted away, completion.md remains.
+# Content/schema in validator; do not write a stamp.
 if [ "$finish" = true ] && [ ! -f "$status_file" ] && [ -f "$completion_file" ]; then
-  [ -f "$feature_file" ] && pass 'finalized feature has feature.md' || fail 'finalized feature is missing feature.md'
-  if rg -q '^  outcome: "(verified|partial)"$' "$completion_file"; then
-    pass 'completion.md records a final outcome'
-  else
-    fail 'completion.md has no verified/partial outcome'
-  fi
-  retention=$(sed -n 's/^  retention: "\([^"]*\)"$/\1/p' "$completion_file")
-  [ -n "$retention" ] || retention=$(config_value retention)
-  if [ "$retention" = full ]; then
-    if find "$feature_dir/archive" -mindepth 1 -maxdepth 1 -type d -print -quit 2>/dev/null | rg -q .; then
-      pass 'full-retention archive exists'
-    else
-      fail 'full-retention feature has no archive directory'
-    fi
-  fi
-  risk_labels_completion=$(sed -n 's/^  risk_labels: \[\(.*\)\]$/\1/p' "$completion_file")
-  if [ -n "$risk_labels_completion" ]; then
-    if rg -q '^  risk_approval_evidence:' "$completion_file" && rg -q '^  risk_verification_summary:' "$completion_file"; then
-      pass 'completion.md preserves risk summary'
-    else
-      fail 'completion.md is missing risk approval evidence or verification summary'
-    fi
+  feature_output=$(node "$validator" feature "$root" "$feature_id" --stage finalized)
+  feature_rc=$?
+  printf '%s\n' "$feature_output"
+  passes=$((passes + $(printf '%s\n' "$feature_output" | grep -c '^PASS')))
+  failures=$((failures + $(printf '%s\n' "$feature_output" | grep -c '^FAIL')))
+  if [ "$feature_rc" -eq 2 ]; then
+    fail 'finalized feature could not be parsed'
   fi
   printf '\nSummary: %s passed, %s warning(s), %s failure(s)\n' "$passes" "$warnings" "$failures"
   [ "$failures" -eq 0 ]
@@ -120,22 +108,27 @@ if ! node "$validator" asset "$root" "$feature_root" "$review_root" "$status_fil
 fi
 pass 'status.md exists'
 
-# Schema, profiles, risk contract, human gates, assets: validated in node.
-finish_flag=""
-[ "$finish" = true ] && finish_flag="--finish"
-status_output=$(node "$validator" status "$root" "$status_file" $finish_flag)
-status_rc=$?
-printf '%s\n' "$status_output"
-passes=$((passes + $(printf '%s\n' "$status_output" | grep -c '^PASS')))
-failures=$((failures + $(printf '%s\n' "$status_output" | grep -c '^FAIL')))
-if [ "$status_rc" -eq 2 ]; then
-  fail 'status.md could not be parsed'
+# Content/schema: active finish uses feature --stage active (includes finish-level
+# status checks); non-finish keeps status --stage current for compatibility.
+if [ "$finish" = true ]; then
+  feature_output=$(node "$validator" feature "$root" "$feature_id" --stage active)
+else
+  feature_output=$(node "$validator" status "$root" "$status_file" --stage current)
+fi
+feature_rc=$?
+printf '%s\n' "$feature_output"
+passes=$((passes + $(printf '%s\n' "$feature_output" | grep -c '^PASS')))
+failures=$((failures + $(printf '%s\n' "$feature_output" | grep -c '^FAIL')))
+if [ "$feature_rc" -eq 2 ]; then
+  fail 'status/feature could not be parsed'
 fi
 
-if rg -q "feature_id: \"$feature_id\"" "$status_file"; then
-  pass 'status feature_id matches'
-else
-  fail 'status feature_id does not match'
+if [ "$finish" != true ]; then
+  if rg -q "feature_id: \"$feature_id\"" "$status_file"; then
+    pass 'status feature_id matches'
+  else
+    fail 'status feature_id does not match'
+  fi
 fi
 
 section() {
@@ -249,16 +242,44 @@ if [ -n "$plan_file" ] && rg -q '^### Task ' "$plan_file" && ! rg -q 'Depends on
   warn 'plan has tasks but no explicit dependency relation'
 fi
 
-printf '\nSummary: %s passed, %s warning(s), %s failure(s)\n' "$passes" "$warnings" "$failures"
-
 if [ "$failures" -eq 0 ]; then
   if [ "$finish" = true ] && [ -n "$expected_fingerprint" ]; then
     stamp_dir=.claude/runtime/dev-flow
-    mkdir -p "$stamp_dir" 2>/dev/null
-    printf 'fingerprint: %s\noutcome: %s\nchecked_at: %s\n' \
-      "$expected_fingerprint" "${outcome:-verified}" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-      > "$stamp_dir/$feature_id.check-ok" 2>/dev/null || true
+    stamp_file="$stamp_dir/$feature_id.check-ok"
+    stamp_tmp=""
+    unsafe_stamp_path=false
+    for stamp_component in .claude .claude/runtime "$stamp_dir"; do
+      if [ -L "$stamp_component" ]; then
+        fail "check-ok stamp path passes through a symbolic link: $stamp_component"
+        unsafe_stamp_path=true
+        break
+      fi
+    done
+    if [ "$unsafe_stamp_path" = true ]; then
+      :
+    elif ! mkdir -p "$stamp_dir" 2>/dev/null; then
+      fail "could not create check-ok stamp directory: $stamp_dir"
+    else
+      workflow_version=$(node "$policy_cmd" version 2>/dev/null || true)
+      if [ -z "$workflow_version" ]; then
+        fail 'could not read workflow_version from policy'
+      elif ! stamp_tmp=$(mktemp "$stamp_dir/.${feature_id}.check-ok.XXXXXX" 2>/dev/null); then
+        fail "could not create temporary check-ok stamp in $stamp_dir"
+      elif ! printf 'workflow_version: %s\nfingerprint: %s\noutcome: %s\nchecked_at: %s\n' \
+        "$workflow_version" "$expected_fingerprint" "${outcome:-verified}" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+        > "$stamp_tmp" 2>/dev/null; then
+        rm -f "$stamp_tmp" 2>/dev/null || true
+        fail 'could not write temporary check-ok stamp'
+      elif ! mv -f "$stamp_tmp" "$stamp_file" 2>/dev/null; then
+        rm -f "$stamp_tmp" 2>/dev/null || true
+        fail "could not atomically publish check-ok stamp: $stamp_file"
+      else
+        pass "check-ok stamp written atomically: $stamp_file"
+      fi
+    fi
   fi
-  exit 0
 fi
-exit 1
+
+printf '\nSummary: %s passed, %s warning(s), %s failure(s)\n' "$passes" "$warnings" "$failures"
+[ "$failures" -eq 0 ]
+exit $?

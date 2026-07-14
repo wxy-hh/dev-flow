@@ -1,0 +1,536 @@
+#!/usr/bin/env bash
+# Task 6 acceptance: feature-scoped recoverable SDD.
+# - feature isolation
+# - plan fingerprint stale
+# - legacy shared SDD is never read
+# - finalization success cleans only the current feature SDD dir
+set -u
+
+# Layout: .claude/skills/dev-flow/scripts/tests/dev-flow-execution-test
+test_dir=$(cd "$(dirname "$0")" && pwd)
+scripts_dir=$(cd "$test_dir/.." && pwd)
+skill_root=$(cd "$scripts_dir/../.." && pwd)   # .claude/skills
+
+sdd_workspace="$skill_root/executing-plans/scripts/sdd-workspace"
+sdd_checkpoint="$skill_root/executing-plans/scripts/sdd-checkpoint"
+task_brief="$skill_root/executing-plans/scripts/task-brief"
+task_schedule="$skill_root/executing-plans/scripts/task-schedule"
+review_package="$skill_root/executing-plans/scripts/review-package"
+finalizer="$scripts_dir/dev-flow-feature-finalize"
+fingerprint_cmd="$scripts_dir/dev-flow-fingerprint"
+policy_cmd="$scripts_dir/dev-flow-policy.mjs"
+
+tmp=$(mktemp -d "${TMPDIR:-/tmp}/dev-flow-execution.XXXXXX")
+trap 'rm -rf "$tmp"' EXIT
+
+failures=0
+
+run_in_tmp() {
+  (cd "$tmp" && "$@")
+}
+
+expect_pass() {
+  if "$@"; then
+    printf 'PASS %s\n' "$*"
+  else
+    printf 'FAIL expected pass: %s\n' "$*"
+    failures=$((failures + 1))
+  fi
+}
+
+expect_fail() {
+  if "$@"; then
+    printf 'FAIL expected failure: %s\n' "$*"
+    failures=$((failures + 1))
+  else
+    printf 'PASS expected failure: %s\n' "$*"
+  fi
+}
+
+expect_exit() {
+  local want=$1
+  shift
+  set +e
+  "$@" >/dev/null 2>&1
+  local rc=$?
+  set +e
+  if [ "$rc" -eq "$want" ]; then
+    printf 'PASS exit %s: %s\n' "$want" "$*"
+  else
+    printf 'FAIL exit %s (got %s): %s\n' "$want" "$rc" "$*"
+    failures=$((failures + 1))
+  fi
+}
+
+assert_file() {
+  if [ -f "$1" ]; then
+    printf 'PASS file exists: %s\n' "$1"
+  else
+    printf 'FAIL file missing: %s\n' "$1"
+    failures=$((failures + 1))
+  fi
+}
+
+assert_dir() {
+  if [ -d "$1" ]; then
+    printf 'PASS dir exists: %s\n' "$1"
+  else
+    printf 'FAIL dir missing: %s\n' "$1"
+    failures=$((failures + 1))
+  fi
+}
+
+assert_no_path() {
+  if [ ! -e "$1" ]; then
+    printf 'PASS absent: %s\n' "$1"
+  else
+    printf 'FAIL expected absent: %s\n' "$1"
+    failures=$((failures + 1))
+  fi
+}
+
+assert_eq() {
+  local desc=$1 expected=$2 actual=$3
+  if [ "$expected" = "$actual" ]; then
+    printf 'PASS %s\n' "$desc"
+  else
+    printf 'FAIL %s (expected=%s actual=%s)\n' "$desc" "$expected" "$actual"
+    failures=$((failures + 1))
+  fi
+}
+
+assert_contains() {
+  local desc=$1 needle=$2 haystack=$3
+  case "$haystack" in
+    *"$needle"*) printf 'PASS %s\n' "$desc" ;;
+    *)
+      printf 'FAIL %s (missing %s in: %s)\n' "$desc" "$needle" "$haystack"
+      failures=$((failures + 1))
+      ;;
+  esac
+}
+
+# ---------- bootstrap fixture repo ----------
+mkdir -p "$tmp/.claude/rules" \
+  "$tmp/.claude/runtime/sdd" \
+  "$tmp/.claude/runtime/dev-flow" \
+  "$tmp/docs/dev-flow/features" \
+  "$tmp/docs/dev-flow/reviews" \
+  "$tmp/src"
+
+printf '%s\n' \
+  '---' \
+  'dev_flow:' \
+  '  paths:' \
+  '    runtime_root: .claude/runtime' \
+  '    feature_root: docs/dev-flow/features' \
+  '    review_root: docs/dev-flow/reviews' \
+  '    sdd_progress: .claude/runtime/sdd' \
+  '  verification:' \
+  '    webapp_testing: "disabled"' \
+  '  artifacts:' \
+  '    retention: "compact"' \
+  '---' \
+  '# fixture workflow' > "$tmp/.claude/rules/project-workflow.md"
+
+# Legacy shared SDD noise that v0.8 must ignore.
+printf '%s\n' 'LEGACY SHARED progress — must never be read' > "$tmp/.claude/runtime/sdd/progress.md"
+printf '%s\n' 'LEGACY SHARED task brief' > "$tmp/.claude/runtime/sdd/task-1-brief.md"
+printf '%s\n' 'LEGACY SHARED review' > "$tmp/.claude/runtime/sdd/review-abc..def.diff"
+printf '%s\n' 'LEGACY SHARED progress.json' > "$tmp/.claude/runtime/sdd/progress.json"
+
+# Plans for two features.
+mkdir -p "$tmp/docs/dev-flow/features/alpha" "$tmp/docs/dev-flow/features/beta"
+cat > "$tmp/docs/dev-flow/features/alpha/plan.md" <<'EOF'
+# Alpha plan
+
+### Task 1: setup
+**Depends on:** none
+**Writes:**
+- src/alpha.js
+
+### Task 2: followup
+**Depends on:** Task 1
+**Writes:**
+- src/alpha-more.js
+EOF
+
+cat > "$tmp/docs/dev-flow/features/beta/plan.md" <<'EOF'
+# Beta plan
+
+### Task 1: setup
+**Depends on:** none
+**Writes:**
+- src/beta.js
+EOF
+
+printf '%s\n' 'export const alpha = 1' > "$tmp/src/alpha.js"
+printf '%s\n' 'export const beta = 1' > "$tmp/src/beta.js"
+
+git -C "$tmp" init -q
+git -C "$tmp" -c user.name='dev-flow test' -c user.email='dev-flow@example.test' add .
+git -C "$tmp" -c user.name='dev-flow test' -c user.email='dev-flow@example.test' commit -qm baseline
+
+# ---------- 1) feature isolation via sdd-workspace ----------
+ws_alpha=$(run_in_tmp "$sdd_workspace" alpha)
+ws_beta=$(run_in_tmp "$sdd_workspace" beta)
+
+assert_contains 'alpha workspace is feature-scoped' '/.claude/runtime/sdd/alpha' "$ws_alpha"
+assert_contains 'beta workspace is feature-scoped' '/.claude/runtime/sdd/beta' "$ws_beta"
+
+if [ "$ws_alpha" = "$ws_beta" ]; then
+  printf 'FAIL alpha and beta workspaces must differ\n'
+  failures=$((failures + 1))
+else
+  printf 'PASS alpha/beta workspaces are distinct\n'
+fi
+
+# workspace must not be the bare shared root
+if [ "$(basename "$ws_alpha")" = "sdd" ]; then
+  printf 'FAIL alpha workspace resolved to bare sdd root\n'
+  failures=$((failures + 1))
+else
+  printf 'PASS alpha workspace is not bare sdd root\n'
+fi
+
+assert_dir "$ws_alpha/reports"
+assert_dir "$ws_beta/reports"
+assert_file "$ws_alpha/.gitignore"
+assert_file "$tmp/.claude/runtime/sdd/progress.md"  # legacy remains untouched
+
+# path traversal rejected
+expect_exit 2 run_in_tmp "$sdd_workspace" '../escape'
+expect_exit 2 run_in_tmp "$sdd_workspace" 'a/b'
+expect_exit 2 run_in_tmp "$sdd_workspace"
+
+# ---------- 2) checkpoint init / mark / isolation ----------
+expect_pass run_in_tmp "$sdd_checkpoint" alpha init --plan docs/dev-flow/features/alpha/plan.md
+expect_pass run_in_tmp "$sdd_checkpoint" beta init --plan docs/dev-flow/features/beta/plan.md
+
+assert_file "$tmp/.claude/runtime/sdd/alpha/checkpoint.json"
+assert_file "$tmp/.claude/runtime/sdd/alpha/progress.md"
+assert_file "$tmp/.claude/runtime/sdd/beta/checkpoint.json"
+assert_file "$tmp/.claude/runtime/sdd/beta/progress.md"
+
+# mark alpha task 1 done; beta stays empty
+expect_pass run_in_tmp "$sdd_checkpoint" alpha mark-progress 1
+expect_pass run_in_tmp "$sdd_checkpoint" alpha mark-done 1 --base HEAD --head HEAD
+
+done_alpha=$(run_in_tmp "$sdd_checkpoint" alpha done-list 2>/dev/null | tr -d '\n')
+done_beta=$(run_in_tmp "$sdd_checkpoint" beta done-list 2>/dev/null | tr -d '\n')
+assert_eq 'alpha done-list is 1' '1' "$done_alpha"
+assert_eq 'beta done-list is empty' '' "$done_beta"
+
+show_alpha=$(run_in_tmp "$sdd_checkpoint" alpha show 2>/dev/null)
+assert_contains 'alpha show reports fresh plan' 'plan_status: fresh' "$show_alpha"
+assert_contains 'alpha show reports done 1' 'done: 1' "$show_alpha"
+
+# progress.md derived, not legacy shared content
+if rg -q 'LEGACY SHARED' "$tmp/.claude/runtime/sdd/alpha/progress.md"; then
+  printf 'FAIL alpha progress.md pulled legacy shared content\n'
+  failures=$((failures + 1))
+else
+  printf 'PASS alpha progress.md is feature-local\n'
+fi
+if rg -q 'Task 1' "$tmp/.claude/runtime/sdd/alpha/progress.md"; then
+  printf 'PASS alpha progress.md lists Task 1\n'
+else
+  printf 'FAIL alpha progress.md missing Task 1\n'
+  failures=$((failures + 1))
+fi
+
+# task-schedule --feature loads done-list from checkpoint
+sched=$(run_in_tmp "$task_schedule" docs/dev-flow/features/alpha/plan.md --feature alpha --json 2>/dev/null)
+assert_contains 'task-schedule uses feature done list' '"done":[1]' "$sched"
+assert_contains 'task-schedule ready task 2' '"ready":[2]' "$sched"
+
+# task-brief writes under feature workspace
+brief_out=$(run_in_tmp "$task_brief" docs/dev-flow/features/alpha/plan.md 2 --feature alpha 2>&1)
+assert_contains 'task-brief path is feature-scoped' '/.claude/runtime/sdd/alpha/' "$brief_out"
+assert_file "$tmp/.claude/runtime/sdd/alpha/task-2-brief.md"
+if [ -f "$tmp/.claude/runtime/sdd/task-2-brief.md" ] && rg -q 'Task 2' "$tmp/.claude/runtime/sdd/task-2-brief.md" 2>/dev/null; then
+  # only fail if our brief overwrote the legacy file with Task 2 content
+  if rg -q 'followup|Task 2' "$tmp/.claude/runtime/sdd/task-2-brief.md" 2>/dev/null; then
+    printf 'FAIL task-brief wrote to bare shared sdd root\n'
+    failures=$((failures + 1))
+  else
+    printf 'PASS task-brief did not overwrite legacy shared root with new brief\n'
+  fi
+else
+  printf 'PASS task-brief did not create bare shared brief\n'
+fi
+
+# Explicit output paths cannot bypass feature scoping.
+expect_exit 2 run_in_tmp "$task_brief" docs/dev-flow/features/alpha/plan.md 1 \
+  "$tmp/outside-brief-without-feature.md"
+expect_exit 2 run_in_tmp "$task_brief" docs/dev-flow/features/alpha/plan.md 1 \
+  --feature alpha "$tmp/outside-brief.md"
+printf '%s\n' 'DIRECT_BRIEF_TARGET_UNCHANGED' \
+  > "$tmp/.claude/runtime/direct-brief-target.md"
+ln -s "$tmp/.claude/runtime/direct-brief-target.md" "$ws_alpha/direct-brief.md"
+expect_exit 2 run_in_tmp "$task_brief" docs/dev-flow/features/alpha/plan.md 1 \
+  --feature alpha "$ws_alpha/direct-brief.md"
+assert_eq 'task-brief rejects a symlink OUTFILE itself' 'DIRECT_BRIEF_TARGET_UNCHANGED' \
+  "$(<"$tmp/.claude/runtime/direct-brief-target.md")"
+rm "$ws_alpha/direct-brief.md"
+printf '%s\n' 'EXISTING_BRIEF_UNCHANGED' > "$ws_alpha/existing-brief.md"
+expect_exit 3 run_in_tmp "$task_brief" docs/dev-flow/features/alpha/plan.md 999 \
+  --feature alpha "$ws_alpha/existing-brief.md"
+assert_eq 'failed task extraction preserves the previous brief' 'EXISTING_BRIEF_UNCHANGED' \
+  "$(<"$ws_alpha/existing-brief.md")"
+
+# Review packages contain the actual staged, unstaged and untracked patches,
+# while their output remains inside the feature workspace.
+printf '%s\n' 'export const alpha = "STAGED_REVIEW_CONTENT"' > "$tmp/src/alpha.js"
+git -C "$tmp" add src/alpha.js
+printf '%s\n' 'export const beta = "UNSTAGED_REVIEW_CONTENT"' > "$tmp/src/beta.js"
+printf '%s\n' 'export const newFile = "UNTRACKED_REVIEW_CONTENT"' \
+  > "$tmp/src/review-untracked.js"
+package_out=$(run_in_tmp "$review_package" HEAD HEAD --feature alpha 2>&1)
+assert_contains 'review-package path is feature-scoped' '/.claude/runtime/sdd/alpha/' "$package_out"
+short_head=$(git -C "$tmp" rev-parse --short HEAD)
+package_file="$tmp/.claude/runtime/sdd/alpha/review-${short_head}..${short_head}.diff"
+assert_file "$package_file"
+package_body=$(<"$package_file")
+assert_contains 'review-package includes staged patch' 'STAGED_REVIEW_CONTENT' "$package_body"
+assert_contains 'review-package includes unstaged patch' 'UNSTAGED_REVIEW_CONTENT' "$package_body"
+assert_contains 'review-package includes untracked patch' 'UNTRACKED_REVIEW_CONTENT' "$package_body"
+
+expect_exit 2 run_in_tmp "$review_package" HEAD HEAD "$tmp/outside-review-without-feature.diff"
+expect_exit 2 run_in_tmp "$review_package" HEAD HEAD --feature alpha \
+  "$tmp/outside-review.diff"
+ln -s "$tmp" "$ws_alpha/escape-link"
+expect_exit 2 run_in_tmp "$review_package" HEAD HEAD --feature alpha \
+  "$ws_alpha/escape-link/review.diff"
+printf '%s\n' 'DIRECT_REVIEW_TARGET_UNCHANGED' \
+  > "$tmp/.claude/runtime/direct-review-target.diff"
+ln -s "$tmp/.claude/runtime/direct-review-target.diff" "$ws_alpha/direct-review.diff"
+expect_exit 2 run_in_tmp "$review_package" HEAD HEAD --feature alpha \
+  "$ws_alpha/direct-review.diff"
+assert_eq 'review-package rejects a symlink OUTFILE itself' 'DIRECT_REVIEW_TARGET_UNCHANGED' \
+  "$(<"$tmp/.claude/runtime/direct-review-target.diff")"
+rm "$ws_alpha/direct-review.diff"
+assert_no_path "$tmp/outside-review.diff"
+
+# ---------- 3) plan fingerprint stale ----------
+printf '\n### Task 3: extra\n**Depends on:** Task 2\n**Writes:**\n- src/alpha-extra.js\n' \
+  >> "$tmp/docs/dev-flow/features/alpha/plan.md"
+
+set +e
+stale_out=$(run_in_tmp "$sdd_checkpoint" alpha check-plan 2>&1)
+stale_rc=$?
+set -e
+assert_eq 'check-plan exits 3 when plan stale' 3 "$stale_rc"
+assert_contains 'check-plan reports stale' 'plan_status: stale' "$stale_out"
+
+set +e
+mark_out=$(run_in_tmp "$sdd_checkpoint" alpha mark-done 2 2>&1)
+mark_rc=$?
+set -e
+assert_eq 'mark-done refuses stale plan (exit 3)' 3 "$mark_rc"
+assert_contains 'mark-done stale message' 'stale' "$mark_out"
+
+set +e
+prog_out=$(run_in_tmp "$sdd_checkpoint" alpha mark-progress 2 2>&1)
+prog_rc=$?
+set -e
+assert_eq 'mark-progress refuses stale plan (exit 3)' 3 "$prog_rc"
+
+# done-list still works (with WARN on stderr)
+done_after=$(run_in_tmp "$sdd_checkpoint" alpha done-list 2>/dev/null | tr -d '\n')
+assert_eq 'done-list still returns prior done after stale' '1' "$done_after"
+
+# refresh restores fresh
+expect_pass run_in_tmp "$sdd_checkpoint" alpha refresh-plan
+expect_pass run_in_tmp "$sdd_checkpoint" alpha check-plan
+expect_pass run_in_tmp "$sdd_checkpoint" alpha mark-done 2 --base HEAD --head HEAD
+done_refreshed=$(run_in_tmp "$sdd_checkpoint" alpha done-list 2>/dev/null | tr -d '\n')
+assert_eq 'after refresh mark-done updates done-list' '1,2' "$done_refreshed"
+
+# ---------- 4) legacy shared SDD is never read ----------
+# Checkpoint for a brand-new feature must ignore progress.md at bare root.
+mkdir -p "$tmp/docs/dev-flow/features/gamma"
+cat > "$tmp/docs/dev-flow/features/gamma/plan.md" <<'EOF'
+# Gamma plan
+
+### Task 1: only
+**Depends on:** none
+**Writes:**
+- src/gamma.js
+EOF
+
+expect_pass run_in_tmp "$sdd_checkpoint" gamma init --plan docs/dev-flow/features/gamma/plan.md
+done_gamma=$(run_in_tmp "$sdd_checkpoint" gamma done-list 2>/dev/null | tr -d '\n')
+assert_eq 'gamma does not inherit legacy shared done list' '' "$done_gamma"
+
+show_gamma=$(run_in_tmp "$sdd_checkpoint" gamma show 2>/dev/null)
+assert_contains 'gamma show is feature-local' 'feature_id: gamma' "$show_gamma"
+if printf '%s' "$show_gamma" | rg -q 'LEGACY'; then
+  printf 'FAIL gamma show leaked legacy content\n'
+  failures=$((failures + 1))
+else
+  printf 'PASS gamma show ignores legacy shared SDD\n'
+fi
+
+# sdd-checkpoint must never open bare shared progress.md as its ledger
+if [ -f "$tmp/.claude/runtime/sdd/gamma/progress.md" ] && ! rg -q 'LEGACY SHARED' "$tmp/.claude/runtime/sdd/gamma/progress.md"; then
+  printf 'PASS gamma progress.md is newly derived (not legacy)\n'
+else
+  printf 'FAIL gamma progress.md missing or contains legacy shared text\n'
+  failures=$((failures + 1))
+fi
+
+# bare shared files still present (not deleted by feature ops)
+assert_file "$tmp/.claude/runtime/sdd/progress.md"
+assert_file "$tmp/.claude/runtime/sdd/task-1-brief.md"
+
+# ---------- 5) finalization cleans only current feature SDD ----------
+write_finalizable() {
+  local id=$1
+  mkdir -p "$tmp/docs/dev-flow/features/$id" "$tmp/docs/dev-flow/reviews" "$tmp/.claude/runtime/sdd/$id"
+  printf '%s\n' \
+    '---' \
+    'dev_flow_status:' \
+    '  schema_version: "3"' \
+    "  feature_id: \"$id\"" \
+    '  level: "L"' \
+    '  profile: "standard"' \
+    '  risk_labels: []' \
+    '  risk_evidence: {}' \
+    '  classification:' \
+    '    topology: "local"' \
+    '    evidence_result: "verified"' \
+    '    note: "fixture"' \
+    '  current_gate: "verification-before-completion"' \
+    '  completed_gates:' \
+    '    - rollback-units' \
+    '    - code-review' \
+    '    - verification-before-completion' \
+    '  next_action: "finish"' \
+    '  auto_continue: false' \
+    '  human_gates:' \
+    '    requirement_confirmation:' \
+    '      required: false' \
+    '      status: "pending"' \
+    '      evidence: "not required"' \
+    '    implementation_approval:' \
+    '      required: true' \
+    '      status: "confirmed"' \
+    '      evidence: "user approved lightweight L implementation"' \
+    '  risk_gates:' \
+    '    requirements_coverage: "none"' \
+    '    plan_review: "none"' \
+    '    rollback_units: "light"' \
+    '    security_review: "none"' \
+    '    behavior_verification: "light"' \
+    '  assets:' \
+    "    - {path: \"docs/dev-flow/reviews/${id}-verification.md\", kind: \"verification\"}" \
+    "    - {path: \"docs/dev-flow/reviews/${id}-code-review.md\", kind: \"review\"}" \
+    "    - {path: \"docs/dev-flow/features/${id}/初步实现计划.md\", kind: \"plan\"}" \
+    '  validation:' \
+    '    last_at: "2026-01-01"' \
+    '    commands:' \
+    '      - "printf validation"' \
+    '    business_diff_fingerprint: "unknown"' \
+    '  gate_evidence:' \
+    '    rollback_units:' \
+    "      path: \"docs/dev-flow/reviews/${id}-verification.md\"" \
+    '      heading: "Rollback summary"' \
+    '    code_review:' \
+    "      path: \"docs/dev-flow/reviews/${id}-code-review.md\"" \
+    '      heading: "Findings"' \
+    '  accepted_risks: []' \
+    '---' > "$tmp/docs/dev-flow/features/$id/status.md"
+  printf '%s\n' "# verification $id" '## Rollback summary' '- reversible' \
+    > "$tmp/docs/dev-flow/reviews/${id}-verification.md"
+  printf '%s\n' "# code review $id" '## Findings' '- none' > "$tmp/docs/dev-flow/reviews/${id}-code-review.md"
+  printf '%s\n' "### Task 1" '**Depends on:** none' > "$tmp/docs/dev-flow/features/$id/初步实现计划.md"
+  printf '%s\n' "# feature $id" > "$tmp/docs/dev-flow/features/$id/feature.md"
+  printf '%s\n' \
+    '---' \
+    'dev_flow_completion:' \
+    '  schema_version: "1"' \
+    "  feature_id: \"$id\"" \
+    '  level: "L"' \
+    '  outcome: "verified"' \
+    '  completed_at: "2026-01-01T00:00:00Z"' \
+    '  retention: "compact"' \
+    "  workflow_version: \"$(node "$policy_cmd" version)\"" \
+    '  risk_labels: []' \
+    '  risk_approval_evidence: ""' \
+    '  risk_verification_summary: ""' \
+    '  business_diff_fingerprint: "0000000000000000000000000000000000000000"' \
+    '  commits: []' \
+    '  pull_request: "none"' \
+    '  accepted_risks: []' \
+    '---' \
+    "# completion $id" > "$tmp/docs/dev-flow/features/$id/completion.md"
+  # ensure feature SDD content exists (checkpoint already for alpha/beta)
+  printf '%s\n' "extra marker for $id" > "$tmp/.claude/runtime/sdd/$id/extra-marker.txt"
+  printf '%s\n' \
+    '{' \
+    "  \"feature_id\": \"$id\"," \
+    '  "level": "L",' \
+    '  "profile": "standard",' \
+    '  "state": "approved",' \
+    '  "protected_roots": ["src/**"],' \
+    '  "created_at": "2026-01-01T00:00:00Z",' \
+    '  "approved_at": "2026-01-01T00:00:00Z"' \
+    '}' > "$tmp/.claude/runtime/dev-flow/write-authorization.json"
+}
+
+stamp_feature() {
+  local id=$1
+  local fp
+  fp=$(run_in_tmp "$fingerprint_cmd" docs/dev-flow/features docs/dev-flow/reviews)
+  local version
+  version=$(node "$policy_cmd" version)
+  printf 'workflow_version: %s\nfingerprint: %s\noutcome: verified\nchecked_at: 2026-01-01T00:00:00Z\n' \
+    "$version" "$fp" > "$tmp/.claude/runtime/dev-flow/${id}.check-ok"
+  awk -v fp="$fp" '{ sub(/^    business_diff_fingerprint: ".*"$/, "    business_diff_fingerprint: \"" fp "\""); print }' \
+    "$tmp/docs/dev-flow/features/$id/status.md" > "$tmp/docs/dev-flow/features/$id/status.new"
+  mv "$tmp/docs/dev-flow/features/$id/status.new" "$tmp/docs/dev-flow/features/$id/status.md"
+  awk -v fp="$fp" '{ sub(/^  business_diff_fingerprint: ".*"$/, "  business_diff_fingerprint: \"" fp "\""); print }' \
+    "$tmp/docs/dev-flow/features/$id/completion.md" > "$tmp/docs/dev-flow/features/$id/completion.new"
+  mv "$tmp/docs/dev-flow/features/$id/completion.new" "$tmp/docs/dev-flow/features/$id/completion.md"
+}
+
+# Business change so fingerprint is meaningful.
+printf '%s\n' 'export const alpha = 2' > "$tmp/src/alpha.js"
+git -C "$tmp" add src/alpha.js
+
+write_finalizable alpha
+write_finalizable beta
+# keep gamma SDD as non-finalized peer
+assert_dir "$tmp/.claude/runtime/sdd/gamma"
+assert_file "$tmp/.claude/runtime/sdd/alpha/checkpoint.json"
+assert_file "$tmp/.claude/runtime/sdd/beta/checkpoint.json"
+
+stamp_feature alpha
+stamp_feature beta
+
+inv=$(run_in_tmp "$finalizer" alpha --retention=compact 2>/dev/null | sed -n 's/^Inventory: //p' | head -1)
+if [ -z "$inv" ]; then
+  printf 'FAIL dry-run inventory empty for alpha\n'
+  failures=$((failures + 1))
+  inv=missing
+else
+  printf 'PASS dry-run inventory for alpha\n'
+fi
+
+expect_pass run_in_tmp "$finalizer" alpha --retention=compact --confirm --inventory "$inv"
+
+# alpha SDD gone; beta + gamma remain; legacy shared files remain
+assert_no_path "$tmp/.claude/runtime/sdd/alpha"
+assert_dir "$tmp/.claude/runtime/sdd/beta"
+assert_file "$tmp/.claude/runtime/sdd/beta/checkpoint.json"
+assert_file "$tmp/.claude/runtime/sdd/beta/extra-marker.txt"
+assert_dir "$tmp/.claude/runtime/sdd/gamma"
+assert_file "$tmp/.claude/runtime/sdd/gamma/checkpoint.json"
+assert_file "$tmp/.claude/runtime/sdd/progress.md"
+assert_file "$tmp/.claude/runtime/sdd/task-1-brief.md"
+assert_file "$tmp/.claude/runtime/sdd/review-abc..def.diff"
+
+printf '\nSummary: %s failure(s)\n' "$failures"
+[ "$failures" -eq 0 ]
+exit $?

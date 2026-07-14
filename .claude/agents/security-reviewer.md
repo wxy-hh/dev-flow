@@ -112,8 +112,13 @@ model: sonnet
 
 `SEC-*` 的 `pending` 只能在设计阶段存在；进入最终 `code-review` 或 `verification-before-completion` 前，必须更新为 `done` 或由用户明确记录为 accepted risk。报告开头同时给出 3-5 行用户决策摘要：结论、阻塞项、待决策项和下一步。
 
-## 参考资料 (Reference)
+## 输出与 severity 职责
 
+报告 **findings-only**：findings + evidence + disposition + remaining risks；禁止完整实现 dump。
+
+**severity 识别属于 security-reviewer / 调用它的 skill**：CRITICAL/HIGH 由本 agent 判定；CLI 不扫描自然语言、不自动 promote。当 `security_review` 为 light 且出现 CRITICAL/HIGH 时，调用方 skill 必须先执行 `dev-flow-status promote-gate security_review --to full --reason <text>`，再落盘 full 报告；即使随后修复，也保留 full 证据与 disposition。阻塞 finding 处置完成前不得 complete gate。
+
+## 参考资料 (Reference)
 
 ---
 

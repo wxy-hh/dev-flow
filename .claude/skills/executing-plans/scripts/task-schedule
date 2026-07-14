@@ -8,28 +8,44 @@
 # Phase 0 (Task 0) is exclusive.
 #
 # Usage:
-#   task-schedule <plan-file> [--done 1,2,3] [--json]
+#   task-schedule <plan-file> [--done 1,2,3] [--feature FEATURE_ID] [--json]
+#
+# When --feature is set and --done is omitted, done list is loaded from
+# sdd-checkpoint <feature-id> done-list (feature-scoped; never legacy shared SDD).
 set -euo pipefail
 
+SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
+
 if [ $# -lt 1 ]; then
-  echo "用法: task-schedule PLAN_FILE [--done 1,2,3] [--json]" >&2
+  echo "用法: task-schedule PLAN_FILE [--done 1,2,3] [--feature FEATURE_ID] [--json]" >&2
   exit 2
 fi
 
 plan=$1
 shift
 done_list=""
+feature_id=${DEV_FLOW_FEATURE_ID:-}
 as_json=false
+done_explicit=false
 while [ $# -gt 0 ]; do
   case "$1" in
-    --done) done_list=${2:-}; shift 2 ;;
+    --done) done_list=${2:-}; done_explicit=true; shift 2 ;;
+    --feature) feature_id=${2:-}; shift 2 ;;
     --json) as_json=true; shift ;;
-    --help|-h) echo "用法: task-schedule PLAN_FILE [--done 1,2,3] [--json]"; exit 0 ;;
+    --help|-h) echo "用法: task-schedule PLAN_FILE [--done 1,2,3] [--feature FEATURE_ID] [--json]"; exit 0 ;;
     *) echo "未知参数: $1" >&2; exit 2 ;;
   esac
 done
 
 [ -f "$plan" ] || { echo "计划文件不存在: $plan" >&2; exit 2; }
+
+if [ "$done_explicit" = false ] && [ -n "$feature_id" ]; then
+  if [ -x "$SCRIPT_DIR/sdd-checkpoint" ]; then
+    # done-list prints WARN on stderr when plan is stale; still usable.
+    done_list=$("$SCRIPT_DIR/sdd-checkpoint" "$feature_id" done-list 2>/dev/null || true)
+    done_list=$(printf '%s' "$done_list" | tr -d '\n')
+  fi
+fi
 
 # Parse with Node for portable regex (macOS awk lacks match 3-arg form).
 parsed=$(node -e '
@@ -172,6 +188,7 @@ result=$(DONE_LIST="$done_list" AS_JSON="$as_json" node -e '
     process.stdout.write(JSON.stringify({
       ready: ready.map((t) => Number(t.id)),
       blocked,
+      done: doneList.map((x) => Number(x)).filter((n) => !Number.isNaN(n)),
     }) + "\n");
   } else {
     process.stdout.write("Ready (parallel-safe): " + (ready.map((t) => t.id).join(" ") || "<none>") + "\n");

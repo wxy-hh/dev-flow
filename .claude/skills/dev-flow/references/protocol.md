@@ -33,7 +33,8 @@
 - 需求覆盖无阻塞缺口时，至少继续到 `plan-review`。
 - `plan-review` 无 CRITICAL/HIGH 时可自动进入实现前的回撤/安全检查；下一步要写业务代码前必须停在 `implementation_approval`。
 - `rollback-units` 触发 `full` 时设计完成后停在实现前；`light` 时把证据写入 `status.md`。
-- `rollback_units: full` 时实现完成后先审计再 `code-review`；无 Critical/Important 阻塞项时进入验证。
+- `rollback_units: full` 时实现完成后先审计再 `code-review`；无 CRITICAL/HIGH 阻塞项时进入验证。
+- light 路线 code-review 用 `gate_evidence.code_review`（path+heading）；标准 L 始终独立报告。
 
 必须停下询问的场景：
 
@@ -41,6 +42,7 @@
 - 需求边界固化后、进入 `writing-plans` 前；计划与实现前门禁完成后、写业务代码前。
 - `requirements-coverage` 出现 `MISSING`/`CONFLICT`/`OUT_OF_SCOPE`，或 L 级出现未接受的 `PARTIAL`/`UNVERIFIABLE`。
 - `plan-review` 出现 CRITICAL/HIGH；安全审查发现高风险残留；验证失败需要选择修复范围或接受风险。
+- finalizer dry-run 输出 `[ASSET FINALIZATION]` 后，当前回合必须停止；只接受精确回复 `compact` / `retain full` / `not now`。
 - 需要提交、回滚、合并、推送、创建 PR、删除文件或其他改变分支状态的动作；中途重分级、跳过已触发门禁或接受高风险残留。
 
 用户可覆盖默认衔接，例如"全自动继续到实现前""每一步都问我""只跑到 plan-review 停下""手动引用这些文件作为输入：..."。
@@ -83,20 +85,52 @@ Stop reason: <only when Auto-continue is no>
 | `executing-plans` | 任务报告、回撤证据 | 仅在 `implementation_approval.status` 为 `confirmed`（或用户明确跳过并接受风险）后执行 |
 | `rollback-units`（审计） | 补齐提交/diff/patch 证据 | 无未解释 `pending` 后进入 `code-review` |
 | `code-review` | 代码审查报告 | 无阻塞后进入 `verification-before-completion` |
-| `verification-before-completion` | 验证报告，必要时 manual-test | 停下询问分支收尾方式 |
-| `finishing-a-development-branch` | 分支收尾动作和最终验证结论 | 按用户选择合并/推送/保留/丢弃 |
+| `verification-before-completion` | 验证报告，必要时 manual-test | `complete-verification` 后进入 feature-check / finalization |
+| `finishing-a-development-branch` | final assets、dry-run、精确 finalization 回复、Git 选项 | 见 ASSET FINALIZATION |
 
 `<feature-id>` 按项目适配层命名，默认 `YYYY-MM-DD-<short-kebab-name>`；已有产物或 OpenSpec change id 已明确时沿用。
+
+## ASSET FINALIZATION 停等
+
+`/finish` 在 feature-check 通过并生成 final assets 后，读取 `dev_flow.artifacts.retention` 作为本次 dry-run 的默认 `compact|full`，只做 finalizer dry-run（**禁止同回合 `--confirm`**），输出：
+
+```text
+[ASSET FINALIZATION]
+Feature: <feature-id>
+Verification: verified|partial
+Inventory: <sha256>
+Working set: <files/bytes>
+Long-term keep: <files/bytes>
+
+Reply exactly:
+- compact
+- retain full
+- not now
+[/ASSET FINALIZATION]
+
+Auto-continue: no
+```
+
+当前回合必须停止。仅精确整行回复有效：
+
+| 回复 | 动作 |
+|------|------|
+| `compact` | `--retention=compact --confirm --inventory <sha256>`；清理中间资产，保留 feature/completion/可复用 manual-test；feature-owned review 删除；共享 review_root 不得残留当前 feature 报告 |
+| `retain full` | 同一 inventory 下 `--retention=full --confirm`；中间资产移入防碰撞的 `archive/<timestamp>-<nonce>/{reviews,feature}/`；共享 review_root 当前 feature 残留为 0 |
+| `not now` | 不调用 finalizer；status/feature/completion/中间资产与 check-ok 保留；只能声明「验证已完成/partial，但资产尚未 finalized」；finish-guard 对 git 返回 ask |
+
+禁止把 implementation approval 或「继续/好的/完成吧」当 finalization 授权。`--confirm` 必须带 `--inventory`；hash 漂移则零修改失败并要求重新 dry-run。状态机细节见 `finish.md` 与 finishing skill。
 
 ## status.md v3 更新契约
 
 - `schema_version` 固定 `"3"`；字段取值见 contract.json 的 `asset_kinds`/`risk_labels`/`risk_gates`/`classification_topologies`/`classification_evidence_results`。
-- **所有 status 创建/更新只通过** `dev-flow-status` CLI（`init`/`authorize`/`activate`/`add-asset`/`complete-gate`/`confirm-human`/`record-validation`/`accept-risk`/`repair`）；写后自动跑 validator，失败恢复原文件。`repair` 只重排确定性字段，不生成审批/验证/风险接受事实。
+- **所有 status 创建/更新只通过** `dev-flow-status` CLI（`init`/`authorize`/`activate`/`add-asset`/`complete-gate`/`promote-gate`/`record-risk-evidence`/`confirm-human`/`record-validation`/`complete-verification`/`accept-risk`/`repair`）；写后自动跑 validator，失败恢复原文件。`repair` 只重排确定性字段，不生成审批/验证/风险接受事实。
+- `implementation_approval` 的 candidate 与 `activate` 共用 validator approval stage：标准 M/L 的路线骨架及所有已触发实现前 gate 未完成时拒绝授权；human `skipped` 合法但不等于 process gate 已执行。
 - 保留已有 `completed_gates`，只追加新完成 gate，不删除历史。
 - `assets` 只追加已存在或本次明确生成的真实路径，每项 `{path, kind}`，禁止 `path#heading`。
-- 可选 `gate_evidence`（仍为 schema v3）：`requirements_coverage: light` 且证据在计划内嵌章节时，`complete-gate` 写入 `path` + 唯一 `heading`；validator 校验文件存在、位于 feature/review 根、标题恰好一次。
+- 可选 `gate_evidence`（仍为 schema v3）：`requirements_coverage: light` 或 light 路线 `code-review` 的证据在已有文件章节时，`complete-gate` 写入 `path` + 唯一 `heading`；validator 校验文件存在、位于 feature/review 根、标题恰好一次。
 - 每次更新设置 `current_gate`、`next_action`、`auto_continue`。
-- 验证门禁完成后用 `record-validation` 记录 `validation.last_at`/`commands`，并刷新 `business_diff_fingerprint`。
+- 验证门禁用 `complete-verification`（或 `record-validation`）记录命令与报告；`complete-verification` 不 stamp，check-ok 只由 feature-check 写。
 - 携带风险标签时，`risk_evidence` 每个标签一项（`mode`/`conclusion`/`verification`/`report`），对应最低 gate 升为 `full` 时必须用 `report` 模式。
 - `risk-minimal` 只适用于带风险标签且 `risk_labels` 非空的 XS/S；带风险标签的 M/L 用 `profile: "standard"`。
 - 只有用户明确确认、继续、接受风险或跳过并接受风险，才能 `confirm-human` 把 `human_gates.<gate>.status` 写为 `confirmed`/`skipped`，理由写入 `evidence`。
@@ -114,6 +148,7 @@ dev_flow_completion:
   outcome: "verified|partial"
   completed_at: "<ISO 8601>"
   retention: "compact|full"
+  workflow_version: "<current contract workflow_version; required for new completion>"
   risk_labels: []
   risk_approval_evidence: ""
   risk_verification_summary: ""
@@ -124,4 +159,14 @@ dev_flow_completion:
 ---
 ```
 
-`dev_flow_completion.schema_version` 恒为 `"1"`，是独立 schema（不是 status v3）。`risk_labels` 非空时，`risk_approval_evidence` 和 `risk_verification_summary` 必填。`outcome: partial` 时必须列出已接受风险且不得写成「验证通过」。
+`dev_flow_completion.schema_version` 恒为 `"1"`，是独立 schema（不是 status v3）。有 active `status.md` 的新 completion 必须写当前 `contract.workflow_version` 和模板全部字段并通过严格校验；`risk_labels`、`accepted_risks` 必须分别与 active status 精确一致，`completed_at` 必须是 ISO-8601 时间。无 status 的历史 finalized completion 可省略版本，按最小旧契约校验并输出 WARN。`risk_labels` 非空时，`risk_approval_evidence` 和 `risk_verification_summary` 必填。
+
+`outcome: verified` 要求 `accepted_risks: []`，不写 accepted-risk 段。`outcome: partial` 必须列出已接受风险，不得写成「验证通过」，并在 frontmatter 后为每个 ID 恰好保留一个长期事实段；段的 ID 集合必须与 `accepted_risks` 一致：
+
+```markdown
+## AR-001
+- reason: <用户接受的剩余风险原因>
+- evidence: <明确用户证据或可审计证据>
+```
+
+新 completion 缺段、重复段、空 reason/evidence 或额外 AR 段均 FAIL。历史 finalized partial 缺少该段只 WARN，不倒填事实。

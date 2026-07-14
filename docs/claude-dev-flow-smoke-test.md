@@ -58,6 +58,7 @@ YYYY-MM-DD-dev-flow-smoke-test
 - 安全审查为 `light` 或 `full`。
 - 行为验证为 `full`。
 - 回撤证据至少为 `light`。
+- code-review 默认 `evidence_level: light`（`completed_gates` 含 `code-review` + `gate_evidence.code_review` path+heading；CRITICAL/HIGH 时独立报告，禁止 `promote-gate code-review`）。
 - 当前没有浏览器自动化能力时，生成 manual-test。
 
 ### 通过标准
@@ -69,6 +70,7 @@ YYYY-MM-DD-dev-flow-smoke-test
 - `behavior-verification` 是 `full`，有 manual-test 或自动化记录。
 - 有 patch 或其它可恢复回撤证据。
 - 收尾时 `dev-flow-feature-check --finish` 在上述轻量 L 配置下可通过。
+- `/finish` dry-run 后输出 `[ASSET FINALIZATION]` 并停止；仅精确回复 `compact` / `retain full` / `not now` 合法；禁止同回合 `--confirm`。
 
 ## 验证任务 C：标准 M
 
@@ -125,7 +127,8 @@ YYYY-MM-DD-dev-flow-smoke-test
 - `Auto-continue: no` 后同一回合没有继续写计划或源码。
 - 验证报告能证明关键路径。
 - feature-check 能拦截缺失验证报告、空命令、空实测、rollback `pending`、不存在资产和 `assets` 里登记的源码条目。
-- compact 收尾只留下 `feature.md`、`completion.md` 和可复用手测；full 收尾将原始资产移动到带时间戳 archive。
+- compact 收尾只留下 `feature.md`、`completion.md` 和可复用手测，并清理 feature-owned reviews；full 收尾将原始资产移动到带时间戳 `archive/`；两者完成后共享 review_root 不得残留当前 feature 报告。
+- `/finish` 在 dry-run 后输出 `[ASSET FINALIZATION]`，只接受精确回复 `compact` / `retain full` / `not now`；禁止同回合 `--confirm`；`--confirm` 必须带 `--inventory`。
 
 ## 必查文件
 

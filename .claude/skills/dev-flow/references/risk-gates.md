@@ -30,6 +30,10 @@
 
 风险 XS/S 用 `profile: "risk-minimal"`；携带风险标签的 M/L 用 `profile: "standard"`。
 
+## promote-gate 与 severity
+
+`promote-gate` 只接受上表 contract risk gates（`requirements_coverage` / `plan_review` / `rollback_units` / `security_review` / `behavior_verification`），只做 `none → light → full` 单调提升与 `--reason` 记录。**severity 识别属于 skill**（requirements-coverage、plan-review、rollback-units、security-reviewer 调用方、verification-before-completion）：light 出现 CRITICAL/HIGH 时 skill 必须先 `promote-gate … --to full --reason <text>`，再落盘 full 证据。CLI / validator **不**扫描 Markdown 中的 HIGH/CRITICAL，也不自动 promote。`code-review` 不是 risk gate，禁止 `promote-gate code-review`；CRITICAL/HIGH 时 skill 创建独立报告并用 `complete-gate code-review --evidence-file …` 登记。
+
 ## 各门禁阻塞条件
 
 **需求覆盖**（复用 `requirements-coverage`，实现计划生成后、计划审查前执行）：需求没有对应任务；任务找不到需求来源且不是明确技术支撑任务；需求没有验收或验证方式；需求文档内部冲突；计划触碰明确不做的范围。通过时只作为 `plan-review` 输入，不追加为 verification 类资产。

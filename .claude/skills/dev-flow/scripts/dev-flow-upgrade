@@ -7,7 +7,8 @@
 #
 # --check compares source manifest to target; --apply builds a candidate in a
 # temp dir, backs up replaced managed files, merges settings hooks, preserves
-# unmanaged content, runs preflight, then switches. Failures restore backup.
+# unmanaged content, quarantines legacy shared SDD / invalidates old auth and
+# check-ok stamps, runs preflight, then switches. Failures restore backup.
 set -euo pipefail
 
 source_root=$(git rev-parse --show-toplevel 2>/dev/null || pwd)
@@ -111,11 +112,40 @@ check() {
 }
 
 apply() {
-  local backup stamp candidate
+  local backup backup_parent stamp candidate
   stamp=$(date -u +%Y%m%dT%H%M%SZ)
-  backup="$target/.claude/runtime/dev-flow/upgrade-backup-$stamp"
+  node -e '
+    const fs=require("fs");
+    const path=require("path");
+    const manifest=JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
+    const targetRoot=process.argv[2];
+    const paths=[
+      ...(manifest.files || []).map((file) => file.path),
+      ...(manifest.deprecated_paths || []),
+      ".claude/dev-flow.manifest.json",
+      ".claude/rules/project-workflow.md",
+      ".claude/runtime/dev-flow",
+      ".claude/runtime/sdd",
+    ];
+    for (const relative of paths) {
+      let current=targetRoot;
+      for (const segment of relative.split("/")) {
+        current=path.join(current, segment);
+        try {
+          if (fs.lstatSync(current).isSymbolicLink()) {
+            throw new Error(`upgrade path passes through a symbolic link: ${relative} (${current})`);
+          }
+        } catch (error) {
+          if (error.code === "ENOENT") break;
+          throw error;
+        }
+      }
+    }
+  ' "$source_manifest" "$target"
+  backup_parent="$target/.claude/runtime/dev-flow"
+  mkdir -p "$backup_parent"
+  backup=$(mktemp -d "$backup_parent/upgrade-backup-$stamp.XXXXXX")
   candidate=$(mktemp -d "${TMPDIR:-/tmp}/dev-flow-upgrade.XXXXXX")
-  mkdir -p "$backup"
 
   echo "Building candidate from source managed files..."
   node -e '
@@ -159,41 +189,78 @@ apply() {
     ' "$target" "$candidate"
   fi
 
-  # Backup managed files that will be replaced
+  # Backup managed files, deprecated paths (file or dir), auth, check-ok, legacy SDD
   node -e '
     const fs=require("fs");
     const path=require("path");
     const m=JSON.parse(fs.readFileSync(process.argv[1],"utf8"));
     const targetRoot=process.argv[2];
     const backup=process.argv[3];
+
+    function copyPath(src, dest) {
+      const st = fs.statSync(src);
+      if (st.isDirectory()) {
+        fs.mkdirSync(dest, {recursive:true});
+        for (const ent of fs.readdirSync(src, {withFileTypes:true})) {
+          copyPath(path.join(src, ent.name), path.join(dest, ent.name));
+        }
+      } else {
+        fs.mkdirSync(path.dirname(dest), {recursive:true});
+        fs.copyFileSync(src, dest);
+      }
+    }
+
     for (const f of m.files) {
       const tp=path.join(targetRoot, f.path);
       if (!fs.existsSync(tp)) continue;
-      const bp=path.join(backup, f.path);
-      fs.mkdirSync(path.dirname(bp), {recursive:true});
-      fs.copyFileSync(tp, bp);
+      copyPath(tp, path.join(backup, f.path));
     }
     // also backup existing manifest
     const tm=path.join(targetRoot, ".claude/dev-flow.manifest.json");
     if (fs.existsSync(tm)) {
-      const bp=path.join(backup, ".claude/dev-flow.manifest.json");
-      fs.mkdirSync(path.dirname(bp), {recursive:true});
-      fs.copyFileSync(tm, bp);
+      copyPath(tm, path.join(backup, ".claude/dev-flow.manifest.json"));
     }
-    // backup deprecated paths if present (for restore)
-    function copyDir(src, dest) {
-      fs.mkdirSync(dest, {recursive:true});
-      for (const ent of fs.readdirSync(src, {withFileTypes:true})) {
-        const s=path.join(src, ent.name);
-        const d=path.join(dest, ent.name);
-        if (ent.isDirectory()) copyDir(s, d);
-        else fs.copyFileSync(s, d);
-      }
+    // project-workflow.md is unmanaged but upgrade synchronizes only its
+    // dev_flow.version/default enforcement fields, so preserve it for rollback.
+    const pw=path.join(targetRoot, ".claude/rules/project-workflow.md");
+    if (fs.existsSync(pw)) {
+      copyPath(pw, path.join(backup, ".claude/rules/project-workflow.md"));
     }
+    // backup deprecated paths if present (file or directory)
     for (const d of m.deprecated_paths || []) {
       const tp=path.join(targetRoot, d);
       if (fs.existsSync(tp)) {
-        copyDir(tp, path.join(backup, d));
+        copyPath(tp, path.join(backup, d));
+      }
+    }
+    // backup write-authorization.json
+    const auth=path.join(targetRoot, ".claude/runtime/dev-flow/write-authorization.json");
+    if (fs.existsSync(auth)) {
+      copyPath(auth, path.join(backup, ".claude/runtime/dev-flow/write-authorization.json"));
+    }
+    // backup all *.check-ok stamps
+    const dfDir=path.join(targetRoot, ".claude/runtime/dev-flow");
+    if (fs.existsSync(dfDir)) {
+      for (const ent of fs.readdirSync(dfDir, {withFileTypes:true})) {
+        if (ent.isFile() && ent.name.endsWith(".check-ok")) {
+          copyPath(
+            path.join(dfDir, ent.name),
+            path.join(backup, ".claude/runtime/dev-flow", ent.name)
+          );
+        }
+      }
+    }
+    // quarantine backup of legacy shared SDD top-level files only
+    // (feature-id subdirs are v0.8-aware and stay in place)
+    const sdd=path.join(targetRoot, ".claude/runtime/sdd");
+    if (fs.existsSync(sdd)) {
+      for (const ent of fs.readdirSync(sdd, {withFileTypes:true})) {
+        if (ent.isFile()) {
+          copyPath(
+            path.join(sdd, ent.name),
+            path.join(backup, "legacy-sdd", ent.name)
+          );
+        }
       }
     }
     console.log("backup at " + backup);
@@ -204,6 +271,56 @@ apply() {
     node -e '
       const fs=require("fs");
       const path=require("path");
+
+      const backup=process.argv[1];
+      const targetRoot=process.argv[2];
+      const manifest=JSON.parse(fs.readFileSync(process.argv[3], "utf8"));
+
+      function removePath(target) {
+        if (fs.existsSync(target)) fs.rmSync(target, {recursive:true, force:true});
+      }
+
+      function removeEmptyParents(target) {
+        let current=path.dirname(target);
+        while (current !== targetRoot && current.startsWith(targetRoot + path.sep)) {
+          try {
+            fs.rmdirSync(current);
+          } catch {
+            break;
+          }
+          current=path.dirname(current);
+        }
+      }
+
+      // First remove every path this apply could have created or replaced. The
+      // backup only contains pre-existing paths, so copying it back afterwards
+      // reproduces absence as well as content.
+      for (const file of manifest.files || []) {
+        const target=path.join(targetRoot, file.path);
+        removePath(target);
+        removeEmptyParents(target);
+      }
+      const targetManifest=path.join(targetRoot, ".claude/dev-flow.manifest.json");
+      removePath(targetManifest);
+      for (const deprecated of manifest.deprecated_paths || []) {
+        removePath(path.join(targetRoot, deprecated));
+      }
+      removePath(path.join(targetRoot, ".claude/runtime/dev-flow/write-authorization.json"));
+      const runtimeDir=path.join(targetRoot, ".claude/runtime/dev-flow");
+      if (fs.existsSync(runtimeDir)) {
+        for (const ent of fs.readdirSync(runtimeDir, {withFileTypes:true})) {
+          if (ent.isFile() && ent.name.endsWith(".check-ok")) {
+            removePath(path.join(runtimeDir, ent.name));
+          }
+        }
+      }
+      const sddDir=path.join(targetRoot, ".claude/runtime/sdd");
+      if (fs.existsSync(sddDir)) {
+        for (const ent of fs.readdirSync(sddDir, {withFileTypes:true})) {
+          if (ent.isFile()) removePath(path.join(sddDir, ent.name));
+        }
+      }
+
       function walk(dir, base, acc=[]) {
         if (!fs.existsSync(dir)) return acc;
         for (const ent of fs.readdirSync(dir, {withFileTypes:true})) {
@@ -213,19 +330,25 @@ apply() {
         }
         return acc;
       }
-      const backup=process.argv[1];
-      const targetRoot=process.argv[2];
       for (const rel of walk(backup, backup)) {
         const src=path.join(backup, rel);
-        const dest=path.join(targetRoot, rel);
+        let dest;
+        // legacy shared SDD was stored under backup/legacy-sdd/ → restore to runtime/sdd/
+        if (rel === "legacy-sdd" || rel.startsWith("legacy-sdd" + path.sep) || rel.startsWith("legacy-sdd/")) {
+          const name = path.relative("legacy-sdd", rel);
+          if (!name || name === ".") continue;
+          dest = path.join(targetRoot, ".claude/runtime/sdd", name);
+        } else {
+          dest = path.join(targetRoot, rel);
+        }
         fs.mkdirSync(path.dirname(dest), {recursive:true});
         fs.copyFileSync(src, dest);
       }
       console.log("restore complete");
-    ' "$backup" "$target"
+    ' "$backup" "$target" "$source_manifest"
   }
 
-  # Copy candidate managed files into target
+  # Copy candidate managed files into target + remove deprecated + quarantine SDD
   if ! node -e '
     const fs=require("fs");
     const path=require("path");
@@ -257,26 +380,48 @@ apply() {
       }
       fs.writeFileSync(manifestPath, JSON.stringify(mm, null, 2) + "\n");
     }
-    // upgrade defaults: if project-workflow exists and lacks enforcement_mode, set ask
+    // Keep project facts unmanaged; synchronize only the workflow contract
+    // version and add the legacy-safe enforcement default when absent.
     const pw=path.join(targetRoot, ".claude/rules/project-workflow.md");
     if (fs.existsSync(pw)) {
       let text=fs.readFileSync(pw, "utf8");
-      if (!/enforcement_mode:/.test(text)) {
-        if (/^dev_flow:\s*$/m.test(text)) {
-          text=text.replace(/^dev_flow:\s*$/m, "dev_flow:\n  enforcement_mode: \"ask\"\n  protected_write_roots: []");
+      const workflowVersion=m.workflow_version;
+      if (/^dev_flow:\s*$/m.test(text)) {
+        if (/^  version:\s*.*$/m.test(text)) {
+          text=text.replace(/^  version:\s*.*$/m, `  version: "${workflowVersion}"`);
         } else {
-          text="dev_flow:\n  enforcement_mode: \"ask\"\n  protected_write_roots: []\n" + text;
+          text=text.replace(/^dev_flow:\s*$/m, `dev_flow:\n  version: "${workflowVersion}"`);
         }
-        fs.writeFileSync(pw, text);
-        console.log("set enforcement_mode: ask on existing project-workflow.md");
+        if (!/^  enforcement_mode:/m.test(text)) {
+          text=text.replace(/^dev_flow:\s*$/m, "dev_flow:\n  enforcement_mode: \"ask\"\n  protected_write_roots: []");
+        }
+      } else {
+        text=`dev_flow:\n  version: "${workflowVersion}"\n  enforcement_mode: "ask"\n  protected_write_roots: []\n${text}`;
       }
+      fs.writeFileSync(pw, text);
+      console.log(`synchronized project-workflow dev_flow.version: ${workflowVersion}`);
     }
-        for (const d of m.deprecated_paths || []) {
+    // remove deprecated paths (skills dirs and files like vue3.md)
+    for (const d of m.deprecated_paths || []) {
       const tp=path.join(targetRoot, d);
       if (fs.existsSync(tp)) {
         fs.rmSync(tp, {recursive:true, force:true});
         console.log("removed deprecated " + d);
       }
+    }
+    // quarantine legacy shared SDD top-level files (already backed up under legacy-sdd/)
+    // keep feature-id subdirectories; ensure base dir exists
+    const sdd=path.join(targetRoot, ".claude/runtime/sdd");
+    if (fs.existsSync(sdd)) {
+      for (const ent of fs.readdirSync(sdd, {withFileTypes:true})) {
+        if (ent.isFile()) {
+          fs.rmSync(path.join(sdd, ent.name), {force:true});
+          console.log("quarantined legacy SDD file: " + ent.name);
+        }
+      }
+    } else {
+      fs.mkdirSync(sdd, {recursive:true});
+      console.log("created empty .claude/runtime/sdd/");
     }
     console.log("applied managed files");
   ' "$source_manifest" "$candidate" "$target"; then
@@ -285,7 +430,7 @@ apply() {
     exit 1
   fi
 
-  # preflight on target (before removing deprecated paths)
+  # preflight on target
   if ! (cd "$target" && "$doctor_cmd" --preflight); then
     echo "ERROR preflight failed after apply; restoring"
     restore
@@ -293,10 +438,53 @@ apply() {
     exit 1
   fi
 
+  # Success path only: invalidate old authorization and check-ok stamps
+  # (v0.7 stamps lack policy version; users must re-activate / re-finish)
+  if ! DEV_FLOW_UPGRADE_FAIL_AFTER_PREFLIGHT="${DEV_FLOW_UPGRADE_FAIL_AFTER_PREFLIGHT:-}" node -e '
+    const fs=require("fs");
+    const path=require("path");
+    const targetRoot=process.argv[1];
+    const injectFailure=process.env.DEV_FLOW_UPGRADE_FAIL_AFTER_PREFLIGHT === "1";
+    let mutations=0;
+    function afterMutation() {
+      mutations += 1;
+      if (injectFailure && mutations === 1) {
+        throw new Error("injected failure after preflight");
+      }
+    }
+    const auth=path.join(targetRoot, ".claude/runtime/dev-flow/write-authorization.json");
+    if (fs.existsSync(auth)) {
+      fs.rmSync(auth, {force:true});
+      console.log("invalidated write-authorization.json (re-run activate before business writes)");
+      afterMutation();
+    }
+    const dfDir=path.join(targetRoot, ".claude/runtime/dev-flow");
+    if (fs.existsSync(dfDir)) {
+      for (const ent of fs.readdirSync(dfDir, {withFileTypes:true})) {
+        if (ent.isFile() && ent.name.endsWith(".check-ok")) {
+          fs.rmSync(path.join(dfDir, ent.name), {force:true});
+          console.log("invalidated check-ok stamp: " + ent.name);
+          afterMutation();
+        }
+      }
+    }
+    if (injectFailure && mutations === 0) {
+      throw new Error("injected failure after preflight");
+    }
+  ' "$target"; then
+    echo "ERROR authorization/check-ok invalidation failed after preflight; restoring"
+    restore
+    rm -rf "$candidate"
+    exit 1
+  fi
 
   rm -rf "$candidate"
   echo "Upgrade applied. Backup: $backup"
   echo "project-workflow.md and custom unmanaged skills were preserved."
+  echo "In-flight feature status/completion/archive assets were not modified."
+  echo "Run dev-flow-status repair for legacy snake_case gate aliases; v0.8 approval/finish will require any missing route duties."
+  echo "Legacy shared SDD top-level files (if any) are under $backup/legacy-sdd/."
+  echo "Old write-authorization and check-ok stamps were invalidated; re-activate and re-run feature-check as needed."
 }
 
 case "$mode" in

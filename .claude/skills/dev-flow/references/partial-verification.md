@@ -33,15 +33,16 @@ dev-flow-status accept-risk <feature-id> --id AR-xxx \
 
 ## check-ok stamp
 
-`dev-flow-feature-check --finish` 成功时写入 `.claude/runtime/dev-flow/<feature-id>.check-ok`：
+`dev-flow-feature-check --finish` 成功时写入 `.claude/runtime/dev-flow/<feature-id>.check-ok`（唯一 stamp 写入者；`complete-verification` 不 stamp）：
 
 ```text
+workflow_version: <contract version>
 fingerprint: <40-char-git-hash>
 outcome: verified|partial
 checked_at: <ISO-8601>
 ```
 
-finish-guard：指纹新鲜则允许 commit/push/merge（partial 与 verified 相同）；不得把 partial 叙述成「验证通过」。业务 diff 变化导致指纹过期：一律失效需重跑 check。
+`workflow_version` 为无引号 contract 版本。finish-guard：指纹新鲜且版本匹配则允许 commit/push/merge（partial 与 verified 相同）；不得把 partial 叙述成「验证通过」。业务 diff 变化或版本不匹配导致过期：一律失效需重跑 check。
 
 ## 收尾文案
 

@@ -119,21 +119,66 @@ else
 fi
 
 # --- confirm-human / activate ---
+# Upstream FAIL: cannot confirm/skip implementation_approval while required
+# requirement_confirmation is still pending.
+expect_fail run_in_tmp node "$status_cli" confirm-human demo-standard implementation_approval \
+  --status confirmed --evidence 'user approved implementation too early'
+expect_fail run_in_tmp node "$status_cli" confirm-human demo-standard implementation_approval \
+  --status skipped --evidence 'user skipped implementation too early'
 expect_fail run_in_tmp node "$status_cli" confirm-human demo-standard implementation_approval \
   --status confirmed --evidence 'not required'
 expect_pass run_in_tmp node "$status_cli" confirm-human demo-standard requirement_confirmation \
   --status confirmed --evidence 'user confirmed requirements'
+# Requirement confirmation alone cannot bypass the standard-L skeleton.
+expect_fail run_in_tmp node "$status_cli" confirm-human demo-standard implementation_approval \
+  --status confirmed --evidence 'user approved before process gates'
+expect_fail run_in_tmp node "$status_cli" confirm-human demo-standard implementation_approval \
+  --status skipped --evidence 'user tried to skip before process gates'
+
+# Complete the fixed writing-plans -> coverage -> plan-review skeleton.
+printf '%s\n' '# plan' '## Rollback evidence' '- bounded' \
+  > "$tmp/docs/dev-flow/features/demo-standard/初步实现计划.md"
+expect_pass run_in_tmp node "$status_cli" add-asset demo-standard \
+  --path docs/dev-flow/features/demo-standard/初步实现计划.md --kind plan
+expect_pass run_in_tmp node "$status_cli" complete-gate demo-standard writing-plans
+
+printf '%s\n' '# coverage' '## Coverage result' '- all covered' \
+  > "$tmp/docs/dev-flow/features/demo-standard/requirements-coverage.md"
+expect_pass run_in_tmp node "$status_cli" add-asset demo-standard \
+  --path docs/dev-flow/features/demo-standard/requirements-coverage.md --kind review
+# snake_case is accepted as input but persisted as the canonical hyphen name.
+expect_pass run_in_tmp node "$status_cli" complete-gate demo-standard requirements_coverage \
+  --evidence-file docs/dev-flow/features/demo-standard/requirements-coverage.md \
+  --heading 'Coverage result'
+expect_contains "$tmp/docs/dev-flow/features/demo-standard/status.md" '    - requirements-coverage'
+
+printf '%s\n' '# plan review' '## Plan findings' '- none' \
+  > "$tmp/docs/dev-flow/reviews/demo-standard-plan-review.md"
+expect_pass run_in_tmp node "$status_cli" add-asset demo-standard \
+  --path docs/dev-flow/reviews/demo-standard-plan-review.md --kind review
+expect_fail run_in_tmp node "$status_cli" complete-gate demo-standard plan_review \
+  --evidence-file docs/dev-flow/reviews/demo-standard-plan-review.md \
+  --heading 'Missing heading'
+expect_pass run_in_tmp node "$status_cli" complete-gate demo-standard plan_review \
+  --evidence-file docs/dev-flow/reviews/demo-standard-plan-review.md \
+  --heading 'Plan findings'
+expect_contains "$tmp/docs/dev-flow/features/demo-standard/status.md" '    - plan-review'
+
+# skipped remains a legal explicit write authorization after upstream duties.
 expect_pass run_in_tmp node "$status_cli" confirm-human demo-standard implementation_approval \
-  --status confirmed --evidence 'user approved implementation'
+  --status skipped --evidence 'user explicitly skipped implementation approval and accepted risk'
 expect_contains "$tmp/.claude/runtime/dev-flow/write-authorization.json" '"state": "approved"'
 
 expect_pass run_in_tmp node "$status_cli" activate demo-risk
 expect_contains "$tmp/.claude/runtime/dev-flow/write-authorization.json" 'demo-risk'
+expect_contains "$tmp/.claude/runtime/dev-flow/write-authorization.json" '"state": "approval-pending"'
+
+# activate only approves when all required human gates are satisfied
+expect_pass run_in_tmp node "$status_cli" activate demo-standard
+expect_contains "$tmp/.claude/runtime/dev-flow/write-authorization.json" 'demo-standard'
+expect_contains "$tmp/.claude/runtime/dev-flow/write-authorization.json" '"state": "approved"'
 
 # --- add-asset ---
-printf '%s\n' '# plan' '## Requirements coverage' '- ok' > "$tmp/docs/dev-flow/features/demo-standard/初步实现计划.md"
-expect_pass run_in_tmp node "$status_cli" add-asset demo-standard \
-  --path docs/dev-flow/features/demo-standard/初步实现计划.md --kind plan
 expect_fail run_in_tmp node "$status_cli" add-asset demo-standard \
   --path 'docs/dev-flow/features/demo-standard/初步实现计划.md#Requirements coverage' --kind plan
 expect_fail run_in_tmp node "$status_cli" add-asset demo-standard \
@@ -142,23 +187,160 @@ expect_fail run_in_tmp node "$status_cli" add-asset demo-standard \
   --path docs/dev-flow/features/demo-standard/missing.md --kind plan
 
 # --- complete-gate with gate_evidence ---
-expect_pass run_in_tmp node "$status_cli" complete-gate demo-standard requirements-coverage \
-  --evidence-file docs/dev-flow/features/demo-standard/初步实现计划.md \
-  --heading 'Requirements coverage'
+expect_fail run_in_tmp node "$status_cli" complete-gate demo-standard implementation_approval
+expect_fail run_in_tmp node "$status_cli" complete-gate demo-standard behavior_verification
 expect_contains "$tmp/docs/dev-flow/features/demo-standard/status.md" 'gate_evidence:'
-expect_contains "$tmp/docs/dev-flow/features/demo-standard/status.md" 'Requirements coverage'
+expect_contains "$tmp/docs/dev-flow/features/demo-standard/status.md" 'Coverage result'
 expect_fail run_in_tmp node "$status_cli" complete-gate demo-standard requirements-coverage \
-  --evidence-file docs/dev-flow/features/demo-standard/初步实现计划.md \
-  --heading 'Requirements coverage'
-# missing heading
-printf '%s\n' '# other plan' > "$tmp/docs/dev-flow/features/demo-standard/other.md"
-expect_fail run_in_tmp node "$status_cli" complete-gate demo-standard plan-review \
-  --evidence-file docs/dev-flow/features/demo-standard/other.md \
-  --heading 'Requirements coverage'
+  --evidence-file docs/dev-flow/features/demo-standard/requirements-coverage.md \
+  --heading 'Coverage result'
+
+# generalized complete-gate stores code_review evidence
+printf '%s\n' '# code review' '## Findings' '- none' > "$tmp/docs/dev-flow/reviews/demo-standard-code-review.md"
+expect_pass run_in_tmp node "$status_cli" add-asset demo-standard \
+  --path docs/dev-flow/reviews/demo-standard-code-review.md --kind review
+expect_pass run_in_tmp node "$status_cli" complete-gate demo-standard code-review \
+  --evidence-file docs/dev-flow/reviews/demo-standard-code-review.md \
+  --heading 'Findings'
+expect_contains "$tmp/docs/dev-flow/features/demo-standard/status.md" 'code_review:'
+expect_contains "$tmp/docs/dev-flow/features/demo-standard/status.md" 'demo-standard-code-review.md'
+
+# --- promote-gate (risk gates only, monotonic) ---
+# Use plan_review (starts at none for security label) so promote does not force
+# report-mode risk_evidence (that only triggers when a minimum gate is full).
+expect_pass run_in_tmp node "$status_cli" promote-gate demo-risk plan_review \
+  --to light --reason 'skill raised plan_review'
+expect_contains "$tmp/docs/dev-flow/features/demo-risk/status.md" 'plan_review: "light"'
+expect_contains "$tmp/docs/dev-flow/features/demo-risk/status.md" 'skill raised plan_review'
+# already at level
+expect_fail run_in_tmp node "$status_cli" promote-gate demo-risk plan_review \
+  --to light --reason 'already light'
+# monotonic: cannot downgrade
+expect_fail run_in_tmp node "$status_cli" promote-gate demo-risk plan_review \
+  --to none --reason 'cannot downgrade'
+# security_review is already light from minimum_risk_gates
+expect_fail run_in_tmp node "$status_cli" promote-gate demo-risk security_review \
+  --to light --reason 'already light from minimum'
+# non-risk gates rejected
+expect_fail run_in_tmp node "$status_cli" promote-gate demo-risk code-review \
+  --to light --reason 'code-review is not a risk gate'
+expect_fail run_in_tmp node "$status_cli" promote-gate demo-risk verification-before-completion \
+  --to full --reason 'not a risk gate'
+# missing --reason
+expect_fail run_in_tmp node "$status_cli" promote-gate demo-risk plan_review \
+  --to full
+expect_fail run_in_tmp node "$status_cli" promote-gate demo-risk plan_review \
+  --to full --reason ''
+
+# --- record-risk-evidence ---
+expect_pass run_in_tmp node "$status_cli" record-risk-evidence demo-risk security \
+  --mode inline --conclusion 'no critical findings' --verification 'spot-checked auth paths'
+expect_contains "$tmp/docs/dev-flow/features/demo-risk/status.md" 'no critical findings'
+expect_fail run_in_tmp node "$status_cli" record-risk-evidence demo-risk money \
+  --mode inline --conclusion 'not declared'
+expect_fail run_in_tmp node "$status_cli" record-risk-evidence demo-risk security \
+  --mode report --conclusion 'needs report'
+printf '%s\n' '# outside risk report' > "$tmp/src/outside-risk.md"
+expect_fail run_in_tmp node "$status_cli" record-risk-evidence demo-risk security \
+  --mode report --conclusion 'reviewed security paths' \
+  --verification 'security checks passed' --report src/outside-risk.md
+printf '%s\n' '# managed risk report' > "$tmp/docs/dev-flow/reviews/demo-risk-security-review.md"
+expect_pass run_in_tmp node "$status_cli" record-risk-evidence demo-risk security \
+  --mode report --conclusion 'reviewed security paths' \
+  --verification 'security checks passed' \
+  --report docs/dev-flow/reviews/demo-risk-security-review.md
+
+# Direct edits cannot bypass the same root boundary enforced by the CLI.
+cp "$tmp/docs/dev-flow/features/demo-risk/status.md" \
+  "$tmp/docs/dev-flow/features/demo-risk/status.risk-report"
+sed 's#docs/dev-flow/reviews/demo-risk-security-review.md#src/outside-risk.md#' \
+  "$tmp/docs/dev-flow/features/demo-risk/status.risk-report" \
+  > "$tmp/docs/dev-flow/features/demo-risk/status.md"
+expect_fail run_in_tmp node "$validator" status "$tmp" \
+  docs/dev-flow/features/demo-risk/status.md
+mv "$tmp/docs/dev-flow/features/demo-risk/status.risk-report" \
+  "$tmp/docs/dev-flow/features/demo-risk/status.md"
 
 # --- record-validation ---
 expect_pass run_in_tmp node "$status_cli" record-validation demo-standard --command 'printf validation'
 expect_contains "$tmp/docs/dev-flow/features/demo-standard/status.md" 'printf validation'
+
+# --- complete-verification (no check-ok stamp) ---
+# light L missing code-review evidence must FAIL
+printf '%s\n' '# light process evidence' '## Rollback summary' '- reversible' \
+  > "$tmp/docs/dev-flow/features/demo-light-l/process-evidence.md"
+expect_pass run_in_tmp node "$status_cli" complete-gate demo-light-l rollback_units \
+  --evidence-file docs/dev-flow/features/demo-light-l/process-evidence.md \
+  --heading 'Rollback summary'
+expect_contains "$tmp/docs/dev-flow/features/demo-light-l/status.md" '    - rollback-units'
+expect_pass run_in_tmp node "$status_cli" confirm-human demo-light-l implementation_approval \
+  --status confirmed --evidence 'user approved light L implementation'
+expect_fail run_in_tmp node "$status_cli" complete-verification demo-light-l \
+  --command 'printf light-l-validation'
+# add code-review evidence, then complete-verification succeeds and does not stamp check-ok
+printf '%s\n' '# light review' '## Light findings' '- none' \
+  > "$tmp/docs/dev-flow/reviews/demo-light-l-code-review.md"
+expect_pass run_in_tmp node "$status_cli" complete-gate demo-light-l code-review \
+  --evidence-file docs/dev-flow/reviews/demo-light-l-code-review.md \
+  --heading 'Light findings'
+printf '%s\n' '# verification' > "$tmp/docs/dev-flow/reviews/demo-light-l-verification.md"
+expect_pass run_in_tmp node "$status_cli" complete-verification demo-light-l \
+  --command 'printf light-l-validation' \
+  --report docs/dev-flow/reviews/demo-light-l-verification.md
+expect_contains "$tmp/docs/dev-flow/features/demo-light-l/status.md" 'verification-before-completion'
+expect_contains "$tmp/docs/dev-flow/features/demo-light-l/status.md" 'printf light-l-validation'
+if [ -f "$tmp/.claude/runtime/dev-flow/demo-light-l.check-ok" ]; then
+  printf 'FAIL complete-verification must not write check-ok stamp\n'
+  failures=$((failures + 1))
+else
+  printf 'PASS complete-verification does not write check-ok\n'
+fi
+# finish-mode validator also rejects light L without code-review evidence
+# (already covered by complete-verification FAIL above; re-assert via validator)
+mkdir -p "$tmp/docs/dev-flow/features/light-finish-fail"
+printf '%s\n' \
+  '---' \
+  'dev_flow_status:' \
+  '  schema_version: "3"' \
+  '  feature_id: "light-finish-fail"' \
+  '  level: "L"' \
+  '  profile: "standard"' \
+  '  risk_labels: []' \
+  '  risk_evidence: {}' \
+  '  classification:' \
+  '    topology: "local"' \
+  '    evidence_result: "partial"' \
+  '    note: "light L missing code-review"' \
+  '  current_gate: "verification-before-completion"' \
+  '  completed_gates:' \
+  '    - implementation_approval' \
+  '    - verification-before-completion' \
+  '  next_action: "finish"' \
+  '  auto_continue: false' \
+  '  human_gates:' \
+  '    requirement_confirmation:' \
+  '      required: false' \
+  '      status: "pending"' \
+  '      evidence: ""' \
+  '    implementation_approval:' \
+  '      required: true' \
+  '      status: "confirmed"' \
+  '      evidence: "user approved"' \
+  '  risk_gates:' \
+  '    requirements_coverage: "none"' \
+  '    plan_review: "none"' \
+  '    rollback_units: "light"' \
+  '    security_review: "none"' \
+  '    behavior_verification: "light"' \
+  '  assets: []' \
+  '  validation:' \
+  '    last_at: "2026-01-01"' \
+  '    commands:' \
+  '      - "printf validation"' \
+  '    business_diff_fingerprint: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"' \
+  '  accepted_risks: []' \
+  '---' > "$tmp/docs/dev-flow/features/light-finish-fail/status.md"
+expect_fail run_in_tmp node "$validator" status "$tmp" docs/dev-flow/features/light-finish-fail/status.md --finish
 
 # --- accept-risk + partial acceptance ---
 expect_pass run_in_tmp node "$status_cli" accept-risk demo-standard \
@@ -168,6 +350,12 @@ expect_contains "$tmp/docs/dev-flow/reviews/demo-standard-partial-acceptance.md"
 expect_contains "$tmp/docs/dev-flow/features/demo-standard/status.md" 'AR-001'
 
 # --- repair does not invent facts ---
+sed -i.bak 's/current_gate: "code-review"/current_gate: "plan_review"/; s/    - plan-review/    - plan_review/' \
+  "$tmp/docs/dev-flow/features/demo-standard/status.md"
+expect_pass run_in_tmp node "$status_cli" repair demo-standard
+expect_contains "$tmp/docs/dev-flow/features/demo-standard/status.md" 'current_gate: "plan-review"'
+expect_contains "$tmp/docs/dev-flow/features/demo-standard/status.md" '    - plan-review'
+expect_not_contains "$tmp/docs/dev-flow/features/demo-standard/status.md" '    - plan_review'
 pending_before=$(rg -c 'pending' "$tmp/docs/dev-flow/features/demo-risk/status.md" || true)
 expect_pass run_in_tmp node "$status_cli" repair demo-risk
 pending_after=$(rg -c 'pending' "$tmp/docs/dev-flow/features/demo-risk/status.md" || true)
@@ -180,7 +368,7 @@ fi
 expect_not_contains "$tmp/docs/dev-flow/features/demo-risk/status.md" 'AR-'
 
 # --- partial tri-party validation via finish ---
-# Build a finishable fixture with structured manual-test steps
+# Build a finishable fixture with structured manual-test steps and code-review evidence.
 mkdir -p "$tmp/docs/dev-flow/features/partial-demo" "$tmp/docs/dev-flow/reviews"
 printf '%s\n' \
   '---' \
@@ -197,6 +385,10 @@ printf '%s\n' \
   '    note: "fixture"' \
   '  current_gate: "verification-before-completion"' \
   '  completed_gates:' \
+  '    - writing-plans' \
+  '    - requirements-coverage' \
+  '    - plan-review' \
+  '    - code-review' \
   '    - verification-before-completion' \
   '  next_action: "finish"' \
   '  auto_continue: false' \
@@ -210,14 +402,28 @@ printf '%s\n' \
   '      status: "confirmed"' \
   '      evidence: "user approved"' \
   '  risk_gates:' \
-  '    requirements_coverage: "none"' \
-  '    plan_review: "none"' \
+  '    requirements_coverage: "full"' \
+  '    plan_review: "light"' \
   '    rollback_units: "none"' \
   '    security_review: "none"' \
   '    behavior_verification: "full"' \
   '  assets:' \
+  '    - {path: "docs/dev-flow/features/partial-demo/初步实现计划.md", kind: "plan"}' \
+  '    - {path: "docs/dev-flow/features/partial-demo/requirements-coverage.md", kind: "review"}' \
+  '    - {path: "docs/dev-flow/reviews/partial-demo-plan-review.md", kind: "review"}' \
   '    - {path: "docs/dev-flow/reviews/partial-demo-verification.md", kind: "verification"}' \
   '    - {path: "docs/dev-flow/reviews/partial-demo-manual-test.md", kind: "verification"}' \
+  '    - {path: "docs/dev-flow/reviews/partial-demo-code-review.md", kind: "review"}' \
+  '  gate_evidence:' \
+  '    requirements_coverage:' \
+  '      path: "docs/dev-flow/features/partial-demo/requirements-coverage.md"' \
+  '      heading: "Coverage"' \
+  '    plan_review:' \
+  '      path: "docs/dev-flow/reviews/partial-demo-plan-review.md"' \
+  '      heading: "Plan findings"' \
+  '    code_review:' \
+  '      path: "docs/dev-flow/reviews/partial-demo-code-review.md"' \
+  '      heading: "Findings"' \
   '  validation:' \
   '    last_at: "2026-01-01"' \
   '    commands:' \
@@ -225,7 +431,14 @@ printf '%s\n' \
   '    business_diff_fingerprint: "unknown"' \
   '  accepted_risks: []' \
   '---' > "$tmp/docs/dev-flow/features/partial-demo/status.md"
+printf '%s\n' '# plan' '### Task 1' '- implement' \
+  > "$tmp/docs/dev-flow/features/partial-demo/初步实现计划.md"
+printf '%s\n' '# coverage' '## Coverage' '- covered' \
+  > "$tmp/docs/dev-flow/features/partial-demo/requirements-coverage.md"
+printf '%s\n' '# plan review' '## Plan findings' '- none' \
+  > "$tmp/docs/dev-flow/reviews/partial-demo-plan-review.md"
 printf '%s\n' '# verification' > "$tmp/docs/dev-flow/reviews/partial-demo-verification.md"
+printf '%s\n' '# code review' '## Findings' '- none' > "$tmp/docs/dev-flow/reviews/partial-demo-code-review.md"
 printf '%s\n' \
   '---' \
   'manual_test_steps:' \

@@ -21,7 +21,7 @@
   hooks/       dev-flow-gate-guard.sh、dev-flow-finish-guard.sh
   settings.json  注册上述 hooks（ask 模式）
   rules/       git-workflow.md、security.md、specs/README.md、
-               project-workflow.template.md（按项目类型再决定是否带 vue3.md）
+               project-workflow.template.md
 docs/
   claude-dev-flow-guide.md（本文件）
   claude-dev-flow-smoke-test.md
@@ -29,11 +29,11 @@ templates/
   CLAUDE.dev-flow-snippet.md
 ```
 
-不要复制 `.claude/rules/project-workflow.md`、`.claude/runtime/`、`.claude/settings.local.json` 或任何一次性生成产物。
+不要复制 `.claude/rules/project-workflow.md`、`.claude/runtime/`、`.claude/settings.local.json` 或任何一次性生成产物。框架/栈规则由目标项目自建，不随包分发。
 
 ## 迁移步骤
 
-1. 复制上方「包含内容」到新项目；非 Vue 项目删除或替换 `vue3.md`。
+1. 复制上方「包含内容」到新项目；需要的框架约定写入目标项目自己的 rules 或 `CLAUDE.md`。
 2. 如果目标项目已有 `CLAUDE.md`，合并 `templates/CLAUDE.dev-flow-snippet.md`；没有则基于该片段新建，并补充项目自己的技术栈和禁止事项。
 3. 运行 `/onboard-dev-flow`（或 `/onboard-dev-flow --smoke-test` 同时验证迁移包）。它会检测项目事实、生成 `.claude/rules/project-workflow.md`、确认 hooks 已注册且可执行、生成 `dev_flow.label_hints` 初始猜测。
 4. 检测清单：项目类型、包管理器、install/dev/build/type-check/lint/test 脚本、test 是否为真测试运行器、是否有浏览器测试/OpenSpec/代码映射、局部规范是否存在、git 边界（本地配置/仓库治理）、agent 例外。这些事实写入 `project-workflow.md` frontmatter 的 `dev_flow` 配置块（结构见 `project-workflow.template.md`），机器可读锚点与下方 Markdown 表格必须一致。
@@ -66,7 +66,7 @@ templates/
 
 `project-workflow.md` 由模板生成（非旧项目复制品）；验证矩阵命令在新项目可解释；test strategy 和 OpenSpec 策略明确写出取值；agent 例外有理由；核心资产路径已写入 `dev_flow.paths` 和标准资产表；`dev-flow-doctor` 和 smoke test 都通过。
 
-常见错误：直接复制旧 `project-workflow.md`；把 `npm test`/`pnpm test` 默认当真测试；浏览器验证写 enabled 但项目没有对应能力；忘记 `.claude/` 被 ignore 导致看不到迁移结果；非 Vue 项目保留 Vue 规则；让 XS/S 或轻量 M 强制生成 `status.md` 等流程产物；没跑 smoke test 就开始真实 L 级任务。
+常见错误：直接复制旧 `project-workflow.md`；把 `npm test`/`pnpm test` 默认当真测试；浏览器验证写 enabled 但项目没有对应能力；忘记 `.claude/` 被 ignore 导致看不到迁移结果；把旧包里的 `vue3.md` 当通用规则继续分发；让 XS/S 或轻量 M 强制生成 `status.md` 等流程产物；没跑 smoke test 就开始真实 L 级任务。
 
 先用一个真实但低风险的 M 级任务试跑，再用一个轻量 L 场景验证 HUMAN GATE、安全审查、行为验证和回撤证据，确认无摩擦后再作为团队默认入口。
 
@@ -132,9 +132,11 @@ templates/
 
 **可以让 Claude 直接提交吗**：默认不提交；用户明确要求后才执行 `git add`/`git commit`；push/合并/删除分支/丢弃改动必须二次确认。
 
-## status CLI 与 partial（v0.7）
+## status CLI、finish 与 partial（v0.8）
 
-所有 `status.md` 创建/更新走 `dev-flow-status` CLI，禁止手改机器字段。无风险 XS/S 用 `authorize`；M/L 与风险 XS/S 用 `init` + `confirm-human`。`outcome: partial` 允许正常 Git 操作，但 completion / check-ok stamp / 收尾文案必须为 partial，禁止写「验证通过」。详情见 `dev-flow/references/status-cli.md` 与 `partial-verification.md`。
+所有 `status.md` 创建/更新走 `dev-flow-status` CLI，禁止手改机器字段。无风险 XS/S 用 `authorize`；M/L 与风险 XS/S 用 `init` + `confirm-human`。`promote-gate` 只接受 contract risk gates 且单调提升；`complete-verification` 登记验证但不写 check-ok。`outcome: partial` 允许正常 Git 操作，但 completion / check-ok stamp / 收尾文案必须为 partial，禁止写「验证通过」。
 
-受管文件升级使用源仓中的 `dev-flow-upgrade --target <abs> --check|--apply`，不要手工半份拷贝 skill。
+`/finish` 在 dry-run 后输出 `[ASSET FINALIZATION]`，只接受精确回复 `compact` / `retain full` / `not now`；禁止同回合 `--confirm`。详情见 `dev-flow/references/status-cli.md`、`partial-verification.md` 与 `protocol.md`。
+
+受管文件升级使用源仓中的 `dev-flow-upgrade --target <abs> --check|--apply`，不要手工半份拷贝 skill。升级会：删除 `deprecated_paths`（含 `vue3.md`）、把 shared SDD 顶层文件隔离到 `upgrade-backup-*/legacy-sdd/`、失效旧 `write-authorization.json` 与全部 `*.check-ok`；在途 feature 的 status/completion/archive 一律保留。失败时从 backup 完整回滚。升级不是 onboarding：栈规则由目标项目自建，upgrade 不管理。
 

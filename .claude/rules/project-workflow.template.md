@@ -6,7 +6,7 @@ paths:
   - "<review-root>/**"
   - "<plan-root>/**"
 dev_flow:
-  version: "0.6.0"
+  version: "<contract-workflow-version>"
   project_kind: "<detect>"
   package_manager: "<detect>"
   paths:
@@ -47,7 +47,7 @@ dev_flow:
 ## 迁移规则
 
 - 流程层可复制：`.claude/skills/`、`.claude/commands/`、`.claude/agents/`、通用 rules。
-- 项目适配层必须重新检测生成：包管理器、验证命令、测试策略、OpenSpec 策略、路径和版本边界都按新项目填写。
+- 项目适配层必须重新检测生成：`dev_flow.version` 从 `contract.json.workflow_version` 写入；包管理器、验证命令、测试策略、OpenSpec 策略、路径和版本边界都按新项目填写。
 - 生成后删除或保留本模板均可；实际工作流只读取 `.claude/rules/project-workflow.md`。
 
 ## 结构化配置
@@ -71,7 +71,7 @@ Claude 工作流入口依次读取 `.claude/rules/project-workflow.md`、`CLAUDE
 | `<COMMAND_ROOT>` | `.claude/commands` | Claude 命令目录 |
 | `<RULE_ROOT>` | `.claude/rules` | Claude 规则目录 |
 | `<RUNTIME_ROOT>` | `<detect-runtime-root>` | 运行时台账和临时交接目录 |
-| `<SDD_PROGRESS>` | `<detect-sdd-progress-path>` | 子任务执行进度台账 |
+| `<SDD_PROGRESS>` | `<detect-sdd-progress-path>`（v0.8 推荐 `.claude/runtime/sdd/<feature-id>/progress.md`） | feature-scoped 子任务执行进度台账 |
 | `<FEATURE_ROOT>` | `<detect-feature-root>` | 需求、计划、覆盖和回撤资产目录 |
 | `<REVIEW_ROOT>` | `<detect-review-root>` | 审查和验证报告目录 |
 | `<PLAN_ROOT>` | `<detect-plan-root>` | 设计和计划类文档目录 |
@@ -122,7 +122,7 @@ YYYY-MM-DD-<short-kebab-name>
 
 ### 资产保留
 
-完成收尾后，`dev_flow.artifacts.retention: compact`（默认）只保留 `feature.md`、`completion.md` 和可复用的 `manual-test.md`；取值 `full` 时把需求、计划、覆盖、审查、回撤和验证等中间资产移动到 feature 目录下带时间戳的 `archive/`。`completion.md` frontmatter 字段的唯一来源是 `dev-flow/references/protocol.md`。
+完成收尾后，`dev_flow.artifacts.retention: compact`（默认）只保留 `feature.md`、`completion.md` 和可复用的 `manual-test.md`，并删除当前 feature 的中间资产（含 feature-owned reviews）；取值 `full` 时把需求、计划、覆盖、审查、回撤和验证等中间资产移动到 feature 目录下防碰撞的 `archive/<timestamp>-<nonce>/{reviews,feature}/`。compact 与 full 完成后，共享 `<REVIEW_ROOT>` 中不得残留当前 feature 的中间报告。`/finish` 先 dry-run 再停等精确回复 `compact` / `retain full` / `not now`（见 protocol ASSET FINALIZATION）。`completion.md` frontmatter 字段的唯一来源是 `dev-flow/references/protocol.md`。
 
 ## 局部规范
 

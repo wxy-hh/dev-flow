@@ -2,7 +2,7 @@
 
 Use this template when dispatching a plan document reviewer subagent.
 
-**Purpose:** Verify the plan is complete, matches the spec, and has proper task decomposition.
+**Purpose:** Verify the plan is complete, matches the spec, and has proper task decomposition. Findings-only; no full implementation dump.
 
 **Dispatch after:** The complete plan is written.
 
@@ -21,7 +21,7 @@ Subagent (general-purpose):
     |----------|------------------|
     | Completeness | TODOs, placeholders, incomplete tasks, missing steps |
     | Spec Alignment | Plan covers spec requirements, no major scope creep |
-    | Task Decomposition | Tasks have clear boundaries, steps are actionable |
+    | Task Decomposition | Tasks use Requirements/Depends on/Writes/Change/Verification/Rollback; no Files+Writes dual list; no full implementation dump |
     | Buildability | Could an engineer follow this plan without getting stuck? |
 
     ## Calibration
@@ -31,19 +31,20 @@ Subagent (general-purpose):
     Minor wording, stylistic preferences, and "nice to have" suggestions are not.
 
     Approve unless there are serious gaps — missing requirements from the spec,
-    contradictory steps, placeholder content, or tasks so vague they can't be acted on.
+    contradictory steps, placeholder content, tasks so vague they can't be acted on,
+    or full implementation dumps that should be short Change/Verification/Rollback only.
 
-    ## Output Format
+    ## Output Format (findings-only)
 
     ## Plan Review
 
     **Status:** Approved | Issues Found
 
-    **Issues (if any):**
-    - [Task X, Step Y]: [specific issue] - [why it matters for implementation]
+    **Findings (if any):**
+    - [Task X]: [specific issue] - [why it matters] - disposition: open
 
-    **Recommendations (advisory, do not block approval):**
+    **Remaining risks (advisory):**
     - [suggestions for improvement]
 ```
 
-**Reviewer returns:** Status, Issues (if any), Recommendations
+**Reviewer returns:** Status, Findings (if any), Remaining risks. Severity judged by reviewer/skill; CLI does not parse severity or auto-promote.

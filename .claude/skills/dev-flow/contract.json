@@ -1,5 +1,5 @@
 {
-  "workflow_version": "0.7.0",
+  "workflow_version": "0.8.0",
   "status_schema": "3",
   "completion_schema": "1",
   "risk_labels": [

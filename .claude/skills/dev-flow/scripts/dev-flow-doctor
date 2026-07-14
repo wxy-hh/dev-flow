@@ -107,6 +107,7 @@ for f in \
   ".claude/skills/dev-flow/references/standard-ml.md" \
   ".claude/skills/dev-flow/references/risk-gates.md" \
   ".claude/skills/req-probe/SKILL.md" \
+  ".claude/skills/dev-flow/scripts/dev-flow-policy.mjs" \
   ".claude/skills/dev-flow/scripts/dev-flow-feature-check" \
   ".claude/skills/dev-flow/scripts/dev-flow-feature-finalize" \
   ".claude/skills/dev-flow/scripts/dev-flow-fingerprint" \
@@ -121,6 +122,7 @@ for f in \
   ".claude/skills/executing-plans/scripts/review-package" \
   ".claude/skills/executing-plans/scripts/task-schedule" \
   ".claude/skills/executing-plans/scripts/sdd-workspace" \
+  ".claude/skills/executing-plans/scripts/sdd-checkpoint" \
   ".claude/skills/dev-flow/scripts/dev-flow-status.mjs" \
   ".claude/skills/dev-flow/scripts/dev-flow-manifest" \
   ".claude/skills/dev-flow/scripts/dev-flow-upgrade" \
@@ -167,6 +169,34 @@ while IFS= read -r script; do
 done < <({ find .claude/skills -path '*/scripts/*' -type f; find .claude/hooks -type f 2>/dev/null; } | sort)
 [ "$script_count" -eq 0 ] && warn "no skill scripts found"
 
+## Forbidden call edges (Layer 0/1/2 isolation)
+# status ↛ feature-check/finalize; feature-check ↛ status/finalize;
+# finalize ↛ status/feature-check; validator/fingerprint/policy ↛ mutators.
+scripts_dir=".claude/skills/dev-flow/scripts"
+forbid_call_edge() {
+  local source=$1
+  local pattern=$2
+  local label=$3
+  local hits
+  # Ignore comments and pure prohibition docs; match real path/command references.
+  hits=$(rg -n -- "$pattern" "$source" 2>/dev/null \
+    | rg -v ':[ \t]*(#|//|/\*|\*)' \
+    | rg -v 'Must not call|禁止调用' \
+    || true)
+  if [ -n "$hits" ]; then
+    fail "forbidden call edge: $label"
+    printf '%s\n' "$hits"
+  else
+    pass "forbidden call edge absent: $label"
+  fi
+}
+forbid_call_edge "$scripts_dir/dev-flow-status.mjs" 'dev-flow-feature-check|dev-flow-feature-finalize' 'status → feature-check/finalize'
+forbid_call_edge "$scripts_dir/dev-flow-feature-check" 'dev-flow-status|dev-flow-feature-finalize' 'feature-check → status/finalize'
+forbid_call_edge "$scripts_dir/dev-flow-feature-finalize" 'dev-flow-status|dev-flow-feature-check' 'feature-finalize → status/feature-check'
+forbid_call_edge "$scripts_dir/dev-flow-validate.mjs" 'dev-flow-status|dev-flow-feature-check|dev-flow-feature-finalize' 'validator → mutators'
+forbid_call_edge "$scripts_dir/dev-flow-fingerprint" 'dev-flow-status|dev-flow-feature-check|dev-flow-feature-finalize|dev-flow-validate' 'fingerprint → upper layers'
+forbid_call_edge "$scripts_dir/dev-flow-policy.mjs" 'dev-flow-status|dev-flow-feature-check|dev-flow-feature-finalize|dev-flow-validate|dev-flow-fingerprint' 'policy → upper layers'
+
 ## ---------------------------------------------------------------------
 ## preflight：本地安装完整性（不比较源包）
 ## ---------------------------------------------------------------------
@@ -208,7 +238,8 @@ if [ "$PREFLIGHT" = true ]; then
         in_block && /^[[:space:]]*[a-z_]+:/ { exit }
         /^[[:space:]]*protected_write_roots:[[:space:]]*\[/ { print; exit }
       ' ".claude/rules/project-workflow.md")
-      if [ -z "$roots" ] || [ "$roots" = "[]" ] || [ "$roots" = "protected_write_roots: []" ]; then
+      roots_trimmed=$(printf '%s' "$roots" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+      if [ -z "$roots_trimmed" ] || [ "$roots_trimmed" = "[]" ] || [ "$roots_trimmed" = "protected_write_roots: []" ]; then
         fail "strict enforcement_mode requires non-empty protected_write_roots"
       else
         unsafe=false
@@ -284,17 +315,33 @@ while IFS= read -r line; do
 done < <(contract_field 'c.line_budgets')
 
 per_skill_max=$(contract_field 'c.line_budgets.per_downstream_skill_max')
-while IFS= read -r skill_file; do
-  [ -z "$skill_file" ] && continue
-  actual=$(wc -l < "$skill_file" | tr -d ' ')
-  if [ "$actual" -le "$per_skill_max" ]; then
-    pass "line budget: $skill_file ($actual/$per_skill_max)"
-  else
-    fail "line budget exceeded: $skill_file ($actual/$per_skill_max)"
-  fi
-done < <(find .claude/skills -mindepth 2 -maxdepth 2 -name SKILL.md ! -path '.claude/skills/dev-flow/*' | sort)
+if [ -f .claude/dev-flow.manifest.json ]; then
+  while IFS= read -r skill_file; do
+    [ -z "$skill_file" ] && continue
+    [ -f "$skill_file" ] || continue
+    actual=$(wc -l < "$skill_file" | tr -d ' ')
+    if [ "$actual" -le "$per_skill_max" ]; then
+      pass "line budget: $skill_file ($actual/$per_skill_max)"
+    else
+      fail "line budget exceeded: $skill_file ($actual/$per_skill_max)"
+    fi
+  done < <(node -e '
+    const fs = require("fs");
+    const m = JSON.parse(fs.readFileSync(".claude/dev-flow.manifest.json", "utf8"));
+    for (const entry of m.files || []) {
+      if (/^\.claude\/skills\/[^/]+\/SKILL\.md$/.test(entry.path)
+          && entry.path !== ".claude/skills/dev-flow/SKILL.md") {
+        console.log(entry.path);
+      }
+    }
+  ' | sort -u)
+else
+  warn "manifest missing; skip downstream skill line budgets"
+fi
 
-version_output=$(rg -n --glob '!contract.json' -- 'workflow_version:\s*"[0-9]' .claude templates README.md docs 2>/dev/null)
+# Implementation plans under docs/plans may document target versions; exclude them.
+# Test fixtures may embed version strings for stamp/completion simulation.
+version_output=$(rg -n --glob '!contract.json' --glob '!docs/plans/**' --glob '!**/scripts/tests/**' -- 'workflow_version:\s*"[0-9]' .claude templates README.md docs 2>/dev/null)
 version_status=$?
 if [ "$version_status" -eq 1 ]; then
   pass "workflow_version has a single source of truth (contract.json)"
@@ -306,8 +353,11 @@ else
 fi
 
 leak_pattern='为当前项目规划时必须使用 Vue|pnpm dev:mock|Cmp-Menu|Cmp-Portal|src/mock|Vue/Vue Router/Pinia API 已自动导入|是否违反 Vue 3|Vue/TS|Vue/TypeScript|Vue 模板|accountType|request\.ts|Vue 性能|placeAnOrder|getProductList'
-leak_output=$(rg -n --glob '!vue3.md' --glob '!**/scripts/dev-flow-doctor' -- "$leak_pattern" \
-  ".claude/agents" ".claude/commands" ".claude/skills" ".claude/rules" 2>/dev/null)
+# Framework/stack rules are project-owned and not part of the reusable package;
+# scan only managed workflow surfaces. Custom stack rules under .claude/rules
+# are ignored so doctor does not treat project-local conventions as package leaks.
+leak_output=$(rg -n --glob '!**/scripts/dev-flow-doctor' -- "$leak_pattern" \
+  ".claude/agents" ".claude/commands" ".claude/skills" 2>/dev/null)
 leak_status=$?
 if [ "$leak_status" -eq 1 ]; then
   pass "reusable workflow layer has no known source-project leakage"
@@ -350,6 +400,23 @@ printf '\n## 适配层\n\n'
 if [ -f ".claude/rules/project-workflow.md" ]; then
   require_pattern ".claude/rules/project-workflow.md" '^dev_flow:' "project-workflow.md has dev_flow config"
   require_pattern ".claude/rules/project-workflow.md" 'retention:' "project-workflow.md has artifact retention config"
+  expected_workflow_version=$(contract_field 'c.workflow_version')
+  project_workflow_version=$(awk '
+    /^dev_flow:[[:space:]]*$/ { in_dev_flow=1; next }
+    in_dev_flow && /^  version:[[:space:]]*/ {
+      value=$0
+      sub(/^[^:]*:[[:space:]]*/, "", value)
+      gsub(/^"|"$/, "", value)
+      print value
+      exit
+    }
+    in_dev_flow && /^[^[:space:]]/ { exit }
+  ' .claude/rules/project-workflow.md)
+  if [ "$project_workflow_version" = "$expected_workflow_version" ]; then
+    pass "project-workflow.md version matches contract ($expected_workflow_version)"
+  else
+    fail "project-workflow.md version must match contract ($expected_workflow_version; got ${project_workflow_version:-missing})"
+  fi
   forbid_pattern '<detect|<none\|present>|<false\|true>|<local-config\|repo-governed>|<required-for-L-behavior\|optional\|custom>|<disabled\|enabled>' \
     "project-workflow.md has no unresolved config placeholders" \
     ".claude/rules/project-workflow.md"
@@ -376,6 +443,50 @@ require_pattern ".claude/skills/dev-flow/references/protocol.md" '资产读取�
 require_pattern ".claude/skills/dev-flow/references/protocol.md" 'dev_flow_completion:' "protocol.md documents completion.md frontmatter schema"
 require_pattern ".claude/skills/dev-flow/SKILL.md" '不可回归的三条底线' "dev-flow SKILL.md states the three non-negotiable baselines"
 require_pattern ".claude/skills/dev-flow/SKILL.md" '风险不抬高规模' "dev-flow SKILL.md keeps risk labels from raising scale level"
+
+require_pattern ".claude/commands/finish.md" '\[ASSET FINALIZATION\]' "finish.md documents ASSET FINALIZATION stop protocol"
+require_pattern ".claude/commands/finish.md" '禁止同回合' "finish.md forbids same-turn --confirm"
+require_pattern ".claude/commands/finish.md" 'not now' "finish.md documents not now path"
+require_pattern ".claude/commands/finish.md" 'dev-flow-status.mjs complete-verification' "finish.md records verification through status CLI before feature-check"
+finish_state_b=$(sed -n '/^### 状态 B：/,/^### 状态 C：/p' ".claude/commands/finish.md")
+if printf '%s\n' "$finish_state_b" | rg -q -- 'dev_flow\.artifacts\.retention' \
+  && printf '%s\n' "$finish_state_b" | rg -q -- '--retention="\$RETENTION"' \
+  && ! printf '%s\n' "$finish_state_b" | rg -q -- '--retention=(compact|full)'; then
+  pass "finish.md derives dry-run retention from project config"
+else
+  fail "finish.md must derive State B dry-run retention from dev_flow.artifacts.retention"
+fi
+require_pattern ".claude/skills/finishing-a-development-branch/SKILL.md" '\[ASSET FINALIZATION\]' "finishing skill documents ASSET FINALIZATION stop protocol"
+require_pattern ".claude/skills/finishing-a-development-branch/SKILL.md" '--inventory' "finishing skill requires --inventory on confirm"
+require_pattern ".claude/skills/verification-before-completion/SKILL.md" '不得互相调用' "verification skill forbids complete-verification/feature-check wrapper calls"
+require_pattern ".claude/hooks/dev-flow-finish-guard.sh" 'verified-unfinalized' "finish-guard handles verified-unfinalized"
+
+## ---------------------------------------------------------------------
+## 在途 feature：verified-unfinalized 仅 WARN（ready-to-finalize）
+## ---------------------------------------------------------------------
+printf '\n## 在途 feature\n\n'
+
+if [ -f ".claude/rules/project-workflow.md" ]; then
+  feature_root=$(awk '/^[[:space:]]*feature_root:/ { v=$0; sub(/^[^:]*:[[:space:]]*/, "", v); gsub(/^"|"$/, "", v); print v; exit }' ".claude/rules/project-workflow.md")
+  if [ -n "$feature_root" ] && [ -d "$feature_root" ]; then
+    unfinalized=0
+    while IFS= read -r feature_dir; do
+      [ -z "$feature_dir" ] && continue
+      [ -f "$feature_dir/status.md" ] || continue
+      [ -f "$feature_dir/completion.md" ] || continue
+      feature_id=$(basename "$feature_dir")
+      warn "ready-to-finalize: feature ${feature_id} is verified-unfinalized (status + completion present; run /finish and reply compact|retain full|not now)"
+      unfinalized=$((unfinalized + 1))
+    done < <(find "$feature_root" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | sort)
+    if [ "$unfinalized" -eq 0 ]; then
+      pass "no verified-unfinalized features"
+    fi
+  else
+    pass "no feature_root to scan for verified-unfinalized"
+  fi
+else
+  pass "skip verified-unfinalized scan (no project-workflow.md)"
+fi
 
 printf '\nSummary: %s passed, %s warning(s), %s failure(s)\n' "$passes" "$warnings" "$failures"
 

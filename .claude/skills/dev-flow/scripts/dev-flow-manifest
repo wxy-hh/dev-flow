@@ -86,6 +86,7 @@ build() {
         ".claude/skills/grilling",
         ".claude/skills/requesting-code-review",
         ".claude/skills/subagent-driven-development",
+        ".claude/rules/vue3.md",
       ],
     };
     fs.mkdirSync(require("path").dirname(out), { recursive: true });
@@ -106,6 +107,19 @@ verify() {
     }
     const m = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
     let failures = 0;
+    const contractPath = ".claude/skills/dev-flow/contract.json";
+    if (!fs.existsSync(contractPath)) {
+      console.log("FAIL missing contract for manifest version check: " + contractPath);
+      failures += 1;
+    } else {
+      const contractVersion = JSON.parse(fs.readFileSync(contractPath, "utf8")).workflow_version;
+      if (m.workflow_version === contractVersion) {
+        console.log("PASS manifest workflow_version matches contract: " + contractVersion);
+      } else {
+        console.log(`FAIL manifest workflow_version ${m.workflow_version || "missing"} does not match contract ${contractVersion}`);
+        failures += 1;
+      }
+    }
     for (const f of m.files || []) {
       if (!fs.existsSync(f.path)) {
         console.log("FAIL missing managed file: " + f.path);

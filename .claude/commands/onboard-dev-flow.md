@@ -18,7 +18,7 @@
 
 ## 流程
 
-1. 读取 `.claude/rules/project-workflow.template.md`。
+1. 读取 `.claude/rules/project-workflow.template.md` 和 `.claude/skills/dev-flow/contract.json`；把 `dev_flow.version` 写成当前 `contract.workflow_version`，不得复制模板中的旧版本字面量。
 2. 检查当前项目：
    - 包管理器和 lock 文件。
    - 项目脚本：install、dev、build、build-only、type-check、lint、lint_changed、test、format、preview。
@@ -49,6 +49,7 @@
 - 不修改业务代码。
 - 不自动提交。
 - 不复用旧项目的 `project-workflow.md` 事实。
+- onboarding 不是 upgrade：已有项目的受管升级用 `dev-flow-upgrade`；框架/栈规则由目标项目自建，不随包分发。
 - 发现无法判断的命令或能力时，写成 `none` 或 `needs-confirmation`，不要猜。
 - `project-workflow.md` 必须保留 `dev_flow` 配置块，且配置值要与 Markdown 表格一致。
 - `dev_flow.paths.scoped_spec_root` 默认写 `.claude/rules/specs`；不要因为没有真实 scope 就生成空规范。

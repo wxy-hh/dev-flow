@@ -13,15 +13,36 @@ dev-flow-status activate <feature-id>
 dev-flow-status add-asset <feature-id> --path <repo-path> --kind <kind>
 dev-flow-status complete-gate <feature-id> <gate> \
   [--evidence-file <repo-path> --heading <markdown-heading>]
+dev-flow-status promote-gate <feature-id> <risk-gate> --to <light|full> --reason <text>
+dev-flow-status record-risk-evidence <feature-id> <label> \
+  [--mode <inline|report>] [--conclusion <text>] [--verification <text>] [--report <path>]
 dev-flow-status confirm-human <feature-id> <gate> \
   --status <confirmed|skipped> --evidence <user-evidence>
 dev-flow-status record-validation <feature-id> --command <command>
+dev-flow-status complete-verification <feature-id> --command <command> \
+  [--report <path>] [--manual-test <path>]
 dev-flow-status accept-risk <feature-id> --id <AR-xxx> \
   --step <manual-test-step-id> --reason <reason> --evidence <user-evidence>
 dev-flow-status repair <feature-id>
 ```
 
 写后立即跑 validator；失败恢复原文件。`repair` 只调整字段顺序，不发明事实。
+
+### approval 与 gate 名称
+
+`confirm-human … implementation_approval` 在 candidate status 上运行 `--stage approval`；`activate` 复用同一检查。标准 M/L 必须先完成路线要求的 writing-plans、coverage（触发时）和 plan-review，已触发 rollback/security 也必须完成；`confirmed`/`skipped` 都不能代替这些 process gate。`complete-gate` 可兼容输入风险 gate 的 snake_case 别名，但 `current_gate`/`completed_gates` 永远落盘为 contract `known_gates` 的连字符名称（如 `plan-review`、`rollback-units`）。HUMAN GATE 只能用 `confirm-human`，验证 gate 只能用 `complete-verification`，不得借通用命令旁路。
+
+### promote-gate
+
+只接受 contract `risk_gates`：`requirements_coverage` / `plan_review` / `rollback_units` / `security_review` / `behavior_verification`。拒绝 `code-review` 等非 risk gate。只做 `none → light → full` 单调提升，并把 `--reason` 追加到现有 `classification.note`（不扩 schema）；不扫描 Markdown severity，不自动 promote。severity 由 skill 判定，skill 在 light 出现 CRITICAL/HIGH 时调用本命令。
+
+### complete-verification
+
+登记验证命令与报告，并在同一原子写入后执行 finish/active validator；路线要求 code-review 时必须已经完成并具备匹配 evidence，full behavior verification 必须有独立 verification 资产。**不**写 check-ok stamp、**不**调用 feature-check/finalizer、**不**生成 feature/completion。stamp 只由随后独立执行的 `dev-flow-feature-check --finish` 写入。
+
+### record-risk-evidence
+
+按标签写入 `risk_evidence`（`mode`/`conclusion`/`verification`/`report`）；对应最低 gate 为 `full` 时用 `report` 模式。
 
 ## 授权分流
 
@@ -34,7 +55,7 @@ dev-flow-status repair <feature-id>
 | 标准/轻量 M/L | `init … --profile standard` | 是 | `approval-pending` → `implementation_approval` 后 `approved` |
 
 - `authorize` 不得接受 `--profile standard`。
-- `activate` 切换活动功能前关闭旧授权；v0.7 不支持同一 worktree 并行两个进行中的 feature 授权。
+- `activate` 切换活动功能前关闭旧授权；同一 worktree 不支持并行两个进行中的 feature 授权。
 - `state: closed` 或文件缺失：受保护路径按无授权处理。
 - Path Card / 分类完成后同回合写入授权（XS/S 用 `authorize`，M/L 用 `init`+`activate`）。
 
@@ -52,7 +73,7 @@ dev-flow-status repair <feature-id>
 
 永远不拦：`.claude/**`、`<feature_root>/**`、`<review_root>/**`、`openspec/**`。未命中 protected roots 的路径 allow。strict 且 roots 为空/不安全：`dev-flow-doctor --preflight` FAIL。未 onboarding（无 project-workflow.md）：静默 allow。
 
-v0.7 只强制 Edit/Write/MultiEdit/NotebookEdit；Bash 写入拦截不是本版本承诺。严格模式是流程护栏而非安全边界。
+只强制 Edit/Write/MultiEdit/NotebookEdit；Bash 写入拦截不是本版本承诺。严格模式是流程护栏而非安全边界。
 
 ## 新/旧项目默认
 
