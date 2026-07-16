@@ -8,6 +8,7 @@
 dev-flow-status authorize --level <XS|S> [--note <text>]
 dev-flow-status init <feature-id> --level <XS|S|M|L> --profile <profile> \
   --topology <topology> --evidence-result <result> \
+  [--entry-gate <req-probe|openspec|grillme|writing-plans>] \
   [--note <text>] [--risk-labels a,b] [--lightweight-l]
 dev-flow-status activate <feature-id>
 dev-flow-status add-asset <feature-id> --path <repo-path> --kind <kind>
@@ -17,7 +18,7 @@ dev-flow-status promote-gate <feature-id> <risk-gate> --to <light|full> --reason
 dev-flow-status record-risk-evidence <feature-id> <label> \
   [--mode <inline|report>] [--conclusion <text>] [--verification <text>] [--report <path>]
 dev-flow-status confirm-human <feature-id> <gate> \
-  --status <confirmed|skipped> --evidence <user-evidence>
+  --status confirmed --evidence <user-evidence>
 dev-flow-status record-validation <feature-id> --command <command>
 dev-flow-status complete-verification <feature-id> --command <command> \
   [--report <path>] [--manual-test <path>]
@@ -30,7 +31,14 @@ dev-flow-status repair <feature-id>
 
 ### approval 与 gate 名称
 
-`confirm-human … implementation_approval` 在 candidate status 上运行 `--stage approval`；`activate` 复用同一检查。标准 M/L 必须先完成路线要求的 writing-plans、coverage（触发时）和 plan-review，已触发 rollback/security 也必须完成；`confirmed`/`skipped` 都不能代替这些 process gate。`complete-gate` 可兼容输入风险 gate 的 snake_case 别名，但 `current_gate`/`completed_gates` 永远落盘为 contract `known_gates` 的连字符名称（如 `plan-review`、`rollback-units`）。HUMAN GATE 只能用 `confirm-human`，验证 gate 只能用 `complete-verification`，不得借通用命令旁路。
+`confirm-human … implementation_approval` 在 candidate status 上运行 `--stage approval`；`activate` 复用同一检查。标准 M/L 必须先完成路线要求的 writing-plans、coverage（触发时）和 plan-review，已触发 rollback/security 也必须完成；process gate 不能用 HUMAN GATE 代替。**所有 required HUMAN GATE 仅 `confirmed` 才算完成**；implementation approval 的确认会生成绑定 approval_basis（route/risk/protected roots + 前置资产路径与内容哈希）的 approved 授权。用户「接受风险并继续」仍记 `confirmed`，原话保存在 evidence。`complete-gate` 可兼容输入风险 gate 的 snake_case 别名，但 `current_gate`/`completed_gates` 永远落盘为 contract `known_gates` 的连字符名称（如 `plan-review`、`rollback-units`）。独立 code-review 报告在 `complete-gate` 成功后若尚未 `add-asset`，CLI 会提示可复制的 `add-asset … --kind review` 命令。HUMAN GATE 只能用 `confirm-human`，验证 gate 只能用 `complete-verification`，不得借通用命令旁路。
+
+### init 与 risk labels
+
+- 标准 M/L 必须显式传 `--entry-gate`：模糊/无文档为 `req-probe`，OpenSpec 路线为 `openspec`，完整未确认文档为 `grillme`，已明确确认且无未决为 `writing-plans`；轻量 L/risk-minimal 不传。
+- 携带风险标签且某 required gate 已为 full 时，**approval/finish** 阶段 `risk_evidence` 须用 report 模式指向真实报告；**init/current** 允许 pending inline 证据（stage-aware）。
+- 标签相对路线无 gate 增量时 init 输出 INFO（不自动剥标签）。
+- 只读校验：`dev-flow-validate.mjs approval-basis` / `authorization`。
 
 ### promote-gate
 
@@ -59,7 +67,7 @@ dev-flow-status repair <feature-id>
 - `state: closed` 或文件缺失：受保护路径按无授权处理。
 - Path Card / 分类完成后同回合写入授权（XS/S 用 `authorize`，M/L 用 `init`+`activate`）。
 
-字段：`feature_id`、`level`、`profile`、`state`（`classified|approval-pending|approved|closed`）、`protected_roots`、`created_at`、`approved_at`。
+字段：`schema_version`、`workflow_version`、`feature_id`、`level`、`profile`、`state`（`classified|approval-pending|approved|closed`）、`protected_roots`、`approval_basis`、`created_at`、`approved_at`、`closed_at`。approved 必须有当前 schema/workflow version、active status 和匹配当前 workflow roots/前置资产的 approval_basis；finalizer 成功后保留同 feature 的 `closed` 记录供 Git 收尾定位。
 
 ## 路径拦截模型 A
 

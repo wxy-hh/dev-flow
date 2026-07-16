@@ -16,15 +16,17 @@
 
 ## 最低门禁映射
 
-| 标签 | 最低 gate |
+| 标签 | 最低 risk gate（与 `contract.json` 同源） |
 |---|---|
 | `security` | `security_review: light`、`behavior_verification: light` |
 | `data` | `rollback_units: light`、`behavior_verification: light` |
 | `money` | `rollback_units: light`、`behavior_verification: light` |
 | `external` | `behavior_verification: light` |
 | `availability` | `behavior_verification: light` |
-| `critical_correctness` | `behavior_verification: light` |
-| `irreversible_consequence` | `rollback_units: light`、`behavior_verification: light` |
+| `critical_correctness` | `behavior_verification: full` |
+| `irreversible_consequence` | `rollback_units: full`、`behavior_verification: full` |
+
+route policy 额外派生（非 risk_gates 字段）：任一风险标签 → code-review 至少 light；`critical_correctness` / `irreversible_consequence` → code-review full。高后果标签**不**直接抬高 `plan_review`；risk-minimal 仍不触发 plan-review / requirements-coverage。
 
 多个标签取所需证明的并集；标签对应的最低 gate 不得降为 `none`，项目或任务可以升为 `full`。gate 形态：`none` 不触发；`light` 只把结论写入 `status.md` 的 `risk_evidence`（`mode: "inline"`）；`full` 落盘为项目适配层定义的标准资产并用 `mode: "report"` 指向仓库内报告。
 
@@ -58,7 +60,7 @@
 
 **安全审查**：优先用 `security-reviewer`；无可用智能体时把清单写进 `plan-review`、`status.md` 和最终 `code-review`。检查重点：token/session 安全读写和清理；权限判断只依赖可信来源、无绕过路径；登录回跳/跨系统参数/URL code 等入口校验和兜底；订单/支付/删除等高后果动作有权限和状态保护；无硬编码凭据、敏感日志或过宽错误泄露。`full` 保存到 `<REVIEW_ROOT>/YYYY-MM-DD-<feature-id>-security-review.md`；`light` 至少写入 `status.md` 或最终代码审查。
 
-**行为验证**：`webapp-testing: enabled` 用其跑关键路径并记录截图/trace；`disabled` 落盘 `<REVIEW_ROOT>/YYYY-MM-DD-<feature-id>-manual-test.md`（步骤、预期、实测结果）；`automated-tests: present` 同时运行相关自动化测试。L 级运行时行为改动不能只用 type-check/lint 作为完成证据。用户跳过完整 lint/build 时可记录 accepted risk，但 verification 只能标 partial，不能进 `completed_gates`。
+**行为验证**：`webapp-testing: enabled` 用其跑关键路径并记录截图/trace；`disabled` 落盘 `<REVIEW_ROOT>/YYYY-MM-DD-<feature-id>-manual-test.md`（步骤、预期、实测结果）；`automated-tests: present` 同时运行相关自动化测试。L 级运行时行为改动不能只用 type-check/lint 作为完成证据。用户跳过完整 lint/build 且尚未形成三方一致的合规 partial 时，不能完成 verification gate；手测步骤、accepted risk 与 partial-acceptance 闭环后，可以用 `outcome: partial` 进入 `completed_gates` 和收尾。
 
 ## 登录 / 鉴权 / SSO 验证矩阵
 

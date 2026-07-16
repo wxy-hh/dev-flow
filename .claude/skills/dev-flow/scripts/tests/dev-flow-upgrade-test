@@ -84,14 +84,14 @@ printf '%s\n' '---' 'feature_id: feat-verified' 'current_gate: verification' '--
 printf '%s\n' '---' 'feature_id: feat-verified' 'outcome: verified' '---' '# completion' \
   > "$target/docs/dev-flow/features/feat-verified/completion.md"
 printf '%s\n' 'mid asset' \
-  > "$target/docs/dev-flow/features/feat-verified/初步实现计划.md"
+  > "$target/docs/dev-flow/features/feat-verified/实现计划.md"
 
 printf '%s\n' '---' 'feature_id: feat-legacy' 'outcome: verified' '---' '# legacy completion' \
   > "$target/docs/dev-flow/features/feat-legacy/completion.md"
 printf '%s\n' 'feature.md retained' \
   > "$target/docs/dev-flow/features/feat-legacy/feature.md"
 printf '%s\n' 'archived mid' \
-  > "$target/docs/dev-flow/features/feat-legacy/archive/2026-01-01T000000Z/feature/初步实现计划.md"
+  > "$target/docs/dev-flow/features/feat-legacy/archive/2026-01-01T000000Z/feature/实现计划.md"
 
 git -C "$target" add .
 git -C "$target" -c user.name=t -c user.email=t@t commit -qm base
@@ -131,10 +131,33 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# --apply should succeed
+# v0.9: refuse apply while active status exists; then clear and succeed
 # ---------------------------------------------------------------------------
+if (cd "$repo" && "$upgrade" --target "$target" --apply) >/tmp/upgrade-refuse.out 2>&1; then
+  fail "apply should refuse when active status exists"
+  cat /tmp/upgrade-refuse.out
+else
+  if rg -q 'active v0.8/v0.9 feature status present' /tmp/upgrade-refuse.out; then
+    pass "apply refuses active feature status with zero mutations"
+  else
+    fail "apply refuses active feature status with zero mutations"
+    cat /tmp/upgrade-refuse.out
+  fi
+fi
+mkdir -p "$target/.claude/runtime/dev-flow/held-status"
+cp "$target/docs/dev-flow/features/feat-active/status.md" \
+  "$target/.claude/runtime/dev-flow/held-status/feat-active-status.md" 2>/dev/null || true
+cp "$target/docs/dev-flow/features/feat-verified/status.md" \
+  "$target/.claude/runtime/dev-flow/held-status/feat-verified-status.md" 2>/dev/null || true
+rm -f "$target/docs/dev-flow/features/feat-active/status.md" \
+  "$target/docs/dev-flow/features/feat-verified/status.md"
+
 if (cd "$repo" && "$upgrade" --target "$target" --apply) >/tmp/upgrade-apply.out 2>&1; then
   pass "apply succeeds"
+  cp "$target/.claude/runtime/dev-flow/held-status/feat-active-status.md" \
+    "$target/docs/dev-flow/features/feat-active/status.md" 2>/dev/null || true
+  cp "$target/.claude/runtime/dev-flow/held-status/feat-verified-status.md" \
+    "$target/docs/dev-flow/features/feat-verified/status.md" 2>/dev/null || true
 else
   fail "apply failed"
   cat /tmp/upgrade-apply.out
@@ -338,8 +361,9 @@ printf '%s\n' 'workflow_version: 0.7.0' \
   > "$target2/.claude/runtime/dev-flow/feat-active.check-ok"
 printf '%s\n' 'legacy progress' > "$target2/.claude/runtime/sdd/progress.md"
 printf '%s\n' 'legacy task' > "$target2/.claude/runtime/sdd/task-1.md"
-printf '%s\n' '---' 'feature_id: feat-active' '---' \
-  > "$target2/docs/dev-flow/features/feat-active/status.md"
+# No active status.md: v0.9 refuse gate would block apply before preflight.
+# Feature dir may exist without status for rollback of other assets.
+printf '%s\n' '# feature note' > "$target2/docs/dev-flow/features/feat-active/note.md"
 
 git -C "$target2" add .
 git -C "$target2" -c user.name=t -c user.email=t@t commit -qm base
@@ -352,7 +376,7 @@ pre_sdd_progress=$(cksum < "$target2/.claude/runtime/sdd/progress.md")
 pre_grilling_hash=$(cksum < "$target2/.claude/skills/grilling/SKILL.md")
 pre_contract=$(cksum < "$target2/.claude/skills/dev-flow/contract.json")
 pre_project_workflow=$(cksum < "$target2/.claude/rules/project-workflow.md")
-pre_status=$(cksum < "$target2/docs/dev-flow/features/feat-active/status.md")
+pre_note=$(cksum < "$target2/docs/dev-flow/features/feat-active/note.md")
 
 if (cd "$repo" && "$upgrade" --target "$target2" --apply) >/tmp/upgrade-fail.out 2>&1; then
   fail "apply should fail when preflight fails (strict empty roots)"
@@ -409,11 +433,11 @@ if [ -f "$target2/.claude/rules/project-workflow.md" ] \
 else
   fail "rollback restores project-workflow version/default edits"
 fi
-if [ -f "$target2/docs/dev-flow/features/feat-active/status.md" ] \
-  && [ "$(cksum < "$target2/docs/dev-flow/features/feat-active/status.md")" = "$pre_status" ]; then
-  pass "rollback leaves feature status intact"
+if [ -f "$target2/docs/dev-flow/features/feat-active/note.md" ] \
+  && [ "$(cksum < "$target2/docs/dev-flow/features/feat-active/note.md")" = "$pre_note" ]; then
+  pass "rollback leaves feature assets intact"
 else
-  fail "rollback leaves feature status intact"
+  fail "rollback leaves feature assets intact"
 fi
 if [ ! -e "$target2/.claude/commands/finish.md" ]; then
   pass "rollback removes managed files created by the failed apply"

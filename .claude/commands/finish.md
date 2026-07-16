@@ -34,17 +34,19 @@
 
 无风险 XS/S 与默认轻量 M（无 `status.md`）不强制该检查。feature-check 成功后进入状态 B。
 
-### 状态 B：已验证但未 finalization
+### 状态 B：logic-complete（可 Git；finalization 可选）
 
 1. 生成或更新精简 `feature.md` / `completion.md`；`partial` 时按 protocol.md 为每个 accepted risk 保留一个 `## AR-xxx` reason/evidence 段，`verified` 不生成 AR 段。
 2. `completion.md` frontmatter 写入当前 contract 的 `workflow_version`（字段见 protocol.md）。
-3. 读取 `.claude/rules/project-workflow.md` 的 `dev_flow.artifacts.retention` 到 `RETENTION`（仅 `compact|full`），按该项目默认值运行 finalizer dry-run（禁止同回合 `--confirm`）：
+3. 报告 **logic-complete**：feature-check 通过 + 有效 `feature.md`/`completion.md` + 新鲜 check-ok 时即可进入 Git；compact/full 只是可选资产维护。
+4. 读取 `.claude/rules/project-workflow.md` 的 `dev_flow.artifacts.retention` 到 `RETENTION`（仅 `compact|full`），按该项目默认值运行 finalizer dry-run（禁止同回合 `--confirm`）：
 
 ```bash
 .claude/skills/dev-flow/scripts/dev-flow-feature-finalize <feature-id> --retention="$RETENTION"
 ```
 
-4. 输出清单、统计和 inventory hash，并输出停止协议：
+5. dry-run 会标注 `[keep]` / `[delete][tracked|untracked]` / `[archive]`。compact 若含 untracked 删除，输出 exact token `DELETE-UNTRACKED:<inventory-sha>:<count>`；普通 `--confirm --inventory` 会被拒绝。
+6. 输出清单、统计和 inventory hash，并输出停止协议：
 
 ```text
 [ASSET FINALIZATION]
@@ -53,6 +55,7 @@ Verification: verified|partial
 Inventory: <sha256>
 Working set: <files/bytes>
 Long-term keep: <files/bytes>
+Semantics: compact=delete intermediate; full=archive; not now=skip without blocking Git
 
 Reply exactly:
 - compact
@@ -63,22 +66,30 @@ Reply exactly:
 Auto-continue: no
 ```
 
-5. **当前回合必须立即停止。** 不得同回合运行 `--confirm`，不得把 implementation approval 或模糊回复（继续/好的/完成吧）当 finalization 授权，不得在未收到精确选择时进入 Git 收尾。
+7. **当前回合必须立即停止。** 不得同回合运行 `--confirm`，不得把 implementation approval 或模糊回复（继续/好的/完成吧）当 finalization 授权。logic-complete 后用户也可直接走 Git（不必先 finalization）；若用户选择 compact/full，则下一回合再 `--confirm`。
 
 ### 状态 C：用户精确回复 `compact`
 
-下一回合：
+下一回合。若 dry-run **没有** untracked 删除候选：
 
 ```bash
 .claude/skills/dev-flow/scripts/dev-flow-feature-finalize <feature-id> \
   --retention=compact --confirm --inventory <sha256>
 ```
 
-成功后运行 `dev-flow-feature-check <feature-id> --finish`（finalized 形态），再进入 Git 收尾选项。
+若 dry-run 输出了 `Untracked delete token: DELETE-UNTRACKED:<sha>:<count>`，必须带同一 token（普通 confirm 零修改失败）：
+
+```bash
+.claude/skills/dev-flow/scripts/dev-flow-feature-finalize <feature-id> \
+  --retention=compact --confirm --inventory <sha256> \
+  --confirm-untracked "DELETE-UNTRACKED:<sha256>:<count>"
+```
+
+成功后运行 `dev-flow-feature-check <feature-id> --finish`（finalized 形态），再进入 Git 收尾选项（若尚未提交）。
 
 ### 状态 D：用户精确回复 `retain full`
 
-使用**同一** inventory hash：
+使用**同一** inventory hash（full 为归档，无需 untracked token）：
 
 ```bash
 .claude/skills/dev-flow/scripts/dev-flow-feature-finalize <feature-id> \
@@ -90,19 +101,19 @@ Auto-continue: no
 ### 状态 E：用户精确回复 `not now`
 
 - 不调用 finalizer；status、feature、completion 和中间资产保持原样；check-ok 保留。
-- 只能声明“验证已完成/partial，但资产尚未 finalized”；禁止声明“可提交”“已收尾”。
-- finish-guard 对 git commit/push/merge 返回 ask（verified-unfinalized）。
-- doctor 输出 ready-to-finalize WARN。
-- 业务 diff 变化会使 check-ok 自动 stale。
-- 再次 `/finish`：fingerprint 未变可复用验证；已变必须重跑 verification + feature-check；无论是否复用都重新 dry-run 生成 inventory。
+- **不阻塞 Git**：logic-complete 已满足时 finish-guard 对 add/commit/push/merge **放行**。
+- 可声明「验证已完成/partial，资产尚未 compact/full」；不得把「未 finalization」说成「未验证」。
+- doctor 可输出 ready-to-finalize WARN（可选归档提示），不挡 Git。
+- 业务 diff 变化会使 check-ok 自动 stale；同 feature 可重跑 verification → feature-check → 更新 completion。
+- 再次 `/finish`：fingerprint 未变可复用验证；已变必须重跑；无论是否复用都重新 dry-run 生成 inventory。
 
 ## 精确回复（唯一合法）
 
 | 回复 | 动作 |
 |------|------|
-| `compact` | confirm + retention=compact + inventory |
+| `compact` | confirm + retention=compact + inventory；有 untracked 删除时另需 `--confirm-untracked "DELETE-UNTRACKED:<sha>:<count>"` |
 | `retain full` | confirm + retention=full + inventory |
-| `not now` | 不 finalizer；保留 check-ok；guard ask |
+| `not now` | 不 finalizer；保留 check-ok；**Git 不阻塞** |
 
 禁止模糊匹配。`--confirm` 必须带 `--inventory <sha256>`，且不得与 dry-run 同回合。
 
@@ -110,5 +121,5 @@ Auto-continue: no
 
 - 没有新鲜验证证据时，不要说“完成”“通过”“可提交”。
 - 验证失败时，报告失败命令、关键错误和下一步。
-- dry-run 后未收到精确选择前，不进入 Git 收尾。
+- logic-complete 后可进入 Git；finalization 可选。
 - 不自动提交；只给出建议暂存文件和 commit message。

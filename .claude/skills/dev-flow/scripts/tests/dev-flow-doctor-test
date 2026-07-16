@@ -54,7 +54,7 @@ assert_contains 'package doctor documents ASSET FINALIZATION' 'finish.md documen
 assert_contains 'package doctor requires inventory on confirm docs' 'finishing skill requires --inventory on confirm' "$pkg_out"
 assert_contains 'package doctor checks complete-verification orchestration' 'finish.md records verification through status CLI before feature-check' "$pkg_out"
 assert_contains 'package doctor checks project default retention' 'finish.md derives dry-run retention from project config' "$pkg_out"
-assert_contains 'package doctor checks finish-guard verified-unfinalized' 'finish-guard handles verified-unfinalized' "$pkg_out"
+assert_contains 'package doctor checks finish-guard logic-complete' 'finish-guard handles logic-complete without finalizer' "$pkg_out"
 assert_contains 'package doctor skips feature scan without project-workflow' 'skip verified-unfinalized scan' "$pkg_out"
 assert_not_contains 'package doctor has no ready-to-finalize WARN without features' 'ready-to-finalize' "$pkg_out"
 
@@ -116,14 +116,63 @@ printf '%s\n' \
   '  level: "S"' \
   '---' > "$tmp/docs/dev-flow/features/active-feature/status.md"
 
-# verified-unfinalized: status + completion
+# verified-unfinalized: a valid lightweight-L status + final assets
 printf '%s\n' \
   '---' \
   'dev_flow_status:' \
   '  schema_version: "3"' \
   '  feature_id: "verified-unfinalized"' \
-  '  level: "S"' \
+  '  level: "L"' \
+  '  profile: "standard"' \
+  '  risk_labels: []' \
+  '  risk_evidence: {}' \
+  '  classification:' \
+  '    topology: "local"' \
+  '    evidence_result: "verified"' \
+  '    note: "doctor fixture"' \
+  '  current_gate: "verification-before-completion"' \
+  '  completed_gates:' \
+  '    - rollback-units' \
+  '    - code-review' \
+  '    - verification-before-completion' \
+  '  next_action: "finish"' \
+  '  auto_continue: false' \
+  '  human_gates:' \
+  '    requirement_confirmation:' \
+  '      required: false' \
+  '      status: "pending"' \
+  '      evidence: "not required"' \
+  '    implementation_approval:' \
+  '      required: true' \
+  '      status: "confirmed"' \
+  '      evidence: "user approved"' \
+  '  risk_gates:' \
+  '    requirements_coverage: "none"' \
+  '    plan_review: "none"' \
+  '    rollback_units: "light"' \
+  '    security_review: "none"' \
+  '    behavior_verification: "full"' \
+  '  assets:' \
+  '    - {path: "docs/dev-flow/reviews/verified-unfinalized-verification.md", kind: "verification"}' \
+  '    - {path: "docs/dev-flow/reviews/verified-unfinalized-code-review.md", kind: "review"}' \
+  '  gate_evidence:' \
+  '    rollback_units:' \
+  '      path: "docs/dev-flow/reviews/verified-unfinalized-verification.md"' \
+  '      heading: "Rollback summary"' \
+  '    code_review:' \
+  '      path: "docs/dev-flow/reviews/verified-unfinalized-code-review.md"' \
+  '      heading: "Findings"' \
+  '  validation:' \
+  '    last_at: "2026-01-01"' \
+  '    commands:' \
+  '      - "printf verification"' \
+  '    business_diff_fingerprint: "unknown"' \
+  '  accepted_risks: []' \
   '---' > "$tmp/docs/dev-flow/features/verified-unfinalized/status.md"
+printf '%s\n' '# verification' '## Rollback summary' '- reversible' \
+  > "$tmp/docs/dev-flow/reviews/verified-unfinalized-verification.md"
+printf '%s\n' '# code review' '## Findings' '- none' \
+  > "$tmp/docs/dev-flow/reviews/verified-unfinalized-code-review.md"
 workflow_version=$(node "$policy_cmd" version)
 printf '%s\n' \
   '---' \
@@ -155,7 +204,7 @@ scan_unfinalized() {
     [ -f "$feature_dir/status.md" ] || continue
     [ -f "$feature_dir/completion.md" ] || continue
     feature_id=$(basename "$feature_dir")
-    out="${out}WARN ready-to-finalize: feature ${feature_id} is verified-unfinalized"$'\n'
+    out="${out}WARN ready-to-finalize: feature ${feature_id} is logic-complete with status still present"$'\n'
     n=$((n + 1))
   done < <(find "$feature_root" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | sort)
   if [ "$n" -eq 0 ]; then
@@ -165,8 +214,8 @@ scan_unfinalized() {
 }
 
 scan_out=$(scan_unfinalized "$tmp/docs/dev-flow/features")
-assert_contains 'scan WARNs verified-unfinalized only' \
-  'ready-to-finalize: feature verified-unfinalized is verified-unfinalized' "$scan_out"
+assert_contains 'scan WARNs logic-complete optional finalize' \
+  'ready-to-finalize: feature verified-unfinalized is logic-complete' "$scan_out"
 assert_not_contains 'scan ignores active-only feature' \
   'feature active-feature' "$scan_out"
 assert_not_contains 'scan ignores legacy-finalized (no status)' \
@@ -178,6 +227,7 @@ assert_eq 'exactly one ready-to-finalize WARN' 1 "$warn_count"
 # Install a minimal hook environment under tmp so finish-guard resolves scripts.
 cp "$fingerprint_cmd" "$tmp/.claude/skills/dev-flow/scripts/dev-flow-fingerprint"
 cp "$policy_cmd" "$tmp/.claude/skills/dev-flow/scripts/dev-flow-policy.mjs"
+cp "$root/dev-flow-validate.mjs" "$tmp/.claude/skills/dev-flow/scripts/dev-flow-validate.mjs"
 cp "$finish_guard" "$tmp/.claude/hooks/dev-flow-finish-guard.sh"
 chmod +x "$tmp/.claude/skills/dev-flow/scripts/dev-flow-fingerprint" \
   "$tmp/.claude/hooks/dev-flow-finish-guard.sh"
@@ -207,24 +257,65 @@ run_guard() {
 out=$(run_guard "git commit -am wip")
 assert_contains 'guard asks for active feature without stamp' 'permissionDecision":"ask"' "$out"
 
-# stamp verified-unfinalized; active still unstamped so overall ask
+# stamp logic-complete feature (verified-unfinalized dir name kept for fixture path);
+# active-feature still has no final assets → overall ask
 workflow_version=$(node "$policy_cmd" version)
 fp=$(cd "$tmp" && "$fingerprint_cmd" docs/dev-flow/features docs/dev-flow/reviews)
+awk -v fp="$fp" '{ sub(/^    business_diff_fingerprint: ".*"$/, "    business_diff_fingerprint: \"" fp "\""); print }' \
+  "$tmp/docs/dev-flow/features/verified-unfinalized/status.md" \
+  > "$tmp/docs/dev-flow/features/verified-unfinalized/status.new"
+mv "$tmp/docs/dev-flow/features/verified-unfinalized/status.new" \
+  "$tmp/docs/dev-flow/features/verified-unfinalized/status.md"
 printf 'workflow_version: %s\nfingerprint: %s\noutcome: verified\nchecked_at: 2026-01-01T00:00:00Z\n' \
   "$workflow_version" "$fp" > "$tmp/.claude/runtime/dev-flow/verified-unfinalized.check-ok"
 printf 'workflow_version: %s\nfingerprint: %s\noutcome: verified\nchecked_at: 2026-01-01T00:00:00Z\n' \
   "$workflow_version" "$fp" > "$tmp/.claude/runtime/dev-flow/active-feature.check-ok"
+# refresh completion fingerprint to match stamp
+printf '%s\n' \
+  '---' \
+  'dev_flow_completion:' \
+  '  schema_version: "1"' \
+  '  feature_id: "verified-unfinalized"' \
+  '  level: "L"' \
+  '  outcome: "verified"' \
+  '  completed_at: "2026-01-01T00:00:00Z"' \
+  '  retention: "compact"' \
+  "  workflow_version: \"$workflow_version\"" \
+  "  business_diff_fingerprint: \"$fp\"" \
+  '  risk_labels: []' \
+  '  risk_approval_evidence: ""' \
+  '  risk_verification_summary: ""' \
+  '  accepted_risks: []' \
+  '  commits: []' \
+  '  pull_request: ""' \
+  '---' \
+  '# completion' > "$tmp/docs/dev-flow/features/verified-unfinalized/completion.md"
+printf '%s\n' '# feature' > "$tmp/docs/dev-flow/features/verified-unfinalized/feature.md"
 
 out=$(run_guard "git commit -am wip")
-assert_contains 'guard asks while any verified-unfinalized feature remains' 'verified-unfinalized' "$out"
+assert_contains 'guard asks while incomplete active feature remains' 'permissionDecision":"ask"' "$out"
 
-# remove active status so only verified-unfinalized remains → still ask
+# remove active status so only logic-complete feature remains → Git allowed (v0.9)
 rm -f "$tmp/docs/dev-flow/features/active-feature/status.md"
 out=$(run_guard "git push origin main")
-assert_contains 'guard asks solely for verified-unfinalized' 'verified-unfinalized' "$out"
+if [ -z "$out" ]; then
+  printf 'PASS guard allows logic-complete without finalizer\n'
+else
+  printf 'FAIL expected allow for logic-complete (got: %s)\n' "$out"
+  failures=$((failures + 1))
+fi
 
-# finalize verified-unfinalized (drop status) → allow (legacy-finalized already has no status)
+# finalize (drop status + process leftovers) and preserve a closed auth so the
+# guard validates the intended finalized feature.
 rm -f "$tmp/docs/dev-flow/features/verified-unfinalized/status.md"
+rm -f "$tmp/docs/dev-flow/reviews/verified-unfinalized-verification.md" \
+  "$tmp/docs/dev-flow/reviews/verified-unfinalized-code-review.md"
+printf '%s\n' \
+  '{' \
+  '  "feature_id": "verified-unfinalized",' \
+  '  "state": "closed",' \
+  '  "closed_at": "2026-01-01T00:00:00Z"' \
+  '}' > "$tmp/.claude/runtime/dev-flow/write-authorization.json"
 out=$(run_guard "git commit -am wip")
 if [ -z "$out" ]; then
   printf 'PASS guard allows when only finalized features remain\n'

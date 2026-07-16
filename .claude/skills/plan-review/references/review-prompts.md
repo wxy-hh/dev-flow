@@ -35,6 +35,11 @@ severity 取值：CRITICAL、HIGH、MEDIUM、LOW。severity 由本审查 agent /
 - `code`：引用实际源码最短片段，标注文件路径和行号范围
 - `spec`：引用 `.claude/rules/project-workflow.md`、`CLAUDE.md`，或存在时的 `.claude/rules/`、`.claude/skills/` 相关规则原文
 
+**反向路径与时机（v0.9 短提示）**：
+
+- 对照 REQ 字面检查触发时机，不只检查最终状态。
+- 从成功路径反推：失败、取消、重试、早退是否会错误写状态、发请求或丢失输入。
+
 ---
 
 ## 1. 架构审查 Agent

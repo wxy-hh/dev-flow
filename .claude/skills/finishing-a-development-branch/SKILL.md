@@ -1,25 +1,19 @@
 ---
 name: finishing-a-development-branch
-description: 实现完成且需要决定如何收尾时使用：先验证，再 dry-run 资产 finalization 并停等精确回复，再给出合并、推送 PR、保留或丢弃的选项。
+description: 实现完成且需要决定如何收尾时使用：先验证与 feature-check，再 logic-complete（可 Git）；可选 dry-run 资产 finalization 并停等精确回复；再给出合并、推送 PR、保留或丢弃的选项。
 ---
 
 # 完成开发分支
 
-用于实现完成后的收尾。不要在验证前提供"完成"结论，也不要在用户未精确确认前压缩或删除中间资产。
+实现完成后的收尾。验证前不给「完成」结论；用户未精确确认前不删除/压缩中间资产。
 
-先读取项目适配层。Claude 环境默认读取 `.claude/rules/project-workflow.md`，从中获取验证配置、OpenSpec baseline 策略和当前项目的分支收尾约束。按 `dev-flow/references/protocol.md` 的资产读取优先级找验证报告和 `status.md`；如果已有新鲜验证报告，也要核对当前工作区没有新的未验证改动，有新改动时重新验证。
-
-如果项目适配层声明 `living-baseline: true`，收尾前必须检查对应 OpenSpec change 是否已经 archive 并回写 baseline。当前项目为 `living-baseline: false` 时，不做 baseline 回写，只在收尾摘要中说明 OpenSpec 是 point-in-time 记录。
+先读 `.claude/rules/project-workflow.md`（验证配置、OpenSpec baseline、分支约束）与 `dev-flow/references/protocol.md` 资产优先级。有新鲜验证时仍须核对工作区无新未验证改动。`living-baseline: true` 时收尾前 archive change 并回写 baseline；`false` 时只在摘要说明 OpenSpec 为 point-in-time。
 
 ## 第 1 步：完成前验证（状态 A）
 
-根据改动风险运行项目适配层定义的验证命令或检查。不要把当前项目的命令复制到本技能正文；迁移项目时只更新适配层。
+按适配层验证命令运行；失败则停止，不合并/推送/删分支。命令不复制进本技能。
 
-如果验证失败，停止收尾，报告失败摘要。不要合并、推送或删除分支。
-
-## 第 1.5 步：feature evidence 检查
-
-完成前验证报告生成后，先用 status CLI 原子登记验证资产、实际命令、fingerprint 和 gate，再单独运行 feature-check：
+## 第 1.5 步：feature evidence
 
 ```bash
 .claude/skills/dev-flow/scripts/dev-flow-status.mjs complete-verification <feature-id> \
@@ -28,30 +22,24 @@ description: 实现完成且需要决定如何收尾时使用：先验证，再 
 .claude/skills/dev-flow/scripts/dev-flow-feature-check <feature-id> --finish
 ```
 
-`complete-verification` 只调用 validator/fingerprint，不调用 feature-check、不生成 check-ok；不得手改 status 或把两条命令封装成脚本互调。
+`complete-verification` 不 stamp、不调 feature-check。失败则不得给「验证通过」的 Git 选项。`outcome: partial` 可继续但文案必须 partial。无风险 XS/S 与默认轻量 M（无 status）跳过本步与 finalization，直接 Git 选项。
 
-检查失败时停止收尾，不能提供「验证通过」的合并、推送或 PR 选项。`outcome: partial`（手测 skipped + 已接受 AR + partial-acceptance 三方一致）允许继续资产 dry-run，但文案必须是 partial，并展示未验证步骤与风险摘要，禁止写成「验证通过」。
+## 第 2 步：logic-complete 与可选 dry-run（状态 B）
 
-无风险 XS/S 与默认轻量 M（无 `status.md`）跳过本步与资产 finalization，直接进入 Git 选项。
-
-## 第 2 步：最终资产与 dry-run（状态 B）
-
-检查通过后，生成或更新两个最终资产：
+生成/更新：
 
 ```text
 <FEATURE_ROOT>/<feature-id>/feature.md
 <FEATURE_ROOT>/<feature-id>/completion.md
 ```
 
-`feature.md` 汇总最终需求边界、非目标、Requirement IDs、最终方案、依赖关系和计划偏差；`completion.md` 汇总 gate 结果、代码/安全审查、验证命令与人工实测、accepted risks、commit/PR 和业务 diff fingerprint，frontmatter 结构见 `dev-flow/references/protocol.md`，并写入当前 contract 的 `workflow_version`。风险标签任务必须保留风险标签、审批证据和验证结论摘要。`outcome: partial` 时，每个 `accepted_risks` ID 必须有且只有一个 `## AR-xxx` 段，包含有意义的 `reason` 与 `evidence`；`verified` 不写 AR 段。不可复用的手测结果写入 `completion.md`，只有明确标记为 `reusable: true` 的脚本保留为长期 `manual-test.md`。
-
-读取项目适配层的 `dev_flow.artifacts.retention` 作为默认策略，运行 dry-run（**禁止同回合 `--confirm`**）：
+frontmatter 见 protocol.md；partial 时每个 AR 有唯一 `## AR-xxx`。**logic-complete**：feature-check + 有效 feature/completion + 新鲜 check-ok → **可 Git**。compact/full 可选；`not now` **不阻塞** add/commit/push/merge。
 
 ```bash
 .claude/skills/dev-flow/scripts/dev-flow-feature-finalize <feature-id> --retention=<compact|full>
 ```
 
-输出清单、统计和 inventory hash 后，必须输出停止协议并**立即停止当前回合**：
+dry-run 标注 `[keep]` / `[delete][tracked|untracked]` / `[archive]`。untracked 删除时输出 `DELETE-UNTRACKED:<inventory-sha>:<count>`；普通 confirm 拒绝。输出后停等（也可 logic-complete 后直接给 Git 选项）：
 
 ```text
 [ASSET FINALIZATION]
@@ -60,6 +48,7 @@ Verification: verified|partial
 Inventory: <sha256>
 Working set: <files/bytes>
 Long-term keep: <files/bytes>
+Semantics: compact=delete intermediate; full=archive; not now=skip without blocking Git
 
 Reply exactly:
 - compact
@@ -70,54 +59,40 @@ Reply exactly:
 Auto-continue: no
 ```
 
-禁止：
+禁止同回合 `--confirm`；禁止模糊回复当 finalization 授权；禁止 token 不匹配时删 untracked。
 
-- 同回合自动运行 `--confirm`。
-- 把用户之前的 implementation approval 当 finalization 确认。
-- 把“继续”“好的”“完成吧”等模糊回复视为删除/归档授权。
-- 未收到精确选择时进入 Git 收尾。
+## 第 2.5 步：精确选择（C/D/E）
 
-## 第 2.5 步：用户精确选择（状态 C/D/E）
-
-仅接受精确回复（整行匹配，不模糊）：
-
-### `compact`（状态 C）
+### `compact`（C）
 
 ```bash
+# 无 untracked 删除
 .claude/skills/dev-flow/scripts/dev-flow-feature-finalize <feature-id> \
   --retention=compact --confirm --inventory <sha256>
+# 有 untracked（token 与 dry-run 一致）
+.claude/skills/dev-flow/scripts/dev-flow-feature-finalize <feature-id> \
+  --retention=compact --confirm --inventory <sha256> \
+  --confirm-untracked "DELETE-UNTRACKED:<sha256>:<count>"
 ```
 
-compact：清理中间资产；保留 `feature.md`、`completion.md`、可复用 `manual-test.md`；本轮不新建 archive。
+删除中间资产；保留 feature/completion/可复用 manual-test。
 
-### `retain full`（状态 D）
-
-使用**同一** inventory（无需第二次 dry-run）：
+### `retain full`（D）
 
 ```bash
 .claude/skills/dev-flow/scripts/dev-flow-feature-finalize <feature-id> \
   --retention=full --confirm --inventory <sha256>
 ```
 
-full：把中间资产复制到 `<FEATURE_ROOT>/<feature-id>/archive/<timestamp>-<nonce>/{reviews,feature}/`；review-root 当前 feature 残留必须为 0。
+归档到 `archive/<timestamp>-<nonce>/{reviews,feature}/`；review_root 当前 feature 残留为 0。
 
-### `not now`（状态 E）
+### `not now`（E）
 
-- 不调用 finalizer。
-- status、feature、completion 和中间资产保持原样；check-ok 保留。
-- 只能声明“验证已完成/partial，但资产尚未 finalized”；禁止“可提交”“已收尾”。
-- finish-guard 对 git commit/push/merge 返回 ask（verified-unfinalized）。
-- doctor 输出 ready-to-finalize WARN。
-- 业务代码再改会使 fingerprint 变化、check-ok 自动 stale。
-- 再次 `/finish`：fingerprint 未变可复用验证；已变必须重跑 verification + feature-check；无论是否复用都重新 dry-run 生成 inventory。
+不 finalizer；保留 check-ok 与中间资产；**Git 不阻塞**。可声明「已验证、未 compact/full」。fingerprint 变则 check-ok stale，须重跑验证。
 
-`--confirm` 必须带 `--inventory <sha256>`。hash 漂移时 finalizer 零修改失败，要求重新 dry-run 并再次停等。
+`--confirm` 必带 `--inventory`。成功 compact/full 后可再 `feature-check --finish`（finalized）。
 
-资产处理成功后再次运行 `dev-flow-feature-check <feature-id> --finish`，确认 finalized 形态通过，再进入 Git 分支选项。
-
-## 第 3 步：判断环境
-
-检查：
+## 第 3–4 步：环境与基线
 
 ```bash
 git rev-parse --git-dir
@@ -125,42 +100,23 @@ git rev-parse --git-common-dir
 git branch --show-current
 ```
 
-判断：普通仓库或 worktree + 命名分支显示标准 4 选项；detached HEAD 显示 3 选项，不提供本地合并。
+命名分支 4 选项；detached 3 选项。基线优先 `merge-base HEAD main|master`。
 
-## 第 4 步：找基线分支
+## 第 5 步：Git 选项
 
-优先尝试 `git merge-base HEAD main` / `git merge-base HEAD master`；不确定时询问用户。
-
-## 第 5 步：给用户选项
-
-仅在 finalization 成功（或无 status 的 XS/S 路径）后展示。普通仓库或命名 worktree：
+**logic-complete 后即可展示**（不必等 finalization）。XS/S 无 status 同样直接展示。
 
 ```text
-实现已闭环（outcome: verified|partial），feature evidence 已通过 feature-check，资产已 finalized。partial 时不得宣称「验证通过」。请选择：
-
+实现已 logic-complete（outcome: verified|partial）。finalization 可选；not now 不阻塞 Git。
+partial 时不得宣称「验证通过」。请选择：
 1. 本地合并回 <base-branch>
 2. 推送并创建 Pull Request
 3. 保留当前分支，我稍后处理
 4. 丢弃这次工作
 ```
 
-detached HEAD：
+detached：推送新分支 PR / 保留 / 丢弃。
 
-```text
-实现已通过验证。当前是 detached HEAD：
+## 第 6 步与清理
 
-1. 推送为新分支并创建 Pull Request
-2. 保留当前状态，我稍后处理
-3. 丢弃这次工作
-```
-
-## 第 6 步：执行选择
-
-- 合并：先切回基线分支、更新、合并，再验证。合并成功后再清理 worktree 和删除分支。
-- PR：推送分支，不清理 worktree，方便处理反馈。
-- 保留：只报告分支和路径。
-- 丢弃：必须要求用户输入精确确认词 `discard`，再删除。
-
-## 清理规则
-
-只清理我们创建且位于 `.worktrees/` 或 `worktrees/` 下的 worktree。宿主管理的工作区不要删除。
+合并：切回基线、更新、合并、再验证，再清理 worktree。PR：推送不删 worktree。丢弃：须精确词 `discard`。只清理我们创建的 `.worktrees/` / `worktrees/`。

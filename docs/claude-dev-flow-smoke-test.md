@@ -52,9 +52,9 @@ YYYY-MM-DD-dev-flow-smoke-test
 ### 期望路径
 
 - 判断为轻量 L。
-- 先输出边界确认卡，并在 `[HUMAN GATE:implementation_approval]` 或等价确认点停止。
-- 用户确认前不生成 `status.md` 或业务代码。
-- 用户确认后生成或更新 `<FEATURE_ROOT>/<feature-id>/status.md`，并在其 `assets` 列表中追加本次产生的需求/审查/验证资产。
+- 先输出边界确认卡，分类同回合用 `init --lightweight-l` 创建 approval-pending 的 `status.md`。
+- 先完成 rollback/security 等实现前证据，再在 `[HUMAN GATE:implementation_approval]` 停止；用户确认前不写业务代码。
+- 用户确认后用 `confirm-human … --status confirmed` 产生 approved 授权，并在后续 `assets` 中追加审查/验证资产。
 - 安全审查为 `light` 或 `full`。
 - 行为验证为 `full`。
 - 回撤证据至少为 `light`。
@@ -70,7 +70,7 @@ YYYY-MM-DD-dev-flow-smoke-test
 - `behavior-verification` 是 `full`，有 manual-test 或自动化记录。
 - 有 patch 或其它可恢复回撤证据。
 - 收尾时 `dev-flow-feature-check --finish` 在上述轻量 L 配置下可通过。
-- `/finish` dry-run 后输出 `[ASSET FINALIZATION]` 并停止；仅精确回复 `compact` / `retain full` / `not now` 合法；禁止同回合 `--confirm`。
+- `/finish` dry-run 后输出 `[ASSET FINALIZATION]` 并停止；仅精确回复 `compact` / `retain full` / `not now` 合法；禁止同回合 `--confirm`。logic-complete 后 `not now` 不阻塞 Git；compact 含 untracked 删除时须 `--confirm-untracked "DELETE-UNTRACKED:<sha>:<count>"`。
 
 ## 验证任务 C：标准 M
 
@@ -80,10 +80,13 @@ YYYY-MM-DD-dev-flow-smoke-test
 
 ### 期望路径
 
-- 需求固化。
+- 已有完整但未确认的需求文档时，不调用 `req-probe`，直接进入 `grillme`。
+- 需求模糊或没有文档时，`req-probe` 生成需求草案后以 `Auto-continue: yes` 交给 `grillme`，不得提前输出需求确认门禁。
+- 用户已明确确认需求基线且没有未决问题时，登记原话为 evidence，跳过 `req-probe`/`grillme`，直接进入 `writing-plans`。
+- 未走已确认捷径时，只有 `grillme` 在更新需求资产后输出一次 `[HUMAN GATE:requirement_confirmation]`。
 - 需求确认前不得生成实现计划。
 - writing-plans 生成计划。
-- writing-plans 创建或刷新 `status.md` 的 `assets` 列表。
+- writing-plans 刷新分类回合已创建的 `status.md` 资产，并用 `complete-gate writing-plans` 派生下一步。
 - requirements-coverage 是否触发由风险维度决定；触发时 `writing-plans` 的 `Next skill` 必须指向 `requirements-coverage`。
 - plan-review 至少以 `light` 形态触发，且发生在实现前。
 - plan-review 后必须停在实现前确认，用户确认前不得写源码。
@@ -94,7 +97,7 @@ YYYY-MM-DD-dev-flow-smoke-test
 - 不触发的门禁不会被强行生成文档。
 - 触发的门禁能读取上一步产物。
 - `status.md` 能记录当前 gate 和下一步。
-- `human_gates.requirement_confirmation` 和 `implementation_approval` 能记录 `confirmed` / `skipped` 以及 evidence。
+- required `human_gates.requirement_confirmation` 和 `implementation_approval` 只能记录 `confirmed` 以及 evidence；接受残留风险同样记为 confirmed。
 - `status.md` 的 `assets` 列表能把需求、计划、覆盖结论和后续审查/验证输入串起来。
 
 ## 验证任务 D：标准 L
@@ -105,7 +108,8 @@ YYYY-MM-DD-dev-flow-smoke-test
 
 ### 期望路径
 
-- 需求边界确认后再进入计划；确认前不得生成 `初步实现计划.md`。
+- 标准 L 使用与标准 M 相同的三条需求固化路线，不维护第二套顺序。
+- 需求边界确认后再进入计划；确认前不得生成 `实现计划.md`。
 - 用户确认需求后必须使用 `writing-plans` 生成正式计划文档；不得用对话里的实现计划替代。
 - writing-plans 后必须自动进入 `requirements-coverage`；覆盖通过后必须自动进入 `plan-review`。
 - requirements-coverage 的主产物是 `<FEATURE_ROOT>/<feature-id>/requirements-coverage.md`；默认只把该产物以 `kind: review` 追加进 `status.md` 的 `assets` 列表，不追加 `kind: verification` 资产。
@@ -127,8 +131,8 @@ YYYY-MM-DD-dev-flow-smoke-test
 - `Auto-continue: no` 后同一回合没有继续写计划或源码。
 - 验证报告能证明关键路径。
 - feature-check 能拦截缺失验证报告、空命令、空实测、rollback `pending`、不存在资产和 `assets` 里登记的源码条目。
-- compact 收尾只留下 `feature.md`、`completion.md` 和可复用手测，并清理 feature-owned reviews；full 收尾将原始资产移动到带时间戳 `archive/`；两者完成后共享 review_root 不得残留当前 feature 报告。
-- `/finish` 在 dry-run 后输出 `[ASSET FINALIZATION]`，只接受精确回复 `compact` / `retain full` / `not now`；禁止同回合 `--confirm`；`--confirm` 必须带 `--inventory`。
+- compact **删除**中间资产，只留下 `feature.md`、`completion.md` 和可复用手测，并清理 feature-owned reviews；有 untracked 删除时须 exact token。full **归档**到带时间戳 `archive/`；两者完成后共享 review_root 不得残留当前 feature 报告。
+- `/finish`：feature-check → final assets → **logic-complete（可 Git）** → dry-run → `[ASSET FINALIZATION]`；只接受 `compact` / `retain full` / `not now`；禁止同回合 `--confirm`；`--confirm` 必须带 `--inventory`；`not now` 不阻塞 Git。
 
 ## 必查文件
 
@@ -152,8 +156,10 @@ YYYY-MM-DD-dev-flow-smoke-test
 
 用一个已指定走标准 L 的 fixture 复跑（使用拓扑证据而非场景关键词判断 L）：
 
-- agent 判断为标准 L 后，可以读取源码和生成需求说明，但必须停在 `[HUMAN GATE:requirement_confirmation]`。
-- 用户确认需求前，不得生成 `初步实现计划.md`、`requirements-coverage.md`、`rollback-units.md` 或写源码。
+- 模糊需求必须按 `req-probe -> grillme` 自动衔接；`req-probe` 不得提前停止，只有 `grillme` 更新需求资产后停在 `[HUMAN GATE:requirement_confirmation]`。
+- 已有完整但未确认的需求文档时不得重复运行 `req-probe`；明确确认且无未决问题时不得运行两者或重复询问确认。
+- 每条标准 M/L 路线最多产生一次 `requirement_confirmation`，分类时的 `--entry-gate`、各 process gate 的 `complete-gate` 和 `status.md.next_action` 必须能正确恢复所选路线。
+- 用户确认需求前，不得生成 `实现计划.md`、`requirements-coverage.md`、`rollback-units.md` 或写源码。
 - 用户确认需求后，才允许 `writing-plans`；不得先输出一份对话内实现计划然后直接开始执行。
 - `writing-plans` 的 handoff 必须把标准 L 交给 `requirements-coverage`。
 - `requirements-coverage` 通过后必须把下一步交给 `plan-review`，不得停下来等待用户提醒。

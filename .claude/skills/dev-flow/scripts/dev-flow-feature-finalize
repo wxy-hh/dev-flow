@@ -12,11 +12,18 @@ feature_id=""
 retention=""
 confirm=false
 inventory_arg=""
+confirm_untracked=""
 expect_inventory_value=false
+expect_untracked_value=false
 for arg in "$@"; do
   if [ "$expect_inventory_value" = true ]; then
     inventory_arg=$arg
     expect_inventory_value=false
+    continue
+  fi
+  if [ "$expect_untracked_value" = true ]; then
+    confirm_untracked=$arg
+    expect_untracked_value=false
     continue
   fi
   case "$arg" in
@@ -25,8 +32,10 @@ for arg in "$@"; do
     --confirm) confirm=true ;;
     --inventory=*) inventory_arg=${arg#--inventory=} ;;
     --inventory) expect_inventory_value=true ;;
+    --confirm-untracked=*) confirm_untracked=${arg#--confirm-untracked=} ;;
+    --confirm-untracked) expect_untracked_value=true ;;
     --help|-h)
-      printf 'Usage: %s <feature-id> --retention=compact|full [--confirm --inventory <sha256>]\n' "$0"
+      printf 'Usage: %s <feature-id> --retention=compact|full [--confirm --inventory <sha256>] [--confirm-untracked DELETE-UNTRACKED:<sha>:<count>]\n' "$0"
       exit 0
       ;;
     --*)
@@ -46,9 +55,13 @@ if [ "$expect_inventory_value" = true ]; then
   printf 'ERROR --inventory requires a value\n' >&2
   exit 2
 fi
+if [ "$expect_untracked_value" = true ]; then
+  printf 'ERROR --confirm-untracked requires a value\n' >&2
+  exit 2
+fi
 
 if [ -z "$feature_id" ] || [ -z "$retention" ]; then
-  printf 'Usage: %s <feature-id> --retention=compact|full [--confirm --inventory <sha256>]\n' "$0" >&2
+  printf 'Usage: %s <feature-id> --retention=compact|full [--confirm --inventory <sha256>] [--confirm-untracked DELETE-UNTRACKED:<sha>:<count>]\n' "$0" >&2
   exit 2
 fi
 if [ "$confirm" = true ] && [ -z "$inventory_arg" ]; then
@@ -283,6 +296,47 @@ file_sha() {
   printf 'other'
 }
 
+git_tracked() {
+  local f=$1
+  git -C "$root" ls-files --error-unmatch -- "$f" >/dev/null 2>&1
+}
+
+# A directory is safe to classify as tracked only when every leaf that compact
+# would delete is tracked. One tracked child must not hide untracked/ignored
+# siblings that Git cannot restore.
+asset_has_untracked_content() {
+  local asset=$1
+  local child
+  local child_count=0
+  [ -e "$asset" ] || return 1
+  if [ ! -d "$asset" ]; then
+    ! git_tracked "$asset"
+    return
+  fi
+  while IFS= read -r child; do
+    [ -z "$child" ] && continue
+    child_count=$((child_count + 1))
+    if ! git_tracked "$child"; then
+      return 0
+    fi
+  done < <(find "$asset" \( -type f -o -type l \) -print 2>/dev/null)
+  # Git cannot track an empty directory, so deleting it is still an untracked
+  # path operation (low cost, but kept under the same exact confirmation rule).
+  [ "$child_count" -eq 0 ] && return 0
+  return 1
+}
+
+asset_tracking_class() {
+  local asset=$1
+  if [ ! -e "$asset" ]; then
+    printf 'missing'
+  elif asset_has_untracked_content "$asset"; then
+    printf 'untracked'
+  else
+    printf 'tracked'
+  fi
+}
+
 is_reusable_manual() {
   local f=$1
   [ -f "$f" ] || return 1
@@ -332,7 +386,8 @@ fi
       kind=other
       size=0
     fi
-    printf 'asset\t%s\t%s\t%s\t%s\n' "$asset" "$kind" "$size" "$(file_sha "$asset")"
+    printf 'asset\t%s\t%s\t%s\t%s\t%s\n' \
+      "$asset" "$kind" "$size" "$(file_sha "$asset")" "$(asset_tracking_class "$asset")"
   done <<< "$sorted_owned"
 } > "$inventory_body"
 
@@ -377,33 +432,81 @@ while IFS= read -r asset; do
   fi
 done <<< "$sorted_owned"
 
+untracked_count=0
 printf 'Retention: %s\n' "$retention"
 printf 'Feature: %s\n' "$feature_id"
 printf 'Inventory: %s\n' "$inventory_sha"
 printf 'Working set: %s files / %s bytes\n' "$working_files" "$working_bytes"
 printf 'Long-term keep: %s files / %s bytes\n' "$keep_files" "$keep_bytes"
 printf 'Reusable manual-test: %s\n' "$reusable_manual"
+printf 'Semantics: compact=delete intermediate assets; full=archive intermediate assets; not now=skip without blocking Git.\n'
 printf 'Assets to process:\n'
+printf '[keep] %s\n' "$feature_file"
+printf '[keep] %s\n' "$completion_file"
+if [ "$reusable_manual" = true ] && [ -n "$manual_report" ]; then
+  printf '[keep] %s -> %s\n' "$manual_report" "$feature_dir/manual-test.md"
+fi
 while IFS= read -r asset; do
   [ -z "$asset" ] && continue
-  printf -- '- %s\n' "$asset"
+  if [ ! -e "$asset" ]; then
+    printf '[conflict] missing %s\n' "$asset"
+    continue
+  fi
+  if [ "$retention" = full ]; then
+    printf '[archive] %s -> %s/...\n' "$asset" "$feature_dir/archive"
+  else
+    if [ "$(asset_tracking_class "$asset")" = tracked ]; then
+      printf '[delete][tracked] %s\n' "$asset"
+    else
+      printf '[delete][untracked] %s\n' "$asset"
+      untracked_count=$((untracked_count + 1))
+    fi
+  fi
 done < "$process_list"
-if [ "$reusable_manual" = true ] && [ -n "$manual_report" ]; then
-  printf 'Keep (move to feature dir):\n'
-  printf -- '- %s -> %s\n' "$manual_report" "$feature_dir/manual-test.md"
+
+untracked_token=""
+if [ "$retention" = compact ] && [ "$untracked_count" -gt 0 ]; then
+  untracked_token="DELETE-UNTRACKED:${inventory_sha}:${untracked_count}"
+  printf '\nUntracked delete token:\n%s\n' "$untracked_token"
+  printf 'compact will permanently delete untracked files. Ordinary --confirm --inventory is refused.\n'
+  printf 'Reply with the exact token, then re-run with --confirm --inventory %s --confirm-untracked "%s"\n' \
+    "$inventory_sha" "$untracked_token"
+  printf 'Or choose retain full (archive) or not now (no changes; Git not blocked).\n'
 fi
 
 if [ "$confirm" != true ]; then
-  printf 'Dry run only. Re-run with --confirm --inventory %s after an exact user choice.\n' "$inventory_sha"
+  printf 'Dry run only. This turn must not --confirm; wait for exact user choice compact / retain full / not now.\n'
+  if [ -n "$untracked_token" ]; then
+    printf 'If compact with untracked deletes: --confirm --inventory %s --confirm-untracked "%s"\n' \
+      "$inventory_sha" "$untracked_token"
+  else
+    printf 'Re-run with --confirm --inventory %s after an exact user choice.\n' "$inventory_sha"
+  fi
   rm -f "$process_list"
   exit 0
 fi
 
 if [ "$inventory_arg" != "$inventory_sha" ]; then
-  printf 'ERROR inventory hash drift (got %s, expected %s). Re-run dry-run; zero modifications made.\n' \
+  printf 'ERROR INVENTORY_CHANGED (got %s, expected %s). Re-run dry-run; zero modifications made.\n' \
     "$inventory_arg" "$inventory_sha" >&2
   rm -f "$process_list"
   exit 1
+fi
+
+if [ "$retention" = compact ] && [ "$untracked_count" -gt 0 ]; then
+  expected_token="DELETE-UNTRACKED:${inventory_sha}:${untracked_count}"
+  if [ -z "$confirm_untracked" ]; then
+    printf 'ERROR UNTRACKED_DELETE_CONFIRMATION_REQUIRED: compact would delete %s untracked path(s). Re-run dry-run and pass --confirm-untracked "%s". Zero modifications made.\n' \
+      "$untracked_count" "$expected_token" >&2
+    rm -f "$process_list"
+    exit 1
+  fi
+  if [ "$confirm_untracked" != "$expected_token" ]; then
+    printf 'ERROR UNTRACKED_DELETE_CONFIRMATION_REQUIRED: token mismatch (got %s, expected %s). Zero modifications made.\n' \
+      "$confirm_untracked" "$expected_token" >&2
+    rm -f "$process_list"
+    exit 1
+  fi
 fi
 
 mkdir -p "$runtime_dir"
@@ -595,6 +698,7 @@ fi
 
 # Runtime cleanup is transactional too: move it into the same quarantine and
 # destroy it only after all finalized postconditions pass.
+auth_quarantined=false
 if [ -d "$sdd_dir" ]; then
   quarantine_move "$sdd_dir"
 fi
@@ -607,10 +711,33 @@ if [ -f "$auth_file" ]; then
   ' "$auth_file" 2>/dev/null || true)
   if [ "$auth_feature" = "$feature_id" ]; then
     quarantine_move "$auth_file"
+    auth_quarantined=true
   fi
 fi
 if [ -f "$stamp_file" ]; then
   quarantine_move "$stamp_file"
+fi
+
+# Preserve a closed authorization record so finish-guard can bind the immediate
+# Git handoff to the feature that was just finalized. The original auth remains
+# in quarantine and is restored if any later postcondition fails.
+if [ "$auth_quarantined" = true ]; then
+  quarantined_auth="$quarantine_root/$auth_file"
+  if ! node - "$quarantined_auth" "$auth_file" <<'NODE'
+const fs = require('fs');
+const path = require('path');
+const [source, destination] = process.argv.slice(2);
+const auth = JSON.parse(fs.readFileSync(source, 'utf8'));
+auth.state = 'closed';
+auth.closed_at = new Date().toISOString();
+fs.mkdirSync(path.dirname(destination), { recursive: true });
+const temporary = `${destination}.tmp-${process.pid}`;
+fs.writeFileSync(temporary, `${JSON.stringify(auth, null, 2)}\n`, 'utf8');
+fs.renameSync(temporary, destination);
+NODE
+  then
+    on_fail "failed to preserve closed authorization for $feature_id"
+  fi
 fi
 
 leftover=0

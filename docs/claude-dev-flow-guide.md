@@ -53,7 +53,7 @@ templates/
 
 风险标签独立于规模，命中时触发最小门禁但不抬高等级：`security`、`data`、`money`、`external`、`availability`、`critical_correctness`、`irreversible_consequence`。定义、最低门禁映射和 `risk_evidence` 填写方式唯一来源是 `dev-flow/references/risk-gates.md`。携带风险标签的 XS/S 用 `profile: "risk-minimal"`（只需 classification、risk_labels、risk_evidence、`implementation_approval`、验证记录、accepted_risks，不要求需求说明书/实现计划/`requirements-coverage`）；M/L 即使携带风险标签也保持 `profile: "standard"`。
 
-标准 M/L 需求确认前不得写实现计划，实现前确认前不得写业务代码；`code-review` 不能替代 `plan-review`。标准 L 计划后固定骨架是 `requirements-coverage -> plan-review`。
+标准 M/L 共用同一需求固化路由，并在分类同回合以 `--entry-gate` 写入 status：完整但未确认的需求文档走 `grillme`；需求模糊或没有文档走 `req-probe -> grillme`；用户已明确确认需求基线且无未决问题时，登记 evidence 后跳过两者进入 `writing-plans`。每个 process gate 用 `complete-gate` 更新可恢复的 `next_action`。需求固化阶段只确认一次，由 `grillme` 在文档更新后触发；确认前不得写实现计划。实现前确认前不得写业务代码；`code-review` 不能替代 `plan-review`。标准 L 计划后固定骨架是 `requirements-coverage -> plan-review`，标准 M 的 coverage 仅在风险维度触发时执行。
 
 ## 按项目类型适配
 
@@ -89,7 +89,7 @@ templates/
 | XS/S | "把设置页按钮文案从『保存』改成『保存设置』" | 不生成额外产物，直接改并验证 |
 | 轻量 M | "订单列表增加『仅看异常订单』筛选，复用现有接口和状态" | 先复述边界，实现后审查+验证，不强制需求书/计划/`status.md` |
 | 标准 M | "新增发票抬头管理，涉及增删改和默认抬头规则，按标准 M" | 需求边界确认后才写计划；至少 `plan_review: light` 并等待确认 |
-| 轻量 L | "调整登录过期跳转兜底，只改一处 guard，携带 security 标签(S+risk-minimal)" | 先出边界确认卡，确认前不写 `status.md`/代码；保留安全审查+行为验证+回撤 |
+| 轻量 L | "调整登录过期后的前端 guard、路由恢复和会话清理，跨三层但方案唯一，按轻量 L" | 先出边界确认卡并创建 approval-pending `status.md`；完成回撤/安全证据后停在实现确认，行为验证 full |
 | risk-minimal S | "修正 token 过期清理逻辑，只改一处工具函数，携带 security 标签" | 最小风险卡；停在 `implementation_approval`；`risk_evidence.security` 记录结论 |
 | 标准 L | "重构支付回跳和订单状态同步，跨系统入口+状态+异常兜底" | 需求确认 → 计划 → coverage → plan-review → 实现前确认，全部落地 |
 
@@ -100,7 +100,7 @@ templates/
 | 产物 | 用途 |
 |------|------|
 | `status.md` | 当前 gate、资产列表、验证新鲜度、风险证据、accepted_risks |
-| `需求说明书.md` / `初步实现计划.md` | 标准 M/L 的需求边界与实现计划 |
+| `需求说明书.md` / `实现计划.md` | 标准 M/L 的需求边界与实现计划 |
 | `requirements-coverage.md` | 需求到任务/验证的覆盖关系，供 `plan-review` 读取，不是完成前验证报告 |
 | `rollback-units.md` | 最小回撤单元和回撤顺序 |
 | `*-code-review.md` / `*-verification.md` / `*-manual-test.md` | 代码审查、完成前验证、手动行为验证证据 |
@@ -110,7 +110,7 @@ templates/
 
 ## 验证新鲜度
 
-完成前必须有新鲜验证证据。`status.md` 的 `validation.last_at`、`validation.commands` 和 `business_diff_fingerprint` 用于判断验证是否过期：验证后代码又变化、或当前 fingerprint 与记录不一致时，不能复用旧结论，必须重新验证。验证结论以最新命令输出、人工测试记录、验证报告和 `feature-check` 为准；完成后默认按 `retention: compact` 清理中间资产。
+完成前必须有新鲜验证证据。`status.md` 的 `validation.last_at`、`validation.commands` 和 `business_diff_fingerprint` 用于判断验证是否过期：验证后代码又变化、或当前 fingerprint 与记录不一致时，不能复用旧结论，必须重新验证。验证结论以最新命令输出、人工测试记录、验证报告和 `feature-check` 为准。logic-complete 后即可 Git；默认 `retention: compact` 仅在用户选择后删除中间资产（full 则归档）。
 
 ## 何时跑 doctor / feature-check
 
@@ -128,15 +128,14 @@ templates/
 
 **没有自动化测试怎么办**：`automated-tests` 写 `none`，不要把 dev/watch 命令当测试证据；L 级运行时行为改动仍需手动测试脚本或其它可复查证据。
 
-**想跳过某个门禁**：XS/S 默认轻量不强行生成文档；标准 M/L 跳过需求确认/计划审查/实现前确认/回撤/安全审查需要说明风险，L 级跳过高风险门禁必须用户明确确认并写入 `accepted_risks`。
+**想跳过某个门禁**：XS/S 默认轻量不为未触发的门禁生成文档。已触发的 process/risk gate 必须形成对应证据；所有 required HUMAN GATE 只能 `confirmed`，不能用 `skipped` 绕过。用户接受残余风险时，把原话写入 `accepted_risks` 和确认 evidence，但这不等于把已触发门禁伪装为完成。
 
 **可以让 Claude 直接提交吗**：默认不提交；用户明确要求后才执行 `git add`/`git commit`；push/合并/删除分支/丢弃改动必须二次确认。
 
-## status CLI、finish 与 partial（v0.8）
+## status CLI、finish 与 partial（v0.9）
 
-所有 `status.md` 创建/更新走 `dev-flow-status` CLI，禁止手改机器字段。无风险 XS/S 用 `authorize`；M/L 与风险 XS/S 用 `init` + `confirm-human`。`promote-gate` 只接受 contract risk gates 且单调提升；`complete-verification` 登记验证但不写 check-ok。`outcome: partial` 允许正常 Git 操作，但 completion / check-ok stamp / 收尾文案必须为 partial，禁止写「验证通过」。
+所有 `status.md` 创建/更新走 `dev-flow-status` CLI，禁止手改机器字段。无风险 XS/S 用 `authorize`；M/L 与风险 XS/S 在分类同回合用 `init`，标准 M/L 还要传需求路线的 `--entry-gate`。所有 required HUMAN GATE 只接受 `confirmed`；implementation approval 绑定 approval_basis 后才写 approved。`promote-gate` 只接受 contract risk gates 且单调提升；`complete-verification` 登记验证但不写 check-ok。`outcome: partial` 在 logic-complete 后允许正常 Git 操作，但 completion / check-ok stamp / 收尾文案必须为 partial，禁止写「验证通过」。
 
-`/finish` 在 dry-run 后输出 `[ASSET FINALIZATION]`，只接受精确回复 `compact` / `retain full` / `not now`；禁止同回合 `--confirm`。详情见 `dev-flow/references/status-cli.md`、`partial-verification.md` 与 `protocol.md`。
+**logic-complete**：feature-check + 有效 feature/completion → **可 Git**；compact/full 可选。`/finish` dry-run 后输出 `[ASSET FINALIZATION]`，只接受 `compact` / `retain full` / `not now`；禁止同回合 `--confirm`；**`not now` 不阻塞 Git**。compact 含 untracked 删除时须 `--confirm-untracked "DELETE-UNTRACKED:<inventory-sha>:<count>"`。详情见 `dev-flow/references/status-cli.md`、`partial-verification.md` 与 `protocol.md`。
 
-受管文件升级使用源仓中的 `dev-flow-upgrade --target <abs> --check|--apply`，不要手工半份拷贝 skill。升级会：删除 `deprecated_paths`（含 `vue3.md`）、把 shared SDD 顶层文件隔离到 `upgrade-backup-*/legacy-sdd/`、失效旧 `write-authorization.json` 与全部 `*.check-ok`；在途 feature 的 status/completion/archive 一律保留。失败时从 backup 完整回滚。升级不是 onboarding：栈规则由目标项目自建，upgrade 不管理。
-
+受管文件升级使用源仓中的 `dev-flow-upgrade --target <abs> --check|--apply`，不要手工半份拷贝 skill。升级会：删除 `deprecated_paths`（含 `vue3.md`）、把 shared SDD 顶层文件隔离到 `upgrade-backup-*/legacy-sdd/`、失效旧 `write-authorization.json` 与全部 `*.check-ok`；**活动 status 存在时零修改拒绝**。失败时从 backup 完整回滚。升级不是 onboarding：栈规则由目标项目自建，upgrade 不管理。

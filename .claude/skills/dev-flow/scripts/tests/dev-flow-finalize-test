@@ -5,6 +5,28 @@ set -u
 
 root=$(cd "$(dirname "$0")/.." && pwd)
 finalizer="$root/dev-flow-feature-finalize"
+
+# v0.9: compact with untracked deletes requires exact token.
+confirm_compact() {
+  local feature=$1
+  local inv token out
+  out=$(run_in_tmp "$finalizer" "$feature" --retention=compact 2>&1) || true
+  inv=$(printf '%s\n' "$out" | sed -n 's/^Inventory: //p' | head -1)
+  token=$(printf '%s\n' "$out" | sed -n 's/^DELETE-UNTRACKED:/DELETE-UNTRACKED:/p' | head -1)
+  if [ -z "$token" ]; then
+    token=$(printf '%s\n' "$out" | sed -n 's/^Untracked delete token:[[:space:]]*//p' | head -1)
+  fi
+  # token may be on next line after "Untracked delete token:"
+  if [ -z "$token" ] || [ "$token" = "Untracked delete token:" ]; then
+    token=$(printf '%s\n' "$out" | awk '/^Untracked delete token:/{getline; print; exit}')
+  fi
+  if [ -n "$token" ]; then
+    run_in_tmp "$finalizer" "$feature" --retention=compact --confirm --inventory "$inv" --confirm-untracked "$token"
+  else
+    run_in_tmp "$finalizer" "$feature" --retention=compact --confirm --inventory "$inv"
+  fi
+}
+
 fingerprint_cmd="$root/dev-flow-fingerprint"
 policy_cmd="$root/dev-flow-policy.mjs"
 validator="$root/dev-flow-validate.mjs"
@@ -50,6 +72,16 @@ assert_no_file() {
     printf 'PASS absent: %s\n' "$1"
   else
     printf 'FAIL expected absent: %s\n' "$1"
+    failures=$((failures + 1))
+  fi
+}
+
+assert_contains() {
+  local file=$1 pattern=$2
+  if [ -f "$file" ] && rg -q -- "$pattern" "$file"; then
+    printf 'PASS %s contains %s\n' "$file" "$pattern"
+  else
+    printf 'FAIL expected %s to contain %s\n' "$file" "$pattern"
     failures=$((failures + 1))
   fi
 }
@@ -116,11 +148,11 @@ write_feature() {
     '    plan_review: "none"' \
     '    rollback_units: "light"' \
     '    security_review: "none"' \
-    '    behavior_verification: "light"' \
+    '    behavior_verification: "full"' \
     '  assets:' \
     "    - {path: \"docs/dev-flow/reviews/${id}-verification.md\", kind: \"verification\"}" \
     "    - {path: \"docs/dev-flow/reviews/${id}-code-review.md\", kind: \"review\"}" \
-    "    - {path: \"docs/dev-flow/features/${id}/初步实现计划.md\", kind: \"plan\"}" \
+    "    - {path: \"docs/dev-flow/features/${id}/实现计划.md\", kind: \"plan\"}" \
     '  validation:' \
     '    last_at: "2026-01-01"' \
     '    commands:' \
@@ -139,7 +171,7 @@ write_feature() {
     > "$tmp/docs/dev-flow/reviews/${id}-verification.md"
   printf '%s\n' "# code review $id" '## Findings' '- none' > "$tmp/docs/dev-flow/reviews/${id}-code-review.md"
   printf '%s\n' "# manual $id" '实测：通过' > "$tmp/docs/dev-flow/reviews/${id}-manual-test.md"
-  printf '%s\n' "### Task 1" '**Depends on:** none' > "$tmp/docs/dev-flow/features/$id/初步实现计划.md"
+  printf '%s\n' "### Task 1" '**Depends on:** none' > "$tmp/docs/dev-flow/features/$id/实现计划.md"
   printf '%s\n' "# feature $id" > "$tmp/docs/dev-flow/features/$id/feature.md"
   printf '%s\n' \
     '---' \
@@ -453,7 +485,7 @@ fail_out=$(
 assert_file "$tmp/docs/dev-flow/features/alpha/status.md"
 assert_file "$tmp/docs/dev-flow/reviews/alpha-verification.md"
 assert_file "$tmp/docs/dev-flow/reviews/alpha-code-review.md"
-assert_file "$tmp/docs/dev-flow/features/alpha/初步实现计划.md"
+assert_file "$tmp/docs/dev-flow/features/alpha/实现计划.md"
 assert_eq 'injected failure restores status content' "$before_alpha_status" "$(snapshot_path "$tmp/docs/dev-flow/features/alpha/status.md")"
 assert_eq 'injected failure restores verification content' "$before_alpha_ver" "$(snapshot_path "$tmp/docs/dev-flow/reviews/alpha-verification.md")"
 assert_eq 'injected failure restores original completion retention/content' "$before_alpha_completion" "$(snapshot_path "$tmp/docs/dev-flow/features/alpha/completion.md")"
@@ -491,12 +523,12 @@ printf '%s\n' \
   '}' > "$tmp/.claude/runtime/dev-flow/write-authorization.json"
 
 # ---------- compact success ----------
-expect_pass run_in_tmp "$finalizer" alpha --retention=compact --confirm --inventory "$inv"
+expect_pass confirm_compact alpha
 assert_no_file "$tmp/docs/dev-flow/features/alpha/status.md"
 assert_no_file "$tmp/docs/dev-flow/reviews/alpha-verification.md"
 assert_no_file "$tmp/docs/dev-flow/reviews/alpha-code-review.md"
 assert_no_file "$tmp/docs/dev-flow/reviews/alpha-manual-test.md"
-assert_no_file "$tmp/docs/dev-flow/features/alpha/初步实现计划.md"
+assert_no_file "$tmp/docs/dev-flow/features/alpha/实现计划.md"
 assert_file "$tmp/docs/dev-flow/features/alpha/feature.md"
 assert_file "$tmp/docs/dev-flow/features/alpha/completion.md"
 assert_no_file "$tmp/.claude/runtime/dev-flow/alpha.check-ok"
@@ -521,8 +553,11 @@ assert_file "$tmp/docs/dev-flow/reviews/beta-verification.md"
 assert_file "$tmp/docs/dev-flow/reviews/beta-code-review.md"
 assert_file "$tmp/.claude/runtime/dev-flow/beta.check-ok"
 assert_file "$tmp/.claude/runtime/sdd/beta/checkpoint.md"
-# matching authorization cleaned
-assert_no_file "$tmp/.claude/runtime/dev-flow/write-authorization.json"
+# matching authorization is retained as closed for the immediate Git handoff
+assert_file "$tmp/.claude/runtime/dev-flow/write-authorization.json"
+assert_contains "$tmp/.claude/runtime/dev-flow/write-authorization.json" '"feature_id": "alpha"'
+assert_contains "$tmp/.claude/runtime/dev-flow/write-authorization.json" '"state": "closed"'
+assert_contains "$tmp/.claude/runtime/dev-flow/write-authorization.json" '"closed_at": "[0-9]'
 # finalized validator
 expect_pass run_in_tmp node "$validator" feature "$tmp" alpha --stage finalized
 ln -s "$tmp/.claude" "$tmp/docs/dev-flow/features/alpha/archive"
@@ -549,7 +584,7 @@ printf '%s\n' \
 
 # mid-move recovery on full path (fail during archive copy after quarantine)
 inv_full=$(inventory_of beta full)
-before_beta_plan=$(snapshot_path "$tmp/docs/dev-flow/features/beta/初步实现计划.md")
+before_beta_plan=$(snapshot_path "$tmp/docs/dev-flow/features/beta/实现计划.md")
 # Use a high fail_after so quarantine succeeds then archive copy injects failure.
 # process_list for beta has: verification, code-review, manual-test, plan, status = 5 quarantine moves,
 # then full copies each again. fail_after=6 should hit the first archive copy.
@@ -559,8 +594,8 @@ fail_full_out=$(
 ) || true
 assert_file "$tmp/docs/dev-flow/features/beta/status.md"
 assert_file "$tmp/docs/dev-flow/reviews/beta-verification.md"
-assert_file "$tmp/docs/dev-flow/features/beta/初步实现计划.md"
-assert_eq 'full injected failure restores plan content' "$before_beta_plan" "$(snapshot_path "$tmp/docs/dev-flow/features/beta/初步实现计划.md")"
+assert_file "$tmp/docs/dev-flow/features/beta/实现计划.md"
+assert_eq 'full injected failure restores plan content' "$before_beta_plan" "$(snapshot_path "$tmp/docs/dev-flow/features/beta/实现计划.md")"
 if [ -d "$tmp/docs/dev-flow/features/beta/archive" ]; then
   # empty or leftover archive dirs after restore_all should be gone
   leftover_archive=$(find "$tmp/docs/dev-flow/features/beta/archive" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | wc -l | tr -d ' ')
@@ -582,7 +617,7 @@ assert_no_file "$tmp/docs/dev-flow/features/beta/status.md"
 assert_no_file "$tmp/docs/dev-flow/reviews/beta-verification.md"
 assert_no_file "$tmp/docs/dev-flow/reviews/beta-code-review.md"
 assert_no_file "$tmp/docs/dev-flow/reviews/beta-manual-test.md"
-assert_no_file "$tmp/docs/dev-flow/features/beta/初步实现计划.md"
+assert_no_file "$tmp/docs/dev-flow/features/beta/实现计划.md"
 assert_file "$tmp/docs/dev-flow/features/beta/feature.md"
 assert_file "$tmp/docs/dev-flow/features/beta/completion.md"
 assert_eq 'full review leftovers for beta' 0 "$(count_feature_reviews beta)"
@@ -609,7 +644,9 @@ fi
 assert_no_file "$tmp/.claude/runtime/dev-flow/beta.check-ok"
 assert_no_file "$tmp/.claude/runtime/sdd/beta/checkpoint.md"
 assert_file "$tmp/.claude/runtime/sdd/beta-legacy.md"
-assert_no_file "$tmp/.claude/runtime/dev-flow/write-authorization.json"
+assert_file "$tmp/.claude/runtime/dev-flow/write-authorization.json"
+assert_contains "$tmp/.claude/runtime/dev-flow/write-authorization.json" '"feature_id": "beta"'
+assert_contains "$tmp/.claude/runtime/dev-flow/write-authorization.json" '"state": "closed"'
 # alpha remains finalized and isolated
 assert_file "$tmp/docs/dev-flow/features/alpha/feature.md"
 assert_file "$tmp/docs/dev-flow/features/alpha/completion.md"
@@ -678,11 +715,19 @@ assert_file "$tmp/docs/dev-flow/features/gamma/status.md"
 
 # If automatic restore itself fails, finalizer must preserve quarantine and
 # report manual recovery instead of deleting the only remaining copy.
-restore_inv=$(inventory_of gamma compact)
+restore_out=$(run_in_tmp "$finalizer" gamma --retention=compact 2>&1) || true
+restore_inv=$(printf '%s\n' "$restore_out" | sed -n 's/^Inventory: //p' | head -1)
+restore_token=$(printf '%s\n' "$restore_out" | awk '/^Untracked delete token:/{getline; print; exit}')
 set +e
-restore_fail_out=$(cd "$tmp" && \
-  DEV_FLOW_FINALIZE_FAIL_AFTER=1 DEV_FLOW_FINALIZE_FAIL_RESTORE_AFTER=1 \
-  "$finalizer" gamma --retention=compact --confirm --inventory "$restore_inv" 2>&1)
+if [ -n "$restore_token" ]; then
+  restore_fail_out=$(cd "$tmp" && \
+    DEV_FLOW_FINALIZE_FAIL_AFTER=1 DEV_FLOW_FINALIZE_FAIL_RESTORE_AFTER=1 \
+    "$finalizer" gamma --retention=compact --confirm --inventory "$restore_inv" --confirm-untracked "$restore_token" 2>&1)
+else
+  restore_fail_out=$(cd "$tmp" && \
+    DEV_FLOW_FINALIZE_FAIL_AFTER=1 DEV_FLOW_FINALIZE_FAIL_RESTORE_AFTER=1 \
+    "$finalizer" gamma --retention=compact --confirm --inventory "$restore_inv" 2>&1)
+fi
 restore_fail_rc=$?
 set -e
 if [ "$restore_fail_rc" -ne 0 ] \
@@ -697,6 +742,23 @@ if find "$tmp/.claude/runtime/dev-flow" -maxdepth 1 -type d \
   printf 'PASS failed restore preserves quarantine\n'
 else
   printf 'FAIL failed restore deleted quarantine\n'
+  failures=$((failures + 1))
+fi
+
+# A directory with one tracked child and one untracked child must require the
+# exact untracked token; one tracked descendant cannot classify the whole tree.
+write_feature mixed-dir compact
+mkdir -p "$tmp/docs/dev-flow/features/mixed-dir/generated"
+printf '%s\n' 'tracked child' > "$tmp/docs/dev-flow/features/mixed-dir/generated/tracked.txt"
+git -C "$tmp" add docs/dev-flow/features/mixed-dir/generated/tracked.txt
+printf '%s\n' 'untracked child' > "$tmp/docs/dev-flow/features/mixed-dir/generated/untracked.txt"
+stamp_feature mixed-dir
+mixed_out=$(run_in_tmp "$finalizer" mixed-dir --retention=compact 2>&1) || true
+if printf '%s' "$mixed_out" | rg -q '\[delete\]\[untracked\] docs/dev-flow/features/mixed-dir/generated' \
+  && printf '%s' "$mixed_out" | rg -q '^DELETE-UNTRACKED:'; then
+  printf 'PASS mixed tracked/untracked directory requires exact untracked confirmation\n'
+else
+  printf 'FAIL mixed directory was not protected as an untracked delete\n'
   failures=$((failures + 1))
 fi
 

@@ -20,7 +20,14 @@ manual_test_steps:
     evidence: "..."
 ```
 
-人读固定七列：`ID | 操作 | 预期 | 结果 | 实测 | 证据 | 风险 ID`。`结果` 仅 `passed|failed|skipped`。仅有表格时 validator 尝试解析，失败则 FAIL。
+人读固定七列：`ID | 操作 | 预期 | 结果 | 实测 | 证据 | 风险 ID`。`结果` 仅 `passed|failed|skipped`。仅有表格时 validator 尝试解析，失败则 FAIL；frontmatter 与表格同时存在时，两边的 ID 集合及每项 `result`、`risk_id` 必须一致。
+
+frontmatter 可选 `method`（`browser|device|api|cli|automated`）：
+
+- 所有 `passed` 须有非空 `observed` 与 `evidence`。
+- `behavior_verification: full` 时每个 `passed` 须有 method；light 缺 method 仅 WARN。
+- `static-review` / 纯 lint / type-check **不能**作为 passed method（禁止冒充运行时证据）。
+- `automated` 须有已注册 verification 资产，并在 evidence 中显式写出 `command: <实际命令>; test: <测试标识>`；只有笼统的「自动化已通过」或资产路径不算执行证据。
 
 ## accept-risk
 
@@ -42,7 +49,7 @@ outcome: verified|partial
 checked_at: <ISO-8601>
 ```
 
-`workflow_version` 为无引号 contract 版本。finish-guard：指纹新鲜且版本匹配则允许 commit/push/merge（partial 与 verified 相同）；不得把 partial 叙述成「验证通过」。业务 diff 变化或版本不匹配导致过期：一律失效需重跑 check。
+`workflow_version` 为无引号 contract 版本。finish-guard：指纹新鲜、final-assets 有效且版本匹配则允许 add/commit/push/merge（partial 与 verified 相同）；不得把 partial 叙述成「验证通过」。业务 diff 变化或版本不匹配导致过期：一律失效需重跑 check。
 
 ## 收尾文案
 

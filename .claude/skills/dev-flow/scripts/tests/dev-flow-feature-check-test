@@ -4,6 +4,26 @@ set -u
 root=$(cd "$(dirname "$0")/.." && pwd)
 checker="$root/dev-flow-feature-check"
 finalizer="$root/dev-flow-feature-finalize"
+
+# v0.9: compact with untracked deletes requires exact token.
+confirm_compact() {
+  local feature=$1
+  local inv
+  local token
+  local out
+  out=$(run_in_tmp "$finalizer" "$feature" --retention=compact 2>&1) || true
+  inv=$(printf '%s
+' "$out" | sed -n 's/^Inventory: //p' | head -1)
+  token=$(printf '%s
+' "$out" | sed -n 's/^DELETE-UNTRACKED://p' | head -1)
+  if [ -n "$token" ]; then
+    token="DELETE-UNTRACKED:$token"
+    run_in_tmp "$finalizer" "$feature" --retention=compact --confirm --inventory "$inv" --confirm-untracked "$token"
+  else
+    run_in_tmp "$finalizer" "$feature" --retention=compact --confirm --inventory "$inv"
+  fi
+}
+
 tmp=$(mktemp -d "${TMPDIR:-/tmp}/dev-flow-feature-check.XXXXXX")
 trap 'rm -rf "$tmp"' EXIT
 
@@ -47,19 +67,27 @@ expect_file() {
   fi
 }
 
-# dry-run → Inventory → --confirm --inventory <sha>
+# dry-run → Inventory → --confirm --inventory <sha> [--confirm-untracked token]
 run_finalizer_confirm() {
   local feature=$1
   local retention=$2
-  local dry_out inv
-  dry_out=$(run_in_tmp "$finalizer" "$feature" --retention="$retention" 2>&1) || return $?
+  local dry_out inv token
+  dry_out=$(run_in_tmp "$finalizer" "$feature" --retention="$retention" 2>&1) || true
   inv=$(printf '%s\n' "$dry_out" | sed -n 's/^Inventory: //p' | head -1)
   if [ -z "$inv" ]; then
     printf 'ERROR dry-run produced no Inventory line\n' >&2
     printf '%s\n' "$dry_out" >&2
     return 1
   fi
-  run_in_tmp "$finalizer" "$feature" --retention="$retention" --confirm --inventory "$inv"
+  token=$(printf '%s\n' "$dry_out" | sed -n 's/^Untracked delete token://p' | head -1 | tr -d '[:space:]')
+  if [ -z "$token" ]; then
+    token=$(printf '%s\n' "$dry_out" | sed -n 's/^DELETE-UNTRACKED:/DELETE-UNTRACKED:/p' | head -1 | tr -d '[:space:]')
+  fi
+  if [ "$retention" = compact ] && [ -n "$token" ]; then
+    run_in_tmp "$finalizer" "$feature" --retention="$retention" --confirm --inventory "$inv" --confirm-untracked "$token"
+  else
+    run_in_tmp "$finalizer" "$feature" --retention="$retention" --confirm --inventory "$inv"
+  fi
 }
 
 update_gate_value() {
@@ -114,8 +142,34 @@ write_risk_variant() {
   local label=$1
   local destination=$2
   awk -v label="$label" '
+    /^  risk_gates:/ { in_risk_gates=1 }
+    /^  [a-z_]+:/ && !/^  risk_gates:/ { in_risk_gates=0 }
     /^  risk_labels: / { print "  risk_labels: [\"" label "\"]"; next }
     /^    security:$/ { print "    " label ":"; next }
+    /^      mode: / {
+      if (label == "critical_correctness" || label == "irreversible_consequence") {
+        print "      mode: \"report\""
+        next
+      }
+    }
+    /^      report: / {
+      if (label == "critical_correctness" || label == "irreversible_consequence") {
+        print "      report: \"docs/dev-flow/reviews/risk-demo-verification.md\""
+        next
+      }
+    }
+    in_risk_gates && /^    behavior_verification: / {
+      if (label == "critical_correctness" || label == "irreversible_consequence") {
+        print "    behavior_verification: \"full\""
+        next
+      }
+    }
+    in_risk_gates && /^    rollback_units: / {
+      if (label == "irreversible_consequence") {
+        print "    rollback_units: \"full\""
+        next
+      }
+    }
     { print }
   ' "$tmp/docs/dev-flow/features/risk-demo/status.md" > "$destination"
 }
@@ -162,7 +216,7 @@ printf '%s\n' \
   '    security_review: "none"' \
   '    behavior_verification: "full"' \
   '  assets:' \
-  '    - {path: "docs/dev-flow/features/demo/初步实现计划.md", kind: "plan"}' \
+  '    - {path: "docs/dev-flow/features/demo/实现计划.md", kind: "plan"}' \
   '    - {path: "docs/dev-flow/features/demo/requirements-coverage.md", kind: "review"}' \
   '    - {path: "docs/dev-flow/reviews/demo-plan-review.md", kind: "review"}' \
   '    - {path: "docs/dev-flow/reviews/demo-verification.md", kind: "verification"}' \
@@ -175,7 +229,7 @@ printf '%s\n' \
   '      path: "docs/dev-flow/reviews/demo-plan-review.md"' \
   '      heading: "Plan findings"' \
   '    rollback_units:' \
-  '      path: "docs/dev-flow/features/demo/初步实现计划.md"' \
+  '      path: "docs/dev-flow/features/demo/实现计划.md"' \
   '      heading: "Rollback summary"' \
   '    code_review:' \
   '      path: "docs/dev-flow/reviews/demo-code-review.md"' \
@@ -190,7 +244,7 @@ printf '%s\n' \
 printf '%s\n' '# verification' > "$tmp/docs/dev-flow/reviews/demo-verification.md"
 printf '%s\n' '# Code Review' '## Findings' '- none' > "$tmp/docs/dev-flow/reviews/demo-code-review.md"
 printf '%s\n' '# manual' '实测：通过' > "$tmp/docs/dev-flow/reviews/demo-manual-test.md"
-printf '%s\n' '### Task 1' '**Depends on:** none' '## Rollback summary' '- reversible' > "$tmp/docs/dev-flow/features/demo/初步实现计划.md"
+printf '%s\n' '### Task 1' '**Depends on:** none' '## Rollback summary' '- reversible' > "$tmp/docs/dev-flow/features/demo/实现计划.md"
 printf '%s\n' '# coverage' '## Coverage' '- covered' > "$tmp/docs/dev-flow/features/demo/requirements-coverage.md"
 printf '%s\n' '# plan review' '## Plan findings' '- none' > "$tmp/docs/dev-flow/reviews/demo-plan-review.md"
 printf '%s\n' '# feature' > "$tmp/docs/dev-flow/features/demo/feature.md"
@@ -292,7 +346,7 @@ set_status_level L
 set_risk_gate requirements_coverage none
 set_risk_gate plan_review none
 set_risk_gate rollback_units light
-set_risk_gate behavior_verification light
+set_risk_gate behavior_verification full
 update_gate_value requirement_confirmation required false
 update_gate_value implementation_approval required true
 update_gate_value requirement_confirmation status pending
@@ -424,6 +478,7 @@ printf '%s\n' \
   '  completed_gates:' \
   '    - rollback-units' \
   '    - security-review' \
+  '    - code-review' \
   '    - verification-before-completion' \
   '  next_action: "finish"' \
   '  auto_continue: false' \
@@ -444,10 +499,14 @@ printf '%s\n' \
   '    behavior_verification: "light"' \
   '  assets:' \
   '    - {path: "docs/dev-flow/reviews/risk-demo-verification.md", kind: "verification"}' \
+  '    - {path: "docs/dev-flow/reviews/risk-demo-code-review.md", kind: "review"}' \
   '  gate_evidence:' \
   '    rollback_units:' \
   '      path: "docs/dev-flow/reviews/risk-demo-verification.md"' \
   '      heading: "Rollback summary"' \
+  '    code_review:' \
+  '      path: "docs/dev-flow/reviews/risk-demo-code-review.md"' \
+  '      heading: "Findings"' \
   '  validation:' \
   '    last_at: "2026-01-01"' \
   '    commands:' \
@@ -457,6 +516,7 @@ printf '%s\n' \
   '---' > "$tmp/docs/dev-flow/features/risk-demo/status.md"
 
 printf '%s\n' '# verification' '## Rollback summary' '- reversible' > "$tmp/docs/dev-flow/reviews/risk-demo-verification.md"
+printf '%s\n' '# code review' '## Findings' '- none' > "$tmp/docs/dev-flow/reviews/risk-demo-code-review.md"
 printf '%s\n' '# manual' '实测：通过' > "$tmp/docs/dev-flow/reviews/risk-demo-manual-test.md"
 printf '%s\n' '# feature' > "$tmp/docs/dev-flow/features/risk-demo/feature.md"
 printf '%s\n' '---' 'dev_flow_completion:' '  schema_version: "1"' '  feature_id: "risk-demo"' '  level: "S"' '  outcome: "verified"' '  completed_at: "2026-01-01T00:00:00Z"' '  retention: "compact"' "  workflow_version: \"$workflow_version\"" '  risk_labels: ["security"]' '  risk_approval_evidence: "user confirmed risk-minimal path"' '  risk_verification_summary: "manual verification passed"' '  business_diff_fingerprint: "0000000000000000000000000000000000000000"' '  commits: []' '  pull_request: "none"' '  accepted_risks: []' '---' '# completion' > "$tmp/docs/dev-flow/features/risk-demo/completion.md"
@@ -594,7 +654,8 @@ rm -f "$tmp/docs/dev-flow/features/risk-demo/status.bak"
 rm -f \
   "$tmp/docs/dev-flow/reviews/risk-demo-verification.md" \
   "$tmp/docs/dev-flow/reviews/risk-demo-manual-test.md" \
-  "$tmp/docs/dev-flow/reviews/risk-demo-security-review.md"
+  "$tmp/docs/dev-flow/reviews/risk-demo-security-review.md" \
+  "$tmp/docs/dev-flow/reviews/risk-demo-code-review.md"
 expect_pass run_feature risk-demo --finish
 if [ ! -f "$tmp/.claude/runtime/dev-flow/risk-demo.check-ok" ]; then
   printf 'PASS risk-demo finalized feature-check does not write stamp\n'

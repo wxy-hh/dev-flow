@@ -11,7 +11,11 @@
 # check-ok stamps, runs preflight, then switches. Failures restore backup.
 set -euo pipefail
 
-source_root=$(git rev-parse --show-toplevel 2>/dev/null || pwd)
+script_dir=$(cd "$(dirname "$0")" && pwd)
+# Source package is the repo that owns this script — not the caller's cwd/target.
+if ! source_root=$(cd "$script_dir" && git rev-parse --show-toplevel 2>/dev/null); then
+  source_root=$(cd "$script_dir/../../../.." && pwd)
+fi
 cd "$source_root" || exit 2
 
 target=""
@@ -43,7 +47,6 @@ case "$target" in
   *) echo "ERROR --target must be an absolute path" >&2; exit 2 ;;
 esac
 
-script_dir=$(cd "$(dirname "$0")" && pwd)
 manifest_cmd="$script_dir/dev-flow-manifest"
 doctor_cmd="$script_dir/dev-flow-doctor"
 source_manifest="$source_root/.claude/dev-flow.manifest.json"
@@ -114,6 +117,35 @@ check() {
 apply() {
   local backup backup_parent stamp candidate
   stamp=$(date -u +%Y%m%dT%H%M%SZ)
+
+  # v0.9: refuse upgrade when target has active feature status.md (zero mutations).
+  if ! node -e '
+    const fs=require("fs");
+    const path=require("path");
+    const targetRoot=process.argv[1];
+    const wf=path.join(targetRoot, ".claude/rules/project-workflow.md");
+    if (!fs.existsSync(wf)) process.exit(0);
+    const text=fs.readFileSync(wf,"utf8");
+    const m=text.match(/^\s*feature_root:\s*"?([^"\n]+)"?/m);
+    if (!m) process.exit(0);
+    const featureRoot=path.join(targetRoot, m[1].trim());
+    if (!fs.existsSync(featureRoot)) process.exit(0);
+    const active=[];
+    for (const ent of fs.readdirSync(featureRoot, {withFileTypes:true})) {
+      if (!ent.isDirectory()) continue;
+      const status=path.join(featureRoot, ent.name, "status.md");
+      if (fs.existsSync(status)) active.push({id: ent.name, path: path.relative(targetRoot, status)});
+    }
+    if (active.length) {
+      console.error("ERROR active v0.8/v0.9 feature status present; refuse upgrade with zero modifications:");
+      for (const a of active) console.error("  - " + a.id + " (" + a.path + ")");
+      console.error("Finish, terminate, or manually clean active features under the previous workflow, then retry.");
+      process.exit(2);
+    }
+  ' "$target"; then
+    exit 2
+  fi
+
   node -e '
     const fs=require("fs");
     const path=require("path");

@@ -71,7 +71,7 @@ Claude 工作流入口依次读取 `.claude/rules/project-workflow.md`、`CLAUDE
 | `<COMMAND_ROOT>` | `.claude/commands` | Claude 命令目录 |
 | `<RULE_ROOT>` | `.claude/rules` | Claude 规则目录 |
 | `<RUNTIME_ROOT>` | `<detect-runtime-root>` | 运行时台账和临时交接目录 |
-| `<SDD_PROGRESS>` | `<detect-sdd-progress-path>`（v0.8 推荐 `.claude/runtime/sdd/<feature-id>/progress.md`） | feature-scoped 子任务执行进度台账 |
+| `<SDD_PROGRESS>` | `<detect-sdd-progress-path>`（v0.9 推荐 `.claude/runtime/sdd/<feature-id>/progress.md`） | feature-scoped 子任务执行进度台账 |
 | `<FEATURE_ROOT>` | `<detect-feature-root>` | 需求、计划、覆盖和回撤资产目录 |
 | `<REVIEW_ROOT>` | `<detect-review-root>` | 审查和验证报告目录 |
 | `<PLAN_ROOT>` | `<detect-plan-root>` | 设计和计划类文档目录 |
@@ -108,7 +108,7 @@ YYYY-MM-DD-<short-kebab-name>
 |------|----------|
 | 状态文件 | `<FEATURE_ROOT>/<feature-id>/status.md` |
 | 需求说明书 | `<FEATURE_ROOT>/<feature-id>/需求说明书.md` |
-| 初步实现计划 | `<FEATURE_ROOT>/<feature-id>/初步实现计划.md` |
+| 实现计划 | `<FEATURE_ROOT>/<feature-id>/实现计划.md` |
 | 需求覆盖矩阵 | `<FEATURE_ROOT>/<feature-id>/requirements-coverage.md` |
 | 回撤单元 | `<FEATURE_ROOT>/<feature-id>/rollback-units.md` |
 | 计划审查 | `<REVIEW_ROOT>/YYYY-MM-DD-<feature-id>-plan-review.md` |
@@ -122,7 +122,7 @@ YYYY-MM-DD-<short-kebab-name>
 
 ### 资产保留
 
-完成收尾后，`dev_flow.artifacts.retention: compact`（默认）只保留 `feature.md`、`completion.md` 和可复用的 `manual-test.md`，并删除当前 feature 的中间资产（含 feature-owned reviews）；取值 `full` 时把需求、计划、覆盖、审查、回撤和验证等中间资产移动到 feature 目录下防碰撞的 `archive/<timestamp>-<nonce>/{reviews,feature}/`。compact 与 full 完成后，共享 `<REVIEW_ROOT>` 中不得残留当前 feature 的中间报告。`/finish` 先 dry-run 再停等精确回复 `compact` / `retain full` / `not now`（见 protocol ASSET FINALIZATION）。`completion.md` frontmatter 字段的唯一来源是 `dev-flow/references/protocol.md`。
+完成收尾后，`dev_flow.artifacts.retention: compact`（默认）只保留 `feature.md`、`completion.md` 和可复用的 `manual-test.md`，并**删除**当前 feature 的中间资产（含 feature-owned reviews；untracked 删除须 exact token）；取值 `full` 时把中间资产**归档**到 `archive/<timestamp>-<nonce>/{reviews,feature}/`。compact 与 full 完成后，共享 `<REVIEW_ROOT>` 中不得残留当前 feature 的中间报告。**logic-complete**（feature-check + final assets）后即可 Git；`/finish` dry-run 后停等 `compact` / `retain full` / `not now`，`not now` 不阻塞 Git（见 protocol ASSET FINALIZATION）。`completion.md` frontmatter 字段的唯一来源是 `dev-flow/references/protocol.md`。
 
 ## 局部规范
 

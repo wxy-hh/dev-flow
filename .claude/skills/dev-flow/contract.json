@@ -1,7 +1,8 @@
 {
-  "workflow_version": "0.8.0",
+  "workflow_version": "0.9.0",
   "status_schema": "3",
   "completion_schema": "1",
+  "authorization_schema": "1",
   "risk_labels": [
     "security",
     "data",
@@ -43,11 +44,11 @@
       "behavior_verification": "light"
     },
     "critical_correctness": {
-      "behavior_verification": "light"
+      "behavior_verification": "full"
     },
     "irreversible_consequence": {
-      "rollback_units": "light",
-      "behavior_verification": "light"
+      "rollback_units": "full",
+      "behavior_verification": "full"
     }
   },
   "profiles": {
@@ -77,8 +78,7 @@
   ],
   "human_gate_statuses": [
     "pending",
-    "confirmed",
-    "skipped"
+    "confirmed"
   ],
   "known_gates": [
     "req-probe",

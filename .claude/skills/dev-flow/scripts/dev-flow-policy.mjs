@@ -32,6 +32,21 @@ export const RISK_GATE_COMPLETION_GATES = Object.freeze({
   behavior_verification: 'verification-before-completion',
 });
 
+export const STANDARD_REQUIREMENT_ENTRY_GATES = Object.freeze([
+  'req-probe',
+  'openspec',
+  'grillme',
+  'writing-plans',
+]);
+
+export function nextActionForGate(gate) {
+  if (gate === 'requirement_confirmation' || gate === 'implementation_approval') {
+    return `await ${gate}`;
+  }
+  if (gate === 'finish') return 'finish feature';
+  return `run ${gate}`;
+}
+
 export function canonicalCompletedGate(contract, gate) {
   const value = String(gate ?? '');
   const riskGate = value.replace(/-/g, '_');
@@ -62,7 +77,7 @@ function raiseGate(gates, rank, gate, minimum) {
  * Derive the full route policy for a feature.
  *
  * @param {object} contract
- * @param {{ level: string, profile: string, riskLabels?: string[], lightweightL?: boolean }} input
+ * @param {{ level: string, profile: string, riskLabels?: string[], lightweightL?: boolean, entryGate?: string }} input
  * @returns {{
  *   route: string,
  *   riskGates: Record<string, string>,
@@ -87,14 +102,11 @@ export function deriveRoute(contract, input) {
     implementation_approval: { required: false },
   };
   let initialCurrentGate = 'req-probe';
-  let initialNextAction = 'clarify requirements';
+  let initialNextAction = nextActionForGate(initialCurrentGate);
 
   if (profile === 'risk-minimal') {
     route = 'risk-minimal';
     humanGates.implementation_approval.required = true;
-    initialCurrentGate = 'implementation_approval';
-    initialNextAction = 'await implementation_approval';
-    // code-review not required by default for risk-minimal
   } else if (profile === 'standard' && level === 'M') {
     // Lightweight M does not create status; when status exists it is standard M.
     route = 'standard-m';
@@ -102,15 +114,17 @@ export function deriveRoute(contract, input) {
     humanGates.implementation_approval.required = true;
     raiseGate(riskGates, rank, 'plan_review', 'light');
     codeReview = { required: true, evidence_level: 'light' };
+    initialCurrentGate = STANDARD_REQUIREMENT_ENTRY_GATES.includes(input.entryGate)
+      ? input.entryGate
+      : 'req-probe';
+    initialNextAction = nextActionForGate(initialCurrentGate);
   } else if (profile === 'standard' && level === 'L' && lightweightL) {
     route = 'lightweight-l';
     humanGates.requirement_confirmation.required = false;
     humanGates.implementation_approval.required = true;
     raiseGate(riskGates, rank, 'rollback_units', 'light');
-    raiseGate(riskGates, rank, 'behavior_verification', 'light');
+    raiseGate(riskGates, rank, 'behavior_verification', 'full');
     codeReview = { required: true, evidence_level: 'light' };
-    initialCurrentGate = 'implementation_approval';
-    initialNextAction = 'await implementation_approval';
   } else if (profile === 'standard' && level === 'L') {
     route = 'standard-l';
     humanGates.requirement_confirmation.required = true;
@@ -119,8 +133,36 @@ export function deriveRoute(contract, input) {
     raiseGate(riskGates, rank, 'plan_review', 'light');
     raiseGate(riskGates, rank, 'behavior_verification', 'full');
     codeReview = { required: true, evidence_level: 'full' };
+    initialCurrentGate = STANDARD_REQUIREMENT_ENTRY_GATES.includes(input.entryGate)
+      ? input.entryGate
+      : 'req-probe';
+    initialNextAction = nextActionForGate(initialCurrentGate);
   } else if (['XS', 'S'].includes(level) && labels.length === 0) {
     route = 'xs-s';
+  }
+
+  // Route-derived code-review (not a risk_gates field). Any risk label raises
+  // at least light; high-consequence labels raise full. Never forces plan-review.
+  if (labels.length > 0) {
+    const levelRank = { none: 0, light: 1, full: 2 };
+    const current = codeReview.required ? (levelRank[codeReview.evidence_level] ?? 0) : 0;
+    let want = Math.max(current, 1);
+    if (
+      labels.includes('critical_correctness') ||
+      labels.includes('irreversible_consequence')
+    ) {
+      want = Math.max(want, 2);
+    }
+    if (want >= 2) codeReview = { required: true, evidence_level: 'full' };
+    else if (want >= 1) codeReview = { required: true, evidence_level: 'light' };
+  }
+
+  if (route === 'risk-minimal' || route === 'lightweight-l') {
+    const firstPreImplementationGate = contract.risk_gates
+      .filter((gate) => gate !== 'behavior_verification' && riskGates[gate] !== 'none')
+      .map((gate) => RISK_GATE_COMPLETION_GATES[gate])[0];
+    initialCurrentGate = firstPreImplementationGate ?? 'implementation_approval';
+    initialNextAction = nextActionForGate(initialCurrentGate);
   }
 
   return {
@@ -150,16 +192,42 @@ export function inferLightweightL(level, humanGates) {
  * Finish-stage code-review obligation for a status model.
  * code-review is NOT a risk_gates field; it is a route-derived finish duty.
  */
-export function codeReviewObligation(contract, { level, profile, humanGates, lightweightL }) {
+export function codeReviewObligation(
+  contract,
+  { level, profile, humanGates, lightweightL, riskLabels = [] },
+) {
   const isLightL =
     lightweightL === true || inferLightweightL(level, humanGates);
   const derived = deriveRoute(contract, {
     level,
     profile,
-    riskLabels: [],
+    riskLabels,
     lightweightL: isLightL,
   });
   return derived.codeReview;
+}
+
+/**
+ * Compare label-minimum gates to the route gate map before labels are applied.
+ * Returns labels whose minima are already covered by the base route.
+ */
+export function labelsWithNoGateIncrement(contract, labels, baseRouteRiskGates) {
+  const rank = gateRank(contract);
+  const noIncrement = [];
+  for (const label of labels) {
+    const minima = contract.minimum_risk_gates[label] ?? {};
+    const keys = Object.keys(minima);
+    if (keys.length === 0) {
+      noIncrement.push(label);
+      continue;
+    }
+    const covered = keys.every((gate) => {
+      const actual = baseRouteRiskGates[gate] ?? 'none';
+      return rank[actual] >= rank[minima[gate]];
+    });
+    if (covered) noIncrement.push(label);
+  }
+  return noIncrement;
 }
 
 /**
@@ -223,9 +291,10 @@ if (import.meta.url === `file://${process.argv[1]}` || process.argv[1]?.endsWith
       else if (rest[i] === '--profile') flags.profile = rest[++i];
       else if (rest[i] === '--risk-labels') flags.riskLabels = rest[++i].split(',').filter(Boolean);
       else if (rest[i] === '--lightweight-l') flags.lightweightL = true;
+      else if (rest[i] === '--entry-gate') flags.entryGate = rest[++i];
     }
     if (!flags.level || !flags.profile) {
-      process.stderr.write('usage: dev-flow-policy.mjs derive --level <L> --profile <p> [--risk-labels a,b] [--lightweight-l]\n');
+      process.stderr.write('usage: dev-flow-policy.mjs derive --level <L> --profile <p> [--risk-labels a,b] [--lightweight-l] [--entry-gate <gate>]\n');
       process.exit(2);
     }
     process.stdout.write(`${JSON.stringify(deriveRoute(contract, flags), null, 2)}\n`);

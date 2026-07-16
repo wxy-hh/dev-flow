@@ -459,7 +459,7 @@ fi
 require_pattern ".claude/skills/finishing-a-development-branch/SKILL.md" '\[ASSET FINALIZATION\]' "finishing skill documents ASSET FINALIZATION stop protocol"
 require_pattern ".claude/skills/finishing-a-development-branch/SKILL.md" '--inventory' "finishing skill requires --inventory on confirm"
 require_pattern ".claude/skills/verification-before-completion/SKILL.md" '不得互相调用' "verification skill forbids complete-verification/feature-check wrapper calls"
-require_pattern ".claude/hooks/dev-flow-finish-guard.sh" 'verified-unfinalized' "finish-guard handles verified-unfinalized"
+require_pattern ".claude/hooks/dev-flow-finish-guard.sh" 'logic-complete' "finish-guard handles logic-complete without finalizer"
 
 ## ---------------------------------------------------------------------
 ## 在途 feature：verified-unfinalized 仅 WARN（ready-to-finalize）
@@ -475,7 +475,7 @@ if [ -f ".claude/rules/project-workflow.md" ]; then
       [ -f "$feature_dir/status.md" ] || continue
       [ -f "$feature_dir/completion.md" ] || continue
       feature_id=$(basename "$feature_dir")
-      warn "ready-to-finalize: feature ${feature_id} is verified-unfinalized (status + completion present; run /finish and reply compact|retain full|not now)"
+      warn "ready-to-finalize: feature ${feature_id} is logic-complete with status still present (optional compact|retain full|not now; Git not blocked)"
       unfinalized=$((unfinalized + 1))
     done < <(find "$feature_root" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | sort)
     if [ "$unfinalized" -eq 0 ]; then

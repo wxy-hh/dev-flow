@@ -1,6 +1,6 @@
 ---
 name: req-probe
-description: "dev-flow 将需求路由到轻量需求固化时使用，或用户明确说先问需求、需求不清楚、用 req-probe 时使用。通过结构化选项式提问探索需求，优先使用可点击选项控件，给每题推荐选项和自定义回答入口，挖掘隐含假设并产出《需求说明书.md》。不要绕过 dev-flow 抢先处理所有新需求。"
+description: "dev-flow 在标准 M/L 缺少需求文档或需求仍有歧义时使用，或用户明确说先问需求、需求不清楚、用 req-probe 时使用。通过结构化选项式提问探索需求，优先使用可点击选项控件，给每题推荐选项和自定义回答入口，挖掘隐含假设并产出《需求说明书.md》。已有完整需求文档时不要重复调用。"
 ---
 
 # 需求结构化拷问（req-probe）
@@ -49,21 +49,23 @@ C. <备选方案>
 
 ### 3. 输出需求说明书
 
-完成提问后，输出完整《需求说明书.md》到 `<FEATURE_ROOT>/<feature-id>/需求说明书.md`，并创建或更新 `<FEATURE_ROOT>/<feature-id>/status.md`。轻量 L 和标准 M/L 的 `status.md` 必须包含 `dev_flow_status`；标准 M/L 必须把 `human_gates.requirement_confirmation` 设为 `required: true`、`status: pending`。
+完成提问后，输出待压测的《需求说明书.md》到 `<FEATURE_ROOT>/<feature-id>/需求说明书.md`。dev-flow 标准 M/L 的 `status.md` 已由分类回合的 `init --entry-gate req-probe` 创建；用 `add-asset --kind requirement` 登记需求书，再调用 `complete-gate <feature-id> req-probe`，让 CLI 把 `next_action` 推进为 `run grillme`。只有独立使用本技能且调用方明确要求状态资产时才初始化 status。
 
-### 4. 反向确认
+### 4. 交接与确认责任
 
-输出末尾必须**复述所有关键边界**，确认无遗漏，然后输出并停止：
+输出末尾必须复述所有关键边界，确认没有遗漏。
+
+在 dev-flow 标准 M/L 链路中，`req-probe` 的产物还要经过 `grillme` 压测，因此本技能**不得**提前输出 `[HUMAN GATE:requirement_confirmation]`。按 `dev-flow/references/protocol.md` 输出 `[HANDOFF]`：`Current gate: req-probe`，`Next skill: grillme`，`Auto-continue: yes`；同回合自动进入 `grillme`。最终需求确认由 `grillme` 在更新需求文档后统一触发。
+
+只有用户明确要求单独使用 `req-probe`、不进入 dev-flow 标准 M/L 链路时，才由本技能输出并停止：
 
 ```text
 [HUMAN GATE:requirement_confirmation]
-请确认以上需求说明书是否准确完整。确认后进入 grillme / writing-plans；确认前不得写实现计划或源码。
+请确认以上需求说明书是否准确完整。确认后进入用户指定的下一步；确认前不得写实现计划或源码。
 [/HUMAN GATE]
 ```
 
-按 `dev-flow/references/protocol.md` 输出 `[HANDOFF]`：`Current gate: req-probe`，`Next skill: grillme`，`Auto-continue: no`，`Stop reason: human requirement confirmation required`。
-
-**必须立即停止所有操作**，等待用户发送明确确认指令（如"确认""继续"）后方可推进。后续恢复时，把 `human_gates.requirement_confirmation.status` 更新为 `confirmed`，用户确认原话写入 `evidence`；用户要求跳过时写为 `skipped` 并同步写入 `accepted_risks`。
+此时 `[HANDOFF]` 使用 `Current gate: req-probe`、用户指定的 `Next skill`、`Auto-continue: no`、`Stop reason: human requirement confirmation required`，并立即停止。后续恢复时，把用户确认或接受未决风险后继续的原话以 `confirmed` 写入 evidence；required HUMAN GATE 不使用 `skipped`。
 
 ## 五维度覆盖清单（内部检查用，不直接问用户）
 

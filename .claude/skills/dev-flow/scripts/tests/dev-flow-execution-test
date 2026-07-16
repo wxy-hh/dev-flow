@@ -17,6 +17,24 @@ task_brief="$skill_root/executing-plans/scripts/task-brief"
 task_schedule="$skill_root/executing-plans/scripts/task-schedule"
 review_package="$skill_root/executing-plans/scripts/review-package"
 finalizer="$scripts_dir/dev-flow-feature-finalize"
+
+# v0.9: compact with untracked deletes requires exact token.
+confirm_compact() {
+  local feature=$1
+  local inv token out
+  out=$(run_in_tmp "$finalizer" "$feature" --retention=compact 2>&1) || true
+  inv=$(printf '%s\n' "$out" | sed -n 's/^Inventory: //p' | head -1)
+  token=$(printf '%s\n' "$out" | awk '/^Untracked delete token:/{getline; print; exit}')
+  if [ -z "$token" ]; then
+    token=$(printf '%s\n' "$out" | sed -n 's/^DELETE-UNTRACKED:/DELETE-UNTRACKED:/p' | head -1)
+  fi
+  if [ -n "$token" ]; then
+    run_in_tmp "$finalizer" "$feature" --retention=compact --confirm --inventory "$inv" --confirm-untracked "$token"
+  else
+    run_in_tmp "$finalizer" "$feature" --retention=compact --confirm --inventory "$inv"
+  fi
+}
+
 fingerprint_cmd="$scripts_dir/dev-flow-fingerprint"
 policy_cmd="$scripts_dir/dev-flow-policy.mjs"
 
@@ -422,11 +440,11 @@ write_finalizable() {
     '    plan_review: "none"' \
     '    rollback_units: "light"' \
     '    security_review: "none"' \
-    '    behavior_verification: "light"' \
+    '    behavior_verification: "full"' \
     '  assets:' \
     "    - {path: \"docs/dev-flow/reviews/${id}-verification.md\", kind: \"verification\"}" \
     "    - {path: \"docs/dev-flow/reviews/${id}-code-review.md\", kind: \"review\"}" \
-    "    - {path: \"docs/dev-flow/features/${id}/初步实现计划.md\", kind: \"plan\"}" \
+    "    - {path: \"docs/dev-flow/features/${id}/实现计划.md\", kind: \"plan\"}" \
     '  validation:' \
     '    last_at: "2026-01-01"' \
     '    commands:' \
@@ -444,7 +462,7 @@ write_finalizable() {
   printf '%s\n' "# verification $id" '## Rollback summary' '- reversible' \
     > "$tmp/docs/dev-flow/reviews/${id}-verification.md"
   printf '%s\n' "# code review $id" '## Findings' '- none' > "$tmp/docs/dev-flow/reviews/${id}-code-review.md"
-  printf '%s\n' "### Task 1" '**Depends on:** none' > "$tmp/docs/dev-flow/features/$id/初步实现计划.md"
+  printf '%s\n' "### Task 1" '**Depends on:** none' > "$tmp/docs/dev-flow/features/$id/实现计划.md"
   printf '%s\n' "# feature $id" > "$tmp/docs/dev-flow/features/$id/feature.md"
   printf '%s\n' \
     '---' \
@@ -518,7 +536,7 @@ else
   printf 'PASS dry-run inventory for alpha\n'
 fi
 
-expect_pass run_in_tmp "$finalizer" alpha --retention=compact --confirm --inventory "$inv"
+expect_pass confirm_compact alpha
 
 # alpha SDD gone; beta + gamma remain; legacy shared files remain
 assert_no_path "$tmp/.claude/runtime/sdd/alpha"

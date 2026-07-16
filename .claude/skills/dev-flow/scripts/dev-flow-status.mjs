@@ -10,7 +10,8 @@
  * Usage:
  *   dev-flow-status authorize --level <XS|S> [--note <text>]
  *   dev-flow-status init <feature-id> --level <XS|S|M|L> --profile <profile> \
- *     --topology <topology> --evidence-result <result> [--note <text>] [--risk-labels a,b] [--lightweight-l]
+ *     --topology <topology> --evidence-result <result> [--entry-gate <gate>] \
+ *     [--note <text>] [--risk-labels a,b] [--lightweight-l]
  *   dev-flow-status activate <feature-id>
  *   dev-flow-status add-asset <feature-id> --path <repo-path> --kind <kind>
  *   dev-flow-status complete-gate <feature-id> <gate> \
@@ -19,7 +20,7 @@
  *   dev-flow-status record-risk-evidence <feature-id> <label> \
  *     [--mode <inline|report>] [--conclusion <text>] [--verification <text>] [--report <path>]
  *   dev-flow-status confirm-human <feature-id> <gate> \
- *     --status <confirmed|skipped> --evidence <user-evidence>
+ *     --status confirmed --evidence <user-evidence>
  *   dev-flow-status record-validation <feature-id> --command <command>
  *   dev-flow-status complete-verification <feature-id> --command <command> \
  *     [--report <path>] [--manual-test <path>]
@@ -37,7 +38,11 @@ import {
   codeReviewObligation,
   deriveRoute,
   gateRank,
+  labelsWithNoGateIncrement,
   loadContract,
+  nextActionForGate,
+  routeObligations,
+  STANDARD_REQUIREMENT_ENTRY_GATES,
 } from './dev-flow-policy.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -729,26 +734,96 @@ function isRequiredFlag(value) {
   return value === true || value === 'true';
 }
 
-function humanGateSatisfied(gate) {
-  return gate?.status === 'confirmed' || gate?.status === 'skipped';
-}
-
+/** Every required HUMAN GATE only counts when explicitly confirmed. */
 function requiredHumanGatesSatisfied(model) {
   for (const name of contract.human_gates) {
     const gate = model.humanGates[name] || {};
-    if (isRequiredFlag(gate.required) && !humanGateSatisfied(gate)) return false;
+    if (!isRequiredFlag(gate.required)) continue;
+    if (gate.status !== 'confirmed') return false;
   }
   return true;
 }
 
+function nextGateAfter(model, completedGate) {
+  if (completedGate === 'req-probe' || completedGate === 'openspec') return 'grillme';
+  if (completedGate === 'grillme') return 'requirement_confirmation';
+  if (completedGate === 'requirement_confirmation') return 'writing-plans';
+  if (completedGate === 'implementation_approval') return 'implementation';
+  if (completedGate === 'code-review') return 'verification-before-completion';
+  if (completedGate === 'verification-before-completion') return 'finish';
+
+  const obligations = routeObligations(contract, {
+    level: model.level,
+    profile: model.profile,
+    riskLabels: model.labels,
+    humanGates: model.humanGates,
+    riskGates: model.riskGates,
+  });
+  if (obligations.approvalProcessGates.includes(completedGate)) {
+    return (
+      obligations.approvalProcessGates.find(
+        (gate) => !model.completedGates.includes(gate),
+      ) ?? 'implementation_approval'
+    );
+  }
+  return completedGate;
+}
+
+function computeApprovalBasisForModel(root, workflow, model) {
+  const result = spawnSync(
+    process.execPath,
+    [
+      validator,
+      'approval-basis',
+      root,
+      model.relative,
+      '--protected-roots',
+      (workflow.protectedWriteRoots || []).join(','),
+    ],
+    { cwd: root, encoding: 'utf8' },
+  );
+  if (result.status !== 0) {
+    if (result.stderr) process.stderr.write(result.stderr);
+    if (result.stdout) process.stderr.write(result.stdout);
+    fail('failed to compute approval basis', 1);
+  }
+  try {
+    return JSON.parse(result.stdout);
+  } catch (error) {
+    fail(`invalid approval-basis JSON: ${error.message}`, 1);
+  }
+}
+
+function buildApprovedAuth(root, workflow, model, existing) {
+  const basis = computeApprovalBasisForModel(root, workflow, model);
+  return {
+    schema_version: String(contract.authorization_schema || '1'),
+    workflow_version: contract.workflow_version,
+    feature_id: model.featureId,
+    level: model.level,
+    profile: model.profile,
+    state: 'approved',
+    protected_roots: workflow.protectedWriteRoots || [],
+    approval_basis: {
+      algorithm: basis.algorithm || 'sha256',
+      hash: basis.hash,
+      route_hash: basis.route_hash,
+      assets: basis.assets || [],
+    },
+    created_at: existing?.created_at || nowIso(),
+    approved_at: nowIso(),
+    closed_at: null,
+  };
+}
+
 function assertApprovalUpstream(model, gate) {
-  // implementation_approval may not be confirmed/skipped while a required
+  // implementation_approval may not be confirmed while a required
   // requirement_confirmation is still pending.
   if (gate !== 'implementation_approval') return;
   const req = model.humanGates.requirement_confirmation || {};
-  if (isRequiredFlag(req.required) && !humanGateSatisfied(req)) {
+  if (isRequiredFlag(req.required) && req.status !== 'confirmed') {
     fail(
-      'cannot confirm/skip implementation_approval while required requirement_confirmation is still pending',
+      'cannot confirm implementation_approval while required requirement_confirmation is still pending',
       1,
     );
   }
@@ -798,6 +873,8 @@ function cmdAuthorize(root, workflow, flags) {
   if (flags.profile) fail('authorize must not accept --profile (use init for risk-minimal/standard)');
   closeExistingAuth(root);
   const auth = {
+    schema_version: String(contract.authorization_schema || '1'),
+    workflow_version: contract.workflow_version,
     feature_id: `xs-s-${level.toLowerCase()}-${createHash('sha1').update(nowIso()).digest('hex').slice(0, 8)}`,
     level,
     profile: null,
@@ -806,6 +883,7 @@ function cmdAuthorize(root, workflow, flags) {
     note: flags.note || '',
     created_at: nowIso(),
     approved_at: nowIso(),
+    closed_at: null,
   };
   writeAuth(root, auth);
   process.stdout.write(`authorized ${level} writes (state: classified)\n`);
@@ -848,6 +926,22 @@ function cmdInit(root, workflow, featureId, flags) {
     fail('XS/S with risk labels must use profile risk-minimal');
   }
 
+  const lightweightL = Boolean(flags['lightweight-l']);
+  const entryGate = flags['entry-gate'];
+  const requiresRequirementEntry =
+    profile === 'standard' && ['M', 'L'].includes(level) && !lightweightL;
+  if (requiresRequirementEntry && !entryGate) {
+    fail(
+      `standard M/L requires --entry-gate (${STANDARD_REQUIREMENT_ENTRY_GATES.join(', ')})`,
+    );
+  }
+  if (entryGate && !STANDARD_REQUIREMENT_ENTRY_GATES.includes(entryGate)) {
+    fail(`--entry-gate must be one of: ${STANDARD_REQUIREMENT_ENTRY_GATES.join(', ')}`);
+  }
+  if (!requiresRequirementEntry && entryGate) {
+    fail('--entry-gate is only valid for standard M/L (not lightweight L)');
+  }
+
   const absolute = statusAbs(root, workflow, featureId);
   if (fs.existsSync(absolute)) fail(`status already exists: ${statusPath(workflow, featureId)}`, 1);
 
@@ -855,7 +949,15 @@ function cmdInit(root, workflow, featureId, flags) {
     level,
     profile,
     riskLabels: labels,
-    lightweightL: Boolean(flags['lightweight-l']),
+    lightweightL,
+    entryGate,
+  });
+  const baseRoute = deriveRoute(contract, {
+    level,
+    profile,
+    riskLabels: [],
+    lightweightL,
+    entryGate,
   });
   const humanGates = {};
   for (const gate of contract.human_gates) {
@@ -893,14 +995,30 @@ function cmdInit(root, workflow, featureId, flags) {
 
   closeExistingAuth(root);
   writeAuth(root, {
+    schema_version: String(contract.authorization_schema || '1'),
+    workflow_version: contract.workflow_version,
     feature_id: featureId,
     level,
     profile,
     state: 'approval-pending',
     protected_roots: workflow.protectedWriteRoots,
+    approval_basis: null,
     created_at: nowIso(),
     approved_at: null,
+    closed_at: null,
   });
+
+  const noInc = labelsWithNoGateIncrement(contract, labels, baseRoute.riskGates);
+  for (const label of noInc) {
+    process.stdout.write(
+      `INFO risk label ${label} does not raise gate strength beyond the current route (kept for audit; not auto-stripped)\n`,
+    );
+  }
+  if (labels.length > 0) {
+    process.stdout.write(
+      'NOTE: when a required risk gate is full, risk_evidence must use report mode pointing at a real report before approval/finish (pending inline is OK at init).\n',
+    );
+  }
 
   process.stdout.write(`initialized ${statusPath(workflow, featureId)}\n`);
   process.stdout.write(`write-authorization state: approval-pending\n`);
@@ -911,26 +1029,30 @@ function cmdActivate(root, workflow, featureId) {
   const model = loadStatusModel(root, workflow, featureId);
   // Approval-stage: required human gates and route-required upstream process
   // gates must all pass the same validator used by confirm-human.
-  let state = 'approval-pending';
-  let approvedAt = null;
+  let authPayload;
   if (
     requiredHumanGatesSatisfied(model) &&
     runValidatorStatus(root, model.relative, 'approval') === 0
   ) {
-    state = 'approved';
-    approvedAt = nowIso();
+    authPayload = buildApprovedAuth(root, workflow, model, null);
+  } else {
+    authPayload = {
+      schema_version: String(contract.authorization_schema || '1'),
+      workflow_version: contract.workflow_version,
+      feature_id: featureId,
+      level: model.level,
+      profile: model.profile,
+      state: 'approval-pending',
+      protected_roots: workflow.protectedWriteRoots,
+      approval_basis: null,
+      created_at: nowIso(),
+      approved_at: null,
+      closed_at: null,
+    };
   }
   closeExistingAuth(root);
-  writeAuth(root, {
-    feature_id: featureId,
-    level: model.level,
-    profile: model.profile,
-    state,
-    protected_roots: workflow.protectedWriteRoots,
-    created_at: nowIso(),
-    approved_at: approvedAt,
-  });
-  process.stdout.write(`activated ${featureId} (state: ${state})\n`);
+  writeAuth(root, authPayload);
+  process.stdout.write(`activated ${featureId} (state: ${authPayload.state})\n`);
 }
 
 function cmdAddAsset(root, workflow, featureId, flags) {
@@ -1003,9 +1125,19 @@ function cmdCompleteGate(root, workflow, featureId, gate, flags) {
 
   model.completedGates.push(canonicalGate);
   model.currentGate = canonicalGate;
-  model.nextAction = `after ${canonicalGate}`;
+  model.nextAction = nextActionForGate(nextGateAfter(model, canonicalGate));
   saveModel(root, model);
   process.stdout.write(`completed gate ${canonicalGate}\n`);
+  if (canonicalGate === 'code-review' && flags['evidence-file']) {
+    const evidencePath = flags['evidence-file'];
+    const registered = model.assets.some((a) => a.path === evidencePath);
+    if (!registered) {
+      process.stdout.write(
+        `HINT: register the code-review report before complete-verification:\n` +
+          `  dev-flow-status add-asset ${featureId} --path ${evidencePath} --kind review\n`,
+      );
+    }
+  }
 }
 
 function cmdPromoteGate(root, workflow, featureId, gate, flags) {
@@ -1118,6 +1250,7 @@ function cmdCompleteVerification(root, workflow, featureId, flags) {
     level: model.level,
     profile: model.profile,
     humanGates: model.humanGates,
+    riskLabels: model.labels || [],
   });
   if (obligation.required) {
     if (!model.completedGates.includes('code-review')) {
@@ -1161,8 +1294,8 @@ function cmdConfirmHuman(root, workflow, featureId, gate, flags) {
     fail(`human gate must be one of: ${contract.human_gates.join(', ')}`);
   }
   const status = flags.status;
-  if (!['confirmed', 'skipped'].includes(status)) {
-    fail('--status must be confirmed or skipped');
+  if (status !== 'confirmed') {
+    fail('--status must be confirmed; accepting residual risk is confirmed with evidence');
   }
   const evidence = flags.evidence;
   if (!evidence || !String(evidence).trim()) fail('--evidence is required');
@@ -1177,28 +1310,17 @@ function cmdConfirmHuman(root, workflow, featureId, gate, flags) {
   model.humanGates[gate].evidence = evidence;
   if (!model.completedGates.includes(gate)) model.completedGates.push(gate);
   model.currentGate = gate;
-  model.nextAction = status === 'confirmed' ? `after ${gate}` : `skipped ${gate}`;
+  model.nextAction = nextActionForGate(nextGateAfter(model, gate));
   saveModel(root, model, {
     stage: gate === 'implementation_approval' ? 'approval' : 'current',
   });
 
-  // Sync write-authorization only when every required human gate is satisfied.
-  if (gate === 'implementation_approval' && requiredHumanGatesSatisfied(model)) {
-    const auth = readAuth(root);
-    if (auth && auth.feature_id === featureId) {
-      auth.state = 'approved';
-      auth.approved_at = nowIso();
-      writeAuth(root, auth);
-    } else {
-      writeAuth(root, {
-        feature_id: featureId,
-        level: model.level,
-        profile: model.profile,
-        state: 'approved',
-        protected_roots: workflow.protectedWriteRoots,
-        created_at: nowIso(),
-        approved_at: nowIso(),
-      });
+  // Sync write-authorization only when all required gates are confirmed.
+  if (gate === 'implementation_approval') {
+    if (requiredHumanGatesSatisfied(model)) {
+      const existing = readAuth(root);
+      writeAuth(root, buildApprovedAuth(root, workflow, model, existing));
+      process.stdout.write('write-authorization state: approved (approval_basis bound)\n');
     }
   }
 
@@ -1268,7 +1390,8 @@ function usage() {
   process.stdout.write(`Usage:
   dev-flow-status authorize --level <XS|S> [--note <text>]
   dev-flow-status init <feature-id> --level <XS|S|M|L> --profile <profile> \\
-    --topology <topology> --evidence-result <result> [--note <text>] [--risk-labels a,b] [--lightweight-l]
+    --topology <topology> --evidence-result <result> [--entry-gate <gate>] \
+    [--note <text>] [--risk-labels a,b] [--lightweight-l]
   dev-flow-status activate <feature-id>
   dev-flow-status add-asset <feature-id> --path <repo-path> --kind <kind>
   dev-flow-status complete-gate <feature-id> <gate> \\
@@ -1277,7 +1400,7 @@ function usage() {
   dev-flow-status record-risk-evidence <feature-id> <label> \\
     [--mode <inline|report>] [--conclusion <text>] [--verification <text>] [--report <path>]
   dev-flow-status confirm-human <feature-id> <gate> \\
-    --status <confirmed|skipped> --evidence <user-evidence>
+    --status confirmed --evidence <user-evidence>
   dev-flow-status record-validation <feature-id> --command <command>
   dev-flow-status complete-verification <feature-id> --command <command> \\
     [--report <path>] [--manual-test <path>]

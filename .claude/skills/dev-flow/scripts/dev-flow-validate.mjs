@@ -11,16 +11,44 @@
  */
 import fs from 'node:fs';
 import path from 'node:path';
+import { createHash } from 'node:crypto';
 import {
   RISK_GATE_COMPLETION_GATES,
   gateRank as policyGateRank,
   loadContract,
   routeObligations,
+  labelsWithNoGateIncrement,
 } from './dev-flow-policy.mjs';
 
 const contract = loadContract();
 
 const [command, ...args] = process.argv.slice(2);
+
+const MANUAL_METHODS = new Set(['browser', 'device', 'api', 'cli', 'automated']);
+const NON_RUNTIME_METHODS = new Set([
+  'static-review',
+  'static_review',
+  'code-review',
+  'code_review',
+  'lint',
+  'type-check',
+  'typecheck',
+  'type_check',
+]);
+
+function automatedEvidenceHasCommandAndTestId(evidence) {
+  const value = String(evidence ?? '');
+  const placeholder = '(?:none|n/a|pending|unknown|待执行|未知)';
+  const commandRef = new RegExp(
+    `(?:^|[\\s;,，；])(?:command|cmd|命令)\\s*[:=：]\\s*(?!${placeholder}(?:\\s|$))\\S+`,
+    'i',
+  );
+  const testRef = new RegExp(
+    `(?:^|[\\s;,，；])(?:test(?:[_ -]?(?:id|case))?|case|spec|测试(?:标识|id|用例)?)\\s*[:=：]\\s*(?!${placeholder}(?:\\s|$))\\S+`,
+    'i',
+  );
+  return commandRef.test(value) && testRef.test(value);
+}
 
 let checkFailures = 0;
 function pass(message) {
@@ -429,10 +457,28 @@ function validateStatus(root, statusPath, stage = 'current') {
     if (!contract.evidence_modes.includes(entry.mode)) { failCheck(`risk_evidence.${label}.mode must be "inline" or "report"`); evidenceOk = false; continue; }
     if (!hasMeaningfulEvidence(entry.conclusion)) { failCheck(`risk_evidence.${label}.conclusion must be non-empty evidence`); evidenceOk = false; }
     if (!hasMeaningfulEvidence(entry.verification)) { failCheck(`risk_evidence.${label}.verification must be non-empty evidence`); evidenceOk = false; }
-    const needsReport = Object.keys(contract.minimum_risk_gates[label] ?? {}).some((gate) => gates[gate] === 'full');
-    if (needsReport && entry.mode !== 'report') { failCheck(`risk_evidence.${label} must use report mode when a required gate is full`); evidenceOk = false; }
+    // Stage-aware: init/current may keep pending evidence without report files
+    // even when route gates are already full (reports are produced later).
+    const pendingEvidence =
+      stage === 'current' &&
+      (!hasCompletedEvidence(entry.conclusion) || !hasCompletedEvidence(entry.verification));
+    const enforceReportMode =
+      !pendingEvidence &&
+      Object.keys(contract.minimum_risk_gates[label] ?? {}).some((gate) => gates[gate] === 'full');
+    if (enforceReportMode && entry.mode !== 'report') {
+      failCheck(
+        `risk_evidence.${label} must use report mode when a required gate is full (see status-cli.md; complete-gate + add-asset when report exists)`,
+      );
+      evidenceOk = false;
+    }
     if (entry.mode === 'report') {
-      if (!hasMeaningfulEvidence(entry.report)) { failCheck(`risk_evidence.${label}.report is required for report mode`); evidenceOk = false; continue; }
+      if (!hasMeaningfulEvidence(entry.report)) {
+        if (!pendingEvidence) {
+          failCheck(`risk_evidence.${label}.report is required for report mode`);
+          evidenceOk = false;
+        }
+        continue;
+      }
       const reportPath = repositoryPath(absoluteRoot, entry.report, `risk_evidence.${label}.report`);
       rejectSymlinks(absoluteRoot, reportPath, `risk_evidence.${label}.report`);
       const config = loadProjectConfig(absoluteRoot);
@@ -455,15 +501,23 @@ function validateStatus(root, statusPath, stage = 'current') {
       try {
         stat = fs.statSync(reportPath);
       } catch (error) {
-        if (error.code === 'ENOENT') { failCheck(`risk_evidence.${label}.report does not exist: ${entry.report}`); evidenceOk = false; continue; }
+        if (error.code === 'ENOENT') {
+          if (!pendingEvidence) {
+            failCheck(`risk_evidence.${label}.report does not exist: ${entry.report}`);
+            evidenceOk = false;
+          }
+          continue;
+        }
         fail(`cannot inspect risk_evidence.${label}.report: ${error.message}`);
       }
-      if (!stat.isFile()) { failCheck(`risk_evidence.${label}.report is not a file: ${entry.report}`); evidenceOk = false; }
+      if (stat && !stat.isFile()) {
+        failCheck(`risk_evidence.${label}.report is not a file: ${entry.report}`);
+        evidenceOk = false;
+      }
     }
   }
   if (labels.length > 0 && evidenceOk) pass('risk_evidence satisfies the contract');
   if (labels.length === 0 && Object.keys(evidence).length === 0) pass('no risk labels; empty risk_evidence is valid');
-
   // human gates
   const humanGates = parseNestedMap(lines, 'human_gates', 'human_gates');
   if (!humanGates) {
@@ -484,6 +538,21 @@ function validateStatus(root, statusPath, stage = 'current') {
     humanGates,
     riskGates: gates,
   });
+  if (labels.length > 0 && stage === 'current') {
+    const baseRoute = routeObligations(contract, {
+      level,
+      profile,
+      riskLabels: [],
+      humanGates,
+      riskGates: {},
+    });
+    const noInc = labelsWithNoGateIncrement(contract, labels, baseRoute.effectiveRiskGates);
+    for (const label of noInc) {
+      warn(
+        `INFO risk label ${label} does not raise gate strength beyond the current route (kept for audit; not auto-stripped)`,
+      );
+    }
+  }
   for (const gateName of contract.human_gates) {
     const expected = obligations.humanGates[gateName]?.required === true;
     const actual = humanGates?.[gateName]?.required === 'true';
@@ -603,8 +672,8 @@ function validateStatus(root, statusPath, stage = 'current') {
     for (const gateName of contract.human_gates) {
       if (obligations.humanGates[gateName]?.required !== true) continue;
       const gate = humanGates?.[gateName];
-      if (gate?.status !== 'confirmed' && gate?.status !== 'skipped') {
-        failCheck(`${stage} requires ${gateName} to be confirmed or skipped`);
+      if (gate?.status !== 'confirmed') {
+        failCheck(`${stage} requires ${gateName} to be confirmed`);
       } else if (!hasMeaningfulEvidence(gate.evidence)) {
         failCheck(`${gateName} is ${gate.status} but has no meaningful evidence`);
       } else {
@@ -739,7 +808,9 @@ function validateStatus(root, statusPath, stage = 'current') {
 
     if (stage === 'finish') {
       // partial / verified outcome from manual-test steps when present
-      validatePartialContract(absoluteRoot, featureId, acceptedRisks, assets);
+      validatePartialContract(absoluteRoot, featureId, acceptedRisks, assets, {
+        behaviorLevel: gates.behavior_verification ?? 'none',
+      });
     }
   }
 
@@ -768,8 +839,43 @@ function parseGateEvidence(lines) {
   return map;
 }
 
+function manualStepAgreementError(frontmatterSteps, tableSteps) {
+  const duplicateIds = (steps) =>
+    [...new Set(steps.map((step) => step.id).filter((id, index, ids) => ids.indexOf(id) !== index))];
+  const frontmatterDuplicates = duplicateIds(frontmatterSteps);
+  const tableDuplicates = duplicateIds(tableSteps);
+  if (frontmatterDuplicates.length > 0 || tableDuplicates.length > 0) {
+    return `manual-test has duplicate IDs (frontmatter: ${frontmatterDuplicates.join(', ') || 'none'}; table: ${tableDuplicates.join(', ') || 'none'})`;
+  }
+  const frontmatterById = new Map(frontmatterSteps.map((step) => [step.id, step]));
+  const tableById = new Map(tableSteps.map((step) => [step.id, step]));
+  const allIds = [...new Set([...frontmatterById.keys(), ...tableById.keys()])];
+  const mismatches = [];
+  for (const id of allIds) {
+    const frontmatter = frontmatterById.get(id);
+    const table = tableById.get(id);
+    if (!frontmatter || !table) {
+      mismatches.push(`${id}: missing from ${frontmatter ? 'table' : 'frontmatter'}`);
+      continue;
+    }
+    const frontmatterResult = String(frontmatter.result ?? '').trim().toLowerCase();
+    const tableResult = String(table.result ?? '').trim().toLowerCase();
+    const frontmatterRisk = frontmatter.risk_id || null;
+    const tableRisk = table.risk_id || null;
+    if (frontmatterResult !== tableResult || frontmatterRisk !== tableRisk) {
+      mismatches.push(
+        `${id}: frontmatter(result=${frontmatterResult || 'empty'}, risk_id=${frontmatterRisk || 'null'}) != table(result=${tableResult || 'empty'}, risk_id=${tableRisk || 'null'})`,
+      );
+    }
+  }
+  return mismatches.length > 0
+    ? `manual-test frontmatter/table mismatch: ${mismatches.join('; ')}`
+    : null;
+}
+
 /**
- * Parse manual_test_steps from frontmatter or a 7-column markdown table.
+ * Parse manual_test_steps from frontmatter and/or a 7-column markdown table.
+ * When both representations exist, their ID/result/risk_id facts must agree.
  * Returns { steps, source } or null when no manual-test asset is registered.
  */
 function loadManualTestSteps(root, assets) {
@@ -779,7 +885,8 @@ function loadManualTestSteps(root, assets) {
   if (!fs.existsSync(file)) return { steps: null, error: `manual-test missing: ${manualAssets[0].path}` };
   const content = fs.readFileSync(file, 'utf8');
 
-  // Prefer YAML frontmatter / sidecar-style list
+  // YAML frontmatter / sidecar-style list
+  let frontmatterSteps = [];
   const fm = content.match(/^---\r?\n([\s\S]*?)\r?\n---/);
   if (fm) {
     const steps = [];
@@ -795,11 +902,18 @@ function loadManualTestSteps(root, assets) {
         const start = line.match(/^  - id:\s*(.+)$/);
         if (start) {
           if (current) steps.push(current);
-          current = { id: unquote(start[1]), result: null, risk_id: null, observed: '', evidence: '' };
+          current = {
+            id: unquote(start[1]),
+            result: null,
+            risk_id: null,
+            observed: '',
+            evidence: '',
+            method: null,
+          };
           continue;
         }
         if (current) {
-          const field = line.match(/^    (result|risk_id|observed|evidence):\s*(.*)$/);
+          const field = line.match(/^    (result|risk_id|observed|evidence|method):\s*(.*)$/);
           if (field) {
             let value = unquote(field[2]);
             if (value === 'null' || value === '~' || value === '') value = null;
@@ -813,12 +927,12 @@ function loadManualTestSteps(root, assets) {
       }
     }
     if (current) steps.push(current);
-    if (steps.length > 0) return { steps, source: 'frontmatter' };
+    frontmatterSteps = steps;
   }
 
-  // Fallback: 7-column table
+  // 7-column table
   // | ID | 操作 | 预期 | 结果 | 实测 | 证据 | 风险 ID |
-  const steps = [];
+  const tableSteps = [];
   for (const line of content.split(/\r?\n/)) {
     if (!line.trim().startsWith('|')) continue;
     if (/^\|\s*-+/.test(line)) continue;
@@ -827,7 +941,7 @@ function loadManualTestSteps(root, assets) {
     if (cells.length < 7) continue;
     const [id, , , result, observed, evidence, riskId] = cells;
     if (!id || id === 'ID') continue;
-    steps.push({
+    tableSteps.push({
       id,
       result: result || null,
       risk_id: !riskId || riskId === '-' || riskId.toLowerCase() === 'null' ? null : riskId,
@@ -835,8 +949,25 @@ function loadManualTestSteps(root, assets) {
       evidence: evidence || '',
     });
   }
-  if (steps.length === 0) return { steps: null, error: 'manual-test has no structured steps or parsable table' };
-  return { steps, source: 'table' };
+  if (frontmatterSteps.length > 0 && tableSteps.length > 0) {
+    const mismatch = manualStepAgreementError(frontmatterSteps, tableSteps);
+    if (mismatch) return { steps: null, error: mismatch };
+    return { steps: frontmatterSteps, source: 'frontmatter+table' };
+  }
+  if (frontmatterSteps.length > 0) {
+    return { steps: frontmatterSteps, source: 'frontmatter' };
+  }
+  if (tableSteps.length > 0) {
+    return { steps: tableSteps, source: 'table' };
+  }
+  if (tableSteps.length === 0) {
+    return {
+      steps: null,
+      error:
+        'manual-test has no structured steps or parsable table (see references/partial-verification.md; expect 7-col: ID|操作|预期|结果|实测|证据|风险 ID or frontmatter manual_test_steps)',
+    };
+  }
+  return { steps: tableSteps, source: 'table' };
 }
 
 function loadPartialAcceptanceIds(root, featureId, assets) {
@@ -864,7 +995,8 @@ function loadPartialAcceptanceIds(root, featureId, assets) {
   return { foundFile, ids };
 }
 
-function validatePartialContract(root, featureId, acceptedRisks, assets) {
+function validatePartialContract(root, featureId, acceptedRisks, assets, options = {}) {
+  const behaviorLevel = options.behaviorLevel ?? 'none';
   const loaded = loadManualTestSteps(root, assets ?? []);
   if (loaded === null) {
     // No manual-test asset: if accepted_risks non-empty, still require partial-acceptance
@@ -900,9 +1032,41 @@ function validatePartialContract(root, featureId, acceptedRisks, assets) {
       failCheck(`manual-test step ${step.id} has invalid result: ${step.result}`);
       continue;
     }
+    const method = (step.method || '').toString().trim().toLowerCase();
+    if (result === 'passed') {
+      if (!hasMeaningfulEvidence(step.observed) || !hasMeaningfulEvidence(step.evidence)) {
+        failCheck(`manual-test step ${step.id} passed requires non-empty observed and evidence`);
+      }
+      if (method && NON_RUNTIME_METHODS.has(method)) {
+        failCheck(
+          `manual-test step ${step.id} cannot use non-runtime method "${method}" as passed (static-review/lint/type-check are not runtime evidence)`,
+        );
+      }
+      if (behaviorLevel === 'full') {
+        if (!method) {
+          failCheck(
+            `behavior_verification full requires method on passed step ${step.id} (browser|device|api|cli|automated); see partial-verification.md`,
+          );
+        } else if (!MANUAL_METHODS.has(method)) {
+          failCheck(`manual-test step ${step.id} has unknown method: ${step.method}`);
+        } else if (method === 'automated') {
+          const hasVerification = (assets ?? []).some((a) => a.kind === 'verification');
+          if (!hasVerification || !automatedEvidenceHasCommandAndTestId(step.evidence)) {
+            failCheck(
+              `automated method on ${step.id} requires a registered verification asset and explicit "command: ...; test: ..." identifiers in evidence`,
+            );
+          }
+        }
+      } else if (!method) {
+        warn(`manual-test step ${step.id} missing method (WARN at light; full requires method)`);
+      }
+    }
     if (result === 'failed') {
       failCheck(`manual-test step ${step.id} failed`);
       hasFailed = true;
+      if (behaviorLevel === 'full' && !method) {
+        failCheck(`failed step ${step.id} should record method when behavior_verification is full`);
+      }
     }
     if (result === 'skipped') {
       if (!step.risk_id || !/^AR-[A-Za-z0-9_-]+$/.test(step.risk_id)) {
@@ -979,10 +1143,39 @@ function loadProjectConfig(root) {
     }
     return '';
   };
+  const configList = (key) => {
+    const values = [];
+    let inBlock = false;
+    for (const line of content.split(/\r?\n/)) {
+      if (!inBlock) {
+        const match = line.match(new RegExp(`^\\s*${key}:\\s*(.*)$`));
+        if (!match) continue;
+        const inline = match[1].trim();
+        if (inline.startsWith('[') && inline.endsWith(']')) {
+          return inline
+            .slice(1, -1)
+            .split(',')
+            .map((value) => unquote(value.trim()))
+            .filter(Boolean);
+        }
+        inBlock = true;
+        continue;
+      }
+      if (line.trim() === '') continue;
+      const item = line.match(/^\s*-\s+(.+)$/);
+      if (item) {
+        values.push(unquote(item[1]));
+        continue;
+      }
+      break;
+    }
+    return values;
+  };
   return {
     featureRoot: configValue('feature_root'),
     reviewRoot: configValue('review_root'),
     retention: configValue('retention') || 'compact',
+    protectedWriteRoots: configList('protected_write_roots'),
   };
 }
 
@@ -1047,7 +1240,7 @@ function acceptedRiskSections(content) {
  * Pre-finalization final-assets contract.
  * - Always requires feature.md + completion outcome/retention.
  * - Active status means a newly produced completion: current workflow_version
- *   and the full v0.8 field set are mandatory.
+ *   and the full current-version field set are mandatory.
  * - Finalized historical completion without the current version keeps the
  *   legacy minimal contract and emits a warning.
  */
@@ -1117,29 +1310,29 @@ function validateFinalAssets(root, featurePath, completionPath, statusPath, fini
       pass('completion schema_version is current');
     } else {
       failCheck(
-        `v0.8 completion schema_version must be "${contract.completion_schema}": ${schemaVersion ?? ''}`,
+        `current completion schema_version must be "${contract.completion_schema}": ${schemaVersion ?? ''}`,
       );
     }
     const featureId = completionField(completion, 'feature_id');
     if (featureId && /^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(featureId) && !featureId.startsWith('.')) {
       pass('completion feature_id is well-formed');
     } else {
-      failCheck(`v0.8 completion feature_id is missing or malformed: ${featureId ?? ''}`);
+      failCheck(`current completion feature_id is missing or malformed: ${featureId ?? ''}`);
     }
     const level = completionField(completion, 'level');
     if (contract.levels.includes(level)) pass('completion level is recognized');
-    else failCheck(`v0.8 completion level is missing or unknown: ${level ?? ''}`);
+    else failCheck(`current completion level is missing or unknown: ${level ?? ''}`);
     const completedAt = completionField(completion, 'completed_at');
     if (isIso8601Timestamp(completedAt)) {
       pass('completion completed_at is an ISO-8601 timestamp');
     } else {
-      failCheck('v0.8 completion completed_at must be an ISO-8601 timestamp');
+      failCheck('current completion completed_at must be an ISO-8601 timestamp');
     }
     const fingerprint = completionField(completion, 'business_diff_fingerprint');
     if (/^[0-9a-f]{40}$/.test(fingerprint ?? '')) {
       pass('completion business_diff_fingerprint is a Git hash');
     } else {
-      failCheck('v0.8 completion business_diff_fingerprint must be a Git hash');
+      failCheck('current completion business_diff_fingerprint must be a Git hash');
     }
     for (const [listField, values] of [
       ['risk_labels', completionRiskLabels],
@@ -1149,7 +1342,7 @@ function validateFinalAssets(root, featurePath, completionPath, statusPath, fini
       if (values !== null) {
         pass(`completion ${listField} field is present`);
       } else {
-        failCheck(`v0.8 completion is missing ${listField}`);
+        failCheck(`current completion is missing ${listField}`);
       }
     }
     for (const scalarField of [
@@ -1160,7 +1353,7 @@ function validateFinalAssets(root, featurePath, completionPath, statusPath, fini
       if (completionField(completion, scalarField) !== null) {
         pass(`completion ${scalarField} field is present`);
       } else {
-        failCheck(`v0.8 completion is missing ${scalarField}`);
+        failCheck(`current completion is missing ${scalarField}`);
       }
     }
     if (completionRiskLabels !== null) {
@@ -1509,6 +1702,245 @@ function parseFeatureStage(args) {
   return { stage, rest };
 }
 
+// ---------- approval basis / authorization ----------
+
+function sha256File(absPath) {
+  const buf = fs.readFileSync(absPath);
+  return createHash('sha256').update(buf).digest('hex');
+}
+
+function canonicalJson(value) {
+  if (value === null || typeof value !== 'object') return JSON.stringify(value);
+  if (Array.isArray(value)) return `[${value.map((v) => canonicalJson(v)).join(',')}]`;
+  const keys = Object.keys(value).sort();
+  return `{${keys.map((k) => `${JSON.stringify(k)}:${canonicalJson(value[k])}`).join(',')}}`;
+}
+
+/**
+ * Build approval basis from status frontmatter + protected roots.
+ * Only pre-implementation assets and route structure enter the hash.
+ */
+function computeApprovalBasis(root, statusPath, protectedRoots = []) {
+  const { absoluteRoot, content } = readStatus(root, statusPath);
+  const lines = statusLines(content);
+  const featureId = topLevelValue(lines, 'feature_id');
+  const level = topLevelValue(lines, 'level');
+  const profile = topLevelValue(lines, 'profile');
+  const labels = parseStringList(lines, 'risk_labels', 'risk_labels') ?? [];
+  const classification = parseFlatBlock(lines, 'classification', 'classification') || {};
+  const gates = parseFlatBlock(lines, 'risk_gates', 'risk_gates') || {};
+  const humanGates = parseNestedMap(lines, 'human_gates', 'human_gates') || {};
+  const assets = parseAssets(lines) || [];
+  const gateEvidence = parseGateEvidence(lines) || {};
+  const obligations = routeObligations(contract, {
+    level,
+    profile,
+    riskLabels: labels,
+    humanGates,
+    riskGates: gates,
+  });
+
+  const preImplKinds = new Set(['requirement', 'plan', 'spec']);
+  const preImplAssets = assets
+    .filter((a) => preImplKinds.has(a.kind))
+    .map((a) => ({ path: a.path.replace(/\\/g, '/'), kind: a.kind }))
+    .sort((a, b) => a.path.localeCompare(b.path));
+
+  const assetManifests = [];
+  for (const asset of preImplAssets) {
+    const abs = path.join(absoluteRoot, asset.path);
+    if (!fs.existsSync(abs) || !fs.statSync(abs).isFile()) {
+      fail(`APPROVAL_BASIS_STRUCTURAL_CHANGE: approval asset missing: ${asset.path}`);
+    }
+    assetManifests.push({
+      path: asset.path,
+      kind: asset.kind,
+      sha256: sha256File(abs),
+    });
+  }
+
+  // Gate evidence files for pre-impl risk gates also bind content.
+  const preImplCompleted = new Set([
+    'requirements-coverage',
+    'plan-review',
+    'rollback-units',
+    'security-review',
+  ]);
+  for (const [key, entry] of Object.entries(gateEvidence)) {
+    const completed = key.replace(/_/g, '-');
+    if (!preImplCompleted.has(completed)) continue;
+    if (!entry?.path) continue;
+    const norm = entry.path.replace(/\\/g, '/');
+    if (assetManifests.some((m) => m.path === norm)) continue;
+    const abs = path.join(absoluteRoot, entry.path);
+    if (!fs.existsSync(abs) || !fs.statSync(abs).isFile()) {
+      fail(`APPROVAL_BASIS_STRUCTURAL_CHANGE: gate evidence missing: ${entry.path}`);
+    }
+    assetManifests.push({
+      path: norm,
+      kind: 'review',
+      sha256: sha256File(abs),
+    });
+  }
+  assetManifests.sort((a, b) => a.path.localeCompare(b.path));
+
+  const roots = [...protectedRoots].map((r) => String(r).replace(/\\/g, '/')).sort();
+  const req = humanGates.requirement_confirmation || {};
+  const routePayload = {
+    feature_id: featureId,
+    level,
+    profile,
+    topology: classification.topology || '',
+    evidence_result: classification.evidence_result || '',
+    risk_labels: [...labels].sort(),
+    risk_gates: gates,
+    code_review: obligations.codeReview,
+    requirement_confirmation: {
+      required: req.required === true || req.required === 'true',
+      status: req.status || 'pending',
+      evidence: req.evidence || '',
+    },
+    protected_roots: roots,
+    asset_paths: assetManifests.map((m) => m.path),
+  };
+  const routeHash = createHash('sha256').update(canonicalJson(routePayload)).digest('hex');
+  const fullPayload = {
+    ...routePayload,
+    assets: assetManifests,
+  };
+  const hash = createHash('sha256').update(canonicalJson(fullPayload)).digest('hex');
+  return {
+    algorithm: 'sha256',
+    hash,
+    route_hash: routeHash,
+    assets: assetManifests,
+    route: routePayload,
+  };
+}
+
+function compareApprovalBasis(expected, actual) {
+  if (!expected || !actual) {
+    return { ok: false, code: 'APPROVAL_BASIS_STRUCTURAL_CHANGE', detail: 'missing approval_basis' };
+  }
+  if (expected.route_hash !== actual.route_hash) {
+    return {
+      ok: false,
+      code: 'APPROVAL_BASIS_STRUCTURAL_CHANGE',
+      detail: 'route, risk labels, protected roots, or asset path set changed',
+    };
+  }
+  if (expected.hash !== actual.hash) {
+    const changed = [];
+    const expMap = Object.fromEntries((expected.assets || []).map((a) => [a.path, a.sha256]));
+    const actMap = Object.fromEntries((actual.assets || []).map((a) => [a.path, a.sha256]));
+    for (const pathKey of new Set([...Object.keys(expMap), ...Object.keys(actMap)])) {
+      if (expMap[pathKey] !== actMap[pathKey]) changed.push(pathKey);
+    }
+    return {
+      ok: false,
+      code: 'APPROVAL_BASIS_CONTENT_CHANGE',
+      detail: `approved asset content changed: ${changed.join(', ') || '(unknown)'}`,
+      changed,
+    };
+  }
+  return { ok: true };
+}
+
+function validateAuthorization(root, authPath) {
+  const absoluteRoot = path.resolve(root);
+  const absAuth = path.resolve(absoluteRoot, authPath);
+  if (!fs.existsSync(absAuth)) {
+    failCheck(`authorization file missing: ${authPath}`);
+    return finishChecks();
+  }
+  let auth;
+  try {
+    auth = JSON.parse(fs.readFileSync(absAuth, 'utf8'));
+  } catch (error) {
+    failCheck(`cannot parse authorization: ${error.message}`);
+    return finishChecks();
+  }
+  if (auth.state === 'classified') {
+    pass('classified authorization is valid without approval_basis');
+    return finishChecks();
+  }
+  if (auth.state === 'closed') {
+    pass('closed authorization accepted as historical');
+    return finishChecks();
+  }
+  if (auth.state === 'approval-pending') {
+    pass('approval-pending authorization has no approved basis yet');
+    return finishChecks();
+  }
+  if (auth.state !== 'approved') {
+    failCheck(`authorization state not processable: ${auth.state ?? ''}`);
+    return finishChecks();
+  }
+  const config = loadProjectConfig(absoluteRoot);
+  if (!config.featureRoot) {
+    failCheck('project workflow has no feature_root');
+    return finishChecks();
+  }
+  const statusRel = path.join(config.featureRoot, auth.feature_id, 'status.md');
+  const statusAbs = path.join(absoluteRoot, statusRel);
+  // Approved auth always carries the current schema/version/basis. Historical
+  // authorization without an active status must be closed, never reusable.
+  if (String(auth.schema_version) !== String(contract.authorization_schema || '1')) {
+    failCheck(
+      `authorization schema_version must be "${contract.authorization_schema || '1'}": ${auth.schema_version ?? ''}`,
+    );
+    return finishChecks();
+  }
+  pass('authorization schema_version matches');
+  if (auth.workflow_version !== contract.workflow_version) {
+    failCheck(
+      `authorization workflow_version mismatch: ${auth.workflow_version ?? 'missing'} vs ${contract.workflow_version}`,
+    );
+    return finishChecks();
+  }
+  pass('authorization workflow_version matches');
+  if (!auth.approval_basis || !auth.approval_basis.hash) {
+    failCheck('APPROVAL_BASIS_STRUCTURAL_CHANGE: approved authorization missing approval_basis.hash');
+    return finishChecks();
+  }
+  const normalizeRoots = (roots) =>
+    (Array.isArray(roots) ? roots : []).map((root) => String(root).replace(/\\/g, '/')).sort();
+  const authorizedRoots = normalizeRoots(auth.protected_roots);
+  const currentRoots = normalizeRoots(config.protectedWriteRoots);
+  if (JSON.stringify(authorizedRoots) !== JSON.stringify(currentRoots)) {
+    failCheck(
+      `APPROVAL_BASIS_STRUCTURAL_CHANGE: authorization protected_roots differ from current workflow (${authorizedRoots.join(', ') || 'none'} vs ${currentRoots.join(', ') || 'none'})`,
+    );
+    return finishChecks();
+  }
+  if (!fs.existsSync(statusAbs)) {
+    failCheck('approved authorization has no active status; finalize/close it instead of reusing residual approval');
+    return finishChecks();
+  }
+  let recomputed;
+  try {
+    recomputed = computeApprovalBasis(
+      absoluteRoot,
+      statusRel,
+      config.protectedWriteRoots || [],
+    );
+  } catch (error) {
+    failCheck(`APPROVAL_BASIS_STRUCTURAL_CHANGE: ${error.message}`);
+    return finishChecks();
+  }
+  const cmp = compareApprovalBasis(auth.approval_basis, {
+    hash: recomputed.hash,
+    route_hash: recomputed.route_hash,
+    assets: recomputed.assets,
+  });
+  if (!cmp.ok) {
+    failCheck(`${cmp.code}: ${cmp.detail}`);
+    return finishChecks();
+  }
+  pass('authorization approval_basis matches current pre-implementation assets');
+  return finishChecks();
+}
+
 // ---------- entry ----------
 
 switch (command) {
@@ -1565,9 +1997,50 @@ switch (command) {
     process.exit(ok ? 0 : 1);
     break;
   }
+  case 'approval-basis': {
+    // approval-basis <root> <status-path> [--protected-roots a,b]
+    let protectedRoots = [];
+    const rest = [];
+    for (let i = 0; i < args.length; i += 1) {
+      if (args[i] === '--protected-roots') {
+        protectedRoots = String(args[++i] || '')
+          .split(',')
+          .map((s) => s.trim())
+          .filter(Boolean);
+        continue;
+      }
+      rest.push(args[i]);
+    }
+    if (rest.length !== 2) {
+      fail('usage: dev-flow-validate.mjs approval-basis <repo-root> <status-path> [--protected-roots a,b]');
+    }
+    const basis = computeApprovalBasis(path.resolve(rest[0]), rest[1], protectedRoots);
+    process.stdout.write(`${JSON.stringify(basis, null, 2)}\n`);
+    break;
+  }
+  case 'authorization': {
+    if (args.length !== 2) {
+      fail('usage: dev-flow-validate.mjs authorization <repo-root> <authorization-path>');
+    }
+    const ok = validateAuthorization(path.resolve(args[0]), args[1]);
+    process.exit(ok ? 0 : 1);
+    break;
+  }
   case 'contract': {
-    const required = ['workflow_version', 'status_schema', 'risk_labels', 'risk_gates', 'gate_levels',
-      'minimum_risk_gates', 'profiles', 'human_gates', 'known_gates', 'asset_kinds', 'line_budgets'];
+    const required = [
+      'workflow_version',
+      'status_schema',
+      'authorization_schema',
+      'risk_labels',
+      'risk_gates',
+      'gate_levels',
+      'minimum_risk_gates',
+      'profiles',
+      'human_gates',
+      'known_gates',
+      'asset_kinds',
+      'line_budgets',
+    ];
     const missing = required.filter((key) => !Object.hasOwn(contract, key));
     if (missing.length > 0) fail(`contract.json is missing keys: ${missing.join(', ')}`);
     const unmapped = contract.risk_labels.filter((label) => !Object.hasOwn(contract.minimum_risk_gates, label));
