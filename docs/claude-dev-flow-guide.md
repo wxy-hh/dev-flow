@@ -55,6 +55,188 @@ templates/
 
 标准 M/L 共用同一需求固化路由，并在分类同回合以 `--entry-gate` 写入 status：完整但未确认的需求文档走 `grillme`；需求模糊或没有文档走 `req-probe -> grillme`；用户已明确确认需求基线且无未决问题时，登记 evidence 后跳过两者进入 `writing-plans`。每个 process gate 用 `complete-gate` 更新可恢复的 `next_action`。需求固化阶段只确认一次，由 `grillme` 在文档更新后触发；确认前不得写实现计划。实现前确认前不得写业务代码；`code-review` 不能替代 `plan-review`。标准 L 计划后固定骨架是 `requirements-coverage -> plan-review`，标准 M 的 coverage 仅在风险维度触发时执行。
 
+## 各级别实现路线与进度判断
+
+dev-flow 先判断改动规模，再独立判断风险标签。规模只有 `XS`、`S`、`M`、`L` 四级；`risk-minimal`、轻量和标准是执行路线，不是新的规模等级。文件数量只用于辅助调查，不直接决定等级。
+
+### 开始前路线速查
+
+| 路线 | 适用情况 | 完整路线 | 强制停顿 | 收尾要求 |
+|------|----------|----------|----------|----------|
+| XS | 单点、私有或局部、契约稳定 | 定位 → 最小修改 → 验证 | 无 | 新鲜验证 |
+| S | 单模块局部变化、边界清楚、可独立回滚 | 边界确认 → 实现 → 验证 | 最多一个阻塞问题 | 新鲜验证 |
+| risk-minimal XS/S | XS/S 命中任一风险标签 | 风险卡 → 风险门禁 → 实现确认 → 实现 → code-review → 行为验证 | `implementation_approval` | verification + feature-check |
+| 轻量 M | 功能内多步骤，但需求和共享契约稳定 | 边界确认 → 短计划 → 实现 → code-review → 验证 | 无固定 HUMAN GATE | verification；无 status 时不强制 feature-check |
+| 标准 M | 需求分支、状态、错误路径或契约存在不确定性 | 需求固化 → 需求确认 → 计划 → 可选 coverage → plan-review → 风险检查 → 实现确认 → 实现 → code-review → 验证 | `requirement_confirmation`、`implementation_approval` | verification + feature-check |
+| 轻量 L | 跨层，但边界清楚、设计自明、验证方式明确 | 边界卡 → 回撤/风险检查 → 实现确认 → 实现 → full 行为验证 → code-review | `implementation_approval` | verification + feature-check |
+| 标准 L | 跨层且有共享契约、多链路、方案取舍或协调回滚 | 需求固化 → 需求确认 → 计划 → coverage → plan-review → 回撤/风险检查 → 实现确认 → 分批实现 → 回撤审计 → full code-review → full 验证 | `requirement_confirmation`、`implementation_approval` | verification + feature-check + finalization |
+
+表中的“需求确认”和“实现确认”在实际输出中写成 `[HUMAN GATE:<gate-id>]`。一旦出现 HUMAN GATE 或 `Auto-continue: no`，本回合必定停止；用户明确回复确认、继续或接受风险并继续后，流程才会进入下一段。
+
+### XS：直接修改路线
+
+```text
+读取直接相关文件
+→ 判断为 XS 且无风险标签
+→ 写入有限授权
+→ 最小修改
+→ 运行最相关验证
+→ 汇报文件和验证结果
+```
+
+这条路线不创建需求、计划或 `status.md`，也不强制 code-review 和 feature-check。
+
+### S：边界确认路线
+
+```text
+读取相关实现
+→ 复述需求和关键边界
+→ 必要时最多询问一个阻塞问题
+→ 写入有限授权
+→ 实现
+→ 运行相关验证
+→ 汇报结果
+```
+
+无风险 S 默认不创建流程资产。用户明确要求保留需求、计划或审查记录时才生成相应文档。
+
+### risk-minimal：带风险标签的 XS/S
+
+```text
+输出最小风险卡
+→ 创建并激活 risk-minimal status.md
+→ 完成标签派生的 rollback/security 等实现前门禁
+→ [HUMAN GATE:implementation_approval]
+→ 用户确认
+→ 实现
+→ code-review
+→ 标签要求的行为验证
+→ verification-before-completion
+→ dev-flow-feature-check --finish
+→ completion / 收尾
+```
+
+这条路线不要求需求说明书、`req-probe`、`grillme`、`writing-plans`、requirements coverage 或 plan-review。它用于表达“小而高风险”，风险不会把 XS/S 自动升级为 L。
+
+### 轻量 M：对话内短计划路线
+
+```text
+复述需求边界和不做范围
+→ 必要时轻量 req-probe
+→ 对话内短计划
+→ 实现
+→ code-review
+→ verification-before-completion
+→ 汇报结果
+```
+
+轻量 M 默认没有 `status.md`，因此不强制 feature-check。出现契约不确定、重要方案分支、需要正式恢复点或用户要求留档时，应转入标准 M/L。
+
+### 标准 M：需求和计划双确认路线
+
+标准 M/L 的需求固化只有以下三种入口，整个需求阶段只确认一次：
+
+```text
+完整但尚未确认的需求 → grillme → requirement_confirmation
+模糊或没有需求文档   → req-probe/openspec → grillme → requirement_confirmation
+用户已明确确认基线   → 记录确认原话 → 直接 writing-plans
+```
+
+取得需求确认后的主路线：
+
+```text
+writing-plans
+→ requirements-coverage（仅在风险维度触发）
+→ plan-review（至少 light）
+→ rollback/security 等已触发的实现前检查
+→ [HUMAN GATE:implementation_approval]
+→ 用户确认
+→ 按批准计划实现
+→ rollback 审计（rollback_units: full 时）
+→ code-review
+→ verification-before-completion
+→ dev-flow-feature-check --finish
+→ final assets / 收尾
+```
+
+需求确认只授权创建实现计划；实现确认必须基于已经完成的计划和实现前审查另行取得，两次确认不能共用同一条回复。
+
+### 轻量 L：跨层但设计自明路线
+
+```text
+输出边界确认卡
+→ 创建并激活 lightweight-L status.md
+→ rollback light
+→ 标签派生的安全/风险检查
+→ [HUMAN GATE:implementation_approval]
+→ 用户确认
+→ 实现
+→ full 行为验证
+→ code-review（至少 light）
+→ verification-before-completion
+→ dev-flow-feature-check --finish
+→ final assets / 收尾
+```
+
+轻量 L 的 `requirement_confirmation.required` 为 `false`，不强制 grillme、完整计划、coverage 或 plan-review。实现中一旦发现新需求分支、接口不明、多方案取舍、共享状态变化或难回撤，立即停止并升级标准 L。
+
+### 标准 L：完整跨层路线
+
+进入标准 L 前先运行 `dev-flow-doctor`。需求入口与标准 M 相同，需求确认后的固定实现前骨架不能跳过：
+
+```text
+writing-plans
+→ requirements-coverage（通常 full）
+→ plan-review（至少 light；复杂跨层通常 full）
+→ rollback-units / security review
+→ [HUMAN GATE:implementation_approval]
+```
+
+用户确认后的实现和收尾路线：
+
+```text
+按可验证批次实现
+→ rollback 审计
+→ code-review（固定 full 独立报告）
+→ 最强相关自动化和运行时验证
+→ complete-verification
+→ dev-flow-feature-check --finish
+→ feature.md / completion.md
+→ logic-complete（此时可进入 Git）
+→ finalizer dry-run
+→ [ASSET FINALIZATION]
+→ 用户选择 compact / retain full / not now
+```
+
+`compact` 删除中间资产并保留长期摘要；`retain full` 归档全部资产；`not now` 保持现状且不阻塞 Git。finalizer dry-run 后必须等待用户精确选择，不能在同一回合自动确认。
+
+### 风险标签如何叠加
+
+| 风险标签 | 最低附加门禁 |
+|----------|--------------|
+| `security` | security review light + behavior verification light |
+| `data` | rollback light + behavior verification light |
+| `money` | rollback light + behavior verification light |
+| `external` | behavior verification light |
+| `availability` | behavior verification light |
+| `critical_correctness` | behavior verification full + code-review full |
+| `irreversible_consequence` | rollback full + behavior verification full + code-review full |
+
+多个标签取门禁并集。风险标签只增加证明义务，不把 S 自动改成 L；携带风险的 M/L 保持原有轻量/标准分流，但 status profile 仍为 `standard`。
+
+### 执行中如何知道进行到哪一步
+
+按以下顺序判断当前进度：
+
+1. 先看最近一次回复中的“我判断这是 `<level>`，我会走 `<route>`”，确定级别和路线。
+2. 有 `status.md` 时，以 `dev_flow_status.current_gate` 和 `next_action` 为准；`assets` 显示已经生成的需求、计划、审查和验证产物。
+3. 看到 `[HUMAN GATE:requirement_confirmation]`，表示需求已整理完，正在等待允许创建实现计划。
+4. 看到 `[HUMAN GATE:implementation_approval]`，表示计划和实现前检查已完成，正在等待允许写业务代码。
+5. 看到 `[HANDOFF]` 时，`Current gate` 是刚完成的阶段，`Next skill` 是下一步；`Auto-continue: no` 表示必须等待用户。
+6. 看到验证报告和 feature-check 通过，表示功能达到 logic-complete；看到 `[ASSET FINALIZATION]`，表示只剩资产压缩、归档或暂不处理的选择。
+
+无 `status.md` 的 XS、S 和默认轻量 M 通过对话中的边界确认、实现、审查和验证汇报判断进度。不要为获得“进度条”而给这些轻量路线额外制造流程资产。
+
 ## 按项目类型适配
 
 - **Vue/React SPA**：组件、路由、状态、API 改动通常是 M 或 L；没有 E2E 时 L 级行为验证要有手动测试脚本。

@@ -78,10 +78,19 @@ onboarding 会根据目标项目实际情况生成：
 
 dev-flow 会先判断 XS / S / M / L：
 
-- XS：直接修改并验证。
-- S：轻量确认边界后实现。
-- M：按轻量 M 或标准 M 分流。
-- L：轻量 L 或标准 L 都必须先确认高风险边界；标准 M/L 分类同回合用 `--entry-gate` 记录“完整文档 → grillme、模糊需求 → req-probe → grillme、明确确认且无未决 → writing-plans”，且整个需求阶段只确认一次。标准 L 的固定骨架是 `writing-plans -> requirements-coverage -> plan-review -> implementation_approval`，之后才写代码。
+| 路线 | 实现步骤速查 |
+|------|--------------|
+| XS | 定位 → 最小修改 → 验证 → 完成 |
+| S | 边界确认 → 实现 → 验证 → 完成 |
+| risk-minimal XS/S | 风险卡 → 风险门禁 → **实现确认** → 实现 → 审查/行为验证 → feature-check |
+| 轻量 M | 边界确认 → 短计划 → 实现 → code-review → 验证 |
+| 标准 M | 需求固化 → **需求确认** → 计划 → plan-review → **实现确认** → 实现 → code-review → 验证 → feature-check |
+| 轻量 L | 边界卡 → 回撤/风险检查 → **实现确认** → 实现 → full 行为验证 → code-review → feature-check |
+| 标准 L | 需求固化 → **需求确认** → 计划 → coverage → plan-review → 回撤/风险检查 → **实现确认** → 分批实现 → full 审查/验证 → feature-check |
+
+风险标签不改变 XS/S/M/L 规模，只给原路线增加必要门禁。表中的“需求确认”和“实现确认”都是必须停下等待用户回复的 HUMAN GATE。标准 M 的 coverage 只在风险维度触发，标准 L 的 coverage 是固定步骤。
+
+完整路线、每一步的含义以及“当前进行到哪里”的判断方法见[各级别实现路线](docs/claude-dev-flow-guide.md#各级别实现路线与进度判断)。
 
 ## 迁移文档
 

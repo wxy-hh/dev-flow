@@ -58,6 +58,8 @@ Layer 3 顺序：`complete-verification` → `feature-check --finish` → final 
 
 ## 路径总览
 
+面向使用者的逐级完整路线和进度判断说明见 `docs/claude-dev-flow-guide.md` 的“各级别实现路线与进度判断”；本节保留执行路由摘要，具体约束仍以本技能及 references 为准。
+
 | 路径 | 何时 | 产物 |
 |------|------|------|
 | XS | 无风险标签 | 无 |
