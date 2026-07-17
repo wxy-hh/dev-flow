@@ -26,7 +26,7 @@ fi
 
 is_workflow_path() {
   case "$1" in
-    .claude/*|"$feature_root"/*|"$review_root"/*|docs/claude-dev-flow-*) return 0 ;;
+    .claude/*|"$feature_root"/*|"$review_root"/*|openspec/*|docs/claude-dev-flow-*) return 0 ;;
     *) return 1 ;;
   esac
 }
@@ -36,11 +36,13 @@ is_workflow_path() {
     ':(exclude).claude/**' \
     ":(exclude)$feature_root/**" \
     ":(exclude)$review_root/**" \
+    ':(exclude)openspec/**' \
     ':(exclude)docs/claude-dev-flow-*'
   git diff --cached --binary -- . \
     ':(exclude).claude/**' \
     ":(exclude)$feature_root/**" \
     ":(exclude)$review_root/**" \
+    ':(exclude)openspec/**' \
     ':(exclude)docs/claude-dev-flow-*'
   while IFS= read -r file; do
     [ -z "$file" ] && continue

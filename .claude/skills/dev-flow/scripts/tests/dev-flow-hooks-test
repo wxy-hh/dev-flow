@@ -7,6 +7,7 @@ gate_guard="$hooks_root/dev-flow-gate-guard.sh"
 finish_guard="$hooks_root/dev-flow-finish-guard.sh"
 fingerprint_cmd="$root/dev-flow-fingerprint"
 status_cli="$root/dev-flow-status.mjs"
+classifier="$root/dev-flow-command.mjs"
 
 tmp=$(mktemp -d "${TMPDIR:-/tmp}/dev-flow-hooks.XXXXXX")
 trap 'rm -rf "$tmp"' EXIT
@@ -41,6 +42,22 @@ expect_allow() {
     printf 'PASS %s\n' "$description"
   else
     printf 'FAIL expected allow (empty output): %s (got: %s)\n' "$description" "$output"
+    failures=$((failures + 1))
+  fi
+}
+
+expect_classification() {
+  local description=$1 expected_control=$2 expected_shell=$3 command=$4
+  local output actual
+  output=$(node "$classifier" "$command")
+  actual=$(node -e '
+    const value = JSON.parse(process.argv[1]);
+    process.stdout.write(`${value.is_control ? 1 : 0}:${value.has_shell_control ? 1 : 0}`);
+  ' "$output")
+  if [ "$actual" = "$expected_control:$expected_shell" ]; then
+    printf 'PASS %s\n' "$description"
+  else
+    printf 'FAIL %s (got %s)\n' "$description" "$actual"
     failures=$((failures + 1))
   fi
 }
@@ -99,6 +116,8 @@ expect_ask "ask mode: no auth asks on protected src path" "$gate_guard" "$(edit_
 expect_allow "ask mode: no auth allows unprotected notes path" "$gate_guard" "$(edit_payload "$tmp/notes/readme.txt")"
 expect_allow "ask mode: allows feature_root writes without auth" "$gate_guard" "$(edit_payload "$tmp/docs/dev-flow/features/demo/status.md")"
 expect_allow "ask mode: allows .claude writes without auth" "$gate_guard" "$(edit_payload "$tmp/.claude/rules/project-workflow.md")"
+expect_ask "ask mode: real secret file writes always require confirmation" "$gate_guard" "$(edit_payload "$tmp/.env")"
+expect_allow "ask mode: .env.example remains an allowed template" "$gate_guard" "$(edit_payload "$tmp/.env.example")"
 expect_allow "gate-guard allows when tool_input has no path" "$gate_guard" '{"tool_name":"Edit","tool_input":{}}'
 expect_ask "gate-guard reads notebook_path for NotebookEdit" "$gate_guard" "$(printf '{"tool_name":"NotebookEdit","tool_input":{"notebook_path":"%s"}}' "$tmp/src/business.js")"
 
@@ -112,6 +131,24 @@ expect_ask "ask mode: chained dev-flow control command is rejected" "$gate_guard
   "$(commit_payload "dev-flow-status --help && rm -rf src")"
 expect_ask "ask mode: piped dev-flow control command is rejected" "$gate_guard" \
   "$(commit_payload "dev-flow-status --help | rm -rf src")"
+expect_classification "classifier allows a pipe inside single quotes" 1 0 \
+  "dev-flow-status complete-gate demo code-review --evidence-inline 'a|b'"
+expect_classification "classifier allows a pipe inside double quotes" 1 0 \
+  'dev-flow-status complete-gate demo code-review --evidence-inline "a|b"'
+expect_classification "classifier allows an escaped metacharacter" 1 0 \
+  'dev-flow-status complete-gate demo code-review --evidence-inline a\|b'
+expect_classification "classifier blocks an unquoted pipe" 0 1 \
+  'dev-flow-status --help | sh'
+expect_classification "classifier blocks redirection" 0 1 \
+  'dev-flow-status --help > result.txt'
+expect_classification "classifier blocks command substitution inside double quotes" 0 1 \
+  'dev-flow-status next "$(touch src/pwned)"'
+expect_classification "classifier allows command substitution syntax as a single-quoted literal" 1 0 \
+  "dev-flow-status complete-gate demo code-review --evidence-inline '\$(literal)'"
+expect_classification "classifier allows escaped command substitution syntax as a literal" 1 0 \
+  'dev-flow-status complete-gate demo code-review --evidence-inline \$(literal)'
+expect_classification "classifier blocks embedded newlines" 0 1 \
+  $'dev-flow-status --help\nrm src/business.js'
 expect_ask "ask mode: control path in a later argv does not spoof control" "$gate_guard" \
   "$(commit_payload "rm -rf src .claude/skills/dev-flow/scripts/dev-flow-status.mjs")"
 expect_allow "ask mode: single git add is delegated to finish-guard" "$gate_guard" "$(commit_payload "git add src/business.js")"
@@ -123,6 +160,16 @@ expect_ask "ask mode: residual approved auth without status is stale" "$gate_gua
 
 write_auth classified
 expect_allow "ask mode: classified (XS/S) allows protected path" "$gate_guard" "$(edit_payload "$tmp/src/business.js")"
+expect_ask "ask mode: classified auth asks before root credentials.* Edit" \
+  "$gate_guard" "$(edit_payload "$tmp/credentials.json")"
+expect_ask "ask mode: classified auth asks before root secrets.* Edit" \
+  "$gate_guard" "$(edit_payload "$tmp/secrets.yaml")"
+expect_ask "ask mode: classified auth still asks before Bash writes a real secret file" \
+  "$gate_guard" "$(commit_payload "printf placeholder > .env")"
+expect_ask "ask mode: classified auth detects secret writes inside bash -c" \
+  "$gate_guard" "$(commit_payload "bash -c 'printf placeholder > .env'")"
+expect_allow "ask mode: classified auth allows Bash writes to .env.example" \
+  "$gate_guard" "$(commit_payload "printf placeholder > .env.example")"
 
 write_auth closed
 expect_ask "ask mode: closed auth asks on protected path" "$gate_guard" "$(edit_payload "$tmp/src/business.js")"
@@ -242,7 +289,7 @@ write_final_assets() {
   printf '%s\n' \
     '---' \
     'dev_flow_completion:' \
-    '  schema_version: "1"' \
+    '  schema_version: "2"' \
     "  workflow_version: \"$ver\"" \
     '  feature_id: "demo"' \
     '  level: "M"' \
@@ -254,6 +301,9 @@ write_final_assets() {
     '  risk_approval_evidence: ""' \
     '  risk_verification_summary: ""' \
     '  accepted_risks: []' \
+    '  process_mode: "normal"' \
+    '  retrospective_reason: "none"' \
+    '  retrospective_evidence: "none"' \
     '  commits: []' \
     '  pull_request: ""' \
     '---' \

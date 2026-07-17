@@ -109,14 +109,18 @@ const policyPath = process.argv[2];
 const {
   STANDARD_REQUIREMENT_ENTRY_GATES,
   deriveRoute,
+  deriveStartPlan,
   gateRank,
   loadContract,
+  routeObligations,
+  validateTopology,
 } = await import(`file://${policyPath}`);
 const contract = loadContract();
 const rank = gateRank(contract);
 const routes = [
   { name: 'risk-minimal-xs', level: 'XS', profile: 'risk-minimal' },
   { name: 'risk-minimal-s', level: 'S', profile: 'risk-minimal' },
+  { name: 'risk-minimal-m', level: 'M', profile: 'risk-minimal' },
   { name: 'standard-m', level: 'M', profile: 'standard', entryGate: 'req-probe' },
   { name: 'standard-l', level: 'L', profile: 'standard', entryGate: 'grillme' },
   { name: 'lightweight-l', level: 'L', profile: 'standard', lightweightL: true },
@@ -166,20 +170,365 @@ for (const entryGate of STANDARD_REQUIREMENT_ENTRY_GATES) {
   });
   assert(derived.initialCurrentGate === entryGate, `entry gate was not preserved: ${entryGate}`);
 }
-process.stdout.write(`policy matrix checked ${checked} route/label combinations\n`);
+
+const levels = contract.levels;
+const topologies = contract.classification_topologies;
+const executions = [undefined, ...contract.execution_modes];
+const riskSets = [[], ...contract.risk_labels.map((label) => [label])];
+let startInputs = 0;
+let startAccepted = 0;
+for (const level of levels) {
+  for (const topology of topologies) {
+    for (const execution of executions) {
+      for (const riskLabels of riskSets) {
+        for (const processMode of contract.process_modes) {
+          startInputs += 1;
+          const executionValid = ['XS', 'S'].includes(level)
+            ? execution === undefined
+            : contract.execution_modes.includes(execution);
+          const topologyValid = validateTopology(contract, level, topology) === null;
+          const shouldPass = executionValid && topologyValid;
+          let plan;
+          let error;
+          try {
+            plan = deriveStartPlan(contract, {
+              level,
+              topology,
+              execution,
+              requirements: execution === 'standard' ? 'confirmed' : undefined,
+              riskLabels,
+              processMode,
+            });
+          } catch (caught) {
+            error = caught;
+          }
+          assert(Boolean(plan) === shouldPass, [
+            level, topology, execution ?? 'derived-light', riskLabels[0] ?? 'no-risk', processMode,
+            error?.message ?? plan?.route,
+          ].join('/'));
+          if (!plan) continue;
+          if (processMode === 'retrospective') {
+            assert(plan.kind === 'status', 'retrospective route must be status-bearing');
+            const expectedRoute = ['XS', 'S'].includes(level)
+              ? 'risk-minimal'
+              : level === 'M' && execution === 'light'
+                ? 'risk-minimal-m'
+                : level === 'M'
+                  ? 'standard-m'
+                  : execution === 'light'
+                    ? 'lightweight-l'
+                    : 'standard-l';
+            assert(plan.route === expectedRoute, `retrospective route mismatch: ${plan.route}/${expectedRoute}`);
+            assert(plan.humanGates.implementation_approval.required, 'retrospective route lacks approval');
+            assert(plan.codeReview.required, 'retrospective route lacks code-review');
+            assert(plan.entryGate === undefined, 'retrospective route must not backfill an entry gate');
+            const obligations = routeObligations(contract, {
+              level,
+              profile: plan.profile,
+              riskLabels,
+              humanGates: plan.humanGates,
+              riskGates: plan.riskGates,
+              processMode,
+              execution: execution ?? 'light',
+            });
+            assert(obligations.approvalProcessGates.length === 0, 'retrospective approval backfilled process gates');
+            assert(!obligations.finishProcessGates.includes('plan-review'), 'retrospective finish backfilled plan-review');
+            assert(!obligations.finishProcessGates.includes('requirements-coverage'), 'retrospective finish backfilled coverage');
+            assert(obligations.finishProcessGates.includes('code-review'), 'retrospective finish lacks code-review');
+            assert(obligations.finishProcessGates.includes('verification-before-completion'), 'retrospective finish lacks verification');
+          } else if (
+            riskLabels.length === 0 &&
+            (['XS', 'S'].includes(level) || (level === 'M' && execution === 'light'))
+          ) {
+            assert(plan.kind === 'authorize', 'no-risk normal light route should be stateless');
+          }
+          startAccepted += 1;
+        }
+      }
+    }
+  }
+}
+process.stdout.write(`policy matrix checked ${checked} route/label and ${startInputs} full-axis inputs (${startAccepted} accepted)\n`);
 NODE
 then
-  printf 'PASS policy matrix covers every route and risk label\n'
+  printf 'PASS policy matrix covers topology, level, execution, risk, and process mode\n'
 else
   printf 'FAIL policy matrix route/risk-label contract\n'
   failures=$((failures + 1))
 fi
 
+# --- 1.0 high-level start/topology fixtures ---
+dry_a=$(run_in_tmp node "$status_cli" start fixture-a --level M \
+  --topology shared-contract --risk-labels security --execution light \
+  --evidence-result verified --dry-run)
+if printf '%s' "$dry_a" | rg -q '"route": "risk-minimal-m"'; then
+  printf 'PASS Fixture A dry-run derives risk-minimal-m\n'
+else
+  printf 'FAIL Fixture A did not derive risk-minimal-m\n'
+  failures=$((failures + 1))
+fi
+start_a=$(run_in_tmp node "$status_cli" start fixture-a --level M \
+  --topology shared-contract --risk-labels security --execution light \
+  --evidence-result verified)
+if printf '%s' "$start_a" | rg -q 'risk-minimal-m'; then
+  printf 'PASS Fixture A real start matches dry-run route\n'
+else
+  printf 'FAIL Fixture A real start route differs from dry-run\n'
+  failures=$((failures + 1))
+fi
+active_auth_before=$(shasum -a 256 "$tmp/.claude/runtime/dev-flow/write-authorization.json" | awk '{print $1}')
+expect_fail run_in_tmp node "$status_cli" start fixture-a --level S --topology local
+expect_fail run_in_tmp node "$status_cli" start fixture-a --level S --topology local --dry-run
+expect_fail run_in_tmp node "$status_cli" authorize --level S --note 'must not replace active status'
+active_auth_after=$(shasum -a 256 "$tmp/.claude/runtime/dev-flow/write-authorization.json" | awk '{print $1}')
+if [ "$active_auth_before" = "$active_auth_after" ]; then
+  printf 'PASS active status-backed authorization cannot be downgraded or replaced\n'
+else
+  printf 'FAIL downgrade attempt mutated active status-backed authorization\n'
+  failures=$((failures + 1))
+fi
+expect_fail run_in_tmp node "$status_cli" complete-gate fixture-a security-review \
+  --evidence-inline 'Reviewed security and found no issues'
+expect_pass run_in_tmp node "$status_cli" complete-gate fixture-a security-review \
+  --evidence-inline 'Auth matrix verified: anonymous denied, account and OAuth allowed'
+printf '%s\n' 'API_TOKEN=supersecretvalue123' > "$tmp/docs/dev-flow/reviews/fixture-a-secret-review.md"
+secret_output=$(run_in_tmp node "$status_cli" add-asset fixture-a \
+  --path docs/dev-flow/reviews/fixture-a-secret-review.md --kind review 2>&1 || true)
+if printf '%s' "$secret_output" | rg -q 'fixture-a-secret-review.md.*API_TOKEN' \
+  && ! printf '%s' "$secret_output" | rg -q 'supersecretvalue123'; then
+  printf 'PASS secret scan reports only managed path/key and never the value\n'
+else
+  printf 'FAIL secret scan omitted path/key or leaked the value\n'
+  failures=$((failures + 1))
+fi
+next_a=$(run_in_tmp node "$status_cli" next fixture-a)
+next_a_repeat=$(run_in_tmp node "$status_cli" next fixture-a)
+if printf '%s' "$next_a" | rg -q 'route: risk-minimal-m' \
+  && printf '%s' "$next_a" | rg -q 'command: dev-flow-status confirm-human fixture-a implementation_approval' \
+  && [ "$next_a" = "$next_a_repeat" ]; then
+  printf 'PASS Fixture A reaches its first HUMAN GATE in three control commands\n'
+else
+  printf 'FAIL Fixture A next command is not the implementation HUMAN GATE\n'
+  failures=$((failures + 1))
+fi
+
+expect_pass run_in_tmp node "$status_cli" start stable-shared --level M \
+  --topology shared-contract --execution standard --requirements confirmed --dry-run
+expect_pass run_in_tmp node "$status_cli" start required-l --level L \
+  --topology multi-chain --execution standard --requirements confirmed --dry-run
+expect_fail run_in_tmp node "$status_cli" start invalid-multi-m --level M \
+  --topology multi-chain --execution light --dry-run
+expect_fail run_in_tmp node "$status_cli" start invalid-rollback-m --level M \
+  --topology coordinated-rollback --execution standard --requirements confirmed --dry-run
+expect_fail run_in_tmp node "$status_cli" start invalid-local-l --level L \
+  --topology local --execution light --dry-run
+expect_fail run_in_tmp node "$status_cli" start invalid-xs-execution --level XS \
+  --topology local --execution light --dry-run
+expect_fail run_in_tmp node "$status_cli" start invalid-standard-input --level M \
+  --topology local --execution standard --dry-run
+
+auth_before=$(shasum -a 256 "$tmp/.claude/runtime/dev-flow/write-authorization.json" | awk '{print $1}')
+expect_fail run_in_tmp node "$status_cli" start atomic-policy-fail --level M \
+  --topology multi-chain --execution light
+auth_after=$(shasum -a 256 "$tmp/.claude/runtime/dev-flow/write-authorization.json" | awk '{print $1}')
+if [ "$auth_before" = "$auth_after" ] && [ ! -e "$tmp/docs/dev-flow/features/atomic-policy-fail/status.md" ]; then
+  printf 'PASS failed start leaves no half-status or authorization mutation\n'
+else
+  printf 'FAIL failed start left partial state\n'
+  failures=$((failures + 1))
+fi
+
+# --- approval baseline and retrospective semantics ---
+printf '%s\n' 'unrelated legacy diff (content must not be printed)' > "$tmp/src/business.js"
+dirty_output=$(run_in_tmp node "$status_cli" start dirty-missing-disposition --level S \
+  --topology local --risk-labels external 2>&1 || true)
+if printf '%s' "$dirty_output" | rg -q 'src/business.js' \
+  && ! printf '%s' "$dirty_output" | rg -q 'content must not be printed'; then
+  printf 'PASS dirty start reports path/status without file contents\n'
+else
+  printf 'FAIL dirty start output leaked content or omitted path\n'
+  failures=$((failures + 1))
+fi
+expect_pass run_in_tmp node "$status_cli" start unrelated-normal --level S \
+  --topology local --risk-labels external --existing-diff unrelated \
+  --reason 'pre-existing unrelated work'
+expect_pass run_in_tmp node "$status_cli" confirm-human unrelated-normal implementation_approval \
+  --status confirmed --evidence 'user approved implementation on the unrelated baseline'
+approved_next=$(run_in_tmp node "$status_cli" next unrelated-normal)
+if printf '%s' "$approved_next" | rg -q 'current_gate: implementation' \
+  && printf '%s' "$approved_next" | rg -q 'blocked: no' \
+  && printf '%s' "$approved_next" | rg -q 'blocker: none' \
+  && printf '%s' "$approved_next" | rg -q 'command: /executing-plans'; then
+  printf 'PASS next reports the actual post-approval gate and executable command\n'
+else
+  printf 'FAIL next reports a stale gate or invalid implementation command\n'
+  failures=$((failures + 1))
+fi
+printf '%s\n' 'approved feature code plus legacy diff' > "$tmp/src/business.js"
+expect_pass run_in_tmp node "$validator" authorization "$tmp" \
+  .claude/runtime/dev-flow/write-authorization.json
+expect_pass run_in_tmp node "$status_cli" activate unrelated-normal
+expect_pass run_in_tmp node "$status_cli" confirm-human unrelated-normal implementation_approval \
+  --status confirmed --evidence 'user reconfirmed the approved implementation after code changes'
+expect_pass run_in_tmp node "$validator" authorization "$tmp" \
+  .claude/runtime/dev-flow/write-authorization.json
+printf '%s\n' 'baseline' > "$tmp/src/business.js"
+
+expect_pass run_in_tmp node "$status_cli" start preapproval-drift --level S \
+  --topology local --risk-labels external
+baseline_before=$(sed -n 's/^    baseline_business_diff_fingerprint: "\([0-9a-f]*\)"/\1/p' \
+  "$tmp/docs/dev-flow/features/preapproval-drift/status.md")
+printf '%s\n' 'unauthorized preapproval business write' > "$tmp/src/business.js"
+status_before=$(shasum -a 256 "$tmp/docs/dev-flow/features/preapproval-drift/status.md" | awk '{print $1}')
+auth_before=$(shasum -a 256 "$tmp/.claude/runtime/dev-flow/write-authorization.json" | awk '{print $1}')
+expect_fail run_in_tmp node "$status_cli" confirm-human preapproval-drift implementation_approval \
+  --status confirmed --evidence 'user approved after accidental implementation'
+status_after=$(shasum -a 256 "$tmp/docs/dev-flow/features/preapproval-drift/status.md" | awk '{print $1}')
+auth_after=$(shasum -a 256 "$tmp/.claude/runtime/dev-flow/write-authorization.json" | awk '{print $1}')
+if [ "$status_before" = "$status_after" ] && [ "$auth_before" = "$auth_after" ]; then
+  printf 'PASS preapproval fingerprint drift fails with zero status/auth mutations\n'
+else
+  printf 'FAIL preapproval fingerprint drift mutated status or authorization\n'
+  failures=$((failures + 1))
+fi
+expect_pass run_in_tmp node "$status_cli" mark-retrospective preapproval-drift \
+  --reason 'implementation began before approval'
+baseline_after=$(sed -n 's/^    baseline_business_diff_fingerprint: "\([0-9a-f]*\)"/\1/p' \
+  "$tmp/docs/dev-flow/features/preapproval-drift/status.md")
+if [ "$baseline_before" = "$baseline_after" ]; then
+  printf 'PASS mark-retrospective preserves the original baseline fingerprint\n'
+else
+  printf 'FAIL mark-retrospective refreshed the original baseline\n'
+  failures=$((failures + 1))
+fi
+expect_pass run_in_tmp node "$status_cli" confirm-human preapproval-drift implementation_approval \
+  --status confirmed --evidence 'user approved retrospective review and repair'
+expect_pass run_in_tmp node "$status_cli" scaffold preapproval-drift --asset completion
+expect_contains "$tmp/docs/dev-flow/features/preapproval-drift/completion.md" 'schema_version: "2"'
+expect_contains "$tmp/docs/dev-flow/features/preapproval-drift/completion.md" 'process_mode: "retrospective"'
+expect_contains "$tmp/docs/dev-flow/features/preapproval-drift/completion.md" 'retrospective_reason: "implementation began before approval"'
+expect_fail run_in_tmp node "$status_cli" scaffold preapproval-drift --asset code-review --refresh
+expect_pass run_in_tmp node "$status_cli" scaffold preapproval-drift --asset completion --refresh
+cp "$tmp/docs/dev-flow/features/preapproval-drift/status.md" \
+  "$tmp/docs/dev-flow/features/preapproval-drift/status.basis-backup"
+sed -i.bak 's/baseline_business_diff_fingerprint: "[0-9a-f]*"/baseline_business_diff_fingerprint: "ffffffffffffffffffffffffffffffffffffffff"/' \
+  "$tmp/docs/dev-flow/features/preapproval-drift/status.md"
+expect_fail run_in_tmp node "$validator" authorization "$tmp" \
+  .claude/runtime/dev-flow/write-authorization.json
+mv "$tmp/docs/dev-flow/features/preapproval-drift/status.basis-backup" \
+  "$tmp/docs/dev-flow/features/preapproval-drift/status.md"
+printf '%s\n' 'baseline' > "$tmp/src/business.js"
+
+# Every in-scope start is status-bearing, including no-risk XS/S and light M.
+printf '%s\n' 'retrospective implementation already exists' > "$tmp/src/business.js"
+expect_pass run_in_tmp node "$status_cli" start retro-s --level S --topology local \
+  --existing-diff in-scope --reason 'existing S implementation'
+expect_contains "$tmp/docs/dev-flow/features/retro-s/status.md" 'profile: "risk-minimal"'
+expect_contains "$tmp/docs/dev-flow/features/retro-s/status.md" 'mode: "retrospective"'
+expect_contains "$tmp/docs/dev-flow/features/retro-s/status.md" 'current_gate: "implementation_approval"'
+expect_contains "$tmp/.claude/runtime/dev-flow/write-authorization.json" '"state": "approval-pending"'
+expect_pass run_in_tmp node "$validator" status "$tmp" docs/dev-flow/features/retro-s/status.md
+
+expect_pass run_in_tmp node "$status_cli" start retro-m-light --level M --topology local \
+  --execution light --existing-diff in-scope --reason 'existing light M implementation'
+retro_m_next=$(run_in_tmp node "$status_cli" next retro-m-light)
+if printf '%s' "$retro_m_next" | rg -q 'route: risk-minimal-m' \
+  && printf '%s' "$retro_m_next" | rg -q 'command: dev-flow-status confirm-human retro-m-light implementation_approval'; then
+  printf 'PASS no-risk light M retrospective is status-bearing risk-minimal-m\n'
+else
+  printf 'FAIL no-risk light M retrospective route or next command\n'
+  failures=$((failures + 1))
+fi
+
+retro_standard_dry=$(run_in_tmp node "$status_cli" start retro-standard-m --level M \
+  --topology local --execution standard --requirements confirmed \
+  --existing-diff in-scope --reason 'existing standard M implementation' --dry-run)
+expect_pass run_in_tmp node "$status_cli" start retro-standard-m --level M \
+  --topology local --execution standard --requirements confirmed \
+  --existing-diff in-scope --reason 'existing standard M implementation'
+if printf '%s' "$retro_standard_dry" | rg -q '"route": "standard-m"' \
+  && rg -q 'current_gate: "implementation_approval"' "$tmp/docs/dev-flow/features/retro-standard-m/status.md" \
+  && ! rg -q 'current_gate: "(req-probe|openspec|grillme|writing-plans)"' "$tmp/docs/dev-flow/features/retro-standard-m/status.md"; then
+  printf 'PASS standard M retrospective dry-run and real start skip requirement entry\n'
+else
+  printf 'FAIL standard M retrospective parity or entry-gate semantics\n'
+  failures=$((failures + 1))
+fi
+expect_pass run_in_tmp node "$status_cli" confirm-human retro-standard-m implementation_approval \
+  --status confirmed --evidence 'user approved retrospective review repair and validation'
+expect_pass run_in_tmp node "$status_cli" complete-gate retro-standard-m code-review \
+  --evidence-inline 'Reviewed the existing implementation and found no blocking issue'
+expect_pass run_in_tmp node "$status_cli" complete-verification retro-standard-m \
+  --command 'printf retrospective-validation'
+expect_pass run_in_tmp node "$validator" status "$tmp" \
+  docs/dev-flow/features/retro-standard-m/status.md --finish
+expect_not_contains "$tmp/docs/dev-flow/features/retro-standard-m/status.md" '    - writing-plans'
+expect_not_contains "$tmp/docs/dev-flow/features/retro-standard-m/status.md" '    - requirements-coverage'
+expect_not_contains "$tmp/docs/dev-flow/features/retro-standard-m/status.md" '    - plan-review'
+retro_finish_next=$(run_in_tmp node "$status_cli" next retro-standard-m)
+if printf '%s' "$retro_finish_next" | rg -q 'current_gate: finish' \
+  && printf '%s' "$retro_finish_next" | rg -q 'command: /finish'; then
+  printf 'PASS retrospective finish requires review/verification without backfilling planning gates\n'
+else
+  printf 'FAIL retrospective finish gate or command\n'
+  failures=$((failures + 1))
+fi
+expect_pass run_in_tmp node "$status_cli" start retro-standard-l --level L \
+  --topology multi-chain --execution standard --requirements confirmed \
+  --existing-diff in-scope --reason 'existing standard L implementation'
+expect_contains "$tmp/docs/dev-flow/features/retro-standard-l/status.md" 'current_gate: "implementation_approval"'
+expect_pass run_in_tmp node "$validator" status "$tmp" docs/dev-flow/features/retro-standard-l/status.md
+expect_pass run_in_tmp node "$status_cli" start retro-light-l --level L \
+  --topology shared-contract --execution light \
+  --existing-diff in-scope --reason 'existing lightweight L implementation'
+expect_pass run_in_tmp node "$status_cli" confirm-human retro-light-l implementation_approval \
+  --status confirmed --evidence 'user approved retrospective lightweight L review and repair'
+expect_pass run_in_tmp node "$status_cli" complete-gate retro-light-l rollback-units \
+  --evidence-inline 'Rollback unit and restoration boundary reviewed'
+retro_risk_next=$(run_in_tmp node "$status_cli" next retro-light-l)
+if printf '%s' "$retro_risk_next" | rg -q 'current_gate: code-review' \
+  && printf '%s' "$retro_risk_next" | rg -q 'command: /code-review'; then
+  printf 'PASS retrospective risk gate advances to the next finish obligation\n'
+else
+  printf 'FAIL retrospective risk gate left next on the completed gate\n'
+  failures=$((failures + 1))
+fi
+printf '%s\n' 'baseline' > "$tmp/src/business.js"
+
+expect_pass run_in_tmp node "$status_cli" start 2026-07-17-single-date --level S \
+  --topology local --risk-labels external
+expect_pass run_in_tmp node "$status_cli" scaffold 2026-07-17-single-date --asset code-review
+expect_file "$tmp/docs/dev-flow/reviews/2026-07-17-single-date-code-review.md"
+if [ ! -e "$tmp/docs/dev-flow/reviews/2026-07-17-2026-07-17-single-date-code-review.md" ]; then
+  printf 'PASS scaffold generation does not stack a second date prefix\n'
+else
+  printf 'FAIL scaffold generated a double-date asset name\n'
+  failures=$((failures + 1))
+fi
+
 # --- authorize (XS/S, no status.md) ---
+node -e '
+  const fs = require("fs");
+  const file = process.argv[1];
+  const auth = JSON.parse(fs.readFileSync(file, "utf8"));
+  auth.state = "closed";
+  auth.closed_at = new Date().toISOString();
+  fs.writeFileSync(file, `${JSON.stringify(auth, null, 2)}\n`);
+' "$tmp/.claude/runtime/dev-flow/write-authorization.json"
 expect_pass run_in_tmp node "$status_cli" authorize --level S --note 'small fix'
 expect_file "$tmp/.claude/runtime/dev-flow/write-authorization.json"
 expect_contains "$tmp/.claude/runtime/dev-flow/write-authorization.json" '"state": "classified"'
-expect_fail run_in_tmp node "$status_cli" authorize --level M
+expect_pass run_in_tmp node "$status_cli" authorize --level M --note 'classified medium fix'
+expect_contains "$tmp/.claude/runtime/dev-flow/write-authorization.json" '"level": "M"'
+classified_next=$(run_in_tmp node "$status_cli" next)
+if printf '%s' "$classified_next" | rg -q 'current_gate: implementation' \
+  && printf '%s' "$classified_next" | rg -q 'command: /executing-plans'; then
+  printf 'PASS classified next emits an executable implementation command\n'
+else
+  printf 'FAIL classified next emits an invalid implementation command\n'
+  failures=$((failures + 1))
+fi
+expect_fail run_in_tmp node "$status_cli" authorize --level M --risk-labels security
 expect_fail run_in_tmp node "$status_cli" authorize --level S --profile standard
 
 # --- init three profiles ---
@@ -222,7 +571,7 @@ expect_fail run_in_tmp node "$status_cli" init demo-risk --level S --profile ris
   --topology local --evidence-result verified --risk-labels security
 
 expect_pass run_in_tmp node "$status_cli" init demo-light-l --level L --profile standard \
-  --topology local --evidence-result partial --lightweight-l --note 'light L'
+  --topology shared-contract --evidence-result partial --lightweight-l --note 'light L'
 expect_contains "$tmp/docs/dev-flow/features/demo-light-l/status.md" 'required: false'
 expect_contains "$tmp/docs/dev-flow/features/demo-light-l/status.md" 'behavior_verification: "full"'
 expect_contains "$tmp/docs/dev-flow/features/demo-light-l/status.md" 'current_gate: "rollback-units"'
@@ -331,8 +680,12 @@ expect_fail run_in_tmp node "$status_cli" complete-gate demo-standard requiremen
 
 # generalized complete-gate stores code_review evidence
 printf '%s\n' '# code review' '## Findings' '- none' > "$tmp/docs/dev-flow/reviews/demo-standard-code-review.md"
+expect_fail run_in_tmp node "$status_cli" complete-gate demo-standard code-review \
+  --evidence-file docs/dev-flow/reviews/demo-standard-code-review.md --heading 'Findings'
 expect_pass run_in_tmp node "$status_cli" add-asset demo-standard \
   --path docs/dev-flow/reviews/demo-standard-code-review.md --kind review
+expect_fail run_in_tmp node "$status_cli" complete-gate demo-standard code-review \
+  --evidence-inline 'Full code review found no blocking issue'
 expect_pass run_in_tmp node "$status_cli" complete-gate demo-standard code-review \
   --evidence-file docs/dev-flow/reviews/demo-standard-code-review.md \
   --heading 'Findings'
@@ -403,6 +756,10 @@ expect_contains "$tmp/docs/dev-flow/features/demo-standard/status.md" 'printf va
 # light L missing code-review evidence must FAIL
 printf '%s\n' '# light process evidence' '## Rollback summary' '- reversible' \
   > "$tmp/docs/dev-flow/features/demo-light-l/process-evidence.md"
+# The earlier boundary test created a business-root file. Remove it before the
+# normal-mode approval guard so this fixture still represents no pre-approval
+# business writes.
+rm -f "$tmp/src/outside-risk.md"
 expect_pass run_in_tmp node "$status_cli" complete-gate demo-light-l rollback_units \
   --evidence-file docs/dev-flow/features/demo-light-l/process-evidence.md \
   --heading 'Rollback summary'
@@ -416,8 +773,7 @@ expect_fail run_in_tmp node "$status_cli" complete-verification demo-light-l \
 printf '%s\n' '# light review' '## Light findings' '- none' \
   > "$tmp/docs/dev-flow/reviews/demo-light-l-code-review.md"
 expect_pass run_in_tmp node "$status_cli" complete-gate demo-light-l code-review \
-  --evidence-file docs/dev-flow/reviews/demo-light-l-code-review.md \
-  --heading 'Light findings'
+  --evidence-inline 'Reviewed changed paths; no blocking findings'
 printf '%s\n' '# verification' > "$tmp/docs/dev-flow/reviews/demo-light-l-verification.md"
 expect_pass run_in_tmp node "$status_cli" complete-verification demo-light-l \
   --command 'printf light-l-validation' \
@@ -436,14 +792,21 @@ mkdir -p "$tmp/docs/dev-flow/features/light-finish-fail"
 printf '%s\n' \
   '---' \
   'dev_flow_status:' \
-  '  schema_version: "3"' \
+  '  schema_version: "4"' \
   '  feature_id: "light-finish-fail"' \
   '  level: "L"' \
   '  profile: "standard"' \
   '  risk_labels: []' \
   '  risk_evidence: {}' \
+  '  process:' \
+  '    mode: "normal"' \
+  '    started_at: "2026-01-01T00:00:00Z"' \
+  '    baseline_business_diff_fingerprint: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"' \
+  '    existing_diff: "clean"' \
+  '    reason: "none"' \
   '  classification:' \
-  '    topology: "local"' \
+  '    topology: "shared-contract"' \
+  '    execution: "light"' \
   '    evidence_result: "partial"' \
   '    note: "light L missing code-review"' \
   '  current_gate: "verification-before-completion"' \
@@ -478,14 +841,77 @@ printf '%s\n' \
 expect_fail run_in_tmp node "$validator" status "$tmp" docs/dev-flow/features/light-finish-fail/status.md --finish
 
 # --- accept-risk + partial acceptance ---
+proposal_output=$(run_in_tmp node "$status_cli" propose-risk demo-standard \
+  --id AR-001 --step MT-002 --reason 'env unavailable')
+proposal_token=$(printf '%s\n' "$proposal_output" | sed -n 's/^- proposal-token: //p')
+expect_fail run_in_tmp node "$status_cli" accept-risk demo-standard \
+  --id AR-001 --proposal-token "$proposal_token" --evidence '继续'
+expect_fail run_in_tmp node "$status_cli" accept-risk demo-standard \
+  --id AR-001 --proposal-token "$proposal_token" --evidence '我接受风险并继续'
+expect_fail run_in_tmp node "$status_cli" accept-risk demo-standard \
+  --id AR-001 --proposal-token "$proposal_token" --evidence 'I accept risk and continue'
+expect_fail run_in_tmp node "$status_cli" accept-risk demo-standard \
+  --id AR-001 --proposal-token '0000000000000000000000000000000000000000000000000000000000000000' \
+  --evidence 'user: I explicitly accept the residual risk and continue'
+expect_fail run_in_tmp node "$status_cli" accept-risk demo-standard \
+  --id AR-001 --proposal-token "$proposal_token" \
+  --evidence 'user: I explicitly accept the residual risk'
+if ! rg -q -- "$proposal_token" "$tmp/.claude/runtime/dev-flow/risk-proposals/demo-standard/AR-001.json"; then
+  printf 'PASS risk proposal runtime stores only the token hash\n'
+else
+  printf 'FAIL raw risk proposal token was persisted\n'
+  failures=$((failures + 1))
+fi
 expect_pass run_in_tmp node "$status_cli" accept-risk demo-standard \
-  --id AR-001 --step MT-002 --reason 'env unavailable' --evidence 'user: accept risk for MT-002'
+  --id AR-001 --proposal-token "$proposal_token" \
+  --evidence 'user: I explicitly accept the residual risk for MT-002 and continue'
+expect_fail run_in_tmp node "$status_cli" accept-risk demo-standard \
+  --id AR-001 --proposal-token "$proposal_token" \
+  --evidence 'user: I explicitly accept the residual risk and continue'
 expect_file "$tmp/docs/dev-flow/reviews/demo-standard-partial-acceptance.md"
 expect_contains "$tmp/docs/dev-flow/reviews/demo-standard-partial-acceptance.md" 'AR-001'
 expect_contains "$tmp/docs/dev-flow/features/demo-standard/status.md" 'AR-001'
 
+proposal_output=$(run_in_tmp node "$status_cli" propose-risk demo-standard \
+  --id AR-ID --step MT-ID --reason 'proposal id reference test')
+proposal_token=$(printf '%s\n' "$proposal_output" | sed -n 's/^- proposal-token: //p')
+expect_pass run_in_tmp node "$status_cli" accept-risk demo-standard \
+  --id AR-ID --proposal-token "$proposal_token" \
+  --evidence 'user: I accept AR-ID and continue'
+
+proposal_output=$(run_in_tmp node "$status_cli" propose-risk demo-standard \
+  --id AR-DRIFT --step MT-003 --reason 'external service unavailable')
+proposal_token=$(printf '%s\n' "$proposal_output" | sed -n 's/^- proposal-token: //p')
+printf '%s\n' 'risk proposal fingerprint drift' > "$tmp/src/business.js"
+expect_fail run_in_tmp node "$status_cli" accept-risk demo-standard \
+  --id AR-DRIFT --proposal-token "$proposal_token" \
+  --evidence 'user: I accept the named residual risk and continue'
+printf '%s\n' 'baseline' > "$tmp/src/business.js"
+
+proposal_output=$(run_in_tmp node "$status_cli" propose-risk demo-standard \
+  --id AR-EXPIRED --step MT-004 --reason 'test expiration')
+proposal_token=$(printf '%s\n' "$proposal_output" | sed -n 's/^- proposal-token: //p')
+node -e '
+  const fs = require("fs");
+  const p = process.argv[1];
+  const value = JSON.parse(fs.readFileSync(p, "utf8"));
+  value.expires_at = "2000-01-01T00:00:00.000Z";
+  fs.writeFileSync(p, `${JSON.stringify(value, null, 2)}\n`);
+' "$tmp/.claude/runtime/dev-flow/risk-proposals/demo-standard/AR-EXPIRED.json"
+expect_fail run_in_tmp node "$status_cli" accept-risk demo-standard \
+  --id AR-EXPIRED --proposal-token "$proposal_token" \
+  --evidence 'user: I accept the named residual risk and continue'
+
+proposal_output=$(run_in_tmp node "$status_cli" propose-risk demo-standard \
+  --id AR-LOST --step MT-005 --reason 'runtime cleanup')
+proposal_token=$(printf '%s\n' "$proposal_output" | sed -n 's/^- proposal-token: //p')
+rm "$tmp/.claude/runtime/dev-flow/risk-proposals/demo-standard/AR-LOST.json"
+expect_fail run_in_tmp node "$status_cli" accept-risk demo-standard \
+  --id AR-LOST --proposal-token "$proposal_token" \
+  --evidence 'user: I accept the named residual risk and continue'
+
 # --- repair does not invent facts ---
-sed -i.bak 's/current_gate: "code-review"/current_gate: "plan_review"/; s/    - plan-review/    - plan_review/' \
+sed -i.bak 's/current_gate: "verification-before-completion"/current_gate: "plan_review"/; s/    - plan-review/    - plan_review/' \
   "$tmp/docs/dev-flow/features/demo-standard/status.md"
 expect_pass run_in_tmp node "$status_cli" repair demo-standard
 expect_contains "$tmp/docs/dev-flow/features/demo-standard/status.md" 'current_gate: "plan-review"'
@@ -508,14 +934,21 @@ mkdir -p "$tmp/docs/dev-flow/features/partial-demo" "$tmp/docs/dev-flow/reviews"
 printf '%s\n' \
   '---' \
   'dev_flow_status:' \
-  '  schema_version: "3"' \
+  '  schema_version: "4"' \
   '  feature_id: "partial-demo"' \
   '  level: "L"' \
   '  profile: "standard"' \
   '  risk_labels: []' \
   '  risk_evidence: {}' \
+  '  process:' \
+  '    mode: "normal"' \
+  '    started_at: "2026-01-01T00:00:00Z"' \
+  '    baseline_business_diff_fingerprint: "0000000000000000000000000000000000000000"' \
+  '    existing_diff: "clean"' \
+  '    reason: "none"' \
   '  classification:' \
-  '    topology: "local"' \
+  '    topology: "multi-chain"' \
+  '    execution: "standard"' \
   '    evidence_result: "verified"' \
   '    note: "fixture"' \
   '  current_gate: "verification-before-completion"' \
@@ -551,12 +984,15 @@ printf '%s\n' \
   '    - {path: "docs/dev-flow/reviews/partial-demo-code-review.md", kind: "review"}' \
   '  gate_evidence:' \
   '    requirements_coverage:' \
+  '      mode: "report"' \
   '      path: "docs/dev-flow/features/partial-demo/requirements-coverage.md"' \
   '      heading: "Coverage"' \
   '    plan_review:' \
+  '      mode: "report"' \
   '      path: "docs/dev-flow/reviews/partial-demo-plan-review.md"' \
   '      heading: "Plan findings"' \
   '    code_review:' \
+  '      mode: "report"' \
   '      path: "docs/dev-flow/reviews/partial-demo-code-review.md"' \
   '      heading: "Findings"' \
   '  validation:' \
@@ -602,8 +1038,12 @@ awk -v fp="$fixture_fp" '{ sub(/^    business_diff_fingerprint: ".*"$/, "    bus
   "$tmp/docs/dev-flow/features/partial-demo/status.md" > "$tmp/docs/dev-flow/features/partial-demo/status.new"
 mv "$tmp/docs/dev-flow/features/partial-demo/status.new" "$tmp/docs/dev-flow/features/partial-demo/status.md"
 
+proposal_output=$(run_in_tmp node "$status_cli" propose-risk partial-demo \
+  --id AR-010 --step MT-002 --reason 'env')
+proposal_token=$(printf '%s\n' "$proposal_output" | sed -n 's/^- proposal-token: //p')
 expect_pass run_in_tmp node "$status_cli" accept-risk partial-demo \
-  --id AR-010 --step MT-002 --reason 'env' --evidence 'user: accept AR-010'
+  --id AR-010 --proposal-token "$proposal_token" \
+  --evidence 'user: I explicitly accept the named residual risk and continue'
 expect_pass run_in_tmp node "$validator" status "$tmp" docs/dev-flow/features/partial-demo/status.md --finish
 expect_pass run_in_tmp "$checker" partial-demo --finish
 if [ -f "$tmp/.claude/runtime/dev-flow/partial-demo.check-ok" ]; then
@@ -622,6 +1062,11 @@ sed -i.bak 's/result: failed/result: passed/' "$tmp/docs/dev-flow/reviews/partia
 sed -i.bak 's/result: passed/result: pending/' "$tmp/docs/dev-flow/reviews/partial-demo-manual-test.md"
 expect_fail run_in_tmp node "$validator" status "$tmp" docs/dev-flow/features/partial-demo/status.md --finish
 sed -i.bak 's/result: pending/result: passed/' "$tmp/docs/dev-flow/reviews/partial-demo-manual-test.md"
+
+# delegated means a human/runtime check was handed off but has not completed.
+sed -i.bak 's/result: passed/result: delegated/' "$tmp/docs/dev-flow/reviews/partial-demo-manual-test.md"
+expect_fail run_in_tmp node "$validator" status "$tmp" docs/dev-flow/features/partial-demo/status.md --finish
+sed -i.bak 's/result: delegated/result: passed/' "$tmp/docs/dev-flow/reviews/partial-demo-manual-test.md"
 
 # skipped without risk_id -> fail
 sed -i.bak 's/risk_id: AR-010/risk_id: null/' "$tmp/docs/dev-flow/reviews/partial-demo-manual-test.md"
@@ -704,6 +1149,7 @@ awk '
   /^  accepted_risks:/ {
     print "  gate_evidence:"
     print "    requirements_coverage:"
+    print "      mode: \"report\""
     print "      path: \"docs/dev-flow/features/demo-standard/dup.md\""
     print "      heading: \"Requirements coverage\""
   }

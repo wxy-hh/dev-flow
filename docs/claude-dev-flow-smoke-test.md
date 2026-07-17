@@ -47,18 +47,18 @@ YYYY-MM-DD-dev-flow-smoke-test
 
 ### 模拟任务
 
-一个高风险但设计自明的改动，例如只改一处 auth/permission 判断，不引入新接口、不改共享数据结构。
+一个跨层但设计自明的改动：共享契约稳定，需同时调整 API、状态和 UI；没有独立 multi-chain 或协调回滚。
 
 ### 期望路径
 
 - 判断为轻量 L。
-- 先输出边界确认卡，分类同回合用 `init --lightweight-l` 创建 approval-pending 的 `status.md`。
+- 先输出边界卡，同回合用 `start --level L --topology shared-contract --execution light` 创建 approval-pending status。
 - 先完成 rollback/security 等实现前证据，再在 `[HUMAN GATE:implementation_approval]` 停止；用户确认前不写业务代码。
 - 用户确认后用 `confirm-human … --status confirmed` 产生 approved 授权，并在后续 `assets` 中追加审查/验证资产。
 - 安全审查为 `light` 或 `full`。
 - 行为验证为 `full`。
 - 回撤证据至少为 `light`。
-- code-review 默认 `evidence_level: light`（`completed_gates` 含 `code-review` + `gate_evidence.code_review` path+heading；CRITICAL/HIGH 时独立报告，禁止 `promote-gate code-review`）。
+- code-review 默认 light，可 inline 或 report；CRITICAL/HIGH 时独立报告。
 - 当前没有浏览器自动化能力时，生成 manual-test。
 
 ### 通过标准
@@ -109,6 +109,7 @@ YYYY-MM-DD-dev-flow-smoke-test
 ### 期望路径
 
 - 标准 L 使用与标准 M 相同的三条需求固化路线，不维护第二套顺序。
+- `multi-chain`、`coordinated-rollback` 或破坏共享契约时必须 L；`L + local` 必须拒绝。
 - 需求边界确认后再进入计划；确认前不得生成 `实现计划.md`。
 - 用户确认需求后必须使用 `writing-plans` 生成正式计划文档；不得用对话里的实现计划替代。
 - writing-plans 后必须自动进入 `requirements-coverage`；覆盖通过后必须自动进入 `plan-review`。
@@ -141,8 +142,8 @@ YYYY-MM-DD-dev-flow-smoke-test
 ```text
 <FEATURE_ROOT>/<feature-id>/status.md
 <FEATURE_ROOT>/<feature-id>/rollback-units.md
-<REVIEW_ROOT>/YYYY-MM-DD-<feature-id>-manual-test.md
-<REVIEW_ROOT>/YYYY-MM-DD-<feature-id>-verification.md
+<REVIEW_ROOT>/<feature-id>-manual-test.md
+<REVIEW_ROOT>/<feature-id>-verification.md
 ```
 
 并检查 patch 或等价回撤证据：
@@ -158,7 +159,7 @@ YYYY-MM-DD-dev-flow-smoke-test
 
 - 模糊需求必须按 `req-probe -> grillme` 自动衔接；`req-probe` 不得提前停止，只有 `grillme` 更新需求资产后停在 `[HUMAN GATE:requirement_confirmation]`。
 - 已有完整但未确认的需求文档时不得重复运行 `req-probe`；明确确认且无未决问题时不得运行两者或重复询问确认。
-- 每条标准 M/L 路线最多产生一次 `requirement_confirmation`，分类时的 `--entry-gate`、各 process gate 的 `complete-gate` 和 `status.md.next_action` 必须能正确恢复所选路线。
+- 每条标准 M/L 路线最多产生一次需求确认；`start --requirements`、各 process gate 和 `next` 必须能恢复所选路线。
 - 用户确认需求前，不得生成 `实现计划.md`、`requirements-coverage.md`、`rollback-units.md` 或写源码。
 - 用户确认需求后，才允许 `writing-plans`；不得先输出一份对话内实现计划然后直接开始执行。
 - `writing-plans` 的 handoff 必须把标准 L 交给 `requirements-coverage`。
@@ -178,6 +179,14 @@ YYYY-MM-DD-dev-flow-smoke-test
 3. **导出共享契约变化**：有搜索和分类证据。
 4. **私有局部修复**：不被强制调用方搜索。
 5. **S + security**：最小风险档案、审批、`risk_evidence`、验证和完成检查均闭环。
+
+## 1.0 Fixture A/B/C
+
+- A：同一认证 feature 的匿名/账号/OAuth 分支，`M + shared-contract + security + execution light` → `risk-minimal-m`；到 implementation HUMAN GATE 不超过三条控制命令。
+- B：稳定 shared-contract 可 M；破坏契约、multi-chain、coordinated rollback 必须 L。M+multi-chain、M+rollback、L+local 全部拒绝。
+- C：XS/S、light M、standard M、light L、standard L 旧路线无回归；`start --dry-run` 与真实路由一致，失败不留半状态。
+- normal approval 前业务 diff 必须等于启动基线；漂移零修改失败并可转 retrospective，原基线不刷新。批准后新增代码不使 authorization 失效。
+- quoted/escaped 元字符放行，真实 shell control 阻断；risk token 对模糊回复、重复消费、漂移、丢失和过期均拒绝；delegated 阻止 finish。
 
 ## 自检命令
 

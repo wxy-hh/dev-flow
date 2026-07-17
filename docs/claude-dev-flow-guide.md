@@ -45,19 +45,19 @@ templates/
 | 接口 | 路径 | 使用边界 |
 |------|------|----------|
 | 机器可读状态 | `<FEATURE_ROOT>/<feature-id>/status.md` 的 `dev_flow_status` frontmatter | 轻量 L、标准 M/L、需要跨技能恢复的任务 |
-| HUMAN GATE | `dev_flow_status.human_gates.{requirement_confirmation,implementation_approval}` | 标准 M/L 两者都必需；轻量 L 和风险标签 XS/S 只需 `implementation_approval` |
+| HUMAN GATE | `dev_flow_status.human_gates.{requirement_confirmation,implementation_approval}` | 标准 M/L 两者都必需；轻量 L 和 risk-minimal（XS/S/M）只需 `implementation_approval` |
 | 最终资产 | `<FEATURE_ROOT>/<feature-id>/{feature.md,completion.md}` | 完成后默认保留；中间资产按 `dev_flow.artifacts.retention` 压缩或归档 |
 | 局部规范 | `<SCOPED_SPEC_ROOT>/<scope>/index.md` | 可选；M/L 明确命中 scope 时读取 |
 
 `status.md` 的 schema、`assets` 列表规则和恢复中断流程唯一来源是 `dev-flow/references/protocol.md`；本指南不维护副本。
 
-风险标签独立于规模，命中时触发最小门禁但不抬高等级：`security`、`data`、`money`、`external`、`availability`、`critical_correctness`、`irreversible_consequence`。定义、最低门禁映射和 `risk_evidence` 填写方式唯一来源是 `dev-flow/references/risk-gates.md`。携带风险标签的 XS/S 用 `profile: "risk-minimal"`（只需 classification、risk_labels、risk_evidence、`implementation_approval`、验证记录、accepted_risks，不要求需求说明书/实现计划/`requirements-coverage`）；M/L 即使携带风险标签也保持 `profile: "standard"`。
+风险标签独立于规模：`security`、`data`、`money`、`external`、`availability`、`critical_correctness`、`irreversible_consequence`。normal 的 XS/S 和 light M 命中标签时用 `profile: "risk-minimal"`，M 派生 `risk-minimal-m`；无风险 `in-scope` retrospective 也复用这两条 status 路线。standard M/L 仍可携带标签。risk-minimal 不要求需求书、实现计划、coverage 或 plan-review，但不减少实现确认、风险门、code-review 和行为验证。
 
 标准 M/L 共用同一需求固化路由，并在分类同回合以 `--entry-gate` 写入 status：完整但未确认的需求文档走 `grillme`；需求模糊或没有文档走 `req-probe -> grillme`；用户已明确确认需求基线且无未决问题时，登记 evidence 后跳过两者进入 `writing-plans`。每个 process gate 用 `complete-gate` 更新可恢复的 `next_action`。需求固化阶段只确认一次，由 `grillme` 在文档更新后触发；确认前不得写实现计划。实现前确认前不得写业务代码；`code-review` 不能替代 `plan-review`。标准 L 计划后固定骨架是 `requirements-coverage -> plan-review`，标准 M 的 coverage 仅在风险维度触发时执行。
 
 ## 各级别实现路线与进度判断
 
-dev-flow 先判断改动规模，再独立判断风险标签。规模只有 `XS`、`S`、`M`、`L` 四级；`risk-minimal`、轻量和标准是执行路线，不是新的规模等级。文件数量只用于辅助调查，不直接决定等级。
+dev-flow 先判断规模与拓扑，再独立判断风险。`local` 允许 XS/S/M；`shared-contract` 最低 M，破坏共享契约时为 L；`multi-chain`、`coordinated-rollback` 必须 L。同一功能的匿名/账号/OAuth 行为分支是验证矩阵，不是 multi-chain。文件数量不决定等级。
 
 ### 开始前路线速查
 
@@ -65,7 +65,7 @@ dev-flow 先判断改动规模，再独立判断风险标签。规模只有 `XS`
 |------|----------|----------|----------|----------|
 | XS | 单点、私有或局部、契约稳定 | 定位 → 最小修改 → 验证 | 无 | 新鲜验证 |
 | S | 单模块局部变化、边界清楚、可独立回滚 | 边界确认 → 实现 → 验证 | 最多一个阻塞问题 | 新鲜验证 |
-| risk-minimal XS/S | XS/S 命中任一风险标签 | 风险卡 → 风险门禁 → 实现确认 → 实现 → code-review → 行为验证 | `implementation_approval` | verification + feature-check |
+| risk-minimal XS/S/M | normal 命中标签，或无风险 in-scope retrospective | 风险卡 → 风险门禁 → 实现确认 → 实现 → code-review → 行为验证 | `implementation_approval` | verification + feature-check |
 | 轻量 M | 功能内多步骤，但需求和共享契约稳定 | 边界确认 → 短计划 → 实现 → code-review → 验证 | 无固定 HUMAN GATE | verification；无 status 时不强制 feature-check |
 | 标准 M | 需求分支、状态、错误路径或契约存在不确定性 | 需求固化 → 需求确认 → 计划 → 可选 coverage → plan-review → 风险检查 → 实现确认 → 实现 → code-review → 验证 | `requirement_confirmation`、`implementation_approval` | verification + feature-check |
 | 轻量 L | 跨层，但边界清楚、设计自明、验证方式明确 | 边界卡 → 回撤/风险检查 → 实现确认 → 实现 → full 行为验证 → code-review | `implementation_approval` | verification + feature-check |
@@ -100,11 +100,11 @@ dev-flow 先判断改动规模，再独立判断风险标签。规模只有 `XS`
 
 无风险 S 默认不创建流程资产。用户明确要求保留需求、计划或审查记录时才生成相应文档。
 
-### risk-minimal：带风险标签的 XS/S
+### risk-minimal：XS/S/M 的最小状态路线
 
 ```text
 输出最小风险卡
-→ 创建并激活 risk-minimal status.md
+→ `dev-flow-status start` 创建 risk-minimal status.md（M 派生 risk-minimal-m）
 → 完成标签派生的 rollback/security 等实现前门禁
 → [HUMAN GATE:implementation_approval]
 → 用户确认
@@ -116,7 +116,7 @@ dev-flow 先判断改动规模，再独立判断风险标签。规模只有 `XS`
 → completion / 收尾
 ```
 
-这条路线不要求需求说明书、`req-probe`、`grillme`、`writing-plans`、requirements coverage 或 plan-review。它用于表达“小而高风险”，风险不会把 XS/S 自动升级为 L。
+这条路线不要求需求说明书、`req-probe`、`grillme`、`writing-plans`、coverage 或 plan-review。它表达“小/中而高风险”；风险本身不把规模升级为 L。
 
 ### 轻量 M：对话内短计划路线
 
@@ -298,7 +298,7 @@ writing-plans
 
 `dev-flow-doctor` 时机：onboarding 后；修改 `.claude/skills`/`commands`/`agents`/`rules`/`hooks` 后；调整 `project-workflow.md` 的路径/验证命令/Git 边界后；smoke test 前；升级迁移包后。它只做静态检查，不替代业务测试或 smoke test。
 
-`dev-flow-feature-check <feature-id> --finish`：标准 M/L、轻量 L 和携带风险标签的 XS/S 功能收尾前运行，检查验证报告、手动行为证据、风险标签最低 gate 与证据、回撤闭环、资产路径和验证新鲜度。无风险 XS/S 与默认轻量 M（无 `status.md`）不强制。doctor 管流程包/适配层，feature-check 管单个 feature 的执行产物；对强制路径，两者都通过才能进入分支收尾。
+`dev-flow-feature-check <feature-id> --finish`：标准 M/L、轻量 L 和 risk-minimal（XS/S/M）收尾前运行，检查验证、风险门、回撤、资产和新鲜度。仅 normal 无风险 XS/S 与默认轻量 M（无 status）不强制；in-scope retrospective 始终强制。
 
 ## 维护规则
 
@@ -314,9 +314,11 @@ writing-plans
 
 **可以让 Claude 直接提交吗**：默认不提交；用户明确要求后才执行 `git add`/`git commit`；push/合并/删除分支/丢弃改动必须二次确认。
 
-## status CLI、finish 与 partial（v0.9）
+## status CLI、finish 与 partial（v1.0）
 
-所有 `status.md` 创建/更新走 `dev-flow-status` CLI，禁止手改机器字段。无风险 XS/S 用 `authorize`；M/L 与风险 XS/S 在分类同回合用 `init`，标准 M/L 还要传需求路线的 `--entry-gate`。所有 required HUMAN GATE 只接受 `confirmed`；implementation approval 绑定 approval_basis 后才写 approved。`promote-gate` 只接受 contract risk gates 且单调提升；`complete-verification` 登记验证但不写 check-ok。`outcome: partial` 在 logic-complete 后允许正常 Git 操作，但 completion / check-ok stamp / 收尾文案必须为 partial，禁止写「验证通过」。
+分类统一运行 `dev-flow-status start`：XS/S 自动 light，M/L 显式选择 execution，standard 声明 requirements；dirty workspace 声明 unrelated/in-scope 和原因。normal 在 implementation approval 前要求业务 hash 等于启动基线；已提前实现时用 `mark-retrospective`，原基线不刷新。所有机器字段禁止手改；`next` 每次只给一条后续命令。
+
+approval basis 沿用既有结构并绑定 process/baseline；批准后不再与启动基线比较，最终验证使用 `Bfinal`。gate evidence light 可 inline/report，full 只接受登记报告。`propose-risk` 的一次性 token 只接受明确“接受具名残余风险并继续/收尾”的后续回复。
 
 **logic-complete**：feature-check + 有效 feature/completion → **可 Git**；compact/full 可选。`/finish` dry-run 后输出 `[ASSET FINALIZATION]`，只接受 `compact` / `retain full` / `not now`；禁止同回合 `--confirm`；**`not now` 不阻塞 Git**。compact 含 untracked 删除时须 `--confirm-untracked "DELETE-UNTRACKED:<inventory-sha>:<count>"`。详情见 `dev-flow/references/status-cli.md`、`partial-verification.md` 与 `protocol.md`。
 

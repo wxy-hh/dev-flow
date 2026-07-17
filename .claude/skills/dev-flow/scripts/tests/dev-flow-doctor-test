@@ -55,6 +55,7 @@ assert_contains 'package doctor requires inventory on confirm docs' 'finishing s
 assert_contains 'package doctor checks complete-verification orchestration' 'finish.md records verification through status CLI before feature-check' "$pkg_out"
 assert_contains 'package doctor checks project default retention' 'finish.md derives dry-run retention from project config' "$pkg_out"
 assert_contains 'package doctor checks finish-guard logic-complete' 'finish-guard handles logic-complete without finalizer' "$pkg_out"
+assert_contains 'package doctor enforces status-cli line budget' 'line budget: .claude/skills/dev-flow/references/status-cli.md' "$pkg_out"
 assert_contains 'package doctor skips feature scan without project-workflow' 'skip verified-unfinalized scan' "$pkg_out"
 assert_not_contains 'package doctor has no ready-to-finalize WARN without features' 'ready-to-finalize' "$pkg_out"
 
@@ -120,14 +121,21 @@ printf '%s\n' \
 printf '%s\n' \
   '---' \
   'dev_flow_status:' \
-  '  schema_version: "3"' \
+  '  schema_version: "4"' \
   '  feature_id: "verified-unfinalized"' \
   '  level: "L"' \
   '  profile: "standard"' \
   '  risk_labels: []' \
   '  risk_evidence: {}' \
+  '  process:' \
+  '    mode: "normal"' \
+  '    started_at: "2026-01-01T00:00:00Z"' \
+  '    baseline_business_diff_fingerprint: "0000000000000000000000000000000000000000"' \
+  '    existing_diff: "clean"' \
+  '    reason: "none"' \
   '  classification:' \
-  '    topology: "local"' \
+  '    topology: "shared-contract"' \
+  '    execution: "light"' \
   '    evidence_result: "verified"' \
   '    note: "doctor fixture"' \
   '  current_gate: "verification-before-completion"' \
@@ -157,9 +165,11 @@ printf '%s\n' \
   '    - {path: "docs/dev-flow/reviews/verified-unfinalized-code-review.md", kind: "review"}' \
   '  gate_evidence:' \
   '    rollback_units:' \
+  '      mode: "report"' \
   '      path: "docs/dev-flow/reviews/verified-unfinalized-verification.md"' \
   '      heading: "Rollback summary"' \
   '    code_review:' \
+  '      mode: "report"' \
   '      path: "docs/dev-flow/reviews/verified-unfinalized-code-review.md"' \
   '      heading: "Findings"' \
   '  validation:' \
@@ -274,7 +284,7 @@ printf 'workflow_version: %s\nfingerprint: %s\noutcome: verified\nchecked_at: 20
 printf '%s\n' \
   '---' \
   'dev_flow_completion:' \
-  '  schema_version: "1"' \
+  '  schema_version: "2"' \
   '  feature_id: "verified-unfinalized"' \
   '  level: "L"' \
   '  outcome: "verified"' \
@@ -286,6 +296,9 @@ printf '%s\n' \
   '  risk_approval_evidence: ""' \
   '  risk_verification_summary: ""' \
   '  accepted_risks: []' \
+  '  process_mode: "normal"' \
+  '  retrospective_reason: "none"' \
+  '  retrospective_evidence: "none"' \
   '  commits: []' \
   '  pull_request: ""' \
   '---' \

@@ -49,7 +49,7 @@ C. <备选方案>
 
 ### 3. 输出需求说明书
 
-完成提问后，输出待压测的《需求说明书.md》到 `<FEATURE_ROOT>/<feature-id>/需求说明书.md`。dev-flow 标准 M/L 的 `status.md` 已由分类回合的 `init --entry-gate req-probe` 创建；用 `add-asset --kind requirement` 登记需求书，再调用 `complete-gate <feature-id> req-probe`，让 CLI 把 `next_action` 推进为 `run grillme`。只有独立使用本技能且调用方明确要求状态资产时才初始化 status。
+完成提问后，输出《需求说明书.md》。标准 M/L status 已由 `start --execution standard --requirements missing-or-unclear` 创建；登记需求书后 `complete-gate req-probe` 推进到 grillme。独立使用且明确要求状态资产时才初始化。
 
 ### 4. 交接与确认责任
 

@@ -8,7 +8,10 @@
  * Must not call feature-check or feature-finalize. Must not write check-ok stamps.
  *
  * Usage:
- *   dev-flow-status authorize --level <XS|S> [--note <text>]
+ *   dev-flow-status start <feature-id> --level <XS|S|M|L> --topology <topology> [options]
+ *   dev-flow-status next [feature-id]
+ *   dev-flow-status scaffold <feature-id> --asset <kind> [--refresh]
+ *   dev-flow-status authorize --level <XS|S|M> [--note <text>]
  *   dev-flow-status init <feature-id> --level <XS|S|M|L> --profile <profile> \
  *     --topology <topology> --evidence-result <result> [--entry-gate <gate>] \
  *     [--note <text>] [--risk-labels a,b] [--lightweight-l]
@@ -24,25 +27,29 @@
  *   dev-flow-status record-validation <feature-id> --command <command>
  *   dev-flow-status complete-verification <feature-id> --command <command> \
  *     [--report <path>] [--manual-test <path>]
+ *   dev-flow-status propose-risk <feature-id> --id <AR-xxx> --step <step> --reason <reason>
  *   dev-flow-status accept-risk <feature-id> --id <AR-xxx> \
- *     --step <manual-test-step-id> --reason <reason> --evidence <user-evidence>
+ *     --proposal-token <token> --evidence <exact-user-reply>
+ *   dev-flow-status mark-retrospective <feature-id> --reason <reason>
  *   dev-flow-status repair <feature-id>
  */
 import fs from 'node:fs';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { createHash } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import {
   canonicalCompletedGate,
   codeReviewObligation,
   deriveRoute,
+  deriveStartPlan,
   gateRank,
   labelsWithNoGateIncrement,
   loadContract,
   nextActionForGate,
   routeObligations,
   STANDARD_REQUIREMENT_ENTRY_GATES,
+  validateTopology,
 } from './dev-flow-policy.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -130,6 +137,7 @@ function loadWorkflow(root) {
     featureRootAbs: path.join(root, featureRoot),
     reviewRootAbs: path.join(root, reviewRoot),
     enforcementMode: configValue(workflowFile, 'enforcement_mode') || 'off',
+    retention: configValue(workflowFile, 'retention') || 'compact',
     protectedWriteRoots: parseProtectedRoots(workflowFile),
   };
 }
@@ -254,6 +262,86 @@ function closeExistingAuth(root) {
   }
 }
 
+function activeStatusBackedAuthorization(root, workflow) {
+  const auth = readAuth(root);
+  if (!auth?.feature_id || !['approval-pending', 'approved'].includes(auth.state)) return null;
+  return fs.existsSync(statusAbs(root, workflow, auth.feature_id)) ? auth : null;
+}
+
+function assertNoStatusBackedDowngrade(root, workflow) {
+  const active = activeStatusBackedAuthorization(root, workflow);
+  if (!active) return;
+  fail(
+    `cannot replace active status-backed authorization for ${active.feature_id}; finish or close that feature first`,
+    1,
+  );
+}
+
+function workflowOwnedPath(workflow, filePath) {
+  const normalized = String(filePath).replace(/^"|"$/g, '').replace(/\\/g, '/');
+  return (
+    normalized === '.claude' ||
+    normalized.startsWith('.claude/') ||
+    normalized === workflow.featureRoot ||
+    normalized.startsWith(`${workflow.featureRoot}/`) ||
+    normalized === workflow.reviewRoot ||
+    normalized.startsWith(`${workflow.reviewRoot}/`) ||
+    normalized === 'openspec' ||
+    normalized.startsWith('openspec/') ||
+    normalized.startsWith('docs/claude-dev-flow-')
+  );
+}
+
+function businessDiffEntries(root, workflow) {
+  const result = spawnSync(
+    'git',
+    ['-c', 'core.quotePath=false', 'status', '--porcelain=v1', '--untracked-files=all'],
+    { cwd: root, encoding: 'utf8' },
+  );
+  if (result.status !== 0) fail('failed to inspect working tree');
+  const entries = [];
+  for (const line of result.stdout.split(/\r?\n/)) {
+    if (!line) continue;
+    const status = line.slice(0, 2).trim() || 'modified';
+    const rawPath = line.slice(3);
+    const paths = rawPath.includes(' -> ') ? rawPath.split(' -> ') : [rawPath];
+    if (paths.every((candidate) => workflowOwnedPath(workflow, candidate))) continue;
+    entries.push({ status, path: rawPath });
+  }
+  return entries;
+}
+
+function processForStart(root, workflow, flags) {
+  const entries = businessDiffEntries(root, workflow);
+  const declared = flags['existing-diff'];
+  const reason = flags.reason === undefined ? '' : String(flags.reason).trim();
+  if (entries.length === 0) {
+    if (declared) fail('--existing-diff is only valid when business diff already exists');
+    return {
+      mode: 'normal',
+      started_at: nowIso(),
+      baseline_business_diff_fingerprint: computeFingerprint(root, workflow),
+      existing_diff: 'clean',
+      reason: 'none',
+      entries,
+    };
+  }
+  if (!['unrelated', 'in-scope'].includes(declared)) {
+    process.stderr.write('Business diff already exists:\n');
+    for (const entry of entries) process.stderr.write(`  ${entry.status} ${entry.path}\n`);
+    fail('dirty business diff requires --existing-diff unrelated|in-scope --reason <text>', 1);
+  }
+  if (!reason) fail('dirty business diff requires a non-empty --reason', 1);
+  return {
+    mode: declared === 'in-scope' ? 'retrospective' : 'normal',
+    started_at: nowIso(),
+    baseline_business_diff_fingerprint: computeFingerprint(root, workflow),
+    existing_diff: declared,
+    reason,
+    entries,
+  };
+}
+
 function statusPath(workflow, featureId) {
   return path.join(workflow.featureRoot, featureId, 'status.md');
 }
@@ -320,11 +408,13 @@ function renderStatus({
   labels,
   topology,
   evidenceResult,
+  execution,
   note,
   currentGate,
   nextAction,
   humanGates,
   riskGates,
+  processInfo,
   assets,
   acceptedRisks,
   gateEvidence,
@@ -341,8 +431,15 @@ function renderStatus({
   body += `  profile: ${yamlQuote(profile)}\n`;
   body += `  risk_labels: ${labelList}\n`;
   body += renderRiskEvidence(labels);
+  body += '  process:\n';
+  body += `    mode: ${yamlQuote(processInfo.mode)}\n`;
+  body += `    started_at: ${yamlQuote(processInfo.started_at)}\n`;
+  body += `    baseline_business_diff_fingerprint: ${yamlQuote(processInfo.baseline_business_diff_fingerprint)}\n`;
+  body += `    existing_diff: ${yamlQuote(processInfo.existing_diff)}\n`;
+  body += `    reason: ${yamlQuote(processInfo.reason)}\n`;
   body += '  classification:\n';
   body += `    topology: ${yamlQuote(topology)}\n`;
+  body += `    execution: ${yamlQuote(execution)}\n`;
   body += `    evidence_result: ${yamlQuote(evidenceResult)}\n`;
   body += `    note: ${yamlQuote(note || '')}\n`;
   body += `  current_gate: ${yamlQuote(currentGate)}\n`;
@@ -392,8 +489,13 @@ function renderStatus({
     body += '  gate_evidence:\n';
     for (const [gate, evidence] of Object.entries(gateEvidence)) {
       body += `    ${gate}:\n`;
-      body += `      path: ${yamlQuote(evidence.path)}\n`;
-      body += `      heading: ${yamlQuote(evidence.heading)}\n`;
+      body += `      mode: ${yamlQuote(evidence.mode)}\n`;
+      if (evidence.mode === 'inline') {
+        body += `      summary: ${yamlQuote(evidence.summary)}\n`;
+      } else {
+        body += `      path: ${yamlQuote(evidence.path)}\n`;
+        body += `      heading: ${yamlQuote(evidence.heading)}\n`;
+      }
     }
   }
   body += '---\n';
@@ -531,7 +633,7 @@ function parseGateEvidence(lines) {
       map[current] = {};
       continue;
     }
-    const field = line.match(/^      (path|heading):\s*(.*)$/);
+    const field = line.match(/^      (mode|summary|path|heading):\s*(.*)$/);
     if (field && current) map[current][field[1]] = unquote(field[2]);
   }
   return map;
@@ -566,6 +668,7 @@ function loadStatusModel(root, workflow, featureId) {
     gateEvidence: parseGateEvidence(body),
     classification: parseFlatBlock(body, 'classification'),
     riskEvidence: parseNestedMap(body, 'risk_evidence'),
+    process: parseFlatBlock(body, 'process'),
   };
 }
 
@@ -606,8 +709,15 @@ function rebuildFromModel(model) {
   body += `  profile: ${yamlQuote(model.profile)}\n`;
   body += `  risk_labels: ${labelList}\n`;
   body += riskEvidenceBlock;
+  body += '  process:\n';
+  body += `    mode: ${yamlQuote(model.process.mode)}\n`;
+  body += `    started_at: ${yamlQuote(model.process.started_at)}\n`;
+  body += `    baseline_business_diff_fingerprint: ${yamlQuote(model.process.baseline_business_diff_fingerprint)}\n`;
+  body += `    existing_diff: ${yamlQuote(model.process.existing_diff)}\n`;
+  body += `    reason: ${yamlQuote(model.process.reason)}\n`;
   body += '  classification:\n';
   body += `    topology: ${yamlQuote(model.classification.topology || 'local')}\n`;
+  body += `    execution: ${yamlQuote(model.classification.execution || 'light')}\n`;
   body += `    evidence_result: ${yamlQuote(model.classification.evidence_result || 'not-applicable')}\n`;
   body += `    note: ${yamlQuote(model.classification.note || '')}\n`;
   body += `  current_gate: ${yamlQuote(model.currentGate)}\n`;
@@ -665,8 +775,13 @@ function rebuildFromModel(model) {
     body += '  gate_evidence:\n';
     for (const [gate, evidence] of Object.entries(model.gateEvidence)) {
       body += `    ${gate}:\n`;
-      body += `      path: ${yamlQuote(evidence.path)}\n`;
-      body += `      heading: ${yamlQuote(evidence.heading)}\n`;
+      body += `      mode: ${yamlQuote(evidence.mode)}\n`;
+      if (evidence.mode === 'inline') {
+        body += `      summary: ${yamlQuote(evidence.summary)}\n`;
+      } else {
+        body += `      path: ${yamlQuote(evidence.path)}\n`;
+        body += `      heading: ${yamlQuote(evidence.heading)}\n`;
+      }
     }
   }
   body += '---\n';
@@ -758,12 +873,21 @@ function nextGateAfter(model, completedGate) {
     riskLabels: model.labels,
     humanGates: model.humanGates,
     riskGates: model.riskGates,
+    processMode: model.process.mode,
+    execution: model.classification.execution,
   });
   if (obligations.approvalProcessGates.includes(completedGate)) {
     return (
       obligations.approvalProcessGates.find(
         (gate) => !model.completedGates.includes(gate),
       ) ?? 'implementation_approval'
+    );
+  }
+  if (obligations.finishProcessGates.includes(completedGate)) {
+    return (
+      obligations.finishProcessGates.find(
+        (gate) => !model.completedGates.includes(gate),
+      ) ?? 'finish'
     );
   }
   return completedGate;
@@ -809,6 +933,7 @@ function buildApprovedAuth(root, workflow, model, existing) {
       hash: basis.hash,
       route_hash: basis.route_hash,
       assets: basis.assets || [],
+      baseline_business_diff_fingerprint: basis.baseline_business_diff_fingerprint,
     },
     created_at: existing?.created_at || nowIso(),
     approved_at: nowIso(),
@@ -845,6 +970,18 @@ function computeFingerprint(root, workflow) {
   return hash;
 }
 
+function assertNormalApprovalFingerprint(root, workflow, model) {
+  if (model.process.mode !== 'normal') return;
+  const current = computeFingerprint(root, workflow);
+  const baseline = model.process.baseline_business_diff_fingerprint;
+  if (current !== baseline) {
+    fail(
+      `business diff changed before implementation approval; no status/auth changes were made. Run: dev-flow-status mark-retrospective ${model.featureId} --reason "<why implementation already changed>"`,
+      1,
+    );
+  }
+}
+
 function registerAsset(model, assetPath, kind) {
   if (model.assets.some((a) => a.path === assetPath)) return;
   model.assets.push({ path: assetPath, kind });
@@ -869,8 +1006,11 @@ function assertEvidenceFile(root, workflow, evidencePath, heading) {
 
 function cmdAuthorize(root, workflow, flags) {
   const level = flags.level;
-  if (!['XS', 'S'].includes(level)) fail('authorize --level must be XS or S');
+  if (!['XS', 'S', 'M'].includes(level)) fail('authorize --level must be XS, S, or M');
   if (flags.profile) fail('authorize must not accept --profile (use init for risk-minimal/standard)');
+  if (flags['risk-labels']) fail('authorize does not accept risk labels; use start for risk-minimal-m');
+  assertNoStatusBackedDowngrade(root, workflow);
+  const processInfo = processForStart(root, workflow, flags);
   closeExistingAuth(root);
   const auth = {
     schema_version: String(contract.authorization_schema || '1'),
@@ -880,6 +1020,7 @@ function cmdAuthorize(root, workflow, flags) {
     profile: null,
     state: 'classified',
     protected_roots: workflow.protectedWriteRoots,
+    process: processInfo,
     note: flags.note || '',
     created_at: nowIso(),
     approved_at: nowIso(),
@@ -906,6 +1047,8 @@ function cmdInit(root, workflow, featureId, flags) {
   if (!contract.classification_topologies.includes(topology)) {
     fail(`--topology must be one of: ${contract.classification_topologies.join(', ')}`);
   }
+  const topologyError = validateTopology(contract, level, topology);
+  if (topologyError) fail(topologyError);
   if (!contract.classification_evidence_results.includes(evidenceResult)) {
     fail(`--evidence-result must be one of: ${contract.classification_evidence_results.join(', ')}`);
   }
@@ -919,17 +1062,18 @@ function cmdInit(root, workflow, featureId, flags) {
   for (const label of labels) {
     if (!contract.risk_labels.includes(label)) fail(`unknown risk label: ${label}`);
   }
-  if (profile === 'risk-minimal' && labels.length === 0) {
-    fail('risk-minimal profile requires --risk-labels');
-  }
   if (profile === 'standard' && ['XS', 'S'].includes(level) && labels.length > 0) {
     fail('XS/S with risk labels must use profile risk-minimal');
   }
 
+  const processInfo = processForStart(root, workflow, flags);
+  if (profile === 'risk-minimal' && labels.length === 0 && processInfo.mode !== 'retrospective') {
+    fail('risk-minimal profile requires --risk-labels except for an in-scope retrospective start');
+  }
   const lightweightL = Boolean(flags['lightweight-l']);
   const entryGate = flags['entry-gate'];
   const requiresRequirementEntry =
-    profile === 'standard' && ['M', 'L'].includes(level) && !lightweightL;
+    processInfo.mode === 'normal' && profile === 'standard' && ['M', 'L'].includes(level) && !lightweightL;
   if (requiresRequirementEntry && !entryGate) {
     fail(
       `standard M/L requires --entry-gate (${STANDARD_REQUIREMENT_ENTRY_GATES.join(', ')})`,
@@ -951,6 +1095,7 @@ function cmdInit(root, workflow, featureId, flags) {
     riskLabels: labels,
     lightweightL,
     entryGate,
+    processMode: processInfo.mode,
   });
   const baseRoute = deriveRoute(contract, {
     level,
@@ -958,6 +1103,7 @@ function cmdInit(root, workflow, featureId, flags) {
     riskLabels: [],
     lightweightL,
     entryGate,
+    processMode: processInfo.mode,
   });
   const humanGates = {};
   for (const gate of contract.human_gates) {
@@ -976,11 +1122,13 @@ function cmdInit(root, workflow, featureId, flags) {
     labels,
     topology,
     evidenceResult,
+    execution: lightweightL || profile === 'risk-minimal' ? 'light' : 'standard',
     note: flags.note || '',
     currentGate: route.initialCurrentGate,
     nextAction: route.initialNextAction,
     humanGates,
     riskGates: route.riskGates,
+    processInfo,
     assets: [],
     acceptedRisks: [],
     gateEvidence: {},
@@ -1002,6 +1150,7 @@ function cmdInit(root, workflow, featureId, flags) {
     profile,
     state: 'approval-pending',
     protected_roots: workflow.protectedWriteRoots,
+    process: processInfo,
     approval_basis: null,
     created_at: nowIso(),
     approved_at: null,
@@ -1097,16 +1246,47 @@ function cmdCompleteGate(root, workflow, featureId, gate, flags) {
   }
 
   const isCoverage = canonicalGate === 'requirements-coverage';
-  const hasEvidenceFlags = Boolean(flags['evidence-file'] || flags.heading);
+  const hasReportEvidence = Boolean(flags['evidence-file'] || flags.heading);
+  const hasInlineEvidence = flags['evidence-inline'] !== undefined;
+  if (hasReportEvidence && hasInlineEvidence) {
+    fail('gate evidence must use either --evidence-inline or --evidence-file/--heading');
+  }
+  const obligations = routeObligations(contract, {
+    level: model.level,
+    profile: model.profile,
+    riskLabels: model.labels,
+    humanGates: model.humanGates,
+    riskGates: model.riskGates,
+    processMode: model.process.mode,
+    execution: model.classification.execution,
+  });
+  const riskGate = normalizeRiskGateName(canonicalGate);
+  const requiredLevel = canonicalGate === 'code-review'
+    ? obligations.codeReview.evidence_level
+    : riskGate
+      ? model.riskGates[riskGate]
+      : 'light';
 
-  if (hasEvidenceFlags) {
+  if (hasInlineEvidence) {
+    const summary = String(flags['evidence-inline']).trim();
+    if (!summary) fail('--evidence-inline requires a non-empty summary');
+    if (requiredLevel === 'full') {
+      fail(`${canonicalGate} full evidence requires --evidence-file and --heading`, 1);
+    }
+    model.gateEvidence = model.gateEvidence || {};
+    model.gateEvidence[gateEvidenceKey(canonicalGate)] = { mode: 'inline', summary };
+  } else if (hasReportEvidence) {
     if (!flags['evidence-file'] || !flags.heading) {
       fail('gate evidence requires both --evidence-file and --heading');
     }
     const evidencePath = flags['evidence-file'];
     assertEvidenceFile(root, workflow, evidencePath, flags.heading);
+    if (requiredLevel === 'full' && !model.assets.some((asset) => asset.path === evidencePath)) {
+      fail(`${canonicalGate} full evidence file must be registered with add-asset first`, 1);
+    }
     model.gateEvidence = model.gateEvidence || {};
     model.gateEvidence[gateEvidenceKey(canonicalGate)] = {
+      mode: 'report',
       path: evidencePath,
       heading: flags.heading,
     };
@@ -1124,8 +1304,9 @@ function cmdCompleteGate(root, workflow, featureId, gate, flags) {
   }
 
   model.completedGates.push(canonicalGate);
-  model.currentGate = canonicalGate;
-  model.nextAction = nextActionForGate(nextGateAfter(model, canonicalGate));
+  const nextGate = nextGateAfter(model, canonicalGate);
+  model.currentGate = nextGate;
+  model.nextAction = nextActionForGate(nextGate);
   saveModel(root, model);
   process.stdout.write(`completed gate ${canonicalGate}\n`);
   if (canonicalGate === 'code-review' && flags['evidence-file']) {
@@ -1251,21 +1432,30 @@ function cmdCompleteVerification(root, workflow, featureId, flags) {
     profile: model.profile,
     humanGates: model.humanGates,
     riskLabels: model.labels || [],
+    processMode: model.process.mode,
+    execution: model.classification.execution,
   });
   if (obligation.required) {
     if (!model.completedGates.includes('code-review')) {
       fail('complete-verification requires completed_gates to include code-review', 1);
     }
     const evidence = model.gateEvidence?.code_review;
-    if (!evidence?.path || !evidence?.heading) {
+    const hasInline = evidence?.mode === 'inline' && String(evidence.summary || '').trim();
+    const hasReport = evidence?.mode === 'report' && evidence.path && evidence.heading;
+    if (!hasInline && !hasReport) {
       fail(
-        'complete-verification requires gate_evidence.code_review with path and heading',
+        'complete-verification requires valid inline or report gate_evidence.code_review',
         1,
       );
     }
-    const abs = path.join(root, evidence.path);
-    if (!fs.existsSync(abs)) {
-      fail(`code-review evidence file does not exist: ${evidence.path}`, 1);
+    if (obligation.evidence_level === 'full' && !hasReport) {
+      fail('full code-review requires report gate evidence', 1);
+    }
+    if (hasReport) {
+      const abs = path.join(root, evidence.path);
+      if (!fs.existsSync(abs)) {
+        fail(`code-review evidence file does not exist: ${evidence.path}`, 1);
+      }
     }
   }
 
@@ -1279,8 +1469,8 @@ function cmdCompleteVerification(root, workflow, featureId, flags) {
   if (!model.completedGates.includes('verification-before-completion')) {
     model.completedGates.push('verification-before-completion');
   }
-  model.currentGate = 'verification-before-completion';
-  model.nextAction = 'finish';
+  model.currentGate = 'finish';
+  model.nextAction = nextActionForGate('finish');
 
   // Atomic write + finish validation; restore on failure. Never writes check-ok.
   saveModel(root, model, { stage: 'finish' });
@@ -1306,11 +1496,17 @@ function cmdConfirmHuman(root, workflow, featureId, gate, flags) {
   const model = loadStatusModel(root, workflow, featureId);
   if (!model.humanGates[gate]) fail(`status is missing human_gates.${gate}`, 1);
   assertApprovalUpstream(model, gate);
+  const firstImplementationApproval =
+    gate === 'implementation_approval' && model.humanGates[gate].status !== 'confirmed';
+  if (firstImplementationApproval) {
+    assertNormalApprovalFingerprint(root, workflow, model);
+  }
   model.humanGates[gate].status = status;
   model.humanGates[gate].evidence = evidence;
   if (!model.completedGates.includes(gate)) model.completedGates.push(gate);
-  model.currentGate = gate;
-  model.nextAction = nextActionForGate(nextGateAfter(model, gate));
+  const nextGate = nextGateAfter(model, gate);
+  model.currentGate = nextGate;
+  model.nextAction = nextActionForGate(nextGate);
   saveModel(root, model, {
     stage: gate === 'implementation_approval' ? 'approval' : 'current',
   });
@@ -1356,26 +1552,362 @@ function cmdRecordValidation(root, workflow, featureId, flags) {
 function cmdAcceptRisk(root, workflow, featureId, flags) {
   validateFeatureId(featureId);
   const id = flags.id;
-  const step = flags.step;
-  const reason = flags.reason;
+  const token = flags['proposal-token'];
   const evidence = flags.evidence;
   if (!id || !/^AR-[A-Za-z0-9_-]+$/.test(id)) fail('--id must look like AR-xxx');
-  if (!step || !String(step).trim()) fail('--step is required');
-  if (!reason || !String(reason).trim()) fail('--reason is required');
+  if (!token || !/^[0-9a-f]{64}$/.test(String(token))) fail('--proposal-token must be the one-time 64-hex token');
   if (!evidence || !String(evidence).trim()) fail('--evidence is required');
+  const normalizedEvidence = String(evidence).trim();
+
+  const proposalFile = riskProposalPath(root, featureId, id);
+  if (!fs.existsSync(proposalFile)) fail('risk proposal is missing; run propose-risk again', 1);
+  let proposal;
+  try {
+    proposal = JSON.parse(fs.readFileSync(proposalFile, 'utf8'));
+  } catch (error) {
+    fail(`risk proposal is unreadable; run propose-risk again: ${error.message}`, 1);
+  }
+  if (proposal.consumed_at) fail('risk proposal token was already consumed; run propose-risk again', 1);
+  const expiresAt = Date.parse(proposal.expires_at || '');
+  if (!Number.isFinite(expiresAt) || expiresAt <= Date.now()) {
+    fail('risk proposal token expired; run propose-risk again', 1);
+  }
+  const tokenHash = createHash('sha256').update(String(token)).digest('hex');
+  if (tokenHash !== proposal.token_hash || proposal.feature_id !== featureId || proposal.id !== id) {
+    fail('risk proposal token does not match this feature and AR', 1);
+  }
+  const vague = new Set(['确认', '继续', '完成吧', '完成', '行', '行吧', '可以', 'ok', 'okay', 'continue', 'finish']);
+  const namesProposal = normalizedEvidence.toLowerCase().includes(id.toLowerCase());
+  const acceptsRisk =
+    /(接受|同意承担).*(风险)|(accept|assume).*(risk)/i.test(normalizedEvidence) ||
+    (namesProposal && /(接受|同意承担)|(accept|assume)/i.test(normalizedEvidence));
+  const continues = /(继续|收尾|完成)|(continue|proceed|close(?:\s|-)?out|finish)/i.test(normalizedEvidence);
+  const referencesNamedRisk =
+    /(?:具名|残余|剩余|上述|上面|前述|刚列出|刚才列出|该项|这项|所列).{0,16}风险|风险.{0,16}(?:具名|残余|剩余|上述|上面|前述|刚列出|刚才列出|该项|这项|所列)/.test(normalizedEvidence) ||
+    /(?:named|residual|remaining|listed|above|described|this|that)(?:\s+\w+){0,4}\s+risk|risk(?:\s+\w+){0,4}\s+(?:named|residual|remaining|listed|above|described|this|that)/i.test(normalizedEvidence);
+  if (
+    vague.has(normalizedEvidence.toLowerCase()) ||
+    !acceptsRisk ||
+    !continues ||
+    (!namesProposal && !referencesNamedRisk)
+  ) {
+    fail('accept-risk requires an explicit reply accepting this proposal\'s named residual risk and continuing/closing out; generic risk acceptance is insufficient', 1);
+  }
+  const currentFingerprint = computeFingerprint(root, workflow);
+  if (proposal.business_diff_fingerprint !== currentFingerprint) {
+    fail('risk proposal is stale because business diff changed; run propose-risk again', 1);
+  }
 
   const model = loadStatusModel(root, workflow, featureId);
   if (!model.acceptedRisks.includes(id)) model.acceptedRisks.push(id);
   saveModel(root, model);
   const acceptance = updatePartialAcceptance(root, workflow, featureId, {
     id,
-    step,
-    reason,
-    evidence,
+    step: proposal.step,
+    reason: proposal.reason,
+    evidence: normalizedEvidence,
     confirmed_at: nowIso(),
   });
-  process.stdout.write(`accepted risk ${id} for step ${step}\n`);
+  proposal.consumed_at = nowIso();
+  writeJsonAtomic(proposalFile, proposal);
+  process.stdout.write(`accepted risk ${id} for step ${proposal.step}\n`);
   process.stdout.write(`${acceptance}\n`);
+}
+
+function riskProposalPath(root, featureId, id) {
+  validateFeatureId(featureId);
+  if (!/^AR-[A-Za-z0-9_-]+$/.test(id)) fail('--id must look like AR-xxx');
+  return path.join(root, '.claude/runtime/dev-flow/risk-proposals', featureId, `${id}.json`);
+}
+
+function cmdProposeRisk(root, workflow, featureId, flags) {
+  validateFeatureId(featureId);
+  const id = flags.id;
+  const step = String(flags.step || '').trim();
+  const reason = String(flags.reason || '').trim();
+  if (!id || !/^AR-[A-Za-z0-9_-]+$/.test(id)) fail('--id must look like AR-xxx');
+  if (!step) fail('--step is required');
+  if (!reason) fail('--reason is required');
+  loadStatusModel(root, workflow, featureId);
+  const token = randomBytes(32).toString('hex');
+  const proposal = {
+    schema_version: '1',
+    workflow_version: contract.workflow_version,
+    feature_id: featureId,
+    id,
+    step,
+    reason,
+    business_diff_fingerprint: computeFingerprint(root, workflow),
+    token_hash: createHash('sha256').update(token).digest('hex'),
+    created_at: nowIso(),
+    expires_at: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
+    consumed_at: null,
+  };
+  writeJsonAtomic(riskProposalPath(root, featureId, id), proposal);
+  process.stdout.write(`[HANDOFF]\nFeature ID: ${featureId}\n`);
+  process.stdout.write('Current gate: verification-before-completion\n');
+  process.stdout.write('Next skill: verification-before-completion\n');
+  process.stdout.write(`Next inputs:\n- ${id}: ${step}\n- reason: ${reason}\n- proposal-token: ${token}\n`);
+  process.stdout.write('Auto-continue: no\n');
+  process.stdout.write('Stop reason: awaiting explicit residual-risk acceptance or an actual test result\n[/HANDOFF]\n');
+}
+
+function pendingAuth(root, workflow, model) {
+  return {
+    schema_version: String(contract.authorization_schema || '1'),
+    workflow_version: contract.workflow_version,
+    feature_id: model.featureId,
+    level: model.level,
+    profile: model.profile,
+    state: 'approval-pending',
+    protected_roots: workflow.protectedWriteRoots,
+    process: model.process,
+    approval_basis: null,
+    created_at: readAuth(root)?.created_at || nowIso(),
+    approved_at: null,
+    closed_at: null,
+  };
+}
+
+function cmdMarkRetrospective(root, workflow, featureId, flags) {
+  const reason = String(flags.reason || '').trim();
+  if (!reason) fail('mark-retrospective requires --reason');
+  const model = loadStatusModel(root, workflow, featureId);
+  if (model.process.mode === 'retrospective') {
+    process.stdout.write(`process mode is already retrospective for ${featureId}\n`);
+    return;
+  }
+  if (model.humanGates.implementation_approval?.status === 'confirmed') {
+    fail('cannot switch to retrospective after implementation approval; start a new recovery feature', 1);
+  }
+  model.process.mode = 'retrospective';
+  model.process.reason = reason;
+  model.humanGates.requirement_confirmation.required = 'false';
+  model.currentGate = 'implementation_approval';
+  model.nextAction = 'await implementation_approval';
+  saveModel(root, model);
+  writeAuth(root, pendingAuth(root, workflow, model));
+  process.stdout.write(`marked ${featureId} retrospective; implementation approval is still pending\n`);
+}
+
+function parseRiskLabels(flags) {
+  const labels = flags['risk-labels']
+    ? String(flags['risk-labels']).split(',').map((value) => value.trim()).filter(Boolean)
+    : [];
+  const duplicate = labels.find((label, index) => labels.indexOf(label) !== index);
+  if (duplicate) fail(`duplicate risk label: ${duplicate}`);
+  for (const label of labels) {
+    if (!contract.risk_labels.includes(label)) fail(`unknown risk label: ${label}`);
+  }
+  return labels;
+}
+
+function snapshotFile(filePath) {
+  return fs.existsSync(filePath) ? fs.readFileSync(filePath) : null;
+}
+
+function restoreFile(filePath, snapshot) {
+  if (snapshot === null) fs.rmSync(filePath, { force: true });
+  else {
+    fs.mkdirSync(path.dirname(filePath), { recursive: true });
+    fs.writeFileSync(filePath, snapshot);
+  }
+}
+
+function cmdStart(root, workflow, featureId, flags) {
+  validateFeatureId(featureId);
+  const statusFile = statusAbs(root, workflow, featureId);
+  if (fs.existsSync(statusFile)) fail(`status already exists: ${statusPath(workflow, featureId)}`, 1);
+  const labels = parseRiskLabels(flags);
+  const processInfo = processForStart(root, workflow, flags);
+  let startPlan;
+  try {
+    startPlan = deriveStartPlan(contract, {
+      level: flags.level,
+      topology: flags.topology,
+      riskLabels: labels,
+      execution: flags.execution,
+      requirements: flags.requirements,
+      processMode: processInfo.mode,
+    });
+  } catch (error) {
+    fail(error.message);
+  }
+  const summary = {
+    feature_id: featureId,
+    level: flags.level,
+    topology: flags.topology,
+    risk_labels: labels,
+    process: processInfo,
+    action: startPlan.kind,
+    route: startPlan.route,
+    profile: startPlan.profile,
+    entry_gate: startPlan.entryGate || null,
+  };
+  if (flags['dry-run']) {
+    process.stdout.write(`${JSON.stringify(summary, null, 2)}\n`);
+    return;
+  }
+
+  if (startPlan.kind === 'authorize') {
+    assertNoStatusBackedDowngrade(root, workflow);
+    writeAuth(root, {
+      schema_version: String(contract.authorization_schema || '2'),
+      workflow_version: contract.workflow_version,
+      feature_id: featureId,
+      level: flags.level,
+      profile: null,
+      state: 'classified',
+      protected_roots: workflow.protectedWriteRoots,
+      process: processInfo,
+      note: flags.note || '',
+      created_at: nowIso(),
+      approved_at: nowIso(),
+      closed_at: null,
+    });
+    process.stdout.write(`started ${featureId}: ${startPlan.route} (classified)\n`);
+    return;
+  }
+
+  const authFile = authPath(root);
+  const authSnapshot = snapshotFile(authFile);
+  const args = [process.argv[1], 'init', featureId, '--level', flags.level, '--profile', startPlan.profile,
+    '--topology', flags.topology, '--evidence-result', flags['evidence-result'] || 'partial'];
+  if (labels.length) args.push('--risk-labels', labels.join(','));
+  if (startPlan.lightweightL) args.push('--lightweight-l');
+  if (startPlan.entryGate) args.push('--entry-gate', startPlan.entryGate);
+  if (flags.note) args.push('--note', flags.note);
+  if (processInfo.existing_diff !== 'clean') {
+    args.push('--existing-diff', processInfo.existing_diff, '--reason', processInfo.reason);
+  }
+  const result = spawnSync(process.execPath, args, { cwd: root, encoding: 'utf8' });
+  if (result.stdout) process.stdout.write(result.stdout);
+  if (result.stderr) process.stderr.write(result.stderr);
+  if (result.status !== 0) {
+    fs.rmSync(statusFile, { force: true });
+    restoreFile(authFile, authSnapshot);
+    fail('start failed atomically; status and authorization were restored', 1);
+  }
+  process.stdout.write(`started ${featureId}: ${startPlan.route}\n`);
+}
+
+function nextCommand(model) {
+  const action = model.nextAction || '';
+  if (action.startsWith('await ')) {
+    const gate = action.slice('await '.length);
+    return `dev-flow-status confirm-human ${model.featureId} ${gate} --status confirmed --evidence "<exact user reply>"`;
+  }
+  if (action === 'run implementation' || action === 'implementation') return '/executing-plans';
+  if (action.startsWith('run ')) return `/${action.slice('run '.length)}`;
+  if (action.includes('finish')) return '/finish';
+  return action || 'none';
+}
+
+function cmdNext(root, workflow, featureId) {
+  const auth = readAuth(root);
+  const id = featureId || auth?.feature_id;
+  if (!id) fail('next requires a feature id when no active authorization exists', 1);
+  validateFeatureId(id);
+  const statusFile = statusAbs(root, workflow, id);
+  if (!fs.existsSync(statusFile)) {
+    const completion = path.join(root, workflow.featureRoot, id, 'completion.md');
+    if (fs.existsSync(completion)) {
+      process.stdout.write(`feature: ${id}\nstate: finalized\nnext: none\n`);
+      return;
+    }
+    if (auth?.feature_id === id && auth.state === 'classified') {
+      process.stdout.write(`feature: ${id}\nroute: ${auth.level === 'M' ? 'light-m' : 'xs-s'}\nprocess: ${auth.process?.mode || 'normal'}\nauthorization: classified\ncurrent_gate: implementation\nblocked: no\nblocker: none\ncommand: /executing-plans\n`);
+      return;
+    }
+    fail(`no status or classified authorization found for ${id}`, 1);
+  }
+  const model = loadStatusModel(root, workflow, id);
+  const obligations = routeObligations(contract, {
+    level: model.level,
+    profile: model.profile,
+    riskLabels: model.labels,
+    humanGates: model.humanGates,
+    riskGates: model.riskGates,
+    processMode: model.process.mode,
+    execution: model.classification.execution,
+  });
+  const authState = auth?.feature_id === id ? auth.state : 'inactive';
+  const blocked = authState !== 'approved';
+  const blocker = blocked
+    ? authState === 'approval-pending'
+      ? `awaiting ${model.currentGate}`
+      : `authorization ${authState}`
+    : 'none';
+  process.stdout.write(`feature: ${id}\nroute: ${obligations.route}\nprocess: ${model.process.mode}\nauthorization: ${authState}\n`);
+  process.stdout.write(`current_gate: ${model.currentGate}\nblocked: ${blocked ? 'yes' : 'no'}\nblocker: ${blocker}\ncommand: ${nextCommand(model)}\n`);
+}
+
+function scaffoldPath(workflow, featureId, asset) {
+  if (asset === 'rollback-units') return path.join(workflow.featureRoot, featureId, 'rollback-units.md');
+  if (asset === 'completion') return path.join(workflow.featureRoot, featureId, 'completion.md');
+  return path.join(workflow.reviewRoot, `${featureId}-${asset}.md`);
+}
+
+function completionContent(root, workflow, model) {
+  const risks = model.acceptedRisks;
+  const labels = model.labels;
+  const list = (values) => values.length ? `[${values.map(yamlQuote).join(', ')}]` : '[]';
+  const approval = model.humanGates.implementation_approval?.evidence || '';
+  const verification = labels.map((label) => model.riskEvidence[label]?.verification).filter(Boolean).join(' | ');
+  let content = '---\ndev_flow_completion:\n';
+  content += `  schema_version: ${yamlQuote(contract.completion_schema)}\n`;
+  content += `  feature_id: ${yamlQuote(model.featureId)}\n  level: ${yamlQuote(model.level)}\n`;
+  content += `  outcome: ${yamlQuote(risks.length ? 'partial' : 'verified')}\n  completed_at: ${yamlQuote(nowIso())}\n`;
+  content += `  retention: ${yamlQuote(workflow.retention)}\n  workflow_version: ${yamlQuote(contract.workflow_version)}\n`;
+  content += `  process_mode: ${yamlQuote(model.process.mode)}\n`;
+  content += `  retrospective_reason: ${yamlQuote(model.process.mode === 'retrospective' ? model.process.reason : 'none')}\n`;
+  content += `  retrospective_evidence: ${yamlQuote(model.process.mode === 'retrospective' ? approval : 'none')}\n`;
+  content += `  risk_labels: ${list(labels)}\n  risk_approval_evidence: ${yamlQuote(approval)}\n`;
+  content += `  risk_verification_summary: ${yamlQuote(verification)}\n`;
+  content += `  business_diff_fingerprint: ${yamlQuote(model.validation.business_diff_fingerprint)}\n`;
+  content += `  commits: []\n  pull_request: "none"\n  accepted_risks: ${list(risks)}\n---\n\n# Completion\n`;
+  const acceptance = partialAcceptancePath(workflow, model.featureId);
+  const acceptanceAbs = path.join(root, acceptance);
+  if (risks.length && fs.existsSync(acceptanceAbs)) {
+    const source = fs.readFileSync(acceptanceAbs, 'utf8');
+    for (const id of risks) {
+      const block = source.match(new RegExp(`^## ${id}\\n[\\s\\S]*?(?=^## |$)`, 'm'))?.[0];
+      if (block) content += `\n${block.trim()}\n`;
+    }
+  }
+  return content;
+}
+
+function cmdScaffold(root, workflow, featureId, flags) {
+  validateFeatureId(featureId);
+  const asset = flags.asset;
+  const allowed = new Set(['rollback-units', 'security-review', 'code-review', 'verification', 'manual-test', 'partial-acceptance', 'completion']);
+  if (!allowed.has(asset)) fail(`--asset must be one of: ${[...allowed].join(', ')}`);
+  const refresh = Boolean(flags.refresh);
+  if (refresh && asset !== 'completion') fail('--refresh is only valid for completion');
+  const model = loadStatusModel(root, workflow, featureId);
+  const relative = scaffoldPath(workflow, featureId, asset);
+  const absolute = path.join(root, relative);
+  if (fs.existsSync(absolute) && !refresh) fail(`asset already exists: ${relative}`, 1);
+  let content;
+  if (asset === 'completion') {
+    content = completionContent(root, workflow, model);
+  } else if (asset === 'manual-test') {
+    content = `---\nmanual_test_steps:\n  - id: MT-001\n    result: delegated\n    risk_id: null\n    observed: pending\n    evidence: pending\n    method: null\n---\n\n# Manual test — ${featureId}\n`;
+  } else if (asset === 'partial-acceptance') {
+    content = `# Partial acceptance — ${featureId}\n`;
+  } else {
+    const title = asset.split('-').map((part) => part[0].toUpperCase() + part.slice(1)).join(' ');
+    content = `# ${title} — ${featureId}\n\n## Summary\n\nPending.\n`;
+  }
+  fs.mkdirSync(path.dirname(absolute), { recursive: true });
+  fs.writeFileSync(absolute, content, 'utf8');
+  if (asset !== 'completion') {
+    const kind = ['verification', 'manual-test'].includes(asset) ? 'verification' : 'review';
+    registerAsset(model, relative, kind);
+    saveModel(root, model);
+  }
+  process.stdout.write(`${refresh ? 'refreshed' : 'created'} ${relative}\n`);
 }
 
 function cmdRepair(root, workflow, featureId) {
@@ -1388,14 +1920,19 @@ function cmdRepair(root, workflow, featureId) {
 
 function usage() {
   process.stdout.write(`Usage:
-  dev-flow-status authorize --level <XS|S> [--note <text>]
+  dev-flow-status start <feature-id> --level <XS|S|M|L> --topology <topology> \\
+    [--risk-labels a,b] [--execution <light|standard>] [--requirements <state>] \\
+    [--evidence-result <result>] [--existing-diff <unrelated|in-scope> --reason <text>] [--dry-run]
+  dev-flow-status next [feature-id]
+  dev-flow-status scaffold <feature-id> --asset <kind> [--refresh]
+  dev-flow-status authorize --level <XS|S|M> [--note <text>]
   dev-flow-status init <feature-id> --level <XS|S|M|L> --profile <profile> \\
     --topology <topology> --evidence-result <result> [--entry-gate <gate>] \
     [--note <text>] [--risk-labels a,b] [--lightweight-l]
   dev-flow-status activate <feature-id>
   dev-flow-status add-asset <feature-id> --path <repo-path> --kind <kind>
   dev-flow-status complete-gate <feature-id> <gate> \\
-    [--evidence-file <repo-path> --heading <markdown-heading>]
+    [--evidence-inline <summary> | --evidence-file <repo-path> --heading <markdown-heading>]
   dev-flow-status promote-gate <feature-id> <risk-gate> --to <light|full> --reason <text>
   dev-flow-status record-risk-evidence <feature-id> <label> \\
     [--mode <inline|report>] [--conclusion <text>] [--verification <text>] [--report <path>]
@@ -1404,8 +1941,10 @@ function usage() {
   dev-flow-status record-validation <feature-id> --command <command>
   dev-flow-status complete-verification <feature-id> --command <command> \\
     [--report <path>] [--manual-test <path>]
+  dev-flow-status propose-risk <feature-id> --id <AR-xxx> --step <step> --reason <reason>
   dev-flow-status accept-risk <feature-id> --id <AR-xxx> \\
-    --step <manual-test-step-id> --reason <reason> --evidence <user-evidence>
+    --proposal-token <token> --evidence <exact-user-reply>
+  dev-flow-status mark-retrospective <feature-id> --reason <reason>
   dev-flow-status repair <feature-id>
 `);
 }
@@ -1421,6 +1960,17 @@ function main() {
   const workflow = loadWorkflow(root);
 
   switch (command) {
+    case 'start':
+      if (!positional[1]) fail('start requires <feature-id>');
+      cmdStart(root, workflow, positional[1], flags);
+      break;
+    case 'next':
+      cmdNext(root, workflow, positional[1]);
+      break;
+    case 'scaffold':
+      if (!positional[1]) fail('scaffold requires <feature-id>');
+      cmdScaffold(root, workflow, positional[1], flags);
+      break;
     case 'authorize':
       cmdAuthorize(root, workflow, flags);
       break;
@@ -1465,6 +2015,14 @@ function main() {
     case 'accept-risk':
       if (!positional[1]) fail('accept-risk requires <feature-id>');
       cmdAcceptRisk(root, workflow, positional[1], flags);
+      break;
+    case 'propose-risk':
+      if (!positional[1]) fail('propose-risk requires <feature-id>');
+      cmdProposeRisk(root, workflow, positional[1], flags);
+      break;
+    case 'mark-retrospective':
+      if (!positional[1]) fail('mark-retrospective requires <feature-id>');
+      cmdMarkRetrospective(root, workflow, positional[1], flags);
       break;
     case 'repair':
       if (!positional[1]) fail('repair requires <feature-id>');

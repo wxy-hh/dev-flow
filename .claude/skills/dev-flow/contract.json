@@ -1,8 +1,8 @@
 {
-  "workflow_version": "0.9.0",
-  "status_schema": "3",
-  "completion_schema": "1",
-  "authorization_schema": "1",
+  "workflow_version": "1.0.0",
+  "status_schema": "4",
+  "completion_schema": "2",
+  "authorization_schema": "2",
   "risk_labels": [
     "security",
     "data",
@@ -55,7 +55,8 @@
     "risk-minimal": {
       "levels": [
         "XS",
-        "S"
+        "S",
+        "M"
       ],
       "requires_risk_labels": true
     },
@@ -110,6 +111,12 @@
     "multi-chain",
     "coordinated-rollback"
   ],
+  "topology_levels": {
+    "local": ["XS", "S", "M"],
+    "shared-contract": ["M", "L"],
+    "multi-chain": ["L"],
+    "coordinated-rollback": ["L"]
+  },
   "classification_evidence_results": [
     "verified",
     "partial",
@@ -119,12 +126,39 @@
     "inline",
     "report"
   ],
+  "process_modes": [
+    "normal",
+    "retrospective"
+  ],
+  "existing_diff_dispositions": [
+    "clean",
+    "unrelated",
+    "in-scope"
+  ],
+  "execution_modes": [
+    "light",
+    "standard"
+  ],
+  "requirement_states": [
+    "missing-or-unclear",
+    "openspec",
+    "documented-unconfirmed",
+    "confirmed"
+  ],
+  "manual_test_results": [
+    "pending",
+    "delegated",
+    "passed",
+    "failed",
+    "skipped"
+  ],
   "line_budgets": {
     ".claude/skills/dev-flow/SKILL.md": 240,
     ".claude/rules/project-workflow.template.md": 260,
     ".claude/skills/dev-flow/references/protocol.md": 200,
     ".claude/skills/dev-flow/references/standard-ml.md": 170,
     ".claude/skills/dev-flow/references/risk-gates.md": 120,
+    ".claude/skills/dev-flow/references/status-cli.md": 160,
     "per_downstream_skill_max": 180
   }
 }

@@ -409,14 +409,21 @@ write_finalizable() {
   printf '%s\n' \
     '---' \
     'dev_flow_status:' \
-    '  schema_version: "3"' \
+    '  schema_version: "4"' \
     "  feature_id: \"$id\"" \
     '  level: "L"' \
     '  profile: "standard"' \
     '  risk_labels: []' \
     '  risk_evidence: {}' \
+    '  process:' \
+    '    mode: "normal"' \
+    '    started_at: "2026-01-01T00:00:00Z"' \
+    '    baseline_business_diff_fingerprint: "0000000000000000000000000000000000000000"' \
+    '    existing_diff: "clean"' \
+    '    reason: "none"' \
     '  classification:' \
-    '    topology: "local"' \
+    '    topology: "shared-contract"' \
+    '    execution: "light"' \
     '    evidence_result: "verified"' \
     '    note: "fixture"' \
     '  current_gate: "verification-before-completion"' \
@@ -452,9 +459,11 @@ write_finalizable() {
     '    business_diff_fingerprint: "unknown"' \
     '  gate_evidence:' \
     '    rollback_units:' \
+    '      mode: "report"' \
     "      path: \"docs/dev-flow/reviews/${id}-verification.md\"" \
     '      heading: "Rollback summary"' \
     '    code_review:' \
+    '      mode: "report"' \
     "      path: \"docs/dev-flow/reviews/${id}-code-review.md\"" \
     '      heading: "Findings"' \
     '  accepted_risks: []' \
@@ -467,7 +476,7 @@ write_finalizable() {
   printf '%s\n' \
     '---' \
     'dev_flow_completion:' \
-    '  schema_version: "1"' \
+    '  schema_version: "2"' \
     "  feature_id: \"$id\"" \
     '  level: "L"' \
     '  outcome: "verified"' \
@@ -481,6 +490,9 @@ write_finalizable() {
     '  commits: []' \
     '  pull_request: "none"' \
     '  accepted_risks: []' \
+    '  process_mode: "normal"' \
+    '  retrospective_reason: "none"' \
+    '  retrospective_evidence: "none"' \
     '---' \
     "# completion $id" > "$tmp/docs/dev-flow/features/$id/completion.md"
   # ensure feature SDD content exists (checkpoint already for alpha/beta)

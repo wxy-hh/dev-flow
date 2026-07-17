@@ -131,13 +131,13 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# v0.9: refuse apply while active status exists; then clear and succeed
+# v1.0: continue refusing apply while a pre-v1.0 active status exists.
 # ---------------------------------------------------------------------------
 if (cd "$repo" && "$upgrade" --target "$target" --apply) >/tmp/upgrade-refuse.out 2>&1; then
   fail "apply should refuse when active status exists"
   cat /tmp/upgrade-refuse.out
 else
-  if rg -q 'active v0.8/v0.9 feature status present' /tmp/upgrade-refuse.out; then
+  if rg -q 'active pre-v1.0 feature status present' /tmp/upgrade-refuse.out; then
     pass "apply refuses active feature status with zero mutations"
   else
     fail "apply refuses active feature status with zero mutations"
@@ -361,7 +361,7 @@ printf '%s\n' 'workflow_version: 0.7.0' \
   > "$target2/.claude/runtime/dev-flow/feat-active.check-ok"
 printf '%s\n' 'legacy progress' > "$target2/.claude/runtime/sdd/progress.md"
 printf '%s\n' 'legacy task' > "$target2/.claude/runtime/sdd/task-1.md"
-# No active status.md: v0.9 refuse gate would block apply before preflight.
+# No active status.md: the pre-v1.0 refusal gate would block before preflight.
 # Feature dir may exist without status for rollback of other assets.
 printf '%s\n' '# feature note' > "$target2/docs/dev-flow/features/feat-active/note.md"
 

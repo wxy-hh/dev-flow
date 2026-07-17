@@ -22,5 +22,5 @@
 - 标准 M/L 和携带风险标签的任务的关键 HUMAN GATE 不能被自动跨过；`code-review` 不能替代实现前 `plan-review`。
 - 标准 L 中，`writing-plans` 后要先跑 `requirements-coverage`，覆盖通过后再跑 `plan-review`；不要用对话里的实现计划替代正式计划文档。
 - `/review-diff` 只报告真实风险，不输出风格偏好。
-- `/finish` 必须有新鲜验证证据，验证失败时不能给出“完成”结论。v0.9：logic-complete 后可 Git；`not now` 不阻塞 Git；compact 含 untracked 删除时须 exact token。
+- `/finish` 先调用 `dev-flow-status next`，一次推进一个 blocker；必须有新鲜验证证据。1.0 中 logic-complete 后可 Git，`not now` 不阻塞，compact 含 untracked 删除时须 exact token。
 - Git 提交和推送默认由用户确认后再执行。

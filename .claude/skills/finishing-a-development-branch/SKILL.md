@@ -7,7 +7,7 @@ description: 实现完成且需要决定如何收尾时使用：先验证与 fea
 
 实现完成后的收尾。验证前不给「完成」结论；用户未精确确认前不删除/压缩中间资产。
 
-先读 `.claude/rules/project-workflow.md`（验证配置、OpenSpec baseline、分支约束）与 `dev-flow/references/protocol.md` 资产优先级。有新鲜验证时仍须核对工作区无新未验证改动。`living-baseline: true` 时收尾前 archive change 并回写 baseline；`false` 时只在摘要说明 OpenSpec 为 point-in-time。
+先读项目 workflow 与 protocol。有新鲜验证时仍核对无新改动。每轮第一条控制命令固定为 `dev-flow-status next [feature-id]`；只推进它输出的一条 command，然后重新 next。这样重复调用幂等，不跨 blocker。
 
 ## 第 1 步：完成前验证（状态 A）
 
@@ -26,7 +26,7 @@ description: 实现完成且需要决定如何收尾时使用：先验证与 fea
 
 ## 第 2 步：logic-complete 与可选 dry-run（状态 B）
 
-生成/更新：
+生成/更新 feature，并用 `dev-flow-status scaffold <feature-id> --asset completion [--refresh]` 生成 completion schema 2：
 
 ```text
 <FEATURE_ROOT>/<feature-id>/feature.md

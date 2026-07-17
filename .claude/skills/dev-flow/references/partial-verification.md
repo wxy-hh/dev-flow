@@ -5,7 +5,7 @@
 - `verified`：所有必需行为步骤均为 `passed`，验证证据新鲜，`accepted_risks` 为空，无未关闭 partial-acceptance。
 - `partial`：无 `failed` 或 pending 步骤；每个 `skipped` 关联唯一 `AR-xxx`；用户明确接受每个风险；手测表、`status.accepted_risks`、`<REVIEW_ROOT>/<feature-id>-partial-acceptance.md` 三方一致。
 
-pending、空实测、`待执行`、缺风险关联或 `failed` → feature-check 失败。
+pending、`delegated`、空实测、`待执行`、缺风险关联或 `failed` → feature-check 失败。delegated 只表示已交给人/环境，未形成结果。
 
 ## 手测机器可读源
 
@@ -14,13 +14,13 @@ pending、空实测、`待执行`、缺风险关联或 `failed` → feature-chec
 ```yaml
 manual_test_steps:
   - id: MT-001
-    result: passed|failed|skipped
+    result: pending|delegated|passed|failed|skipped
     risk_id: null   # skipped 时必填 AR-xxx
     observed: "..."
     evidence: "..."
 ```
 
-人读固定七列：`ID | 操作 | 预期 | 结果 | 实测 | 证据 | 风险 ID`。`结果` 仅 `passed|failed|skipped`。仅有表格时 validator 尝试解析，失败则 FAIL；frontmatter 与表格同时存在时，两边的 ID 集合及每项 `result`、`risk_id` 必须一致。
+人读固定七列：`ID | 操作 | 预期 | 结果 | 实测 | 证据 | 风险 ID`。`pending|delegated` 都是未完成，`passed|failed|skipped` 是终态。仅有表格时 validator 尝试解析；frontmatter 与表格并存时 ID、result、risk_id 必须一致。
 
 frontmatter 可选 `method`（`browser|device|api|cli|automated`）：
 
@@ -32,11 +32,12 @@ frontmatter 可选 `method`（`browser|device|api|cli|automated`）：
 ## accept-risk
 
 ```text
+dev-flow-status propose-risk <feature-id> --id AR-xxx --step MT-00N --reason <reason>
 dev-flow-status accept-risk <feature-id> --id AR-xxx \
-  --step MT-00N --reason <reason> --evidence <user-evidence>
+  --proposal-token <one-time-token> --evidence <exact-user-reply>
 ```
 
-每次成功追加/更新 partial-acceptance 中对应 `AR-xxx`（步骤、原因、用户原话、确认时间）。无任何 skipped 时不得生成或保留有效 partial-acceptance；`repair` 不得凭空创建 AR。
+proposal 使用 `[HANDOFF]` 停等；token 绑定 feature/AR/step/reason/fingerprint，丢失、过期、消费或漂移后重新 propose。accept 只接受明确“接受具名残余风险并继续/收尾”的回复。成功后追加 partial-acceptance；无 skipped 时不得保留有效 AR，`repair` 不得创建 AR。
 
 ## check-ok stamp
 

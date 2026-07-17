@@ -118,7 +118,7 @@ apply() {
   local backup backup_parent stamp candidate
   stamp=$(date -u +%Y%m%dT%H%M%SZ)
 
-  # v0.9: refuse upgrade when target has active feature status.md (zero mutations).
+  # v1.0: refuse upgrade when target has active feature status.md (zero mutations).
   if ! node -e '
     const fs=require("fs");
     const path=require("path");
@@ -137,7 +137,7 @@ apply() {
       if (fs.existsSync(status)) active.push({id: ent.name, path: path.relative(targetRoot, status)});
     }
     if (active.length) {
-      console.error("ERROR active v0.8/v0.9 feature status present; refuse upgrade with zero modifications:");
+      console.error("ERROR active pre-v1.0 feature status present; refuse upgrade with zero modifications:");
       for (const a of active) console.error("  - " + a.id + " (" + a.path + ")");
       console.error("Finish, terminate, or manually clean active features under the previous workflow, then retry.");
       process.exit(2);

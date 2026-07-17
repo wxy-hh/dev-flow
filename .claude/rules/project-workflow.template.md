@@ -71,7 +71,7 @@ Claude 工作流入口依次读取 `.claude/rules/project-workflow.md`、`CLAUDE
 | `<COMMAND_ROOT>` | `.claude/commands` | Claude 命令目录 |
 | `<RULE_ROOT>` | `.claude/rules` | Claude 规则目录 |
 | `<RUNTIME_ROOT>` | `<detect-runtime-root>` | 运行时台账和临时交接目录 |
-| `<SDD_PROGRESS>` | `<detect-sdd-progress-path>`（v0.9 推荐 `.claude/runtime/sdd/<feature-id>/progress.md`） | feature-scoped 子任务执行进度台账 |
+| `<SDD_PROGRESS>` | `<detect-sdd-progress-path>`（1.0 推荐 `.claude/runtime/sdd/<feature-id>/progress.md`） | feature-scoped 子任务执行进度台账 |
 | `<FEATURE_ROOT>` | `<detect-feature-root>` | 需求、计划、覆盖和回撤资产目录 |
 | `<REVIEW_ROOT>` | `<detect-review-root>` | 审查和验证报告目录 |
 | `<PLAN_ROOT>` | `<detect-plan-root>` | 设计和计划类文档目录 |
@@ -111,13 +111,13 @@ YYYY-MM-DD-<short-kebab-name>
 | 实现计划 | `<FEATURE_ROOT>/<feature-id>/实现计划.md` |
 | 需求覆盖矩阵 | `<FEATURE_ROOT>/<feature-id>/requirements-coverage.md` |
 | 回撤单元 | `<FEATURE_ROOT>/<feature-id>/rollback-units.md` |
-| 计划审查 | `<REVIEW_ROOT>/YYYY-MM-DD-<feature-id>-plan-review.md` |
-| 代码审查 | `<REVIEW_ROOT>/YYYY-MM-DD-<feature-id>-code-review.md` |
-| 完成前验证 | `<REVIEW_ROOT>/YYYY-MM-DD-<feature-id>-verification.md` |
-| 手动行为验证脚本 | `<REVIEW_ROOT>/YYYY-MM-DD-<feature-id>-manual-test.md` |
+| 计划审查 | `<REVIEW_ROOT>/<feature-id>-plan-review.md` |
+| 代码审查 | `<REVIEW_ROOT>/<feature-id>-code-review.md` |
+| 完成前验证 | `<REVIEW_ROOT>/<feature-id>-verification.md` |
+| 手动行为验证脚本 | `<REVIEW_ROOT>/<feature-id>-manual-test.md` |
 | 最终功能说明 | `<FEATURE_ROOT>/<feature-id>/feature.md` |
 | 最终完成报告 | `<FEATURE_ROOT>/<feature-id>/completion.md` |
-| 安全审查 | `<REVIEW_ROOT>/YYYY-MM-DD-<feature-id>-security-review.md` |
+| 安全审查 | `<REVIEW_ROOT>/<feature-id>-security-review.md` |
 | 子任务台账 | `<SDD_PROGRESS>` |
 
 ### 资产保留
@@ -136,7 +136,7 @@ YYYY-MM-DD-<short-kebab-name>
 
 ## 状态文件
 
-标准 M/L、轻量 L 和任何需要跨技能交接的任务都维护 `<FEATURE_ROOT>/<feature-id>/status.md`。schema、字段取值、更新规则和恢复中断流程的唯一来源是 `dev-flow/references/protocol.md` 与 `contract.json`；**创建与更新一律使用** `dev-flow-status` CLI，本文件不维护字段副本。
+标准 M/L、轻量 L、risk-minimal 和 retrospective 任务维护 `<FEATURE_ROOT>/<feature-id>/status.md`。schema、process/基线语义和恢复规则的唯一来源是 `dev-flow/references/protocol.md` 与 `contract.json`；**创建与更新一律使用** `dev-flow-status` CLI，本文件不维护字段或命令副本。
 
 ## 项目能力
 

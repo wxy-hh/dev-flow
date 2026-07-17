@@ -39,6 +39,81 @@ export const STANDARD_REQUIREMENT_ENTRY_GATES = Object.freeze([
   'writing-plans',
 ]);
 
+export const REQUIREMENT_ENTRY_BY_STATE = Object.freeze({
+  'missing-or-unclear': 'req-probe',
+  openspec: 'openspec',
+  'documented-unconfirmed': 'grillme',
+  confirmed: 'writing-plans',
+});
+
+export function validateTopology(contract, level, topology) {
+  if (!contract.classification_topologies.includes(topology)) {
+    return `topology must be one of: ${contract.classification_topologies.join(', ')}`;
+  }
+  const allowed = contract.topology_levels?.[topology] ?? [];
+  if (!allowed.includes(level)) {
+    return `topology ${topology} requires level ${allowed.join(' or ') || '(none)'}; got ${level}`;
+  }
+  return null;
+}
+
+/** Translate high-level start inputs into the existing profile/route primitives. */
+export function deriveStartPlan(contract, input) {
+  const { level, topology } = input;
+  const riskLabels = input.riskLabels ?? [];
+  const execution = input.execution;
+  const requirements = input.requirements;
+  const processMode = input.processMode ?? 'normal';
+  if (!contract.levels.includes(level)) {
+    throw new Error(`level must be one of: ${contract.levels.join(', ')}`);
+  }
+  const topologyError = validateTopology(contract, level, topology);
+  if (topologyError) throw new Error(topologyError);
+  if (['XS', 'S'].includes(level) && execution) {
+    throw new Error(`${level} derives the light route and must not set --execution`);
+  }
+  if (['M', 'L'].includes(level) && !contract.execution_modes.includes(execution)) {
+    throw new Error(`${level} requires --execution light|standard`);
+  }
+  if (execution === 'standard' && !contract.requirement_states.includes(requirements)) {
+    throw new Error('standard execution requires --requirements');
+  }
+  if (execution !== 'standard' && requirements) {
+    throw new Error('--requirements is only valid with --execution standard');
+  }
+
+  if (processMode === 'normal' && ['XS', 'S'].includes(level) && riskLabels.length === 0) {
+    return { kind: 'authorize', route: 'xs-s', level, profile: null };
+  }
+  if (processMode === 'normal' && level === 'M' && execution === 'light' && riskLabels.length === 0) {
+    return { kind: 'authorize', route: 'light-m', level, profile: null };
+  }
+
+  let profile = 'standard';
+  let lightweightL = false;
+  if (
+    (riskLabels.length > 0 || processMode === 'retrospective') &&
+    (['XS', 'S'].includes(level) || (level === 'M' && execution === 'light'))
+  ) {
+    profile = 'risk-minimal';
+  } else if (level === 'L' && execution === 'light') {
+    lightweightL = true;
+  }
+  const entryGate = execution === 'standard' && processMode === 'normal'
+    ? REQUIREMENT_ENTRY_BY_STATE[requirements]
+    : undefined;
+  const derived = deriveRoute(contract, {
+    level,
+    profile,
+    riskLabels,
+    lightweightL,
+    entryGate,
+    processMode,
+  });
+  if (derived.route === 'unknown') throw new Error('classification does not map to a supported route');
+  return { kind: 'status', level, profile, lightweightL, entryGate, ...derived };
+}
+
 export function nextActionForGate(gate) {
   if (gate === 'requirement_confirmation' || gate === 'implementation_approval') {
     return `await ${gate}`;
@@ -92,6 +167,7 @@ export function deriveRoute(contract, input) {
   const profile = input.profile;
   const labels = input.riskLabels ?? [];
   const lightweightL = Boolean(input.lightweightL);
+  const processMode = input.processMode ?? 'normal';
   const rank = gateRank(contract);
   const riskGates = riskGatesForLabels(contract, labels);
 
@@ -105,7 +181,7 @@ export function deriveRoute(contract, input) {
   let initialNextAction = nextActionForGate(initialCurrentGate);
 
   if (profile === 'risk-minimal') {
-    route = 'risk-minimal';
+    route = level === 'M' ? 'risk-minimal-m' : 'risk-minimal';
     humanGates.implementation_approval.required = true;
   } else if (profile === 'standard' && level === 'M') {
     // Lightweight M does not create status; when status exists it is standard M.
@@ -141,6 +217,14 @@ export function deriveRoute(contract, input) {
     route = 'xs-s';
   }
 
+  if (processMode === 'retrospective' && route !== 'unknown') {
+    humanGates.requirement_confirmation.required = false;
+    humanGates.implementation_approval.required = true;
+    if (!codeReview.required) codeReview = { required: true, evidence_level: 'light' };
+    initialCurrentGate = 'implementation_approval';
+    initialNextAction = nextActionForGate(initialCurrentGate);
+  }
+
   // Route-derived code-review (not a risk_gates field). Any risk label raises
   // at least light; high-consequence labels raise full. Never forces plan-review.
   if (labels.length > 0) {
@@ -157,7 +241,7 @@ export function deriveRoute(contract, input) {
     else if (want >= 1) codeReview = { required: true, evidence_level: 'light' };
   }
 
-  if (route === 'risk-minimal' || route === 'lightweight-l') {
+  if (processMode !== 'retrospective' && (route === 'risk-minimal' || route === 'risk-minimal-m' || route === 'lightweight-l')) {
     const firstPreImplementationGate = contract.risk_gates
       .filter((gate) => gate !== 'behavior_verification' && riskGates[gate] !== 'none')
       .map((gate) => RISK_GATE_COMPLETION_GATES[gate])[0];
@@ -194,15 +278,16 @@ export function inferLightweightL(level, humanGates) {
  */
 export function codeReviewObligation(
   contract,
-  { level, profile, humanGates, lightweightL, riskLabels = [] },
+  { level, profile, humanGates, lightweightL, riskLabels = [], processMode = 'normal', execution },
 ) {
   const isLightL =
-    lightweightL === true || inferLightweightL(level, humanGates);
+    lightweightL === true || execution === 'light' || (processMode !== 'retrospective' && inferLightweightL(level, humanGates));
   const derived = deriveRoute(contract, {
     level,
     profile,
     riskLabels,
     lightweightL: isLightL,
+    processMode,
   });
   return derived.codeReview;
 }
@@ -240,14 +325,17 @@ export function labelsWithNoGateIncrement(contract, labels, baseRouteRiskGates) 
  */
 export function routeObligations(
   contract,
-  { level, profile, riskLabels = [], humanGates = {}, riskGates = {} },
+  { level, profile, riskLabels = [], humanGates = {}, riskGates = {}, processMode = 'normal', execution },
 ) {
-  const lightweightL = inferLightweightL(level, humanGates);
+  const lightweightL = level === 'L' && (
+    execution === 'light' || (processMode !== 'retrospective' && inferLightweightL(level, humanGates))
+  );
   const route = deriveRoute(contract, {
     level,
     profile,
     riskLabels,
     lightweightL,
+    processMode,
   });
   const effectiveRiskGates = {};
   for (const gate of contract.risk_gates) {
@@ -255,17 +343,24 @@ export function routeObligations(
   }
 
   const approvalProcessGates = [];
-  if (route.route === 'standard-m' || route.route === 'standard-l') {
+  if (processMode !== 'retrospective' && (route.route === 'standard-m' || route.route === 'standard-l')) {
     approvalProcessGates.push('writing-plans');
   }
   for (const gate of contract.risk_gates) {
     if (gate === 'behavior_verification') continue;
     if (effectiveRiskGates[gate] !== 'none') {
-      approvalProcessGates.push(RISK_GATE_COMPLETION_GATES[gate]);
+      if (processMode !== 'retrospective') approvalProcessGates.push(RISK_GATE_COMPLETION_GATES[gate]);
     }
   }
 
-  const finishProcessGates = [...approvalProcessGates];
+  const finishProcessGates = processMode === 'retrospective'
+    ? contract.risk_gates
+        .filter((gate) => (
+          !['requirements_coverage', 'plan_review', 'behavior_verification'].includes(gate) &&
+          effectiveRiskGates[gate] !== 'none'
+        ))
+        .map((gate) => RISK_GATE_COMPLETION_GATES[gate])
+    : [...approvalProcessGates];
   if (route.codeReview.required) finishProcessGates.push('code-review');
   if (route.route !== 'xs-s' && route.route !== 'unknown') {
     finishProcessGates.push('verification-before-completion');

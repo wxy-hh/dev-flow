@@ -66,6 +66,6 @@ grillme → [HUMAN GATE:requirement_confirmation] → writing-plans → requirem
 
 如果 `tasks.md` 已经足够具体，`writing-plans` 可以引用它并只补充项目内执行细节，不要重复制造第二套互相冲突的计划。从 `writing-plans` 起，所有实现层产物都写到 `<FEATURE_ROOT>/<feature-id>/` 或 `<REVIEW_ROOT>/`；OpenSpec 目录只保留需求、设计和 delta spec。
 
-OpenSpec 完成后，在分类回合以 `init --entry-gate openspec` 创建的 `<FEATURE_ROOT>/<feature-id>/status.md` 中登记 change 资产，再调用 `complete-gate <feature-id> openspec`，让 CLI 把 `next_action` 推进为 `run grillme`。如果独立使用 OpenSpec 且调用方明确要求状态资产，才初始化 feature/status。
+OpenSpec 完成后，在分类回合以 `start --execution standard --requirements openspec` 创建的 status 中登记 change 资产，再 `complete-gate <feature-id> openspec` 推进到 grillme。独立使用且明确要求状态资产时才初始化。
 
 完成 OpenSpec 变更包后，不提前输出 `[HUMAN GATE:requirement_confirmation]`。按 `dev-flow/references/protocol.md` 输出 `[HANDOFF]`：`Current gate: openspec`，`Next skill: grillme`，`Auto-continue: yes`；由 `grillme` 压测并更新 OpenSpec 后统一输出唯一一次需求确认门禁。只有用户明确要求单独使用 OpenSpec、不进入 dev-flow 标准 M/L 链路时，才由 OpenSpec 自己输出需求确认并停止。

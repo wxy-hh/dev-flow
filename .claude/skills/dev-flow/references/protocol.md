@@ -1,62 +1,31 @@
-# 交接协议：HUMAN GATE / HANDOFF / 恢复 / status.md 契约
+# HUMAN GATE、HANDOFF 与持久化契约
 
-被 dev-flow `SKILL.md` 引用；只在需要交接细节、恢复中断流程或更新 `status.md` 时读取。
+本文件只定义长期协议语义。命令语法见 `status-cli.md`，项目路径与能力见 `project-workflow.md`。
 
 ## HUMAN GATE 硬协议
 
-所有需要用户确认的停顿点使用同一格式：
-
 ```text
 [HUMAN GATE:<requirement_confirmation|implementation_approval>]
-请确认 <需要确认的边界、计划或风险>。
-确认后我会进入 <next step>。
+请确认 <边界、计划或风险>。
+确认后进入 <next step>。
 [/HUMAN GATE]
 ```
 
-规则：
+- 输出 HUMAN GATE，或 `[HANDOFF]` 中出现 `Auto-continue: no` 后，当前回合必须停止；不得继续计划、写业务代码、跑后续门禁或把 `auto_continue` 改为 true。
+- `implementation_approval` 前，实现任务只能列出，不能标记进行中/完成。标准 M/L 需要两个 HUMAN GATE；轻量 L 与 risk-minimal 只需 implementation approval。两个 gate 不能复用同一回复。
+- 只有用户后续明确“确认”“继续”或“接受风险并继续”才能 `confirm-human`；保存原话。外部消息已明确确认需求基线且无未决时，可直接登记 requirement evidence。
+- process/risk gate 不能用 HUMAN GATE 代替；plan-review 不能由实现后的 code-review 替代，反向也不成立。
+- `accept-risk` 比通用 HUMAN GATE 严格：必须接受刚列出的具名残余风险并明确继续/收尾。“确认”“继续”“完成吧”“行”不能消费 risk proposal。
 
-- 一旦输出 `[HUMAN GATE:<gate-id>]` 或 `[HANDOFF]` 中 `Auto-continue: no`，当前回合必须停止；不得继续写计划、执行代码、运行后续门禁，或在同一回合把 `auto_continue: false` 改成 `true`。
-- `implementation_approval` 确认前，实现任务列表、Todo 或子任务执行计划只能停留在"已列出"状态，不得标记为进行中或已完成——这是"没确认就直接改代码"的常见绕过方式。
-- 已输出 HUMAN GATE 时，只有用户后续明确回复“确认”“继续”或“接受风险并继续”，才能把 `human_gates.<gate-id>.status` 写为 `confirmed`。尚未输出需求确认门禁、但用户当前消息已明确指定某份需求为确认基线且无未决问题时，可按下方“外部已确认需求”规则直接登记；两种情况都必须保存用户原话或接受风险理由作为 `evidence`。
-- 标准 M/L 的 `requirement_confirmation` 和 `implementation_approval` 都是必需 gate（`required: true`）。
-- 轻量 L 和 risk-minimal 只需 `implementation_approval`（`required: true`）；`requirement_confirmation.required` 必须为 `false`。完成检查按声明的 `required` 字段区分轻量/标准，不再仅凭 `level: L` 强制两门。
-- 标准 M/L 的两个 HUMAN GATE 发生在计划前后不同阶段，不能复用同一条回复；implementation approval 必须基于已完成的计划与实现前审查另行确认。
-- `plan-review` 是实现前计划审查，不能由实现后的 `code-review` 替代；`code-review` 只审查已写代码，不能倒填为计划门禁通过。
+## 半自动推进边界
 
-## 半自动门禁模式
+无副作用、无阻塞的 writing-plans → coverage（触发时）→ plan-review → rollback/security 可以自动推进；写业务代码前必须停在 implementation approval。以下情况必须停：需求缺口/冲突、CRITICAL/HIGH、无法验证或回撤、残余风险、重分级、提交/推送/合并/删除，以及任何 `Auto-continue: no`。
 
-标准 M/L 默认自动读取上一步产物、按风险维度自动推进已触发且无副作用的检查门禁，在关键决策点停下确认。
+retrospective 不追补 requirement confirmation、writing-plans、requirements-coverage 或 plan-review，但仍要求 implementation approval、风险门、至少 light code-review、行为验证和 feature-check；任何无风险 XS/S/light M 也必须有 status。该 approval 允许继续审查、修复和验证现有实现，不追认过去实现。
 
-自动继续的场景：
+## 资产读取优先级与 HANDOFF
 
-- `writing-plans` 完成后按 `[HANDOFF]` 的 `Next skill` 继续；标准 L 默认下一跳 `requirements-coverage`。
-- 需求覆盖无阻塞缺口时，至少继续到 `plan-review`。
-- `plan-review` 无 CRITICAL/HIGH 时可自动进入实现前的回撤/安全检查；下一步要写业务代码前必须停在 `implementation_approval`。
-- `rollback-units` 触发 `full` 时设计完成后停在实现前；`light` 时把证据写入 `status.md`。
-- `rollback_units: full` 时实现完成后先审计再 `code-review`；无 CRITICAL/HIGH 阻塞项时进入验证。
-- light 路线 code-review 用 `gate_evidence.code_review`（path+heading）；标准 L 始终独立报告。
-
-必须停下询问的场景：
-
-- 任意 `[HUMAN GATE:<gate-id>]` 已输出，或上一段 `[HANDOFF]` 写了 `Auto-continue: no`。
-- 需求边界固化后、进入 `writing-plans` 前；计划与实现前门禁完成后、写业务代码前。
-- `requirements-coverage` 出现 `MISSING`/`CONFLICT`/`OUT_OF_SCOPE`，或 L 级出现未接受的 `PARTIAL`/`UNVERIFIABLE`。
-- `plan-review` 出现 CRITICAL/HIGH；安全审查发现高风险残留；验证失败需要选择修复范围或接受风险。
-- finalizer dry-run 输出 `[ASSET FINALIZATION]` 后，当前回合必须停止；只接受精确回复 `compact` / `retain full` / `not now`。
-- 需要提交、回滚、合并、推送、创建 PR、删除文件或其他改变分支状态的动作；中途重分级、跳过已触发门禁或接受高风险残留。
-
-用户可覆盖默认衔接，例如"全自动继续到实现前""每一步都问我""只跑到 plan-review 停下""手动引用这些文件作为输入：..."。
-
-## 资产读取优先级（恢复中断流程）
-
-1. `<FEATURE_ROOT>/<feature-id>/status.md`：存在时先读 `dev_flow_status` frontmatter。
-2. `status.md` 的 `assets` 列表：按 `kind` 定位需求、计划、研究、审查、验证、规范资产。
-3. 上一段对话中的 `[HANDOFF]` 块，仅作最近一次交接的辅助线索。
-4. 都没有时，按项目适配层的标准资产路径模板查找最近产物。
-
-不要重跑已完成且仍然可信的步骤；`status.md` 不存在时才视为全新任务。
-
-## [HANDOFF] 格式与路由表
+恢复时依次读取：`<FEATURE_ROOT>/<feature-id>/status.md` → 其 `assets` → 最近 `[HANDOFF]` → 项目路径模板。不要重跑仍可信的已完成步骤；没有 status 才视为全新任务。
 
 ```text
 [HANDOFF]
@@ -67,32 +36,84 @@ Generated assets:
 - <path>
 Next skill: <skill-name>
 Next inputs:
-- <path>
-Auto-continue: yes/no
-Stop reason: <only when Auto-continue is no>
+- <path-or-fact>
+Auto-continue: yes|no
+Stop reason: <required when no>
 [/HANDOFF]
 ```
 
-| 阶段 | 默认产物 | 下一步 |
-|------|----------|--------|
-| `req-probe`/`openspec`（标准 M/L 链路） | 待压测的需求说明书或 `openspec/changes/<change-id>/` | 不输出 HUMAN GATE；`Auto-continue: yes` 进入 `grillme` |
-| `grillme`（标准 M/L 链路） | 已合并 Decision Log 的需求资产 | 输出唯一一次 `[HUMAN GATE:requirement_confirmation]` 并停止；用户确认后进入 `writing-plans` |
-| `writing-plans` | 实现计划、`status.md` | 自动进入已触发的 `requirements-coverage` |
-| `requirements-coverage` | 覆盖矩阵或 `status.md` 轻量结论 | 标准 M/L 通过后至少进入 `plan-review` |
-| `plan-review` | 计划审查报告或轻量结论 | 无 CRITICAL/HIGH 后进入实现前门禁；写代码前必须 `[HUMAN GATE:implementation_approval]` |
-| `security-reviewer` | 安全审查报告或轻量结论 | 高风险残留需停下确认 |
-| `rollback-units`（实现前） | 回撤单元设计 | `full` 时停下询问是否开始实现 |
-| `executing-plans` | 任务报告、回撤证据 | 仅在 `implementation_approval.status` 为 `confirmed` 后执行；接受残留风险也必须登记为 `confirmed` + evidence |
-| `rollback-units`（审计） | 补齐提交/diff/patch 证据 | 无未解释 `pending` 后进入 `code-review` |
-| `code-review` | 代码审查报告 | 无阻塞后进入 `verification-before-completion` |
-| `verification-before-completion` | 验证报告，必要时 manual-test | `complete-verification` 后进入 feature-check / finalization |
-| `finishing-a-development-branch` | final assets、dry-run、精确 finalization 回复、Git 选项 | 见 ASSET FINALIZATION |
+默认路由：需求入口 → grillme/需求确认 → writing-plans → coverage（标准 L 固定）→ plan-review → rollback/security → 实现确认 → executing-plans → code-review → verification → finish。`propose-risk` 复用同一 HANDOFF，`Next inputs` 携带 AR/step/reason/token，禁止创造第四种 marker。
 
-`<feature-id>` 按项目适配层命名，默认 `YYYY-MM-DD-<short-kebab-name>`；已有产物或 OpenSpec change id 已明确时沿用。
+## status.md schema 4
 
-## ASSET FINALIZATION 停等
+所有机器字段只由 status CLI 写。核心新增块：
 
-`/finish` 在 feature-check 通过并生成 final assets 后，读取 `dev_flow.artifacts.retention` 作为本次 dry-run 的默认 `compact|full`，只做 finalizer dry-run（**禁止同回合 `--confirm`**），输出：
+```yaml
+process:
+  mode: "normal|retrospective"
+  started_at: "<ISO-8601>"
+  baseline_business_diff_fingerprint: "<git-hash>"
+  existing_diff: "clean|unrelated|in-scope"
+  reason: "none|<reason>"
+```
+
+`clean|unrelated` 从 normal 开始，`in-scope` 从 retrospective 开始。`mark-retrospective` 只改变 mode、reason 和 pending authorization；原始 baseline 永不刷新。
+
+normal approval 比较时点是首个业务写入之前：start/init 记录 `B0`；流程/OpenSpec 资产不进入业务 hash；implementation approval 首次从 pending 转 confirmed 时，在任何 status/auth 写入前重算 `B1`，必须 `B1 === B0`。成功后的 activate/re-confirm 不再要求当前 hash 等于 `B0`；verification、check-ok、completion 以最终 `Bfinal` 证明新鲜度。
+
+单一 hash 不能证明 approval 后 unrelated 旧 diff 未被修改。强隔离使用干净工作区或 worktree，不新增 diff manifest。
+
+其它不变量：
+
+- `completed_gates` 只追加；`current_gate`/`next_action` 每次由 policy 派生。
+- `assets` 只登记真实、仓库相对、位于 feature/review roots 的路径与 kind；禁止 `path#heading`。
+- `gate_evidence` 复用 `inline|report`：inline 只有 summary，report 只有 path+唯一 heading；full 只允许已登记 report。security inline 必须列适用鉴权矩阵/分支和结果。
+- `risk_evidence` 仍承载标签的 conclusion/verification/report；full 必须 report。
+- risk-minimal 支持 XS/S/M，其中 M 派生 `risk-minimal-m`；normal 要求风险标签，仅无风险 retrospective 可为空且不改变风险责任。
+- active status-backed authorization 不能被重复 start 或低层 authorize 覆盖成 classified。
+- `accepted_risks` 只保存已签收 AR；manual-test、accepted risk、partial-acceptance 必须三方一致。`delegated` 仍是 pending。
+- authorization schema 2 的既有 `approval_basis` 增加 baseline，并绑定 mode、existing-diff、route/risk/protected roots 和前置资产内容；不比较批准后的当前 hash。
+
+## completion.md schema 2
+
+```yaml
+---
+dev_flow_completion:
+  schema_version: "2"
+  feature_id: "<feature-id>"
+  level: "<XS|S|M|L>"
+  outcome: "verified|partial"
+  completed_at: "<ISO-8601>"
+  retention: "compact|full"
+  workflow_version: "<current contract workflow_version>"
+  risk_labels: []
+  risk_approval_evidence: ""
+  risk_verification_summary: ""
+  business_diff_fingerprint: "<Bfinal>"
+  commits: []
+  pull_request: "none"
+  accepted_risks: []
+  process_mode: "normal|retrospective"
+  retrospective_reason: "none|<reason>"
+  retrospective_evidence: "none|<approval-evidence>"
+---
+```
+
+normal 的 retrospective 字段必须为 `none`；retrospective 必须有原始 reason 和 implementation approval evidence。active status 的 risk/process/accepted-risk 事实必须与 completion 一致。legacy finalized completion 无当前版本时按旧只读规则读取，不迁移或重命名。
+
+`verified` 要求 accepted risks 为空。`partial` 为每个 ID 恰好保留一个长期事实段，集合必须与 frontmatter 相同：
+
+```markdown
+## AR-001
+- reason: <residual risk>
+- evidence: <exact acceptance evidence>
+```
+
+## ASSET FINALIZATION
+
+logic-complete 是 feature-check 成功 + 有效 final assets + 新鲜 check-ok；此时可 Git，compact/full 只是资产维护。`/finish` 每次先调用 `next`，一次只推进一个 blocker，再按 verification → feature-check → final assets → logic-complete → finalizer dry-run 前进。
+
+dry-run 输出 inventory 后使用：
 
 ```text
 [ASSET FINALIZATION]
@@ -101,75 +122,12 @@ Verification: verified|partial
 Inventory: <sha256>
 Working set: <files/bytes>
 Long-term keep: <files/bytes>
-
 Reply exactly:
 - compact
 - retain full
 - not now
 [/ASSET FINALIZATION]
-
 Auto-continue: no
 ```
 
-当前回合必须停止。仅精确整行回复有效：
-
-| 回复 | 动作 |
-|------|------|
-| `compact` | `--retention=compact --confirm --inventory <sha256>`；**删除**中间资产，保留 feature/completion/可复用 manual-test；若存在 untracked 删除候选，普通 confirm 被拒，须额外 `--confirm-untracked "DELETE-UNTRACKED:<inventory-sha>:<count>"`（与 dry-run 输出的 exact token 一致） |
-| `retain full` | 同一 inventory 下 `--retention=full --confirm`；中间资产**归档**到 `archive/<timestamp>-<nonce>/{reviews,feature}/`（移动而非删除，无需 untracked token） |
-| `not now` | 不调用 finalizer；status/feature/completion/中间资产与 check-ok 保留；**不阻塞 Git**（logic-complete 已满足时 finish-guard 放行） |
-
-**logic-complete（v0.9）**：`feature-check --finish` 成功 + 有效 `feature.md`/`completion.md` + 新鲜 check-ok 即逻辑完成，**允许进入 Git**；compact/full 只是可选资产维护，不是 Git 前置。
-
-禁止把 implementation approval 或「继续/好的/完成吧」当 finalization 授权。`--confirm` 必须带 `--inventory`；hash 漂移或 untracked token 不匹配则零修改失败并要求重新 dry-run。状态机细节见 `finish.md` 与 finishing skill。
-
-## status.md v3 更新契约
-
-- `schema_version` 固定 `"3"`；字段取值见 contract.json 的 `asset_kinds`/`risk_labels`/`risk_gates`/`classification_topologies`/`classification_evidence_results`。
-- **所有 status 创建/更新只通过** `dev-flow-status` CLI（`init`/`authorize`/`activate`/`add-asset`/`complete-gate`/`promote-gate`/`record-risk-evidence`/`confirm-human`/`record-validation`/`complete-verification`/`accept-risk`/`repair`）；写后自动跑 validator，失败恢复原文件。`repair` 只重排确定性字段，不生成审批/验证/风险接受事实。
-- `implementation_approval` 的 candidate 与 `activate` 共用 validator approval stage：标准 M/L 的路线骨架及所有已触发实现前 gate 未完成时拒绝授权。所有 required HUMAN GATE **仅 `confirmed` 才完成**；implementation approval 确认后才写 approved 授权。用户说“接受风险并继续”仍记为 `confirmed` 并保留原话 evidence。
-- 标准 M/L 外部需求统一路由，并在分类同回合通过 `init --entry-gate` 落盘：已有完整但未确认的需求文档用 `grillme`；需求模糊或没有文档用 `req-probe`（OpenSpec 路线用 `openspec`）并自动进入 `grillme`；用户已明确确认需求基线且无未决问题时用 `writing-plans`，再以当前消息和需求文档执行 `confirm-human requirement_confirmation --status confirmed`。主动告知用户跳过 `req-probe`/`grillme`，**不得**因文档标题/frontmatter 含 confirmed 而自动确认。每个 process gate 完成后调用 `complete-gate`，由 CLI 更新可恢复的 `next_action`；`plan-review` 与 `implementation_approval` 在三条路线中都不省略。
-- 保留已有 `completed_gates`，只追加新完成 gate，不删除历史。
-- `assets` 只追加已存在或本次明确生成的真实路径，每项 `{path, kind}`，禁止 `path#heading`。
-- 可选 `gate_evidence`（仍为 schema v3）：`requirements_coverage: light` 或 light 路线 `code-review` 的证据在已有文件章节时，`complete-gate` 写入 `path` + 唯一 `heading`；validator 校验文件存在、位于 feature/review 根、标题恰好一次。
-- 每次更新设置 `current_gate`、`next_action`、`auto_continue`；恢复时 `current_gate` 表示最近进入/完成的稳定 gate，`next_action` 是 CLI 按路线派生的下一步。
-- 验证门禁用 `complete-verification`（或 `record-validation`）记录命令与报告；`complete-verification` 不 stamp，check-ok 只由 feature-check 写。
-- 携带风险标签时，`risk_evidence` 每个标签一项（`mode`/`conclusion`/`verification`/`report`），对应最低 gate 升为 `full` 时必须用 `report` 模式。
-- `risk-minimal` 只适用于带风险标签且 `risk_labels` 非空的 XS/S；带风险标签的 M/L 用 `profile: "standard"`。
-- 只有用户明确确认、继续或接受风险并继续，才能 `confirm-human` 把 HUMAN GATE 写为 `confirmed`，原话或理由写入 `evidence`。
-- `accepted_risks` 仅保存已接受的 `AR-xxx`；partial 三方一致规则见 `partial-verification.md`（手测步骤、`accepted_risks`、partial-acceptance）。
-- 写入门禁与 `write-authorization.json` 见 `status-cli.md`。
-
-## completion.md frontmatter
-
-```yaml
----
-dev_flow_completion:
-  schema_version: "1"
-  feature_id: "<feature-id>"
-  level: "<XS|S|M|L>"
-  outcome: "verified|partial"
-  completed_at: "<ISO 8601>"
-  retention: "compact|full"
-  workflow_version: "<current contract workflow_version; required for new completion>"
-  risk_labels: []
-  risk_approval_evidence: ""
-  risk_verification_summary: ""
-  business_diff_fingerprint: "<git-hash>"
-  commits: []
-  pull_request: "none"
-  accepted_risks: []
----
-```
-
-`dev_flow_completion.schema_version` 恒为 `"1"`，是独立 schema（不是 status v3）。有 active `status.md` 的新 completion 必须写当前 `contract.workflow_version` 和模板全部字段并通过严格校验；`risk_labels`、`accepted_risks` 必须分别与 active status 精确一致，`completed_at` 必须是 ISO-8601 时间。无 status 的历史 finalized completion 可省略版本，按最小旧契约校验并输出 WARN。`risk_labels` 非空时，`risk_approval_evidence` 和 `risk_verification_summary` 必填。
-
-`outcome: verified` 要求 `accepted_risks: []`，不写 accepted-risk 段。`outcome: partial` 必须列出已接受风险，不得写成「验证通过」，并在 frontmatter 后为每个 ID 恰好保留一个长期事实段；段的 ID 集合必须与 `accepted_risks` 一致：
-
-```markdown
-## AR-001
-- reason: <用户接受的剩余风险原因>
-- evidence: <明确用户证据或可审计证据>
-```
-
-新 completion 缺段、重复段、空 reason/evidence 或额外 AR 段均 FAIL。历史 finalized partial 缺少该段只 WARN，不倒填事实。
+本回合立即停止。下一回合仅精确回复有效：`compact` 删除中间资产，untracked 另需 dry-run 给出的 exact token；`retain full` 归档；`not now` 保留资产且不阻塞 Git。confirm 必须带同一 inventory；漂移零修改失败并重新 dry-run。finalized 查询不依赖 write authorization。

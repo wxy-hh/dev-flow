@@ -4,7 +4,7 @@
  * All workflow contract values (labels, gates, minimums, enums) come from
  * ../contract.json — the single source of truth. This script validates:
  *   - identifiers and repository-relative paths
- *   - v3 dev_flow_status frontmatter (schema, profiles, risk contract, assets)
+ *   - v4 dev_flow_status frontmatter (schema, process, profiles, risk contract, assets)
  * Prose rules live in the dev-flow skill; this file only checks machine facts.
  * Calls Layer 0 (policy) only. Must not write status, check-ok, or assets.
  * Must not call status CLI, feature-check, or feature-finalize.
@@ -18,6 +18,7 @@ import {
   loadContract,
   routeObligations,
   labelsWithNoGateIncrement,
+  validateTopology,
 } from './dev-flow-policy.mjs';
 
 const contract = loadContract();
@@ -292,6 +293,36 @@ function hasCompletedEvidence(value) {
   );
 }
 
+function hasSecurityInlineMatrix(summary) {
+  const value = String(summary || '');
+  const namesAuthScope = /(鉴权|认证|授权|auth(?:entication|orization)?)/i.test(value);
+  const namesMatrixOrBranches = /(矩阵|matrix|匿名|账号|oauth|token|session|角色|role)/i.test(value);
+  const namesResult = /(通过|拒绝|失败|覆盖|验证|pass|deny|fail|verified|covered)/i.test(value);
+  return namesAuthScope && namesMatrixOrBranches && namesResult;
+}
+
+function scanOwnedSecretAssignments(root, relativePaths) {
+  const findings = [];
+  const placeholder = /^(?:none|null|n\/a|pending|unknown|redacted|masked|example|changeme|<.*>|\$\{.*\}|\*+)$/i;
+  for (const relative of [...new Set(relativePaths.filter(Boolean))]) {
+    const absolute = path.resolve(root, relative);
+    if (!isInside(root, absolute) || !fs.existsSync(absolute) || !fs.statSync(absolute).isFile()) continue;
+    const content = fs.readFileSync(absolute, 'utf8');
+    if (/-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----/.test(content)) {
+      findings.push({ path: relative, key: 'private-key' });
+    }
+    for (const line of content.split(/\r?\n/)) {
+      const dotenv = line.match(/^\s*([A-Z][A-Z0-9_]*(?:SECRET|TOKEN|PASSWORD|API_KEY|PRIVATE_KEY)[A-Z0-9_]*)\s*=\s*(.+)\s*$/);
+      const structured = line.match(/^\s*["']?((?:api[_-]?key|client[_-]?secret|access[_-]?token|refresh[_-]?token|password|private[_-]?key))["']?\s*[:=]\s*["']?([^"'#\s][^"'#]*)["']?\s*[,#]?\s*$/i);
+      const match = dotenv || structured;
+      if (!match) continue;
+      const value = String(match[2]).trim().replace(/^['"]|['"]$/g, '');
+      if (value.length >= 8 && !placeholder.test(value)) findings.push({ path: relative, key: match[1] });
+    }
+  }
+  return findings;
+}
+
 function isIso8601Timestamp(value) {
   const match = String(value ?? '').match(
     /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d+)?(?:Z|([+-])(\d{2}):(\d{2}))$/,
@@ -312,7 +343,7 @@ function isIso8601Timestamp(value) {
   return day >= 1 && day <= daysInMonth && !Number.isNaN(Date.parse(value));
 }
 
-// ---------- v3 status validation ----------
+// ---------- v4 status validation ----------
 
 function validateStatus(root, statusPath, stage = 'current') {
   const { absoluteRoot, content } = readStatus(root, statusPath);
@@ -323,7 +354,7 @@ function validateStatus(root, statusPath, stage = 'current') {
     failCheck(`status schema_version must be "${contract.status_schema}": ${schemaVersion ?? ''}`);
     return finishChecks();
   }
-  pass('status schema_version is v3');
+  pass('status schema_version is v4');
 
   const featureId = topLevelValue(lines, 'feature_id');
   if (featureId && /^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(featureId) && !featureId.startsWith('.')) {
@@ -362,12 +393,55 @@ function validateStatus(root, statusPath, stage = 'current') {
     pass('risk_labels are recognized');
   }
 
-  if (profile === 'risk-minimal' && labels.length === 0) {
-    failCheck('risk-minimal profile requires non-empty risk_labels');
-  }
   if (profile === 'standard' && ['XS', 'S'].includes(level) && labels.length > 0) {
     failCheck('XS/S features with risk_labels must use the risk-minimal profile');
   }
+
+  const processInfo = parseFlatBlock(lines, 'process', 'process');
+  if (!processInfo) {
+    failCheck('status requires a process block');
+    return finishChecks();
+  }
+  let processOk = true;
+  if (!contract.process_modes.includes(processInfo.mode)) {
+    failCheck(`process.mode must be one of: ${contract.process_modes.join(', ')}`);
+    processOk = false;
+  }
+  if (profile === 'risk-minimal' && labels.length === 0 && processInfo.mode !== 'retrospective') {
+    failCheck('risk-minimal profile requires non-empty risk_labels except in retrospective mode');
+  }
+  if (!isIso8601Timestamp(processInfo.started_at)) {
+    failCheck('process.started_at must be an ISO-8601 timestamp');
+    processOk = false;
+  }
+  if (!/^[0-9a-f]{40}$/.test(processInfo.baseline_business_diff_fingerprint ?? '')) {
+    failCheck('process.baseline_business_diff_fingerprint must be a Git hash');
+    processOk = false;
+  }
+  if (!contract.existing_diff_dispositions.includes(processInfo.existing_diff)) {
+    failCheck(`process.existing_diff must be one of: ${contract.existing_diff_dispositions.join(', ')}`);
+    processOk = false;
+  }
+  if (processInfo.mode === 'normal' && processInfo.existing_diff === 'clean' && processInfo.reason !== 'none') {
+    failCheck('normal clean process requires reason: none');
+    processOk = false;
+  }
+  if (
+    (processInfo.existing_diff !== 'clean' || processInfo.mode === 'retrospective') &&
+    !hasMeaningfulEvidence(processInfo.reason)
+  ) {
+    failCheck('retrospective or dirty process requires a meaningful reason');
+    processOk = false;
+  }
+  if (processInfo.existing_diff === 'in-scope' && processInfo.mode !== 'retrospective') {
+    failCheck('in-scope existing diff requires retrospective process mode');
+    processOk = false;
+  }
+  if (processInfo.mode === 'normal' && processInfo.existing_diff === 'in-scope') {
+    failCheck('normal process cannot declare in-scope existing diff');
+    processOk = false;
+  }
+  if (processOk) pass('process block is valid');
 
   // classification
   const classification = parseFlatBlock(lines, 'classification', 'classification');
@@ -376,6 +450,14 @@ function validateStatus(root, statusPath, stage = 'current') {
   } else {
     if (!contract.classification_topologies.includes(classification.topology)) {
       failCheck(`classification.topology must be one of: ${contract.classification_topologies.join(', ')}`);
+    } else if (validateTopology(contract, level, classification.topology)) {
+      failCheck(validateTopology(contract, level, classification.topology));
+    } else if (!contract.execution_modes.includes(classification.execution)) {
+      failCheck(`classification.execution must be one of: ${contract.execution_modes.join(', ')}`);
+    } else if (profile === 'risk-minimal' && classification.execution !== 'light') {
+      failCheck('risk-minimal status requires classification.execution: light');
+    } else if (profile === 'standard' && level === 'M' && classification.execution !== 'standard') {
+      failCheck('status-bearing standard M requires classification.execution: standard');
     } else if (!contract.classification_evidence_results.includes(classification.evidence_result)) {
       failCheck(`classification.evidence_result must be one of: ${contract.classification_evidence_results.join(', ')}`);
     } else {
@@ -537,6 +619,8 @@ function validateStatus(root, statusPath, stage = 'current') {
     riskLabels: labels,
     humanGates,
     riskGates: gates,
+    processMode: processInfo.mode,
+    execution: classification?.execution,
   });
   if (labels.length > 0 && stage === 'current') {
     const baseRoute = routeObligations(contract, {
@@ -545,6 +629,8 @@ function validateStatus(root, statusPath, stage = 'current') {
       riskLabels: [],
       humanGates,
       riskGates: {},
+      processMode: processInfo.mode,
+      execution: classification?.execution,
     });
     const noInc = labelsWithNoGateIncrement(contract, labels, baseRoute.effectiveRiskGates);
     for (const label of noInc) {
@@ -592,6 +678,17 @@ function validateStatus(root, statusPath, stage = 'current') {
     }
     if (assetsOk) pass('registered assets exist and have valid kinds');
   }
+  const secretFindings = scanOwnedSecretAssignments(
+    absoluteRoot,
+    [statusPath, ...(assets ?? []).map((asset) => asset.path)],
+  );
+  if (secretFindings.length > 0) {
+    for (const finding of secretFindings) {
+      failCheck(`managed asset contains a likely secret assignment: ${finding.path} (${finding.key})`);
+    }
+  } else {
+    pass('managed assets contain no high-confidence secret assignments');
+  }
 
   // accepted_risks (optional list of AR-xxx ids)
   const acceptedRisks = parseStringList(lines, 'accepted_risks', 'accepted_risks') ?? [];
@@ -602,13 +699,31 @@ function validateStatus(root, statusPath, stage = 'current') {
     pass('accepted_risks ids are well-formed');
   }
 
-  // optional gate_evidence (schema v3 optional block)
+  // optional gate_evidence reuses contract.evidence_modes
   const gateEvidence = parseGateEvidence(lines);
   if (gateEvidence !== undefined) {
     let geOk = true;
     for (const [gateName, evidence] of Object.entries(gateEvidence)) {
-      if (!evidence.path || !evidence.heading) {
-        failCheck(`gate_evidence.${gateName} requires path and heading`);
+      if (!contract.evidence_modes.includes(evidence.mode)) {
+        failCheck(`gate_evidence.${gateName}.mode must be inline or report`);
+        geOk = false;
+        continue;
+      }
+      const fields = Object.keys(evidence);
+      if (evidence.mode === 'inline') {
+        const unsupported = fields.filter((field) => !['mode', 'summary'].includes(field));
+        if (unsupported.length || !hasMeaningfulEvidence(evidence.summary)) {
+          failCheck(`gate_evidence.${gateName} inline mode requires only mode and meaningful summary`);
+          geOk = false;
+        } else if (gateName.replace(/-/g, '_') === 'security_review' && !hasSecurityInlineMatrix(evidence.summary)) {
+          failCheck(`gate_evidence.${gateName} inline summary must name the applicable auth matrix/branches and verification result`);
+          geOk = false;
+        }
+        continue;
+      }
+      const unsupported = fields.filter((field) => !['mode', 'path', 'heading'].includes(field));
+      if (unsupported.length || !evidence.path || !evidence.heading) {
+        failCheck(`gate_evidence.${gateName} report mode requires only mode, path, and heading`);
         geOk = false;
         continue;
       }
@@ -699,11 +814,20 @@ function validateStatus(root, statusPath, stage = 'current') {
         return requiredLevel !== 'full' || (entry.mode === 'report' && hasCompletedEvidence(entry.report));
       });
     };
+    const registeredRiskReportFor = (riskGate) => {
+      const relevantLabels = labels.filter((label) =>
+        Object.hasOwn(contract.minimum_risk_gates[label] ?? {}, riskGate),
+      );
+      return relevantLabels.length > 0 && relevantLabels.every((label) => {
+        const entry = evidence[label];
+        return entry?.mode === 'report' && registeredAssets.some((asset) => asset.path === entry.report);
+      });
+    };
     const gateEvidenceFor = (completedGate) =>
       gateEvidence?.[completedGate.replace(/-/g, '_')];
     const requireRegisteredEvidence = (completedGate, kind) => {
       const entry = gateEvidenceFor(completedGate);
-      if (!entry?.path || !entry?.heading) return false;
+      if (entry?.mode !== 'report' || !entry.path || !entry.heading) return false;
       return registeredAssets.some(
         (asset) => asset.path === entry.path && (!kind || asset.kind === kind),
       );
@@ -735,11 +859,13 @@ function validateStatus(root, statusPath, stage = 'current') {
 
       if (completedGate === 'code-review') {
         const entry = gateEvidenceFor(completedGate);
-        if (!entry?.path || !entry?.heading) {
-          failCheck('code-review requires gate_evidence.code_review with path and heading');
+        const inline = entry?.mode === 'inline' && hasMeaningfulEvidence(entry.summary);
+        const report = entry?.mode === 'report' && entry.path && entry.heading;
+        if (!inline && !report) {
+          failCheck('code-review requires valid inline or report gate_evidence.code_review');
         } else if (
           obligations.codeReview.evidence_level === 'full' &&
-          !requireRegisteredEvidence(completedGate, 'review')
+          (!report || !requireRegisteredEvidence(completedGate, 'review'))
         ) {
           failCheck('full code-review requires its independent report to be a registered review asset');
         } else {
@@ -790,15 +916,16 @@ function validateStatus(root, statusPath, stage = 'current') {
       const requiredLevel = gates[riskGate] ?? 'none';
       const inlineOrReportEvidence = evidenceForRiskGate(riskGate, requiredLevel);
       const entry = gateEvidenceFor(completedGate);
-      const fileEvidence = Boolean(entry?.path && entry?.heading);
-      if (!inlineOrReportEvidence && !fileEvidence) {
+      const gateInline = entry?.mode === 'inline' && hasMeaningfulEvidence(entry.summary);
+      const fileEvidence = entry?.mode === 'report' && entry.path && entry.heading;
+      if (!inlineOrReportEvidence && !gateInline && !fileEvidence) {
         failCheck(
           `${completedGate} ${requiredLevel} requires completed risk_evidence or gate_evidence`,
         );
       } else if (
         requiredLevel === 'full' &&
-        !inlineOrReportEvidence &&
-        !requireRegisteredEvidence(completedGate)
+        !registeredRiskReportFor(riskGate) &&
+        (!fileEvidence || !requireRegisteredEvidence(completedGate))
       ) {
         failCheck(`${completedGate} full evidence must be a registered independent asset`);
       } else {
@@ -831,7 +958,7 @@ function parseGateEvidence(lines) {
       map[current] = {};
       continue;
     }
-    const field = line.match(/^      (path|heading):\s*(.*)$/);
+    const field = line.match(/^      (mode|summary|path|heading):\s*(.*)$/);
     if (!field || !current) fail(`gate_evidence has unsupported syntax: ${line}`);
     if (Object.hasOwn(map[current], field[1])) fail(`gate_evidence.${current} has duplicate ${field[1]}`);
     map[current][field[1]] = unquote(field[2]);
@@ -1017,13 +1144,13 @@ function validatePartialContract(root, featureId, acceptedRisks, assets, options
     return;
   }
   const steps = loaded.steps;
-  const allowed = new Set(['passed', 'failed', 'skipped']);
+  const allowed = new Set(contract.manual_test_results.filter((result) => result !== 'pending'));
   let hasFailed = false;
   let hasPending = false;
   const skippedRisks = [];
   for (const step of steps) {
     const result = (step.result || '').toLowerCase();
-    if (!result || result === 'pending' || result === '待执行' || result === '_待执行_') {
+    if (!result || result === 'pending' || result === 'delegated' || result === '待执行' || result === '_待执行_') {
       failCheck(`manual-test step ${step.id} has pending/empty result`);
       hasPending = true;
       continue;
@@ -1275,6 +1402,10 @@ function validateFinalAssets(root, featurePath, completionPath, statusPath, fini
     return result();
   }
   const completion = fs.readFileSync(completionAbs, 'utf8');
+  const finalSecretFindings = scanOwnedSecretAssignments(absoluteRoot, [featurePath, completionPath]);
+  for (const finding of finalSecretFindings) {
+    failCheck(`managed final asset contains a likely secret assignment: ${finding.path} (${finding.key})`);
+  }
   if (!/^---\s*$/m.test(completion) || !/^dev_flow_completion:\s*$/m.test(completion)) {
     failCheck('completion.md is missing dev_flow_completion frontmatter');
     return result();
@@ -1346,6 +1477,9 @@ function validateFinalAssets(root, featurePath, completionPath, statusPath, fini
       }
     }
     for (const scalarField of [
+      'process_mode',
+      'retrospective_reason',
+      'retrospective_evidence',
       'risk_approval_evidence',
       'risk_verification_summary',
       'pull_request',
@@ -1355,6 +1489,25 @@ function validateFinalAssets(root, featurePath, completionPath, statusPath, fini
       } else {
         failCheck(`current completion is missing ${scalarField}`);
       }
+    }
+    const processMode = completionField(completion, 'process_mode');
+    const retrospectiveReason = completionField(completion, 'retrospective_reason');
+    const retrospectiveEvidence = completionField(completion, 'retrospective_evidence');
+    if (!contract.process_modes.includes(processMode)) {
+      failCheck(`completion process_mode must be one of: ${contract.process_modes.join(', ')}`);
+    } else if (
+      processMode === 'normal' &&
+      (retrospectiveReason !== 'none' || retrospectiveEvidence !== 'none')
+    ) {
+      failCheck('normal completion requires retrospective_reason/evidence: none');
+    } else if (
+      processMode === 'retrospective' &&
+      (!hasMeaningfulEvidence(retrospectiveReason || '') ||
+        !hasMeaningfulEvidence(retrospectiveEvidence || ''))
+    ) {
+      failCheck('retrospective completion requires meaningful reason and evidence');
+    } else {
+      pass('completion process mode is valid');
     }
     if (completionRiskLabels !== null) {
       const duplicateLabels = duplicateValues(completionRiskLabels);
@@ -1481,6 +1634,20 @@ function validateFinalAssets(root, featurePath, completionPath, statusPath, fini
       );
     }
     const statusValidation = parseFlatBlock(statusLinesArr, 'validation', 'validation');
+    const statusProcess = parseFlatBlock(statusLinesArr, 'process', 'process');
+    const completionProcessMode = completionField(completion, 'process_mode');
+    if (statusProcess?.mode === completionProcessMode) {
+      pass('completion process_mode matches status');
+    } else {
+      failCheck('completion process_mode does not match status');
+    }
+    if (completionProcessMode === 'retrospective') {
+      if (completionField(completion, 'retrospective_reason') !== statusProcess?.reason) {
+        failCheck('completion retrospective_reason does not match status');
+      } else {
+        pass('completion retrospective_reason matches status');
+      }
+    }
     const completionFingerprint = completionField(completion, 'business_diff_fingerprint');
     if (
       statusValidation?.business_diff_fingerprint &&
@@ -1728,6 +1895,7 @@ function computeApprovalBasis(root, statusPath, protectedRoots = []) {
   const profile = topLevelValue(lines, 'profile');
   const labels = parseStringList(lines, 'risk_labels', 'risk_labels') ?? [];
   const classification = parseFlatBlock(lines, 'classification', 'classification') || {};
+  const processInfo = parseFlatBlock(lines, 'process', 'process') || {};
   const gates = parseFlatBlock(lines, 'risk_gates', 'risk_gates') || {};
   const humanGates = parseNestedMap(lines, 'human_gates', 'human_gates') || {};
   const assets = parseAssets(lines) || [];
@@ -1738,6 +1906,8 @@ function computeApprovalBasis(root, statusPath, protectedRoots = []) {
     riskLabels: labels,
     humanGates,
     riskGates: gates,
+    processMode: processInfo.mode || 'normal',
+    execution: classification.execution,
   });
 
   const preImplKinds = new Set(['requirement', 'plan', 'spec']);
@@ -1792,6 +1962,11 @@ function computeApprovalBasis(root, statusPath, protectedRoots = []) {
     profile,
     topology: classification.topology || '',
     evidence_result: classification.evidence_result || '',
+    execution: classification.execution || '',
+    process_mode: processInfo.mode || '',
+    existing_diff: processInfo.existing_diff || '',
+    baseline_business_diff_fingerprint:
+      processInfo.baseline_business_diff_fingerprint || '',
     risk_labels: [...labels].sort(),
     risk_gates: gates,
     code_review: obligations.codeReview,
@@ -1815,6 +1990,8 @@ function computeApprovalBasis(root, statusPath, protectedRoots = []) {
     route_hash: routeHash,
     assets: assetManifests,
     route: routePayload,
+    baseline_business_diff_fingerprint:
+      processInfo.baseline_business_diff_fingerprint || '',
   };
 }
 
@@ -1827,6 +2004,16 @@ function compareApprovalBasis(expected, actual) {
       ok: false,
       code: 'APPROVAL_BASIS_STRUCTURAL_CHANGE',
       detail: 'route, risk labels, protected roots, or asset path set changed',
+    };
+  }
+  if (
+    expected.baseline_business_diff_fingerprint !==
+    actual.baseline_business_diff_fingerprint
+  ) {
+    return {
+      ok: false,
+      code: 'APPROVAL_BASIS_STRUCTURAL_CHANGE',
+      detail: 'baseline business diff fingerprint changed',
     };
   }
   if (expected.hash !== actual.hash) {
@@ -1932,6 +2119,8 @@ function validateAuthorization(root, authPath) {
     hash: recomputed.hash,
     route_hash: recomputed.route_hash,
     assets: recomputed.assets,
+    baseline_business_diff_fingerprint:
+      recomputed.baseline_business_diff_fingerprint,
   });
   if (!cmp.ok) {
     failCheck(`${cmp.code}: ${cmp.detail}`);

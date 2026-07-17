@@ -57,6 +57,7 @@ fi
 
 hook_dir=$(cd "$(dirname "$0")" && pwd)
 validator="$hook_dir/../skills/dev-flow/scripts/dev-flow-validate.mjs"
+classifier="$hook_dir/../skills/dev-flow/scripts/dev-flow-command.mjs"
 auth_file=.claude/runtime/dev-flow/write-authorization.json
 
 emit_decision() {
@@ -122,46 +123,21 @@ case "$tool_name" in
     [ -z "$command" ] && exit 0
     trimmed=$(printf '%s' "$command" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
 
-    # Classify shell control syntax before looking at command prefixes. A
-    # control/Git command must be one shell command, never a pipeline,
-    # background job, redirect, substitution, or newline-separated program.
-    has_shell_control=0
-    case "$trimmed" in
-      *$'\n'*|*$'\r'*|*'>'*|*'<'*|*'$('*|*'`'*|*'&'*|*'|'*|*';'*) has_shell_control=1 ;;
-    esac
+    classification=$(DEV_FLOW_REPO_ROOT="$root" node "$classifier" "$trimmed" 2>/dev/null)
+    has_shell_control=$(node -e 'try { process.stdout.write(JSON.parse(process.argv[1]).has_shell_control ? "1" : "0") } catch { process.stdout.write("1") }' "$classification")
+    is_control=$(node -e 'try { process.stdout.write(JSON.parse(process.argv[1]).is_control ? "1" : "0") } catch { process.stdout.write("0") }' "$classification")
+    writes_secret_file=$(node -e 'try { process.stdout.write(JSON.parse(process.argv[1]).writes_secret_file ? "1" : "0") } catch { process.stdout.write("0") }' "$classification")
+    command_kind=$(node -e 'try { process.stdout.write(JSON.parse(process.argv[1]).command_kind || "other") } catch { process.stdout.write("other") }' "$classification")
 
-    first_word=${trimmed%%[[:space:]]*}
-    remainder=${trimmed#"$first_word"}
-    remainder=$(printf '%s' "$remainder" | sed -e 's/^[[:space:]]*//')
-    second_word=${remainder%%[[:space:]]*}
+    if [ "$writes_secret_file" = 1 ]; then
+      emit_decision ask "dev-flow detected a Bash write to a real secret-bearing file; confirm the target and keep secret values out of workflow evidence."
+      exit 0
+    fi
 
     # Git add/commit/push/merge close-out is finish-guard's job, but only when
     # the payload is exactly one Git command.
-    if [ "$has_shell_control" = 0 ] && [ "$first_word" = git ]; then
-      case "$second_word" in
-        add|commit|push|merge) exit 0 ;;
-      esac
-    fi
-
-    # Match only argv[0] (or the script argv after node). A destructive command
-    # cannot smuggle a dev-flow path in a later argument and gain control status.
-    is_control=0
-    if [ "$has_shell_control" = 0 ]; then
-      case "$first_word" in
-        dev-flow-status|dev-flow-status.mjs|dev-flow-validate|dev-flow-validate.mjs|dev-flow-policy|dev-flow-policy.mjs|dev-flow-doctor)
-          is_control=1
-          ;;
-        .claude/skills/dev-flow/scripts/dev-flow-status.mjs|.claude/skills/dev-flow/scripts/dev-flow-validate.mjs|.claude/skills/dev-flow/scripts/dev-flow-policy.mjs|.claude/skills/dev-flow/scripts/dev-flow-doctor|"$root"/.claude/skills/dev-flow/scripts/dev-flow-status.mjs|"$root"/.claude/skills/dev-flow/scripts/dev-flow-validate.mjs|"$root"/.claude/skills/dev-flow/scripts/dev-flow-policy.mjs|"$root"/.claude/skills/dev-flow/scripts/dev-flow-doctor)
-          is_control=1
-          ;;
-        node)
-          case "$second_word" in
-            .claude/skills/dev-flow/scripts/dev-flow-status.mjs|.claude/skills/dev-flow/scripts/dev-flow-validate.mjs|.claude/skills/dev-flow/scripts/dev-flow-policy.mjs|"$root"/.claude/skills/dev-flow/scripts/dev-flow-status.mjs|"$root"/.claude/skills/dev-flow/scripts/dev-flow-validate.mjs|"$root"/.claude/skills/dev-flow/scripts/dev-flow-policy.mjs)
-              is_control=1
-              ;;
-          esac
-          ;;
-      esac
+    if [ "$has_shell_control" = 0 ] && [ "$command_kind" = git-closeout ]; then
+      exit 0
     fi
 
     if [ "$auth_valid" = 1 ]; then
@@ -200,6 +176,15 @@ target="$target_dir/$(basename "$target")"
 case "$target" in
   "$root"/*) relative=${target#"$root"/} ;;
   *) exit 0 ;;
+esac
+
+# Real secret-bearing files always require an explicit user confirmation.
+case "$relative" in
+  *.env.example|*/.env.example) ;;
+  .env|*/.env|.env.*|*/.env.*|*.pem|*.key|secrets.*|*/secrets.*|credentials.*|*/credentials.*)
+    emit_decision ask "dev-flow detected a write to a real secret-bearing file (${relative}); confirm the target and ensure no secret value is copied into workflow evidence."
+    exit 0
+    ;;
 esac
 
 case "$relative" in

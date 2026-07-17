@@ -76,7 +76,7 @@ STATUS: 当前 status.md 路径和状态
 - ...
 ```
 
-小功能可以只在对话中输出；L 级与 CRITICAL/HIGH 必须保存到 `<REVIEW_ROOT>/YYYY-MM-DD-<feature-id>-code-review.md`。light 无 CRITICAL/HIGH 时可写 `gate_evidence.code_review` 指向已有 heading，不创建空报告。
+小功能可以只在对话中输出；L 级与 CRITICAL/HIGH 保存到 `<REVIEW_ROOT>/<feature-id>-code-review.md`。light 无阻塞项时可用 inline 或已有报告 heading，不创建空报告。
 
 保存报告后，更新 `status.md`：把报告路径追加到 `assets`（`kind: "review"`），用 `complete-gate code-review --evidence-file ...`（或 light 的 `gate_evidence`）登记；标准 M/L 和轻量 L 同时保留在 `assets` 便于后续恢复。
 

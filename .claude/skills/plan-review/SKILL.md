@@ -19,7 +19,7 @@ description: 多维度独立审查计划，查漏补缺后再执行。已有 req
 - CRITICAL/HIGH 是实现前阻塞项；必须修复、反驳，或由用户明确接受风险后才能继续。
 - 与 Locked Decision Log 冲突时只能标记 `scope-conflict` 并停下请求用户决定，不得自行改写已锁定决策。
 - 标准 M/L 无论 `light` 还是 `full`，都必须在第一处业务源码修改前完成本门禁。
-- L 级 / full 审查报告必须保存到 `<REVIEW_ROOT>/YYYY-MM-DD-<feature-id>-plan-review.md`；light 不创建空报告，可写 `gate_evidence.plan_review` 指向已有 heading。
+- L 级 / full 审查报告保存到 `<REVIEW_ROOT>/<feature-id>-plan-review.md`；light 不创建空报告，可用 inline 或指向已有 heading。
 
 ## 资产读取
 
@@ -93,7 +93,7 @@ description: 多维度独立审查计划，查漏补缺后再执行。已有 req
 
 ## 输出和交接
 
-输出顺序：用户决策摘要（3-5 行：结论、阻塞项、需要决定的事项、下一步）、一句话结论（通过/需修订/阻塞）、报告路径（L 级保存为 `<REVIEW_ROOT>/YYYY-MM-DD-<feature-id>-plan-review.md`）、CRITICAL/HIGH 摘要、MEDIUM/LOW 摘要、修订建议或已修订摘要。
+输出顺序：用户决策摘要、结论、报告路径（L 级 `<REVIEW_ROOT>/<feature-id>-plan-review.md`）、CRITICAL/HIGH、MEDIUM/LOW、修订建议。
 
 保存报告后把路径追加到 `status.md` 的 `assets`（`kind: "review"`），用 `complete-gate plan-review --evidence-file ...` 登记；标准 M/L 必须保持 `human_gates.implementation_approval.required: true`，用户确认前保持 `status: pending`。按 `dev-flow/references/protocol.md` 输出 `[HANDOFF]`。
 
