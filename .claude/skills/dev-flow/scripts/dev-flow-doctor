@@ -339,17 +339,39 @@ else
   warn "manifest missing; skip downstream skill line budgets"
 fi
 
-# Implementation plans under docs/plans may document target versions; exclude them.
-# Test fixtures may embed version strings for stamp/completion simulation.
-version_output=$(rg -n --glob '!contract.json' --glob '!docs/plans/**' --glob '!**/scripts/tests/**' -- 'workflow_version:\s*"[0-9]' .claude templates README.md docs 2>/dev/null)
-version_status=$?
-if [ "$version_status" -eq 1 ]; then
+# Package version single-source: only contract.json may hardcode a numeric
+# workflow_version. Exclude:
+# - docs/plans/** — design/implementation plans may name target versions
+# - **/scripts/tests/** — fixtures simulate stamps/completions
+# - **/completion.md — feature provenance stamps (protocol schema 2); not package
+#   sources. Host projects keep old or current stamps across upgrade; doctor and
+#   upgrade preflight must not treat them as version-source leaks.
+# Only scan roots that exist (host upgrades often lack templates/README.md).
+version_scan_paths=()
+for version_scan_path in .claude templates README.md docs; do
+  if [ -e "$version_scan_path" ]; then
+    version_scan_paths+=("$version_scan_path")
+  fi
+done
+if [ "${#version_scan_paths[@]}" -eq 0 ]; then
   pass "workflow_version has a single source of truth (contract.json)"
-elif [ "$version_status" -eq 0 ]; then
-  fail "workflow_version is hardcoded outside contract.json"
-  printf '%s\n' "$version_output"
 else
-  fail "workflow_version single-source check failed to run"
+  version_output=$(rg -n \
+    --glob '!contract.json' \
+    --glob '!docs/plans/**' \
+    --glob '!**/scripts/tests/**' \
+    --glob '!**/completion.md' \
+    -- 'workflow_version:\s*"[0-9]' \
+    "${version_scan_paths[@]}" 2>/dev/null)
+  version_status=$?
+  if [ "$version_status" -eq 1 ]; then
+    pass "workflow_version has a single source of truth (contract.json)"
+  elif [ "$version_status" -eq 0 ]; then
+    fail "workflow_version is hardcoded outside contract.json"
+    printf '%s\n' "$version_output"
+  else
+    fail "workflow_version single-source check failed to run"
+  fi
 fi
 
 leak_pattern='为当前项目规划时必须使用 Vue|pnpm dev:mock|Cmp-Menu|Cmp-Portal|src/mock|Vue/Vue Router/Pinia API 已自动导入|是否违反 Vue 3|Vue/TS|Vue/TypeScript|Vue 模板|accountType|request\.ts|Vue 性能|placeAnOrder|getProductList'
@@ -369,16 +391,26 @@ else
 fi
 
 heavy_pattern='Tr[e]llis|task[.]json|workflow[-]state|jo[u]rnal|auto[-]commit|默认创建[ ]task'
-heavy_output=$(rg -n --glob '!**/scripts/dev-flow-doctor' -- "$heavy_pattern" \
-  ".claude/agents" ".claude/commands" ".claude/skills" ".claude/rules" "README.md" "docs" "templates" 2>/dev/null)
-heavy_status=$?
-if [ "$heavy_status" -eq 1 ]; then
+heavy_scan_paths=()
+for heavy_scan_path in .claude/agents .claude/commands .claude/skills .claude/rules README.md docs templates; do
+  if [ -e "$heavy_scan_path" ]; then
+    heavy_scan_paths+=("$heavy_scan_path")
+  fi
+done
+if [ "${#heavy_scan_paths[@]}" -eq 0 ]; then
   pass "workflow layer does not introduce heavy workflow concepts"
-elif [ "$heavy_status" -eq 0 ]; then
-  fail "workflow layer does not introduce heavy workflow concepts"
-  printf '%s\n' "$heavy_output"
 else
-  fail "workflow layer does not introduce heavy workflow concepts (search failed)"
+  heavy_output=$(rg -n --glob '!**/scripts/dev-flow-doctor' -- "$heavy_pattern" \
+    "${heavy_scan_paths[@]}" 2>/dev/null)
+  heavy_status=$?
+  if [ "$heavy_status" -eq 1 ]; then
+    pass "workflow layer does not introduce heavy workflow concepts"
+  elif [ "$heavy_status" -eq 0 ]; then
+    fail "workflow layer does not introduce heavy workflow concepts"
+    printf '%s\n' "$heavy_output"
+  else
+    fail "workflow layer does not introduce heavy workflow concepts (search failed)"
+  fi
 fi
 
 forbid_pattern '至少 3 个|找不到就是你失职' \

@@ -35,6 +35,8 @@ mkdir -p \
   "$target/src"
 
 git -C "$target" init -q
+# Host projects from prior onboarding keep runtime ignored; full doctor needs this.
+printf '%s\n' '.claude/runtime/' '.claude/settings.local.json' > "$target/.gitignore"
 
 printf '%s\n' 'custom skill' > "$target/.claude/skills/custom-team/SKILL.md"
 printf '%s\n' 'stale grilling' > "$target/.claude/skills/grilling/SKILL.md"
@@ -81,12 +83,32 @@ printf '%s\n' 'active feature body' \
 
 printf '%s\n' '---' 'feature_id: feat-verified' 'current_gate: verification' '---' '# verified' \
   > "$target/docs/dev-flow/features/feat-verified/status.md"
-printf '%s\n' '---' 'feature_id: feat-verified' 'outcome: verified' '---' '# completion' \
+# Stamped completion (old workflow_version) must survive upgrade and not break
+# post-upgrade full doctor single-source checks.
+printf '%s\n' \
+  '---' \
+  'dev_flow_completion:' \
+  '  schema_version: "2"' \
+  '  feature_id: "feat-verified"' \
+  '  outcome: "verified"' \
+  '  retention: "compact"' \
+  '  workflow_version: "0.9.0"' \
+  '---' \
+  '# completion' \
   > "$target/docs/dev-flow/features/feat-verified/completion.md"
 printf '%s\n' 'mid asset' \
   > "$target/docs/dev-flow/features/feat-verified/实现计划.md"
 
-printf '%s\n' '---' 'feature_id: feat-legacy' 'outcome: verified' '---' '# legacy completion' \
+printf '%s\n' \
+  '---' \
+  'dev_flow_completion:' \
+  '  schema_version: "2"' \
+  '  feature_id: "feat-legacy"' \
+  '  outcome: "verified"' \
+  '  retention: "compact"' \
+  '  workflow_version: "0.8.0"' \
+  '---' \
+  '# legacy completion' \
   > "$target/docs/dev-flow/features/feat-legacy/completion.md"
 printf '%s\n' 'feature.md retained' \
   > "$target/docs/dev-flow/features/feat-legacy/feature.md"
@@ -214,8 +236,8 @@ else
   cat /tmp/upgrade-check2.out | head -30
 fi
 
-# backup dir exists
-backup_dir=$(ls -d "$target/.claude/runtime/dev-flow"/upgrade-backup-* 2>/dev/null | head -1)
+# backup dir exists (use find — colored ls can inject ANSI codes into paths)
+backup_dir=$(find "$target/.claude/runtime/dev-flow" -maxdepth 1 -type d -name 'upgrade-backup-*' 2>/dev/null | sort | head -1)
 if [ -n "$backup_dir" ] && [ -d "$backup_dir" ]; then
   pass "upgrade backup directory created"
   if basename "$backup_dir" | rg -q '^upgrade-backup-[0-9]{8}T[0-9]{6}Z\.[A-Za-z0-9]+$'; then
@@ -294,6 +316,26 @@ if [ "$pre_features" = "$post_features" ]; then
 else
   fail "in-flight feature assets untouched (active/verified/legacy + archive)"
   printf 'PRE:\n%s\nPOST:\n%s\n' "$pre_features" "$post_features"
+fi
+
+# Full doctor (not only --preflight) must stay green when host completions keep
+# old workflow_version stamps — the upgrade path host projects actually run.
+if doctor_out=$(cd "$target" && .claude/skills/dev-flow/scripts/dev-flow-doctor 2>&1); then
+  if printf '%s' "$doctor_out" | rg -q 'workflow_version has a single source of truth'; then
+    pass "post-upgrade full doctor single-source passes with stamped completions"
+  else
+    fail "post-upgrade full doctor single-source passes with stamped completions"
+    printf '%s\n' "$doctor_out" | head -40
+  fi
+else
+  fail "post-upgrade full doctor exits 0 with stamped completions"
+  printf '%s\n' "$doctor_out" | tail -40
+fi
+if rg -q 'workflow_version: "0.9.0"' "$target/docs/dev-flow/features/feat-verified/completion.md" \
+  && rg -q 'workflow_version: "0.8.0"' "$target/docs/dev-flow/features/feat-legacy/completion.md"; then
+  pass "upgrade left historical completion workflow_version stamps intact"
+else
+  fail "upgrade left historical completion workflow_version stamps intact"
 fi
 
 # ---------------------------------------------------------------------------

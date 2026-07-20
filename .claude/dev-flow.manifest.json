@@ -1,7 +1,7 @@
 {
   "schema_version": "1",
   "workflow_version": "1.0.0",
-  "generated_at": "2026-07-17T10:22:55Z",
+  "generated_at": "2026-07-20T00:54:40Z",
   "files": [
     {
       "path": ".claude/agents/build-error-resolver.md",
@@ -135,7 +135,7 @@
     },
     {
       "path": ".claude/skills/dev-flow/scripts/dev-flow-doctor",
-      "sha256": "a3b6bc2fa0ef9dfe8a607fae5a83c4e1fbe308b18e7d98252cc6c370522dd465",
+      "sha256": "aeb3673d012ad5e37989ce264d68300a4cfdf44eee17fae2ffaa786feb0ce504",
       "strategy": "replace"
     },
     {
@@ -180,7 +180,7 @@
     },
     {
       "path": ".claude/skills/dev-flow/scripts/tests/dev-flow-doctor-test",
-      "sha256": "97220173844e1b565a7978c7905ba30c2cacefb49c622a0fb366c6c874e2b6e2",
+      "sha256": "fc5f5d1835698de7123dc5aca08d3c52cc970f07df9247f3083788d38f6e32a1",
       "strategy": "replace"
     },
     {
@@ -210,7 +210,7 @@
     },
     {
       "path": ".claude/skills/dev-flow/scripts/tests/dev-flow-upgrade-test",
-      "sha256": "a4110e9d796279e33820690adde15422ca2d6be631a51ba44881c5fc53eaa14b",
+      "sha256": "9266f1a4a00465454d11e2112eb1cb3ff4cb00d933ab00a1d92f937c9030354a",
       "strategy": "replace"
     },
     {

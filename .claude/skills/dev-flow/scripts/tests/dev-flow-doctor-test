@@ -79,6 +79,66 @@ assert_eq 'doctor ignores unmanaged custom skill line budget' 0 "$scope_rc"
 assert_not_contains 'custom skill is outside line-budget report' 'custom-over-budget/SKILL.md' "$scope_out"
 rm -rf "$scope_tmp"
 
+# ---------- feature completion provenance stamps are not package version sources ----------
+# Host projects keep completion.md workflow_version across upgrade (old or current).
+# Single-source must ignore those stamps so doctor stays green after migrate.
+stamp_tmp="$tmp/completion-stamp"
+mkdir -p "$stamp_tmp"
+cp -R "$repo/.claude" "$stamp_tmp/.claude"
+cp -R "$repo/docs" "$stamp_tmp/docs"
+cp -R "$repo/templates" "$stamp_tmp/templates"
+cp "$repo/README.md" "$stamp_tmp/README.md"
+cp "$repo/.gitignore" "$stamp_tmp/.gitignore"
+mkdir -p \
+  "$stamp_tmp/docs/dev-flow/features/legacy-v09" \
+  "$stamp_tmp/docs/dev-flow/features/current-v10"
+printf '%s\n' \
+  '---' \
+  'dev_flow_completion:' \
+  '  schema_version: "2"' \
+  '  feature_id: "legacy-v09"' \
+  '  level: "S"' \
+  '  outcome: "verified"' \
+  '  completed_at: "2026-01-01T00:00:00Z"' \
+  '  retention: "compact"' \
+  '  workflow_version: "0.9.0"' \
+  '---' \
+  '# legacy completion' > "$stamp_tmp/docs/dev-flow/features/legacy-v09/completion.md"
+printf '%s\n' \
+  '---' \
+  'dev_flow_completion:' \
+  '  schema_version: "2"' \
+  '  feature_id: "current-v10"' \
+  '  level: "S"' \
+  '  outcome: "verified"' \
+  '  completed_at: "2026-01-01T00:00:00Z"' \
+  '  retention: "compact"' \
+  '  workflow_version: "1.0.0"' \
+  '---' \
+  '# current completion' > "$stamp_tmp/docs/dev-flow/features/current-v10/completion.md"
+git -C "$stamp_tmp" init -q
+stamp_out=$(cd "$stamp_tmp" && .claude/skills/dev-flow/scripts/dev-flow-doctor 2>&1)
+stamp_rc=$?
+assert_eq 'doctor passes with stamped feature completions' 0 "$stamp_rc"
+assert_contains 'single-source ignores completion provenance stamps' \
+  'workflow_version has a single source of truth' "$stamp_out"
+assert_not_contains 'single-source does not fail on completion stamps' \
+  'workflow_version is hardcoded outside contract.json' "$stamp_out"
+assert_not_contains 'single-source does not list legacy completion path' \
+  'features/legacy-v09/completion.md' "$stamp_out"
+assert_not_contains 'single-source does not list current completion path' \
+  'features/current-v10/completion.md' "$stamp_out"
+# Negative: a real package-surface hardcode must still fail single-source.
+printf '\nworkflow_version: "9.9.9"\n' >> "$stamp_tmp/.claude/skills/dev-flow/SKILL.md"
+leak_out=$(cd "$stamp_tmp" && .claude/skills/dev-flow/scripts/dev-flow-doctor 2>&1)
+leak_rc=$?
+assert_eq 'doctor fails when package surface hardcodes workflow_version' 1 "$leak_rc"
+assert_contains 'single-source still catches package hardcodes' \
+  'workflow_version is hardcoded outside contract.json' "$leak_out"
+assert_contains 'single-source reports package SKILL.md hardcode path' \
+  'SKILL.md' "$leak_out"
+rm -rf "$stamp_tmp"
+
 # ---------- simulated onboarded project with three feature shapes ----------
 mkdir -p \
   "$tmp/.claude/rules" \

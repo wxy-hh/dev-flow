@@ -105,7 +105,7 @@ dev-flow 会先判断 XS / S / M / L：
 .claude/skills/dev-flow/scripts/dev-flow-doctor
 ```
 
-doctor 只做静态检查，分三类：结构（关键文件存在、脚本可执行、`contract.json` 可解析、hooks 已注册）、一致性（`risk-gates.md` 与 contract 风险标签同步、旧项目事实泄漏、行数预算、`workflow_version` 单源）、适配层（占位符残留、test 命令疑似 dev/watch）。它不运行业务测试，也不替代 smoke test。
+doctor 只做静态检查，分三类：结构（关键文件存在、脚本可执行、`contract.json` 可解析、hooks 已注册）、一致性（`risk-gates.md` 与 contract 风险标签同步、旧项目事实泄漏、行数预算、`workflow_version` 单源）、适配层（占位符残留、test 命令疑似 dev/watch）。`workflow_version` 单源只约束包表面硬编码；`completion.md` 里的版本戳记是 feature  provenance，不参与单源失败。它不运行业务测试，也不替代 smoke test。
 
 单个标准 M/L、轻量 L 和 risk-minimal（XS/S/M）功能收尾前运行 feature evidence 检查：
 
