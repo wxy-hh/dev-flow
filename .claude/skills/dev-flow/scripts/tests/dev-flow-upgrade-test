@@ -185,6 +185,15 @@ else
   cat /tmp/upgrade-apply.out
 fi
 
+expected_repair_command=$(printf 'node %q repair <feature-id>' \
+  "$target/.claude/skills/dev-flow/scripts/dev-flow-status.mjs")
+if rg -Fq -- "$expected_repair_command" /tmp/upgrade-apply.out; then
+  pass "apply prints an executable absolute status repair command"
+else
+  fail "apply prints an executable absolute status repair command"
+  cat /tmp/upgrade-apply.out
+fi
+
 if [ -f "$target/.claude/skills/custom-team/SKILL.md" ]; then
   pass "custom skill preserved"
 else

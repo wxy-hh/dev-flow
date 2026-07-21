@@ -116,7 +116,7 @@ model: sonnet
 
 报告 **findings-only**：findings + evidence + disposition + remaining risks；禁止完整实现 dump。
 
-**severity 识别属于 security-reviewer / 调用它的 skill**：CRITICAL/HIGH 由本 agent 判定；CLI 不扫描自然语言、不自动 promote。当 `security_review` 为 light 且出现 CRITICAL/HIGH 时，调用方 skill 必须先执行 `dev-flow-status promote-gate security_review --to full --reason <text>`，再落盘 full 报告；即使随后修复，也保留 full 证据与 disposition。阻塞 finding 处置完成前不得 complete gate。
+**severity 识别属于 security-reviewer / 调用它的 skill**：CRITICAL/HIGH 由本 agent 判定；CLI 不扫描自然语言、不自动 promote。当 `security_review` 为 light 且出现 CRITICAL/HIGH 时，调用方 skill 必须先执行 `node .claude/skills/dev-flow/scripts/dev-flow-status.mjs promote-gate <feature-id> security_review --to full --reason <text>`（在仓库根目录执行），再落盘 full 报告；即使随后修复，也保留 full 证据与 disposition。阻塞 finding 处置完成前不得 complete gate。
 
 ## 参考资料 (Reference)
 

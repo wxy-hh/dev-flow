@@ -32,8 +32,8 @@ frontmatter 可选 `method`（`browser|device|api|cli|automated`）：
 ## accept-risk
 
 ```text
-dev-flow-status propose-risk <feature-id> --id AR-xxx --step MT-00N --reason <reason>
-dev-flow-status accept-risk <feature-id> --id AR-xxx \
+node .claude/skills/dev-flow/scripts/dev-flow-status.mjs propose-risk <feature-id> --id AR-xxx --step MT-00N --reason <reason>
+node .claude/skills/dev-flow/scripts/dev-flow-status.mjs accept-risk <feature-id> --id AR-xxx \
   --proposal-token <one-time-token> --evidence <exact-user-reply>
 ```
 

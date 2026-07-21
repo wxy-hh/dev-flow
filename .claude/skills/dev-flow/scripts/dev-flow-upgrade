@@ -514,7 +514,8 @@ apply() {
   echo "Upgrade applied. Backup: $backup"
   echo "project-workflow.md and custom unmanaged skills were preserved."
   echo "In-flight feature status/completion/archive assets were not modified."
-  echo "Run dev-flow-status repair for legacy snake_case gate aliases; v0.8 approval/finish will require any missing route duties."
+  printf 'Run node %q repair <feature-id> for legacy snake_case gate aliases; v0.8 approval/finish will require any missing route duties.\n' \
+    "$target/.claude/skills/dev-flow/scripts/dev-flow-status.mjs"
   echo "Legacy shared SDD top-level files (if any) are under $backup/legacy-sdd/."
   echo "Old write-authorization and check-ok stamps were invalidated; re-activate and re-run feature-check as needed."
 }

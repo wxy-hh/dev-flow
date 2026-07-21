@@ -124,6 +124,7 @@ for f in \
   ".claude/skills/executing-plans/scripts/sdd-workspace" \
   ".claude/skills/executing-plans/scripts/sdd-checkpoint" \
   ".claude/skills/dev-flow/scripts/dev-flow-status.mjs" \
+  ".claude/skills/dev-flow/scripts/dev-flow-test" \
   ".claude/skills/dev-flow/scripts/dev-flow-manifest" \
   ".claude/skills/dev-flow/scripts/dev-flow-upgrade" \
   ".claude/skills/dev-flow/references/status-cli.md" \
@@ -296,6 +297,90 @@ while IFS= read -r label; do
   [ -z "$label" ] && continue
   require_pattern ".claude/skills/dev-flow/references/risk-gates.md" "\`${label}\`" "risk-gates.md documents risk label: ${label}"
 done < <(contract_field 'c.risk_labels')
+
+# contract.json is the machine authority. The documentation table is checked
+# deliberately narrowly: only the per-label backticked `gate: level` entries
+# in the minimum-mapping table participate, so prose and table presentation can
+# evolve without becoming a parser protocol.
+risk_gates_doc=".claude/skills/dev-flow/references/risk-gates.md"
+mapping_tmp=$(mktemp)
+node - "$CONTRACT" "$risk_gates_doc" > "$mapping_tmp" <<'NODE'
+const fs = require('fs');
+const [, , contractPath, docPath] = process.argv;
+const minimum = JSON.parse(fs.readFileSync(contractPath, 'utf8')).minimum_risk_gates || {};
+const lines = fs.readFileSync(docPath, 'utf8').split(/\r?\n/);
+const rows = new Map();
+const duplicateLabels = new Set();
+let inMapping = false;
+for (const line of lines) {
+  if (/^##\s+最低门禁映射\s*$/.test(line)) {
+    inMapping = true;
+    continue;
+  }
+  if (inMapping && /^##\s+/.test(line)) break;
+  if (!inMapping || !/^\s*\|/.test(line)) continue;
+  const cells = line.split('|');
+  const labelMatch = (cells[1] || '').match(/`([^`]+)`/);
+  if (!labelMatch) continue;
+  const label = labelMatch[1];
+  if (rows.has(label)) duplicateLabels.add(label);
+  const fragments = [...(cells.slice(2).join('|').matchAll(/`([^`]+)`/g))]
+    .map((match) => match[1])
+    .filter((value) => /^[a-z_]+:\s*(?:none|light|full)$/.test(value));
+  rows.set(label, new Set(fragments.map((value) => value.replace(/:\s+/, ': '))));
+}
+let failures = 0;
+for (const [label, gates] of Object.entries(minimum)) {
+  const actual = rows.get(label);
+  if (!actual) {
+    console.log(`MISSING_LABEL\t${label}`);
+    failures += 1;
+    continue;
+  }
+  const expected = new Set(Object.entries(gates).map(([gate, level]) => `${gate}: ${level}`));
+  for (const gate of expected) {
+    if (!actual.has(gate)) {
+      console.log(`MISSING_GATE\t${label}\t${gate}`);
+      failures += 1;
+    }
+  }
+  for (const gate of actual) {
+    if (!expected.has(gate)) {
+      console.log(`EXTRA_GATE\t${label}\t${gate}`);
+      failures += 1;
+    }
+  }
+}
+for (const label of rows.keys()) {
+  if (!Object.hasOwn(minimum, label)) {
+    console.log(`EXTRA_LABEL\t${label}`);
+    failures += 1;
+  }
+}
+for (const label of duplicateLabels) {
+  console.log(`DUPLICATE_LABEL\t${label}`);
+  failures += 1;
+}
+if (failures === 0) console.log('PASS\tminimum risk mappings exactly match contract');
+NODE
+mapping_status=$?
+mapping_output=$(cat "$mapping_tmp")
+rm -f "$mapping_tmp"
+if [ "$mapping_status" -ne 0 ]; then
+  fail "risk-gates.md minimum mapping check could not read contract/table"
+else
+  while IFS=$'\t' read -r kind label gate; do
+    [ -z "$kind" ] && continue
+    case "$kind" in
+      PASS) pass "risk-gates.md minimum mappings exactly match contract" ;;
+      MISSING_LABEL) fail "risk-gates.md minimum mapping missing label: $label" ;;
+      EXTRA_LABEL) fail "risk-gates.md minimum mapping has extra label: $label" ;;
+      DUPLICATE_LABEL) fail "risk-gates.md minimum mapping has duplicate label: $label" ;;
+      MISSING_GATE) fail "risk-gates.md minimum mapping missing gate for $label: $gate" ;;
+      EXTRA_GATE) fail "risk-gates.md minimum mapping has extra gate for $label: $gate" ;;
+    esac
+  done <<< "$mapping_output"
+fi
 
 while IFS= read -r line; do
   [ -z "$line" ] && continue

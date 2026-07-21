@@ -58,7 +58,14 @@ route policy 额外派生（非 risk_gates 字段）：任一风险标签 → co
 - Risks:
 ```
 
-**安全审查**：优先用 `security-reviewer`；无可用智能体时把清单写进 `plan-review`、`status.md` 和最终 `code-review`。检查重点：token/session 安全读写和清理；权限判断只依赖可信来源、无绕过路径；登录回跳/跨系统参数/URL code 等入口校验和兜底；订单/支付/删除等高后果动作有权限和状态保护；无硬编码凭据、敏感日志或过宽错误泄露。`full` 保存到 `<REVIEW_ROOT>/<feature-id>-security-review.md`；`light` 可用 gate evidence inline，但必须写明适用鉴权矩阵/行为分支和验证结果，不能只写“已审查”。
+**安全审查**：优先用 `security-reviewer`；无可用智能体时把清单写进 `plan-review`、`status.md` 和最终 `code-review`。检查重点：token/session 安全读写和清理；权限判断只依赖可信来源、无绕过路径；登录回跳/跨系统参数/URL code 等入口校验和兜底；订单/支付/删除等高后果动作有权限和状态保护；无硬编码凭据、敏感日志或过宽错误泄露。`full` 保存到 `<REVIEW_ROOT>/<feature-id>-security-review.md`；`light` 可用 gate evidence inline，必须表达可核验的语义，不能只写“已审查”。最短模板：
+
+```text
+scope=auth; anonymous denied, account allowed; result=verified
+scope=privacy；白名单：id,name；排除字段：token,email；强制边界：序列化导出 props；结果：通过
+```
+
+鉴权证据可写矩阵/行为分支，或具体说明登录、SSO、token、session、权限等均未触及、原因和验证结论；privacy 必须同时有白名单、排除字段、强制边界和结果。可用中英文自然语言或键值写法，字段顺序不限。
 
 **行为验证**：`webapp-testing: enabled` 用其跑关键路径并记录截图/trace；`disabled` 落盘 `<REVIEW_ROOT>/<feature-id>-manual-test.md`（步骤、预期、实测结果）；`automated-tests: present` 同时运行相关自动化测试。L 级运行时行为改动不能只用 type-check/lint 作为完成证据。`delegated` 仍是 pending；只有 passed 或 skipped+AR 三方闭环后才能完成 verification gate。
 

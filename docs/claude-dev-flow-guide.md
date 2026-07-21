@@ -104,7 +104,7 @@ dev-flow 先判断规模与拓扑，再独立判断风险。`local` 允许 XS/S/
 
 ```text
 输出最小风险卡
-→ `dev-flow-status start` 创建 risk-minimal status.md（M 派生 risk-minimal-m）
+→ `node .claude/skills/dev-flow/scripts/dev-flow-status.mjs start <feature-id> …`（在仓库根目录执行）创建 risk-minimal status.md（M 派生 risk-minimal-m）
 → 完成标签派生的 rollback/security 等实现前门禁
 → [HUMAN GATE:implementation_approval]
 → 用户确认
@@ -316,7 +316,7 @@ writing-plans
 
 ## status CLI、finish 与 partial（v1.0）
 
-分类统一运行 `dev-flow-status start`：XS/S 自动 light，M/L 显式选择 execution，standard 声明 requirements；dirty workspace 声明 unrelated/in-scope 和原因。normal 在 implementation approval 前要求业务 hash 等于启动基线；已提前实现时用 `mark-retrospective`，原基线不刷新。所有机器字段禁止手改；`next` 每次只给一条后续命令。
+分类统一运行 `node .claude/skills/dev-flow/scripts/dev-flow-status.mjs start <feature-id> …`（在仓库根目录执行）：XS/S 自动 light，M/L 显式选择 execution，standard 声明 requirements；dirty workspace 声明 unrelated/in-scope 和原因。normal 在 implementation approval 前要求业务 hash 等于启动基线；已提前实现时用 `mark-retrospective`，原基线不刷新。所有机器字段禁止手改；`next` 每次只给一条后续命令。
 
 approval basis 沿用既有结构并绑定 process/baseline；批准后不再与启动基线比较，最终验证使用 `Bfinal`。gate evidence light 可 inline/report，full 只接受登记报告。`propose-risk` 的一次性 token 只接受明确“接受具名残余风险并继续/收尾”的后续回复。
 

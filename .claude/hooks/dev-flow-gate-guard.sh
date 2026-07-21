@@ -112,9 +112,10 @@ if [ -f "$auth_file" ]; then
   fi
 fi
 
-next_steps_no_auth='先运行 /dev-task 完成分级；无风险 XS/S 执行 dev-flow-status authorize --level XS|S；M/L 或风险 XS/S 执行 dev-flow-status init … 并在 implementation_approval 确认后写入 approved 授权。'
-next_steps_pending='对活动 feature 运行 dev-flow-status confirm-human <feature-id> implementation_approval --status confirmed --evidence "<用户原话>"。'
-next_steps_stale='approval_basis 已过期：查看变更后重新 confirm-human implementation_approval --status confirmed（内容变更不必重跑全部前置 gate；结构变更需补齐路线要求）。'
+status_cli="node \"${root}/.claude/skills/dev-flow/scripts/dev-flow-status.mjs\""
+next_steps_no_auth='先运行 /dev-task 完成分级；由高层 start 根据分级创建授权或 status，勿直接调用低层 init。'
+next_steps_pending="对活动 feature 运行 ${status_cli} confirm-human <feature-id> implementation_approval --status confirmed --evidence \"<用户原话>\"。"
+next_steps_stale="approval_basis 已过期：查看变更后重新 ${status_cli} confirm-human <feature-id> implementation_approval --status confirmed（内容变更不必重跑全部前置 gate；结构变更需补齐路线要求）。"
 
 # --- Bash path ---
 case "$tool_name" in

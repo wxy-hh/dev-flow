@@ -55,6 +55,18 @@ import {
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const contract = loadContract();
 const validator = path.join(__dirname, 'dev-flow-validate.mjs');
+let activeRepositoryRoot = '';
+
+// Status commands are emitted for a caller to paste into any repository
+// subdirectory. Resolve the invoked script once instead of relying on cwd or
+// a PATH shim. In an installed package this is the repository's
+// .claude/skills/dev-flow/scripts/dev-flow-status.mjs path.
+function formatManagedStatusCommand(...args) {
+  const script = activeRepositoryRoot
+    ? path.join(activeRepositoryRoot, '.claude/skills/dev-flow/scripts/dev-flow-status.mjs')
+    : path.resolve(process.argv[1]);
+  return `node ${JSON.stringify(script)} ${args.map((arg) => JSON.stringify(String(arg))).join(' ')}`;
+}
 
 function fail(message, code = 2) {
   process.stderr.write(`ERROR ${message}\n`);
@@ -311,6 +323,12 @@ function businessDiffEntries(root, workflow) {
   return entries;
 }
 
+function hasOnlyUntrackedDocumentation(entries) {
+  return entries.length > 0 && entries.every((entry) =>
+    entry.status === '??' && (entry.path.startsWith('docs/') || entry.path.endsWith('.md')),
+  );
+}
+
 function processForStart(root, workflow, flags) {
   const entries = businessDiffEntries(root, workflow);
   const declared = flags['existing-diff'];
@@ -329,6 +347,12 @@ function processForStart(root, workflow, flags) {
   if (!['unrelated', 'in-scope'].includes(declared)) {
     process.stderr.write('Business diff already exists:\n');
     for (const entry of entries) process.stderr.write(`  ${entry.status} ${entry.path}\n`);
+    if (hasOnlyUntrackedDocumentation(entries)) {
+      process.stderr.write(
+        '提示：若这些均为用户预先编写的文档输入，可明确记录基线：\n' +
+          '  --existing-diff unrelated --reason "用户预先编写的需求输入，已纳入 B0 基线"\n',
+      );
+    }
     fail('dirty business diff requires --existing-diff unrelated|in-scope --reason <text>', 1);
   }
   if (!reason) fail('dirty business diff requires a non-empty --reason', 1);
@@ -976,7 +1000,7 @@ function assertNormalApprovalFingerprint(root, workflow, model) {
   const baseline = model.process.baseline_business_diff_fingerprint;
   if (current !== baseline) {
     fail(
-      `business diff changed before implementation approval; no status/auth changes were made. Run: dev-flow-status mark-retrospective ${model.featureId} --reason "<why implementation already changed>"`,
+      `business diff changed before implementation approval; no status/auth changes were made. Run: ${formatManagedStatusCommand('mark-retrospective', model.featureId, '--reason', '<why implementation already changed>')}`,
       1,
     );
   }
@@ -1309,13 +1333,14 @@ function cmdCompleteGate(root, workflow, featureId, gate, flags) {
   model.nextAction = nextActionForGate(nextGate);
   saveModel(root, model);
   process.stdout.write(`completed gate ${canonicalGate}\n`);
+  process.stdout.write(`next_command: ${nextCommand(model)}\n`);
   if (canonicalGate === 'code-review' && flags['evidence-file']) {
     const evidencePath = flags['evidence-file'];
     const registered = model.assets.some((a) => a.path === evidencePath);
     if (!registered) {
       process.stdout.write(
         `HINT: register the code-review report before complete-verification:\n` +
-          `  dev-flow-status add-asset ${featureId} --path ${evidencePath} --kind review\n`,
+          `  ${formatManagedStatusCommand('add-asset', featureId, '--path', evidencePath, '--kind', 'review')}\n`,
       );
     }
   }
@@ -1521,6 +1546,7 @@ function cmdConfirmHuman(root, workflow, featureId, gate, flags) {
   }
 
   process.stdout.write(`human gate ${gate}: ${status}\n`);
+  process.stdout.write(`next_command: ${nextCommand(model)}\n`);
 }
 
 function cmdRecordValidation(root, workflow, featureId, flags) {
@@ -1766,6 +1792,7 @@ function cmdStart(root, workflow, featureId, flags) {
       closed_at: null,
     });
     process.stdout.write(`started ${featureId}: ${startPlan.route} (classified)\n`);
+    process.stdout.write('next_command: /executing-plans\n');
     return;
   }
 
@@ -1789,13 +1816,23 @@ function cmdStart(root, workflow, featureId, flags) {
     fail('start failed atomically; status and authorization were restored', 1);
   }
   process.stdout.write(`started ${featureId}: ${startPlan.route}\n`);
+  const model = loadStatusModel(root, workflow, featureId);
+  process.stdout.write(`next_command: ${nextCommand(model)}\n`);
 }
 
 function nextCommand(model) {
   const action = model.nextAction || '';
   if (action.startsWith('await ')) {
     const gate = action.slice('await '.length);
-    return `dev-flow-status confirm-human ${model.featureId} ${gate} --status confirmed --evidence "<exact user reply>"`;
+    return formatManagedStatusCommand(
+      'confirm-human',
+      model.featureId,
+      gate,
+      '--status',
+      'confirmed',
+      '--evidence',
+      '<exact user reply>',
+    );
   }
   if (action === 'run implementation' || action === 'implementation') return '/executing-plans';
   if (action.startsWith('run ')) return `/${action.slice('run '.length)}`;
@@ -1919,33 +1956,34 @@ function cmdRepair(root, workflow, featureId) {
 }
 
 function usage() {
-  process.stdout.write(`Usage:
-  dev-flow-status start <feature-id> --level <XS|S|M|L> --topology <topology> \\
+  const cli = 'node .claude/skills/dev-flow/scripts/dev-flow-status.mjs';
+  process.stdout.write(`Usage (run from the repository root):
+  ${cli} start <feature-id> --level <XS|S|M|L> --topology <topology> \\
     [--risk-labels a,b] [--execution <light|standard>] [--requirements <state>] \\
     [--evidence-result <result>] [--existing-diff <unrelated|in-scope> --reason <text>] [--dry-run]
-  dev-flow-status next [feature-id]
-  dev-flow-status scaffold <feature-id> --asset <kind> [--refresh]
-  dev-flow-status authorize --level <XS|S|M> [--note <text>]
-  dev-flow-status init <feature-id> --level <XS|S|M|L> --profile <profile> \\
+  ${cli} next [feature-id]
+  ${cli} scaffold <feature-id> --asset <kind> [--refresh]
+  ${cli} authorize --level <XS|S|M> [--note <text>]
+  ${cli} init <feature-id> --level <XS|S|M|L> --profile <profile> \\
     --topology <topology> --evidence-result <result> [--entry-gate <gate>] \
     [--note <text>] [--risk-labels a,b] [--lightweight-l]
-  dev-flow-status activate <feature-id>
-  dev-flow-status add-asset <feature-id> --path <repo-path> --kind <kind>
-  dev-flow-status complete-gate <feature-id> <gate> \\
+  ${cli} activate <feature-id>
+  ${cli} add-asset <feature-id> --path <repo-path> --kind <kind>
+  ${cli} complete-gate <feature-id> <gate> \\
     [--evidence-inline <summary> | --evidence-file <repo-path> --heading <markdown-heading>]
-  dev-flow-status promote-gate <feature-id> <risk-gate> --to <light|full> --reason <text>
-  dev-flow-status record-risk-evidence <feature-id> <label> \\
+  ${cli} promote-gate <feature-id> <risk-gate> --to <light|full> --reason <text>
+  ${cli} record-risk-evidence <feature-id> <label> \\
     [--mode <inline|report>] [--conclusion <text>] [--verification <text>] [--report <path>]
-  dev-flow-status confirm-human <feature-id> <gate> \\
+  ${cli} confirm-human <feature-id> <gate> \\
     --status confirmed --evidence <user-evidence>
-  dev-flow-status record-validation <feature-id> --command <command>
-  dev-flow-status complete-verification <feature-id> --command <command> \\
+  ${cli} record-validation <feature-id> --command <command>
+  ${cli} complete-verification <feature-id> --command <command> \\
     [--report <path>] [--manual-test <path>]
-  dev-flow-status propose-risk <feature-id> --id <AR-xxx> --step <step> --reason <reason>
-  dev-flow-status accept-risk <feature-id> --id <AR-xxx> \\
+  ${cli} propose-risk <feature-id> --id <AR-xxx> --step <step> --reason <reason>
+  ${cli} accept-risk <feature-id> --id <AR-xxx> \\
     --proposal-token <token> --evidence <exact-user-reply>
-  dev-flow-status mark-retrospective <feature-id> --reason <reason>
-  dev-flow-status repair <feature-id>
+  ${cli} mark-retrospective <feature-id> --reason <reason>
+  ${cli} repair <feature-id>
 `);
 }
 
@@ -1957,6 +1995,7 @@ function main() {
   }
   const command = positional[0];
   const root = gitRoot();
+  activeRepositoryRoot = root;
   const workflow = loadWorkflow(root);
 
   switch (command) {

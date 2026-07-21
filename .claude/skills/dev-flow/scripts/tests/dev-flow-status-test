@@ -7,6 +7,7 @@ status_cli="$root/dev-flow-status.mjs"
 validator="$root/dev-flow-validate.mjs"
 checker="$root/dev-flow-feature-check"
 policy="$root/dev-flow-policy.mjs"
+classifier="$root/dev-flow-command.mjs"
 tmp=$(mktemp -d "${TMPDIR:-/tmp}/dev-flow-status.XXXXXX")
 trap 'rm -rf "$tmp"' EXIT
 
@@ -62,7 +63,9 @@ expect_not_contains() {
   fi
 }
 
-mkdir -p "$tmp/.claude/rules" "$tmp/docs/dev-flow/features" "$tmp/docs/dev-flow/reviews" "$tmp/src"
+mkdir -p "$tmp/.claude/rules" "$tmp/.claude/skills" "$tmp/docs/dev-flow/features" "$tmp/docs/dev-flow/reviews" "$tmp/src" "$tmp/apps/web"
+skill_root=$(cd "$root/.." && pwd)
+ln -s "$skill_root" "$tmp/.claude/skills/dev-flow"
 git -C "$tmp" init -q
 printf '%s\n' \
   'dev_flow:' \
@@ -270,12 +273,16 @@ fi
 start_a=$(run_in_tmp node "$status_cli" start fixture-a --level M \
   --topology shared-contract --risk-labels security --execution light \
   --evidence-result verified)
-if printf '%s' "$start_a" | rg -q 'risk-minimal-m'; then
-  printf 'PASS Fixture A real start matches dry-run route\n'
+if printf '%s' "$start_a" | rg -q 'risk-minimal-m' \
+  && printf '%s' "$start_a" | rg -q 'next_command: /security-review'; then
+  printf 'PASS Fixture A real start matches dry-run route and emits next_command\n'
 else
-  printf 'FAIL Fixture A real start route differs from dry-run\n'
+  printf 'FAIL Fixture A real start route or next_command differs from policy\n'
   failures=$((failures + 1))
 fi
+expect_pass run_in_tmp node "$status_cli" record-risk-evidence fixture-a security \
+  --mode inline --conclusion 'auth branches reviewed' --verification 'relevant checks passed'
+expect_contains "$tmp/docs/dev-flow/features/fixture-a/status.md" 'current_gate: "security-review"'
 active_auth_before=$(shasum -a 256 "$tmp/.claude/runtime/dev-flow/write-authorization.json" | awk '{print $1}')
 expect_fail run_in_tmp node "$status_cli" start fixture-a --level S --topology local
 expect_fail run_in_tmp node "$status_cli" start fixture-a --level S --topology local --dry-run
@@ -289,8 +296,14 @@ else
 fi
 expect_fail run_in_tmp node "$status_cli" complete-gate fixture-a security-review \
   --evidence-inline 'Reviewed security and found no issues'
-expect_pass run_in_tmp node "$status_cli" complete-gate fixture-a security-review \
-  --evidence-inline 'Auth matrix verified: anonymous denied, account and OAuth allowed'
+complete_a=$(run_in_tmp node "$status_cli" complete-gate fixture-a security-review \
+  --evidence-inline 'Auth matrix verified: anonymous denied, account and OAuth allowed')
+if printf '%s' "$complete_a" | rg -q '^next_command: node ".*/\.claude/skills/dev-flow/scripts/dev-flow-status\.mjs" "confirm-human" "fixture-a" "implementation_approval"'; then
+  printf 'PASS complete-gate emits the first HUMAN GATE command directly\n'
+else
+  printf 'FAIL complete-gate did not emit the first HUMAN GATE command\n'
+  failures=$((failures + 1))
+fi
 printf '%s\n' 'API_TOKEN=supersecretvalue123' > "$tmp/docs/dev-flow/reviews/fixture-a-secret-review.md"
 secret_output=$(run_in_tmp node "$status_cli" add-asset fixture-a \
   --path docs/dev-flow/reviews/fixture-a-secret-review.md --kind review 2>&1 || true)
@@ -301,16 +314,62 @@ else
   printf 'FAIL secret scan omitted path/key or leaked the value\n'
   failures=$((failures + 1))
 fi
+next_command=$(printf '%s\n' "$complete_a" | sed -n 's/^next_command: //p')
+fixture_root=$(git -C "$tmp" rev-parse --show-toplevel)
+classified_next=$(cd "$tmp/apps/web" && DEV_FLOW_REPO_ROOT="$fixture_root" node "$classifier" "$next_command")
+subdir_output=$(cd "$tmp/apps/web" && bash -c "$next_command")
 next_a=$(run_in_tmp node "$status_cli" next fixture-a)
-next_a_repeat=$(run_in_tmp node "$status_cli" next fixture-a)
-if printf '%s' "$next_a" | rg -q 'route: risk-minimal-m' \
-  && printf '%s' "$next_a" | rg -q 'command: dev-flow-status confirm-human fixture-a implementation_approval' \
-  && [ "$next_a" = "$next_a_repeat" ]; then
-  printf 'PASS Fixture A reaches its first HUMAN GATE in three control commands\n'
+if printf '%s' "$classified_next" | rg -q '"is_control":true' \
+  && printf '%s' "$subdir_output" | rg -q 'human gate implementation_approval: confirmed' \
+  && printf '%s' "$subdir_output" | rg -q 'next_command: /executing-plans' \
+  && printf '%s' "$next_a" | rg -q 'command: /executing-plans' \
+  && ! printf '%s' "$next_a" | rg -q 'command: node '; then
+  printf 'PASS Fixture A command runs from a subdirectory; slash route keeps its form\n'
 else
-  printf 'FAIL Fixture A next command is not the implementation HUMAN GATE\n'
+  printf 'FAIL Fixture A subdirectory command or slash route is invalid\n'
   failures=$((failures + 1))
 fi
+
+security_status="$tmp/docs/dev-flow/features/fixture-a/status.md"
+check_security_summary() {
+  local description=$1 summary=$2 expected=$3 backup="$security_status.before"
+  cp "$security_status" "$backup"
+  node - "$security_status" "$summary" <<'NODE'
+const fs = require('fs');
+const [,, file, summary] = process.argv;
+const quote = JSON.stringify(summary);
+const text = fs.readFileSync(file, 'utf8').replace(/(summary:\s*)"[^"]*"/, `$1${quote}`);
+fs.writeFileSync(file, text, 'utf8');
+NODE
+  if node "$validator" status "$tmp" "docs/dev-flow/features/fixture-a/status.md" >/dev/null 2>&1; then
+    actual=pass
+  else
+    actual=fail
+  fi
+  mv "$backup" "$security_status"
+  if [ "$actual" = "$expected" ]; then
+    printf 'PASS %s\n' "$description"
+  else
+    printf 'FAIL %s (expected %s, got %s)\n' "$description" "$expected" "$actual"
+    failures=$((failures + 1))
+  fi
+}
+check_security_summary 'auth no-touch evidence is accepted' \
+  'scope=auth；登录、SSO、token、session 和权限均不触及，因为本次仅改展示文案；结果：通过' pass
+check_security_summary 'legacy token auth branch evidence is accepted' \
+  'Auth token verified: expired token denied, refreshed token allowed' pass
+check_security_summary 'legacy session auth branch evidence is accepted' \
+  'Auth session verified: missing session denied, active session allowed' pass
+check_security_summary 'privacy allow/exclude/enforcement evidence is accepted' \
+  'scope=privacy；白名单：id,name；排除字段：token,email；强制边界：序列化导出 props；结果：通过' pass
+check_security_summary 'generic security conclusion is rejected' '已审查，无问题' fail
+check_security_summary 'auth evidence without result is rejected' 'scope=auth; anonymous denied, account allowed' fail
+check_security_summary 'privacy evidence without allowlist is rejected' \
+  'scope=privacy；排除字段：token；强制边界：序列化；结果：通过' fail
+check_security_summary 'privacy evidence without exclusions is rejected' \
+  'scope=privacy；白名单：id,name；强制边界：序列化；结果：通过' fail
+check_security_summary 'privacy evidence without enforcement is rejected' \
+  'scope=privacy；白名单：id,name；排除字段：token；结果：通过' fail
 
 expect_pass run_in_tmp node "$status_cli" start stable-shared --level M \
   --topology shared-contract --execution standard --requirements confirmed --dry-run
@@ -339,16 +398,28 @@ else
 fi
 
 # --- approval baseline and retrospective semantics ---
+printf '%s\n' 'user-authored requirement input' > "$tmp/docs/requirement-input.md"
+doc_dirty_output=$(run_in_tmp node "$status_cli" start docs-hint --level S --topology local 2>&1 || true)
+if printf '%s' "$doc_dirty_output" | rg -q '用户预先编写的需求输入，已纳入 B0 基线'; then
+  printf 'PASS pure untracked documentation diff receives the B0 hint\n'
+else
+  printf 'FAIL pure untracked documentation diff did not receive the B0 hint\n'
+  failures=$((failures + 1))
+fi
+rm -f "$tmp/docs/requirement-input.md"
 printf '%s\n' 'unrelated legacy diff (content must not be printed)' > "$tmp/src/business.js"
+printf '%s\n' 'mixed documentation input' > "$tmp/docs/mixed-input.md"
 dirty_output=$(run_in_tmp node "$status_cli" start dirty-missing-disposition --level S \
   --topology local --risk-labels external 2>&1 || true)
 if printf '%s' "$dirty_output" | rg -q 'src/business.js' \
-  && ! printf '%s' "$dirty_output" | rg -q 'content must not be printed'; then
-  printf 'PASS dirty start reports path/status without file contents\n'
+  && ! printf '%s' "$dirty_output" | rg -q 'content must not be printed' \
+  && ! printf '%s' "$dirty_output" | rg -q '用户预先编写的需求输入，已纳入 B0 基线'; then
+  printf 'PASS source or mixed dirty diff has no documentation-only hint\n'
 else
-  printf 'FAIL dirty start output leaked content or omitted path\n'
+  printf 'FAIL dirty start leaked content, omitted path, or showed a documentation-only hint\n'
   failures=$((failures + 1))
 fi
+rm -f "$tmp/docs/mixed-input.md"
 expect_pass run_in_tmp node "$status_cli" start unrelated-normal --level S \
   --topology local --risk-labels external --existing-diff unrelated \
   --reason 'pre-existing unrelated work'
@@ -433,7 +504,7 @@ expect_pass run_in_tmp node "$status_cli" start retro-m-light --level M --topolo
   --execution light --existing-diff in-scope --reason 'existing light M implementation'
 retro_m_next=$(run_in_tmp node "$status_cli" next retro-m-light)
 if printf '%s' "$retro_m_next" | rg -q 'route: risk-minimal-m' \
-  && printf '%s' "$retro_m_next" | rg -q 'command: dev-flow-status confirm-human retro-m-light implementation_approval'; then
+  && printf '%s' "$retro_m_next" | rg -q 'command: node ".*/\.claude/skills/dev-flow/scripts/dev-flow-status\.mjs" "confirm-human" "retro-m-light" "implementation_approval"'; then
   printf 'PASS no-risk light M retrospective is status-bearing risk-minimal-m\n'
 else
   printf 'FAIL no-risk light M retrospective route or next command\n'

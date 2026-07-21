@@ -7,7 +7,7 @@ description: 实现完成且需要决定如何收尾时使用：先验证与 fea
 
 实现完成后的收尾。验证前不给「完成」结论；用户未精确确认前不删除/压缩中间资产。
 
-先读项目 workflow 与 protocol。有新鲜验证时仍核对无新改动。每轮第一条控制命令固定为 `dev-flow-status next [feature-id]`；只推进它输出的一条 command，然后重新 next。这样重复调用幂等，不跨 blocker。
+先读项目 workflow 与 protocol。有新鲜验证时仍核对无新改动。每轮第一条控制命令固定为 `node .claude/skills/dev-flow/scripts/dev-flow-status.mjs next [feature-id]`（在仓库根目录执行）；只推进它输出的一条 command，然后重新 next。这样重复调用幂等，不跨 blocker。
 
 ## 第 1 步：完成前验证（状态 A）
 
@@ -16,7 +16,7 @@ description: 实现完成且需要决定如何收尾时使用：先验证与 fea
 ## 第 1.5 步：feature evidence
 
 ```bash
-.claude/skills/dev-flow/scripts/dev-flow-status.mjs complete-verification <feature-id> \
+node .claude/skills/dev-flow/scripts/dev-flow-status.mjs complete-verification <feature-id> \
   --command "<actual verification command>" \
   --report <verification-report> [--manual-test <manual-test-report>]
 .claude/skills/dev-flow/scripts/dev-flow-feature-check <feature-id> --finish
@@ -26,7 +26,7 @@ description: 实现完成且需要决定如何收尾时使用：先验证与 fea
 
 ## 第 2 步：logic-complete 与可选 dry-run（状态 B）
 
-生成/更新 feature，并用 `dev-flow-status scaffold <feature-id> --asset completion [--refresh]` 生成 completion schema 2：
+生成/更新 feature，并用 `node .claude/skills/dev-flow/scripts/dev-flow-status.mjs scaffold <feature-id> --asset completion [--refresh]`（在仓库根目录执行）生成 completion schema 2：
 
 ```text
 <FEATURE_ROOT>/<feature-id>/feature.md

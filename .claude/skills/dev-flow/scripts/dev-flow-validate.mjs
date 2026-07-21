@@ -293,12 +293,31 @@ function hasCompletedEvidence(value) {
   );
 }
 
-function hasSecurityInlineMatrix(summary) {
+function securityInlineEvidenceProblem(summary) {
   const value = String(summary || '');
-  const namesAuthScope = /(鉴权|认证|授权|auth(?:entication|orization)?)/i.test(value);
-  const namesMatrixOrBranches = /(矩阵|matrix|匿名|账号|oauth|token|session|角色|role)/i.test(value);
-  const namesResult = /(通过|拒绝|失败|覆盖|验证|pass|deny|fail|verified|covered)/i.test(value);
-  return namesAuthScope && namesMatrixOrBranches && namesResult;
+  const hasResult = /(通过|拒绝|失败|覆盖|已验证|验证通过|pass(?:ed)?|deny|denied|fail(?:ed)?|verified|covered|tested)/i.test(value);
+  const authScope = /(?:scope\s*[:=]\s*auth|范围\s*[:：]\s*(?:鉴权|认证|授权)|鉴权|认证|授权|\bauth(?:entication|orization)?\b|\bsso\b)/i.test(value);
+  const authMatrixOrBranch = /(矩阵|matrix|匿名|账号|oauth|token|session|角色|role|行为分支|分支|branch)/i.test(value);
+  const authSurface = /(登录|login|sso|token|session|权限|permission|鉴权|认证|授权|auth(?:entication|orization)?)/i.test(value);
+  const noAuthTouch = /(不触及|不涉及|未触及|未修改|没有(?:改动|修改|触及)|does not touch|not affected|not modify|not changed|no .*change|unaffected)/i.test(value);
+  const reason = /(原因|因为|由于|鉴于|本次(?:仅|只)|仅修改|只修改|变更仅限|because|since|reason|rationale|why)/i.test(value);
+
+  // Preserve v1.0.0's useful shorthand, such as
+  // "Auth matrix verified: anonymous denied, account and OAuth allowed".
+  if (authScope && hasResult && (authMatrixOrBranch || (authSurface && noAuthTouch && reason))) {
+    return '';
+  }
+
+  const privacyScope = /(?:scope\s*[:=]\s*(?:privacy|sensitive)|范围\s*[:：]\s*(?:隐私|敏感(?:字段|信息)?)|隐私|敏感(?:字段|信息)?|\bprivacy\b|\bsensitive(?:[ -]?(?:field|data))?\b)/i.test(value);
+  const allowlist = /(白名单|允许字段|允许输出|字段允许|whitelist|allow(?:ed)?(?:[ -]?fields?)?)/i.test(value);
+  const exclusions = /(排除字段|排除|不包含|不得包含|黑名单|excluded?|exclude|blocklist|denylist)/i.test(value);
+  const enforcement = /(数据构建|构建层|序列化|导出(?:\s*props?|层)?|props?|serialization|data construction|builder|强制边界|enforce(?:ment|d)?|boundary)/i.test(value);
+  if (privacyScope && hasResult && allowlist && exclusions && enforcement) return '';
+
+  if (!hasResult) return '缺少明确的验证结果';
+  if (privacyScope) return '隐私证据必须同时说明白名单、排除字段和强制边界';
+  if (authScope) return '鉴权证据必须列出矩阵/行为分支，或说明具体鉴权面未触及、原因和验证结论';
+  return '缺少鉴权或隐私范围';
 }
 
 function scanOwnedSecretAssignments(root, relativePaths) {
@@ -715,9 +734,16 @@ function validateStatus(root, statusPath, stage = 'current') {
         if (unsupported.length || !hasMeaningfulEvidence(evidence.summary)) {
           failCheck(`gate_evidence.${gateName} inline mode requires only mode and meaningful summary`);
           geOk = false;
-        } else if (gateName.replace(/-/g, '_') === 'security_review' && !hasSecurityInlineMatrix(evidence.summary)) {
-          failCheck(`gate_evidence.${gateName} inline summary must name the applicable auth matrix/branches and verification result`);
-          geOk = false;
+        } else if (gateName.replace(/-/g, '_') === 'security_review') {
+          const problem = securityInlineEvidenceProblem(evidence.summary);
+          if (problem) {
+            failCheck(
+              `gate_evidence.${gateName} inline summary invalid: ${problem}. ` +
+                'Examples: scope=auth; anonymous denied, account allowed; result=verified. ' +
+                'scope=privacy；白名单：id,name；排除字段：token,email；强制边界：序列化导出 props；结果：通过。',
+            );
+            geOk = false;
+          }
         }
         continue;
       }

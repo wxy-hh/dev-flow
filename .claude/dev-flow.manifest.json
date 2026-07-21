@@ -1,7 +1,7 @@
 {
   "schema_version": "1",
-  "workflow_version": "1.0.0",
-  "generated_at": "2026-07-20T00:54:40Z",
+  "workflow_version": "1.0.1",
+  "generated_at": "2026-07-21T06:49:34Z",
   "files": [
     {
       "path": ".claude/agents/build-error-resolver.md",
@@ -15,7 +15,12 @@
     },
     {
       "path": ".claude/agents/security-reviewer.md",
-      "sha256": "885f96ab0e4cd72abdd3119da5ba6778ae8faf7d607129ff075c74d1750032d5",
+      "sha256": "3d6b9fafc70b9f4251ac20103c731aef47c9d18c015adaf8e57fe98ca829b8a4",
+      "strategy": "replace"
+    },
+    {
+      "path": ".claude/commands/README.md",
+      "sha256": "3891b51d93fa618735a038950ce0dca8a9fd9b00df335215973a78cebcf8247e",
       "strategy": "replace"
     },
     {
@@ -25,12 +30,12 @@
     },
     {
       "path": ".claude/commands/dev-task.md",
-      "sha256": "822061741a8d6db67e722c4ac59820f7d0a743554e711978cee1d94901f1b5f3",
+      "sha256": "e1635d892d1ce910cc78dc5de9af53a59e294557897ff646052cbdd4ec90ebb3",
       "strategy": "replace"
     },
     {
       "path": ".claude/commands/finish.md",
-      "sha256": "89c6853fb42efeee2511ac94c85427404343d94caaec21e2a22fae97ba49131d",
+      "sha256": "b3371962b300748ce9769b57ee52c7ace34ac8fda58b3398919ab01a51870b6d",
       "strategy": "replace"
     },
     {
@@ -41,11 +46,6 @@
     {
       "path": ".claude/commands/onboard-dev-flow.md",
       "sha256": "9312af2fc39a7a3dc496e620adf85ddc1b111757b7cdf79945eae67d503f3f04",
-      "strategy": "replace"
-    },
-    {
-      "path": ".claude/commands/README.md",
-      "sha256": "779d4da0318a89506d23b5e2a26975d3c42e7d36e491997543d101ae87e01c04",
       "strategy": "replace"
     },
     {
@@ -60,7 +60,12 @@
     },
     {
       "path": ".claude/hooks/dev-flow-gate-guard.sh",
-      "sha256": "c7f3f724123e8a44b046de60c359e73be0bf78f36f4dd057c61415253780f871",
+      "sha256": "d95647dbf248857c9fe1896fc6fec201cdd0b4abb12227c1b350f5011df4d561",
+      "strategy": "replace"
+    },
+    {
+      "path": ".claude/rules/README.md",
+      "sha256": "7ea3f95fb97d24255a1641a9b85626c50acabdf1c80c4a8a717aa213d7e7f6e4",
       "strategy": "replace"
     },
     {
@@ -74,11 +79,6 @@
       "strategy": "replace"
     },
     {
-      "path": ".claude/rules/README.md",
-      "sha256": "7ea3f95fb97d24255a1641a9b85626c50acabdf1c80c4a8a717aa213d7e7f6e4",
-      "strategy": "replace"
-    },
-    {
       "path": ".claude/rules/security.md",
       "sha256": "fbd18f0956bcda83679b7e0e88c98f069917c118a141e88335b7251d46b7d50b",
       "strategy": "replace"
@@ -89,23 +89,28 @@
       "strategy": "replace"
     },
     {
-      "path": ".claude/skills/code-review/references/code-reviewer.md",
-      "sha256": "967406dd9745879d3abc18dd5ef9cf934af2de23585105b6a7e39b40ab2ac584",
-      "strategy": "replace"
-    },
-    {
       "path": ".claude/skills/code-review/SKILL.md",
       "sha256": "48d09e4cebcd3a09cc939b95b83a70ec948c702e64581f918e5a129317255fa4",
       "strategy": "replace"
     },
     {
+      "path": ".claude/skills/code-review/references/code-reviewer.md",
+      "sha256": "967406dd9745879d3abc18dd5ef9cf934af2de23585105b6a7e39b40ab2ac584",
+      "strategy": "replace"
+    },
+    {
+      "path": ".claude/skills/dev-flow/SKILL.md",
+      "sha256": "425b94951967843392d2b34d9a0e6ca20e7093a82b98bc75c871eeb737ba9425",
+      "strategy": "replace"
+    },
+    {
       "path": ".claude/skills/dev-flow/contract.json",
-      "sha256": "8f351eed5e16c5a53c1a3d99e04260237902a66b63e4c53a9b6963f0af6e801a",
+      "sha256": "2e1ae17b8e928f9692a1872192a172ce4b9fb0058721e01b9eed09ea13f7c54b",
       "strategy": "replace"
     },
     {
       "path": ".claude/skills/dev-flow/references/partial-verification.md",
-      "sha256": "9877377235520bcefcf4ff52b65d2c8c6e76983aa867de78bc5fc31dec4c0809",
+      "sha256": "5dd741a4bd6a873997acb3885134e9bdac0872fc9fec33f107a256c57111aa5c",
       "strategy": "replace"
     },
     {
@@ -115,7 +120,7 @@
     },
     {
       "path": ".claude/skills/dev-flow/references/risk-gates.md",
-      "sha256": "df1d99f28fea95de5041b63578357398df03240f4374938909a6f6a270376673",
+      "sha256": "380d606d145d13e24aa00ae5cf660bf9f0f825f98e1b6b78ebc89379728ceaa8",
       "strategy": "replace"
     },
     {
@@ -125,7 +130,7 @@
     },
     {
       "path": ".claude/skills/dev-flow/references/status-cli.md",
-      "sha256": "775f1b7de8bca3592fadfa3e854d94360cbc898be49ccf592d46350477970a33",
+      "sha256": "a6cfa63c61955f0e365e329c30fbffecd971607b023abeb6189acbc9f4d807cc",
       "strategy": "replace"
     },
     {
@@ -135,7 +140,7 @@
     },
     {
       "path": ".claude/skills/dev-flow/scripts/dev-flow-doctor",
-      "sha256": "aeb3673d012ad5e37989ce264d68300a4cfdf44eee17fae2ffaa786feb0ce504",
+      "sha256": "aec187ad0f528470e70fa19977323741df52845b0170cee69a003f693ba0797a",
       "strategy": "replace"
     },
     {
@@ -165,22 +170,27 @@
     },
     {
       "path": ".claude/skills/dev-flow/scripts/dev-flow-status.mjs",
-      "sha256": "c0b292de9c8df1c3cd9946940501b0fad2ef1252416d6d17f46d2fb24ec9636a",
+      "sha256": "c0f810f1d04016b04b3db13ab7babe8d652f6387301185af999905a98e9f30c8",
+      "strategy": "replace"
+    },
+    {
+      "path": ".claude/skills/dev-flow/scripts/dev-flow-test",
+      "sha256": "73d270740ed65498bf957ed34da4df99072d1bd4c87302382a622ae8710b8db5",
       "strategy": "replace"
     },
     {
       "path": ".claude/skills/dev-flow/scripts/dev-flow-upgrade",
-      "sha256": "f95613d24b74d19c3384ef7950d20dc83e82a070241e4ae7598044bf8fa101b6",
+      "sha256": "9120955cd88468330d3eefcb55c1e51094fa92df5414057bd93aaf08ddfa72f2",
       "strategy": "replace"
     },
     {
       "path": ".claude/skills/dev-flow/scripts/dev-flow-validate.mjs",
-      "sha256": "b13b95c6e1b6f039ac66c0560f16623831554dcc3157e4acb0db49e5e24c0706",
+      "sha256": "f4ff7da098cdf40f790eccc335e500410a30b786857fcccb086ac48c34925789",
       "strategy": "replace"
     },
     {
       "path": ".claude/skills/dev-flow/scripts/tests/dev-flow-doctor-test",
-      "sha256": "fc5f5d1835698de7123dc5aca08d3c52cc970f07df9247f3083788d38f6e32a1",
+      "sha256": "99246cca5fe2b2f4f6531b682d604593bef280238205bb99de6f54b5959a0356",
       "strategy": "replace"
     },
     {
@@ -205,17 +215,17 @@
     },
     {
       "path": ".claude/skills/dev-flow/scripts/tests/dev-flow-status-test",
-      "sha256": "40b13698d6439f83c662268dc258f6f21d7b409bf93d6f951787227a729c8c23",
+      "sha256": "7e09048d5368b974c579d18929eb6a7e9325f675143cea6c8b5f5913b02ff566",
       "strategy": "replace"
     },
     {
       "path": ".claude/skills/dev-flow/scripts/tests/dev-flow-upgrade-test",
-      "sha256": "9266f1a4a00465454d11e2112eb1cb3ff4cb00d933ab00a1d92f937c9030354a",
+      "sha256": "25e50e65943f27a6d08ffac0e443372042d42bfb2ce1bd1e62ae839a6a87e5cb",
       "strategy": "replace"
     },
     {
-      "path": ".claude/skills/dev-flow/SKILL.md",
-      "sha256": "7b382b823777dacbef5319103ce10ac99b9107d3ec472cf83ab63738a16a0883",
+      "path": ".claude/skills/executing-plans/SKILL.md",
+      "sha256": "7d2e636f08498c072e663de572d31a23ede7c74f7e87cee904c886a347d58019",
       "strategy": "replace"
     },
     {
@@ -254,18 +264,13 @@
       "strategy": "replace"
     },
     {
-      "path": ".claude/skills/executing-plans/SKILL.md",
-      "sha256": "7d2e636f08498c072e663de572d31a23ede7c74f7e87cee904c886a347d58019",
-      "strategy": "replace"
-    },
-    {
       "path": ".claude/skills/executing-plans/task-reviewer-prompt.md",
       "sha256": "515f70fa830dccf10ce94a64be7a68998007fddc5b671c03a744e22cceb00745",
       "strategy": "replace"
     },
     {
       "path": ".claude/skills/finishing-a-development-branch/SKILL.md",
-      "sha256": "7fcaec00448183593156ba9e58c7f41791c9ffc5cc0bb9086eb17a09ed7eb72d",
+      "sha256": "ac04fdc195c5981b425dad5625093498ce31acbd461eb98c27a99e8529d9a5c6",
       "strategy": "replace"
     },
     {
@@ -279,13 +284,13 @@
       "strategy": "replace"
     },
     {
-      "path": ".claude/skills/plan-review/references/review-prompts.md",
-      "sha256": "0a4790a10f9f3b1cbad00b588bfd3e7b3a235599ea52cfcfa0296bf7111ca1de",
+      "path": ".claude/skills/plan-review/SKILL.md",
+      "sha256": "011877d8ec379bb3d60efbba4656c80c48a6cb4b8811f51b0641b72ff1965a3f",
       "strategy": "replace"
     },
     {
-      "path": ".claude/skills/plan-review/SKILL.md",
-      "sha256": "7896b591c0772f0dafbbd62a94ba882f1c0c002c927069d21a2c2b04f7057e5c",
+      "path": ".claude/skills/plan-review/references/review-prompts.md",
+      "sha256": "0a4790a10f9f3b1cbad00b588bfd3e7b3a235599ea52cfcfa0296bf7111ca1de",
       "strategy": "replace"
     },
     {
@@ -294,23 +299,23 @@
       "strategy": "replace"
     },
     {
+      "path": ".claude/skills/requirements-coverage/SKILL.md",
+      "sha256": "e9e4f88c94c4d0deddb9bac4b68ef7b7b65f37bd9632f1859667216935adf6be",
+      "strategy": "replace"
+    },
+    {
       "path": ".claude/skills/requirements-coverage/agents/openai.yaml",
       "sha256": "1e2e473829384a830e2bbaf1a5c63c997d14da3b6300fdb21f6a3af72d05cc62",
       "strategy": "replace"
     },
     {
-      "path": ".claude/skills/requirements-coverage/SKILL.md",
-      "sha256": "c1de1a2b08d1889c2701cf9633125ff23ee26c75360c78321938a4c2bbddd965",
+      "path": ".claude/skills/rollback-units/SKILL.md",
+      "sha256": "2c3ea249e4171558c422845ff1e4d0196f2a5141890ec8b3d1739d90b91afa85",
       "strategy": "replace"
     },
     {
       "path": ".claude/skills/rollback-units/agents/openai.yaml",
       "sha256": "c995d6da00669da1694fcb03cdb2d5afdc3eb5bf9d057aa7839598d27ef4284b",
-      "strategy": "replace"
-    },
-    {
-      "path": ".claude/skills/rollback-units/SKILL.md",
-      "sha256": "00d32186c05a2d4d0a30faab00dac0ff07be1c0a3b053aae3a4881e84a9dd494",
       "strategy": "replace"
     },
     {
@@ -330,17 +335,17 @@
     },
     {
       "path": ".claude/skills/verification-before-completion/SKILL.md",
-      "sha256": "3ffac335fcba8e9711aee3520ddd30522294c33e735e36d4ab51b51913103717",
-      "strategy": "replace"
-    },
-    {
-      "path": ".claude/skills/writing-plans/plan-document-reviewer-prompt.md",
-      "sha256": "d085e415501e5f1f6efd5097c70535716c39ad5c0ffe87175ddaed080f23e43c",
+      "sha256": "2eab0fd778f98fdbe63596a0766fdcebdbf650de2af8e944fbeb733bb3db14eb",
       "strategy": "replace"
     },
     {
       "path": ".claude/skills/writing-plans/SKILL.md",
       "sha256": "5cedf52055b8d5fd40d5bd41bc18664ba2d0db064e5cca5252a472c8f517df74",
+      "strategy": "replace"
+    },
+    {
+      "path": ".claude/skills/writing-plans/plan-document-reviewer-prompt.md",
+      "sha256": "d085e415501e5f1f6efd5097c70535716c39ad5c0ffe87175ddaed080f23e43c",
       "strategy": "replace"
     },
     {

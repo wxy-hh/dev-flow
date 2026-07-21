@@ -15,7 +15,7 @@ description: 多维度独立审查计划，查漏补缺后再执行。已有 req
 - 不替代 `requirements-coverage`；标准 L 和命中 security 风险标签的计划缺少覆盖矩阵时必须退回 `requirements-coverage`，其它场景才可记录流程风险和明显遗漏。
 - 不替代 `code-review`，也不能被实现后的 `code-review` 替代；本技能只做实现前计划审查。
 - 不只依赖当前对话。优先读取用户显式路径和上一步 `[HANDOFF]`，再按约定目录查找文件。
-- **severity 识别属于本 skill**：CRITICAL/HIGH 由本 skill（及 reviewer prompts）判定；CLI 不扫描自然语言、不自动 promote。light 执行中一旦产生 CRITICAL/HIGH，必须先调用 `dev-flow-status promote-gate plan_review --to full --reason <text>`，再落盘 full 报告；即使 finding 随后被修复，也保留 full 报告与 disposition。
+- **severity 识别属于本 skill**：CRITICAL/HIGH 由本 skill（及 reviewer prompts）判定；CLI 不扫描自然语言、不自动 promote。light 执行中一旦产生 CRITICAL/HIGH，必须先调用 `node .claude/skills/dev-flow/scripts/dev-flow-status.mjs promote-gate <feature-id> plan_review --to full --reason <text>`（在仓库根目录执行），再落盘 full 报告；即使 finding 随后被修复，也保留 full 报告与 disposition。
 - CRITICAL/HIGH 是实现前阻塞项；必须修复、反驳，或由用户明确接受风险后才能继续。
 - 与 Locked Decision Log 冲突时只能标记 `scope-conflict` 并停下请求用户决定，不得自行改写已锁定决策。
 - 标准 M/L 无论 `light` 还是 `full`，都必须在第一处业务源码修改前完成本门禁。

@@ -1,5 +1,5 @@
 {
-  "workflow_version": "1.0.0",
+  "workflow_version": "1.0.1",
   "status_schema": "4",
   "completion_schema": "2",
   "authorization_schema": "2",

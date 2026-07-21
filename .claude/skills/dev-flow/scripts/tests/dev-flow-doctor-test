@@ -77,6 +77,37 @@ scope_out=$(cd "$scope_tmp" && .claude/skills/dev-flow/scripts/dev-flow-doctor 2
 scope_rc=$?
 assert_eq 'doctor ignores unmanaged custom skill line budget' 0 "$scope_rc"
 assert_not_contains 'custom skill is outside line-budget report' 'custom-over-budget/SKILL.md' "$scope_out"
+# The contract remains authoritative: doctor must report exactly which table
+# label and gate/level fragments drift, without depending on prose formatting.
+node - "$scope_tmp/.claude/skills/dev-flow/references/risk-gates.md" <<'NODE'
+const fs = require('fs');
+const file = process.argv[2];
+let text = fs.readFileSync(file, 'utf8');
+text = text.replace('| `security` |', '| `security_drift` |');
+text = text.replace(
+  '| `data` | `rollback_units: light`、`behavior_verification: light` |',
+  '| `data` | `rollback_units: light`、`behavior_verification: full` |',
+);
+text = text.replace(
+  '| `data` | `rollback_units: light`、`behavior_verification: full` |',
+  '| `data` | `rollback_units: light`、`behavior_verification: full` |\n' +
+    '| `data` | `rollback_units: light`、`behavior_verification: full` |',
+);
+fs.writeFileSync(file, text, 'utf8');
+NODE
+mapping_out=$(cd "$scope_tmp" && .claude/skills/dev-flow/scripts/dev-flow-doctor 2>&1)
+mapping_rc=$?
+assert_eq 'doctor fails on minimum-risk mapping label/gate/level drift' 1 "$mapping_rc"
+assert_contains 'doctor names missing risk label' \
+  'minimum mapping missing label: security' "$mapping_out"
+assert_contains 'doctor names extra risk label' \
+  'minimum mapping has extra label: security_drift' "$mapping_out"
+assert_contains 'doctor names duplicate risk label' \
+  'minimum mapping has duplicate label: data' "$mapping_out"
+assert_contains 'doctor names missing gate level' \
+  'minimum mapping missing gate for data: behavior_verification: light' "$mapping_out"
+assert_contains 'doctor names extra gate level' \
+  'minimum mapping has extra gate for data: behavior_verification: full' "$mapping_out"
 rm -rf "$scope_tmp"
 
 # ---------- feature completion provenance stamps are not package version sources ----------

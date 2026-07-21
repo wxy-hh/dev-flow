@@ -65,13 +65,13 @@ manual_test_steps:
 | MT-001 | ... | ... | passed | ... | ... | |
 ```
 
-`结果` 仅允许 `passed|failed|skipped`。pending、空实测、`待执行`、缺风险关联或 `failed` 一律使 feature-check 失败。`passed` 须有非空 observed/evidence；`behavior_verification: full` 时 frontmatter 须有 method。**禁止** `static-review` / 纯 lint / type-check 作为 passed method。`skipped` 步骤必须关联唯一 `AR-xxx`，并由 `dev-flow-status accept-risk` 写入 `accepted_risks` 与 `<REVIEW_ROOT>/<feature-id>-partial-acceptance.md`。三方（手测步骤、`accepted_risks`、partial-acceptance）不一致时不得声称 verified。
+`结果` 仅允许 `passed|failed|skipped`。pending、空实测、`待执行`、缺风险关联或 `failed` 一律使 feature-check 失败。`passed` 须有非空 observed/evidence；`behavior_verification: full` 时 frontmatter 须有 method。**禁止** `static-review` / 纯 lint / type-check 作为 passed method。`skipped` 步骤必须关联唯一 `AR-xxx`，并由 `node .claude/skills/dev-flow/scripts/dev-flow-status.mjs accept-risk <feature-id> …`（在仓库根目录执行）写入 `accepted_risks` 与 `<REVIEW_ROOT>/<feature-id>-partial-acceptance.md`。三方（手测步骤、`accepted_risks`、partial-acceptance）不一致时不得声称 verified。
 
 文档/技能改动至少执行适配层列出的文档检查，并人工确认：路径模板没有绕过 `<FEATURE_ROOT>`、`<REVIEW_ROOT>`、`<RUNTIME_ROOT>`、`<SDD_PROGRESS>`；没有新增和当前项目能力不符的测试、E2E 或文档生成前提；没有把某个项目的代理、目录结构或验证命令写进可复用流程层。
 
 ## severity 与 promote
 
-**severity 识别属于本 skill**：行为验证失败、关键路径未覆盖、证据过期等阻塞态由本 skill 判定；CLI 不扫描自然语言、不自动 promote。当 `behavior_verification` 为 light 且出现 CRITICAL/HIGH（如关键路径失败、证据不可信），必须先调用 `dev-flow-status promote-gate behavior_verification --to full --reason <text>`，再落盘 full 验证资产；即使随后修复，也保留 full 证据。
+**severity 识别属于本 skill**：行为验证失败、关键路径未覆盖、证据过期等阻塞态由本 skill 判定；CLI 不扫描自然语言、不自动 promote。当 `behavior_verification` 为 light 且出现 CRITICAL/HIGH（如关键路径失败、证据不可信），必须先调用 `node .claude/skills/dev-flow/scripts/dev-flow-status.mjs promote-gate <feature-id> behavior_verification --to full --reason <text>`（在仓库根目录执行），再落盘 full 验证资产；即使随后修复，也保留 full 证据。
 
 ## 验证失败处理
 
@@ -108,7 +108,7 @@ manual_test_steps:
 - ...
 ```
 
-保存验证报告后，不手改 `status.md`。验证达到 verified/partial 的闭环条件时运行 `dev-flow-status complete-verification <feature-id> --command <actual-command> --report <path> [--manual-test <path>]`，由 CLI 在同一原子路径登记资产、`validation.last_at`/`commands`、fingerprint 和 `verification-before-completion`。CLI 校验失败会恢复原 status。用户跳过完整验证且未形成合规 partial 时，报告结论必须为"部分验证"，不得调用 `complete-verification` 假装闭环。
+保存验证报告后，不手改 `status.md`。验证达到 verified/partial 的闭环条件时运行 `node .claude/skills/dev-flow/scripts/dev-flow-status.mjs complete-verification <feature-id> --command <actual-command> --report <path> [--manual-test <path>]`（在仓库根目录执行），由 CLI 在同一原子路径登记资产、`validation.last_at`/`commands`、fingerprint 和 `verification-before-completion`。CLI 校验失败会恢复原 status。用户跳过完整验证且未形成合规 partial 时，报告结论必须为"部分验证"，不得调用 `complete-verification` 假装闭环。
 
 如果 `status.md` 已有 `validation.last_at`，声称完成前先比较当前 `Head SHA` 和 `business_diff_fingerprint`（用 `dev-flow-fingerprint` 脚本重新计算）；任一项与上次验证记录不一致，已有验证证据视为过期，必须重新运行相关验证。`business_diff_fingerprint` 只覆盖业务改动，排除 `<FEATURE_ROOT>`、`<REVIEW_ROOT>` 和 `.claude/runtime` 生成的流程资产，同时覆盖未暂存和已暂存改动。
 

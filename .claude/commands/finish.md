@@ -11,7 +11,7 @@
 第一步固定运行：
 
 ```bash
-.claude/skills/dev-flow/scripts/dev-flow-status.mjs next [feature-id]
+node .claude/skills/dev-flow/scripts/dev-flow-status.mjs next [feature-id]
 ```
 
 每次调用只推进输出中的一条 `command`；若仍有 blocker，执行后停止并让下一次 `/finish` 重新 `next`。不得一次跨过多个 gate。已 finalized 时只读返回，不依赖 write authorization。
@@ -32,7 +32,7 @@
 4. 对标准 M/L、轻量 L 和 risk-minimal（XS/S/M），先由 status CLI 原子登记验证资产、命令、fingerprint 与 gate，再单独运行 feature-check：
 
 ```bash
-.claude/skills/dev-flow/scripts/dev-flow-status.mjs complete-verification <feature-id> \
+node .claude/skills/dev-flow/scripts/dev-flow-status.mjs complete-verification <feature-id> \
   --command "<actual verification command>" \
   --report <verification-report> [--manual-test <manual-test-report>]
 .claude/skills/dev-flow/scripts/dev-flow-feature-check <feature-id> --finish
@@ -44,7 +44,7 @@
 
 ### 状态 B：logic-complete（可 Git；finalization 可选）
 
-1. 生成或更新精简 `feature.md`；用 `dev-flow-status scaffold <feature-id> --asset completion [--refresh]` 生成 schema 2 `completion.md`。`partial` 按 protocol 为每个 accepted risk 保留一个 AR 段。
+1. 生成或更新精简 `feature.md`；用 `node .claude/skills/dev-flow/scripts/dev-flow-status.mjs scaffold <feature-id> --asset completion [--refresh]`（在仓库根目录执行）生成 schema 2 `completion.md`。`partial` 按 protocol 为每个 accepted risk 保留一个 AR 段。
 2. `completion.md` frontmatter 写入当前 contract 的 `workflow_version`（字段见 protocol.md）。
 3. 报告 **logic-complete**：feature-check 通过 + 有效 `feature.md`/`completion.md` + 新鲜 check-ok 时即可进入 Git；compact/full 只是可选资产维护。
 4. 读取 `.claude/rules/project-workflow.md` 的 `dev_flow.artifacts.retention` 到 `RETENTION`（仅 `compact|full`），按该项目默认值运行 finalizer dry-run（禁止同回合 `--confirm`）：
