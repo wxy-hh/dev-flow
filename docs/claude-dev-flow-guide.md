@@ -31,14 +31,260 @@ templates/
 
 不要复制 `.claude/rules/project-workflow.md`、`.claude/runtime/`、`.claude/settings.local.json` 或任何一次性生成产物。框架/栈规则由目标项目自建，不随包分发。
 
-## 迁移步骤
+## 安装与升级（手把手）
 
-1. 复制上方「包含内容」到新项目；需要的框架约定写入目标项目自己的 rules 或 `CLAUDE.md`。
-2. 如果目标项目已有 `CLAUDE.md`，合并 `templates/CLAUDE.dev-flow-snippet.md`；没有则基于该片段新建，并补充项目自己的技术栈和禁止事项。
-3. 运行 `/onboard-dev-flow`（或 `/onboard-dev-flow --smoke-test` 同时验证迁移包）。它会检测项目事实、生成 `.claude/rules/project-workflow.md`、确认 hooks 已注册且可执行、生成 `dev_flow.label_hints` 初始猜测。
-4. 检测清单：项目类型、包管理器、install/dev/build/type-check/lint/test 脚本、test 是否为真测试运行器、是否有浏览器测试/OpenSpec/代码映射、局部规范是否存在、git 边界（本地配置/仓库治理）、agent 例外。这些事实写入 `project-workflow.md` frontmatter 的 `dev_flow` 配置块（结构见 `project-workflow.template.md`），机器可读锚点与下方 Markdown 表格必须一致。
-5. 决定版本管理边界：本地配置模式下 `.claude/` 可以继续被忽略，验收看文件内容；仓库治理模式下提交需要共享的治理文件，继续忽略 runtime、本地设置和一次性产物。
-6. 运行 `.claude/skills/dev-flow/scripts/dev-flow-doctor`，再按 [smoke test](./claude-dev-flow-smoke-test.md) 执行。通过后才开始真实业务任务；标准 M/L、轻量 L 功能收尾时另跑 `dev-flow-feature-check <feature-id> --finish`。
+把 dev-flow 装到业务项目、或把旧版升到本仓库最新版，按下面两种情况做。  
+**先分清你是哪种，再按「第 1 步、第 2 步…」原样执行。**
+
+下面路径请换成你本机真实路径：
+
+```text
+本仓库（最新流程包，下文叫「源包」）:
+  /Users/weixiaoyu/Desktop/practice/dev-flow
+
+业务项目（要安装或升级的目标，下文叫「目标项目」）:
+  /Users/weixiaoyu/Desktop/practice/AI-aggregation
+```
+
+| 情况 | 你怎么判断 | 走哪一节 |
+|------|------------|----------|
+| 情况 1 | 目标项目**从未**用过 dev-flow | [情况 1：首次安装](#情况-1业务项目还没使用过dev-flow首次安装) |
+| 情况 2 | 目标项目**已经**有旧版 dev-flow，要升到最新 | [情况 2：已使用旧版要升级到最新](#情况-2业务项目已经使用了旧版要升级到最新) |
+
+核心规则（两种情况都适用）：
+
+```text
+1. 升级/安装命令必须在「源包」目录里执行，--target 指向「目标项目」绝对路径
+2. 业务项目自己不能 magically 变成最新版
+3. 装完或升完后，必须在「目标项目」里跑 /onboard-dev-flow 生成或刷新适配层
+4. 不要复制别的项目的 project-workflow.md
+```
+
+---
+
+### 情况 1：业务项目还没使用过 dev-flow（首次安装）
+
+#### 第 1 步：打开终端，进入源包，拉最新代码
+
+```bash
+cd /Users/weixiaoyu/Desktop/practice/dev-flow
+git pull
+```
+
+确认你就在源包根目录（该目录下能看到 `.claude/skills/dev-flow/`）。
+
+#### 第 2 步：仍在源包，把流程层安装到目标项目
+
+先检查，再安装（`--target` 必须是绝对路径）：
+
+```bash
+cd /Users/weixiaoyu/Desktop/practice/dev-flow
+
+.claude/skills/dev-flow/scripts/dev-flow-upgrade \
+  --target /Users/weixiaoyu/Desktop/practice/AI-aggregation \
+  --check
+
+.claude/skills/dev-flow/scripts/dev-flow-upgrade \
+  --target /Users/weixiaoyu/Desktop/practice/AI-aggregation \
+  --apply
+```
+
+这一步会把源包里的受管流程层（skills、commands、agents、hooks、通用 rules、manifest 等）写入目标项目。  
+**不要**手工只拷几个 skill 文件。
+
+#### 第 3 步：仍在源包，复制使用文档和 CLAUDE 片段（推荐）
+
+```bash
+cd /Users/weixiaoyu/Desktop/practice/dev-flow
+
+mkdir -p /Users/weixiaoyu/Desktop/practice/AI-aggregation/docs
+cp docs/claude-dev-flow-guide.md \
+   docs/claude-dev-flow-smoke-test.md \
+   /Users/weixiaoyu/Desktop/practice/AI-aggregation/docs/
+
+mkdir -p /Users/weixiaoyu/Desktop/practice/AI-aggregation/templates
+cp templates/CLAUDE.dev-flow-snippet.md \
+   /Users/weixiaoyu/Desktop/practice/AI-aggregation/templates/
+```
+
+#### 第 4 步：进入目标项目，处理 CLAUDE.md
+
+```bash
+cd /Users/weixiaoyu/Desktop/practice/AI-aggregation
+```
+
+- **已有** `CLAUDE.md`：把 `templates/CLAUDE.dev-flow-snippet.md` 合并进去  
+- **没有** `CLAUDE.md`：可基于该片段新建，并写上本项目技术栈、命令和禁止事项  
+- 框架/栈规则写进目标项目自己的 rules 或 `CLAUDE.md`，不要指望源包代管  
+
+#### 第 5 步：仍在目标项目，用 Claude 生成项目适配层
+
+在 **目标项目** 的 Claude Code 对话里输入：
+
+```text
+/onboard-dev-flow
+```
+
+若要同时跑迁移烟测：
+
+```text
+/onboard-dev-flow --smoke-test
+```
+
+onboarding 会检测包管理器、脚本、测试能力、OpenSpec、hooks、label_hints 等，并生成：
+
+```text
+.claude/rules/project-workflow.md
+```
+
+其中 `dev_flow` 配置块必须与正文表格一致。  
+本地配置模式下 `.claude/` 可被 git ignore；仓库治理模式下只提交需要共享的治理文件，继续忽略 runtime、settings.local 和一次性产物。
+
+#### 第 6 步：仍在目标项目终端，跑 doctor
+
+```bash
+cd /Users/weixiaoyu/Desktop/practice/AI-aggregation
+
+.claude/skills/dev-flow/scripts/dev-flow-doctor --preflight
+.claude/skills/dev-flow/scripts/dev-flow-doctor
+```
+
+#### 第 7 步（可选）：按 smoke test 验收
+
+见 [claude-dev-flow-smoke-test.md](./claude-dev-flow-smoke-test.md)。  
+通过后再开始真实业务任务；日常入口：
+
+```text
+/dev-task <需求描述>
+```
+
+标准 M/L、轻量 L、risk-minimal 收尾时另跑：
+
+```bash
+.claude/skills/dev-flow/scripts/dev-flow-feature-check <feature-id> --finish
+```
+
+---
+
+### 情况 2：业务项目已经使用了旧版，要升级到最新
+
+#### 第 0 步：在目标项目收尾进行中的 feature
+
+```bash
+cd /Users/weixiaoyu/Desktop/practice/AI-aggregation
+```
+
+必须做到：
+
+1. 进行中的任务用 `/finish` 收尾，或手动清理未完成 feature  
+2. `project-workflow.md` 里配置的 `feature_root` 下**不再有**任何 `status.md`  
+3. 工作区干净，或先提交 / 备份  
+
+有活动 `status.md` 时，`--apply` 会**零修改拒绝**，不会动任何文件。
+
+#### 第 1 步：进入源包，拉最新代码
+先拉取本项目
+git clone https://github.com/wxy-hh/dev-flow.git
+比如源码拉取了本地的/Users/weixiaoyu/Desktop/practice/dev-flow位置
+```bash
+cd /Users/weixiaoyu/Desktop/practice/dev-flow
+git pull
+```
+
+#### 第 2 步：仍在源包，先 check 再 apply
+
+```bash
+cd /Users/weixiaoyu/Desktop/practice/dev-flow
+
+.claude/skills/dev-flow/scripts/dev-flow-upgrade \
+  --target /Users/weixiaoyu/Desktop/practice/AI-aggregation \
+  --check
+```
+
+看输出里的 `MISSING` / `DRIFT` / `DEPRECATED_PRESENT`，确认目标路径无误后：
+
+```bash
+cd /Users/weixiaoyu/Desktop/practice/dev-flow
+
+.claude/skills/dev-flow/scripts/dev-flow-upgrade \
+  --target /Users/weixiaoyu/Desktop/practice/AI-aggregation \
+  --apply
+```
+
+`--apply` 会自动：
+
+- 备份到目标项目  
+  `.claude/runtime/dev-flow/upgrade-backup-<时间戳>/`  
+- 用源包最新受管文件覆盖流程层  
+- **保留**目标项目的 `project-workflow.md`（只同步 `dev_flow.version`；缺省时补旧项目友好的 `enforcement_mode: ask`）  
+- 合并 `settings.json` 里的 dev-flow hooks（保留你项目其它 hook）  
+- 删除 `deprecated_paths`（含已弃用的 `vue3.md`）  
+- 隔离旧 shared SDD 顶层文件到 backup 的 `legacy-sdd/`  
+- 跑目标项目 `dev-flow-doctor --preflight`；失败则从 backup 完整回滚  
+- 成功后作废旧 `write-authorization.json` 与全部 `*.check-ok`  
+
+升级**不是** onboarding：栈规则仍由目标项目自建，upgrade 不管理。
+
+#### 第 3 步：进入目标项目，刷新适配层
+
+```bash
+cd /Users/weixiaoyu/Desktop/practice/AI-aggregation
+```
+
+在 Claude 对话里输入：
+
+```text
+/onboard-dev-flow
+```
+
+旧版 `project-workflow.md` 的路径、验证命令、能力探测往往过期，这一步按**当前项目事实**刷新。  
+可选：
+
+```text
+/onboard-dev-flow --smoke-test
+```
+
+#### 第 4 步：仍在目标项目终端，跑 doctor
+
+```bash
+cd /Users/weixiaoyu/Desktop/practice/AI-aggregation
+
+.claude/skills/dev-flow/scripts/dev-flow-doctor --preflight
+.claude/skills/dev-flow/scripts/dev-flow-doctor
+```
+
+#### 第 5 步：升级后立刻要知道的事
+
+| 项 | 你要做什么 |
+|----|------------|
+| 旧 write-authorization | 已失效，写业务代码前需重新激活 |
+| 旧 `*.check-ok` | 已失效，收尾须重新 `feature-check` |
+| 旧 gate 别名 | 可按提示 `dev-flow-status repair` |
+| 自定义 skill / 栈规则 | 一般会保留；栈规则继续项目自建 |
+| 进行中 feature | 升级前就该清掉，upgrade 不会帮你迁活动任务 |
+
+通过后再用 `/dev-task` 做真实需求。
+
+---
+
+### 两种情况对照
+
+| 步骤 | 情况 1 首次安装 | 情况 2 升级旧版 |
+|------|-----------------|-----------------|
+| 在哪执行 upgrade | **源包**目录 | **源包**目录 |
+| `--target` | 目标项目绝对路径 | 目标项目绝对路径 |
+| 升级前清活动 status | 通常无 | **必须** |
+| `/onboard-dev-flow` | 目标项目里，**必做** | 目标项目里，**必做** |
+| doctor | 目标项目里 | 目标项目里 |
+| 复制 docs/templates | 推荐 | 可选（需要新文档时再拷） |
+
+### 明确不要做
+
+1. 不要只在目标项目里执行旧脚本，指望它自己升级成最新  
+2. 不要 `cp -r` 半份 skill 覆盖  
+3. 不要把 A 项目的 `project-workflow.md` 拷到 B 项目  
+4. 不要在有活动 `status.md` 时强行 `--apply`  
+5. 不要把 upgrade 当成 onboard：装完/升完后适配层仍要 `/onboard-dev-flow`
 
 ## 核心资产与风险标签
 
@@ -322,4 +568,4 @@ approval basis 沿用既有结构并绑定 process/baseline；批准后不再与
 
 **logic-complete**：feature-check + 有效 feature/completion → **可 Git**；compact/full 可选。`/finish` dry-run 后输出 `[ASSET FINALIZATION]`，只接受 `compact` / `retain full` / `not now`；禁止同回合 `--confirm`；**`not now` 不阻塞 Git**。compact 含 untracked 删除时须 `--confirm-untracked "DELETE-UNTRACKED:<inventory-sha>:<count>"`。详情见 `dev-flow/references/status-cli.md`、`partial-verification.md` 与 `protocol.md`。
 
-受管文件升级使用源仓中的 `dev-flow-upgrade --target <abs> --check|--apply`，不要手工半份拷贝 skill。升级会：删除 `deprecated_paths`（含 `vue3.md`）、把 shared SDD 顶层文件隔离到 `upgrade-backup-*/legacy-sdd/`、失效旧 `write-authorization.json` 与全部 `*.check-ok`；**活动 status 存在时零修改拒绝**。失败时从 backup 完整回滚。升级不是 onboarding：栈规则由目标项目自建，upgrade 不管理。
+受管文件升级的完整逐步命令见上文 [安装与升级（手把手）](#安装与升级手把手)。摘要：在**源包**目录执行 `dev-flow-upgrade --target <目标绝对路径> --check|--apply`，不要手工半份拷贝 skill；活动 `status.md` 存在时零修改拒绝；失败从 backup 回滚；升完后在**目标项目**跑 `/onboard-dev-flow` 与 doctor。
