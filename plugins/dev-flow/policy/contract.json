@@ -1,0 +1,60 @@
+{
+  "schemaVersion": 1,
+  "routes": {
+    "xs": {
+      "orderedSteps": ["locate", "implementation", "verification", "finalize"],
+      "requiredArtifacts": [],
+      "featureCheckRequired": false
+    },
+    "s": {
+      "orderedSteps": ["boundary", "implementation", "verification", "self_review", "finalize"],
+      "requiredArtifacts": [],
+      "featureCheckRequired": false
+    },
+    "risk-minimal": {
+      "orderedSteps": ["risk_review", "risk_controls", "implementation_approval", "implementation", "code_review", "verification", "feature_check", "finalize"],
+      "requiredArtifacts": ["status", "risk-card"],
+      "artifactSteps": { "risk_review": ["risk-card"], "risk_controls": ["status"] },
+      "featureCheckRequired": true
+    },
+    "light-m": {
+      "orderedSteps": ["boundary_plan", "implementation", "code_review", "verification", "finalize"],
+      "requiredArtifacts": [],
+      "featureCheckRequired": false
+    },
+    "standard-m": {
+      "orderedSteps": ["requirements", "requirement_confirmation", "implementation_plan", "coverage_review", "rollback_unit", "plan_review", "implementation_approval", "implementation", "code_review", "verification", "feature_check", "finalize"],
+      "requiredArtifacts": ["requirements", "implementation-plan", "status", "coverage-matrix"],
+      "artifactSteps": { "requirements": ["requirements"], "implementation_plan": ["implementation-plan"], "coverage_review": ["coverage-matrix"], "implementation_approval": ["status"] },
+      "featureCheckRequired": true
+    },
+    "light-l": {
+      "orderedSteps": ["boundary", "rollback_safety", "implementation_approval", "implementation", "code_review", "verification", "feature_check", "finalize"],
+      "requiredArtifacts": ["boundary-card", "rollback-safety", "verification"],
+      "artifactSteps": { "boundary": ["boundary-card"], "rollback_safety": ["rollback-safety"], "verification": ["verification"] },
+      "featureCheckRequired": true
+    },
+    "standard-l": {
+      "orderedSteps": ["requirements", "requirement_confirmation", "implementation_plan", "coverage_review", "rollback_unit", "plan_review", "implementation_approval", "implementation", "code_review", "verification", "feature_check", "finalize"],
+      "requiredArtifacts": ["requirements", "implementation-plan", "coverage-matrix", "rollback-units", "plan-review", "code-review", "verification"],
+      "artifactSteps": { "requirements": ["requirements"], "implementation_plan": ["implementation-plan"], "coverage_review": ["coverage-matrix"], "rollback_unit": ["rollback-units"], "plan_review": ["plan-review"], "code_review": ["code-review"], "verification": ["verification"] },
+      "featureCheckRequired": true
+    }
+  },
+  "riskEnhancements": {
+    "security": { "checks": ["security"], "verification": "behavior" },
+    "data": { "checks": ["rollback"], "verification": "behavior" },
+    "money": { "checks": ["rollback"], "verification": "behavior" },
+    "external": { "checks": [], "verification": "integration" },
+    "availability": { "checks": [], "verification": "integration" },
+    "critical_correctness": { "checks": ["full-code-review"], "verification": "full" },
+    "irreversible_consequence": { "checks": ["full-rollback", "full-code-review"], "verification": "full" }
+  },
+  "topologyMinimumLevel": {
+    "local": "XS",
+    "shared-contract": "M",
+    "multi-chain": "L",
+    "coordinated-rollback": "L"
+  },
+  "topologyStrictOrder": ["local", "shared-contract", "multi-chain", "coordinated-rollback"]
+}

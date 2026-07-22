@@ -1,0 +1,10 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "required": ["revision", "type", "at"],
+  "properties": {
+    "revision": { "type": "integer", "minimum": 0 },
+    "type": { "type": "string" },
+    "at": { "type": "string" }
+  }
+}

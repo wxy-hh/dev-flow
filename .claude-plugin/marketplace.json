@@ -1,0 +1,14 @@
+{
+  "name": "dev-flow-marketplace",
+  "description": "Dual-host development workflow plugins for Claude Code and Codex CLI.",
+  "owner": {
+    "name": "wxy-hh"
+  },
+  "plugins": [
+    {
+      "name": "dev-flow",
+      "source": "./plugins/dev-flow",
+      "description": "Risk-aware multi-route development orchestration for Claude Code and Codex CLI."
+    }
+  ]
+}

@@ -1,0 +1,28 @@
+{
+  "name": "dev-flow",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Dual-host development workflow plugin for Claude Code and Codex CLI.",
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "build:check": "npm run version:check && npm run build && npm run version:check && git diff --exit-code -- plugins/dev-flow/dist",
+    "version:sync": "node scripts/sync-version.mjs --write",
+    "version:check": "node scripts/sync-version.mjs --check",
+    "typecheck": "tsc --noEmit",
+    "test:unit": "node --test tests/unit/*.test.mjs",
+    "test:routes": "node --test tests/e2e/routes/*.test.mjs",
+    "test:interop": "node --test tests/e2e/cross-host/*.test.mjs",
+    "test:e2e": "node --test tests/e2e/*.test.mjs tests/e2e/routes/*.test.mjs tests/e2e/cross-host/*.test.mjs",
+    "test:host-e2e": "HOST_E2E=1 node --test tests/e2e/native-*.test.mjs",
+    "test": "npm run version:check && npm run build && npm run typecheck && npm run test:unit && npm run test:e2e && npm run build:check"
+  },
+  "devDependencies": {
+    "@types/node": "^24.10.1",
+    "esbuild": "^0.25.10",
+    "typescript": "^5.9.2"
+  }
+}

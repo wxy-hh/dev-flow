@@ -1,4 +1,0 @@
-interface:
-  display_name: "Requirements Coverage"
-  short_description: "检查需求是否被计划完整覆盖"
-  default_prompt: "Use $requirements-coverage to check whether this implementation plan covers the original requirements."

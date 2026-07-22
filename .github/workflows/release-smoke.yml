@@ -1,0 +1,30 @@
+name: Release smoke
+
+on:
+  workflow_dispatch:
+
+jobs:
+  package:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - run: npm ci && npm test
+      - run: test -f plugins/dev-flow/dist/mcp-server.mjs
+      - run: test -f plugins/dev-flow/dist/claude-hook.mjs
+      - run: test -f plugins/dev-flow/dist/codex-hook.mjs
+  native-hosts:
+    needs: package
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - run: npm install --global @anthropic-ai/claude-code@2.1.215 @openai/codex@0.144.4
+      - run: claude --version && codex --version
+      - run: HOST_E2E=1 npm run test:host-e2e

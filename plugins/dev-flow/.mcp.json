@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "dev-flow": {
+      "command": "node",
+      "args": ["${PLUGIN_ROOT}/dist/mcp-server.mjs"]
+    }
+  }
+}

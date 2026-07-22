@@ -1,0 +1,21 @@
+{
+  "name": "dev-flow-marketplace",
+  "description": "Dual-host development workflow plugins for Claude Code and Codex CLI.",
+  "interface": {
+    "displayName": "Dev Flow Marketplace"
+  },
+  "plugins": [
+    {
+      "name": "dev-flow",
+      "source": {
+        "source": "local",
+        "path": "./plugins/dev-flow"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Productivity"
+    }
+  ]
+}

@@ -1,0 +1,30 @@
+{
+  "name": "dev-flow",
+  "version": "1.0.0",
+  "description": "Risk-aware multi-route development orchestration for Claude Code and Codex CLI.",
+  "author": {
+    "name": "wxy-hh",
+    "url": "https://github.com/wxy-hh"
+  },
+  "homepage": "https://github.com/wxy-hh/dev-flow",
+  "repository": "https://github.com/wxy-hh/dev-flow",
+  "license": "MIT",
+  "keywords": ["development", "workflow", "review", "verification"],
+  "skills": "./skills/",
+  "hooks": "./hosts/codex/hooks.json",
+  "mcpServers": "./.mcp.json",
+  "interface": {
+    "displayName": "Dev Flow",
+    "shortDescription": "Route development work by size and risk.",
+    "longDescription": "A dual-host development workflow with strict human gates, route-specific assets, review separation, verification, and safe Git finalization.",
+    "developerName": "wxy-hh",
+    "category": "Productivity",
+    "capabilities": ["Interactive", "Write"],
+    "defaultPrompt": [
+      "Classify and start this development task with Dev Flow.",
+      "Resume the active Dev Flow feature.",
+      "Finish the active feature through verification."
+    ],
+    "brandColor": "#2563EB"
+  }
+}

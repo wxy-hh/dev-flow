@@ -1,0 +1,1 @@
+import test from "node:test"; import { runRoute } from "../../helpers/route-flow.mjs"; test("standard M", () => runRoute({ level: "M", topology: "local", execution: "standard", requirements: "missing-or-unclear" }, "standard-m"));
