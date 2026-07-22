@@ -14,19 +14,204 @@ Dev Flow 是面向 **Claude Code** 与 **Codex CLI** 的预构建双宿主插件
 
 ## 安装
 
+### 先分清两件事
+
+| 概念 | 是什么 | 落在哪里 |
+|------|--------|----------|
+| **插件安装** | 宿主加载 skills / hooks / MCP | Claude：user / project / local 范围 |
+| **项目初始化** | 生成流程配置与状态目录 | 业务仓库里的 **`.dev-flow/`** |
+
+插件装好 ≠ 项目已初始化。每个要用 Dev Flow 的业务仓库，还要在该仓库里跑一次 **`dev_flow_init_project`**（见下文「安装之后做什么」）。
+
+本插件 **没有** 斜杠命令 `/dev_flow_init_project`。  
+`dev_flow_init_project` 是 **MCP 工具名**；会话里用自然语言让 Claude 调用即可。
+
+### Claude Code：安装范围
+
+| 范围 | 命令参数 | 配置落点 | 适用场景 |
+|------|----------|----------|----------|
+| **user**（默认） | 不写或 `-s user` | 用户级配置 | 你自己所有项目都用 |
+| **project** | `-s project` | 仓库 **`.claude/settings.json`**（可提交 git） | **团队共享，推荐项目级** |
+| **local** | `-s local` | **`.claude/settings.local.json`**（通常 gitignore） | 仅本机本仓库，不共享给同事 |
+
+marketplace 也可以按同样范围声明（`--scope`）。
+
+### Claude Code：用户级安装（默认）
+
 ```bash
-# Claude Code
 claude plugin marketplace add wxy-hh/dev-flow
 claude plugin install dev-flow@dev-flow-marketplace
+# 等价：claude plugin install dev-flow@dev-flow-marketplace --scope user
+```
 
-# Codex CLI
+装好后，你在**任意**业务项目打开 Claude Code，只要插件已启用，就能用 Dev Flow 的 skills / MCP（仍需对该仓库做 `dev_flow_init_project`）。
+
+### Claude Code：项目级安装（团队推荐）
+
+在**业务项目仓库根目录**执行（不是在 dev-flow 源码仓，除非你要 dogfood 自己）：
+
+```bash
+cd /path/to/your-business-repo
+
+# 1. 把 marketplace 记到项目（可选但推荐，方便同事 clone 后一致）
+claude plugin marketplace add wxy-hh/dev-flow --scope project
+
+# 2. 把插件装到项目
+claude plugin install dev-flow@dev-flow-marketplace --scope project
+# 简写
+claude plugin install dev-flow@dev-flow-marketplace -s project
+```
+
+说明：
+
+- 会改动/写入项目的 **`.claude/settings.json`**（以及 marketplace 相关项目配置）。  
+- 请把需要共享的 `.claude/settings.json` **提交到 git**，同事 pull 后信任工作区并安装/启用同名插件。  
+- 若只想自己用、不进 git：用 `-s local`。
+
+### Claude Code：卸载
+
+**范围必须与安装时一致**，否则卸错层。
+
+```bash
+# 卸项目级
+claude plugin uninstall dev-flow@dev-flow-marketplace --scope project
+
+# 卸用户级
+claude plugin uninstall dev-flow@dev-flow-marketplace --scope user
+
+# 卸本机项目级
+claude plugin uninstall dev-flow@dev-flow-marketplace --scope local
+```
+
+可选：
+
+```bash
+# 保留插件持久数据目录时
+claude plugin uninstall dev-flow@dev-flow-marketplace --scope project --keep-data
+```
+
+卸载插件 **不会** 自动删除业务仓里的 `.dev-flow/`（状态与配置会留下）。若要彻底清理项目侧：
+
+```bash
+# 在业务仓库根目录，确认后手动删除
+rm -rf .dev-flow
+# 并检查 .gitignore / .claude/settings.json 里是否还引用 dev-flow
+```
+
+marketplace 若只给本项目用、也要去掉：
+
+```bash
+claude plugin marketplace list
+# 按列表中的名称移除，例如：
+claude plugin marketplace remove dev-flow-marketplace
+# 若 add 时用了 --scope project，remove 时注意是否支持/是否需在同一项目下操作（以 claude plugin marketplace --help 为准）
+```
+
+### Claude Code：升级
+
+```bash
+claude plugin marketplace update
+# 或指定 marketplace 名
+claude plugin update dev-flow@dev-flow-marketplace
+```
+
+升级后 **新开会话** 或 `/reload-plugins`。  
+**没有** `dev-flow-upgrade` 命令。
+
+### Codex CLI
+
+```bash
 codex plugin marketplace add wxy-hh/dev-flow
 codex plugin add dev-flow@dev-flow-marketplace
 ```
 
-升级使用各宿主原生命令（如 `claude plugin update`、`codex plugin marketplace upgrade` 等），**没有** `dev-flow-upgrade`。
+Codex 当前 **没有** 与 Claude 对等的 `--scope project` 安装参数；一般为用户级配置。  
+团队共享仍靠：每人安装插件 + 仓库内提交 **`.dev-flow/`**（及约定）。  
+升级：`codex plugin marketplace upgrade` 等原生命令（以 `codex plugin --help` 为准）。
 
-安装后请：新开会话或 reload 插件；按提示**信任 hooks**；确认 MCP 中有 `dev_flow_*` 工具。
+### 安装之后应该做什么（逐步）
+
+以下在**业务项目仓库**中操作。
+
+#### 1. 确认插件已加载
+
+```bash
+claude plugin list
+```
+
+在 Claude Code 会话中：
+
+1. **新开**一个会话，或执行 `/reload-plugins`。  
+2. 打开 `/plugin`，确认 **dev-flow** 为已安装且 **enabled**。  
+3. 打开 `/mcp`，确认存在 **dev-flow** 服务器，且工具列表里有例如：  
+   `dev_flow_init_project`、`dev_flow_start`、`dev_flow_next`、`dev_flow_status`、`dev_flow_doctor` 等。  
+4. 若 hooks 提示未信任：按宿主 UI **审核并信任** dev-flow 的 hooks（未信任则门禁不生效）。
+
+**没有** `/dev_flow_init_project` 或 `/dev-flow:init` 之类斜杠命令是正常的。
+
+#### 2. 初始化本仓库（每个业务仓一次）
+
+在对话中明确要求调用 MCP，例如：
+
+```text
+请用 Dev Flow 的 MCP 工具 dev_flow_init_project 初始化当前仓库：
+- 检测包管理器与常用脚本
+- 生成 .dev-flow/project.json
+- protected roots 设为业务源码目录（如 src）
+- enforcement 使用 strict
+- 登记 unit/lint 等验证命令（按本项目真实脚本填写）
+```
+
+成功标志：
+
+```text
+.dev-flow/
+  project.json          # 必须存在且可被 doctor 读过
+```
+
+未执行本步时，**不能** `dev_flow_start`。
+
+#### 3. 自检
+
+```text
+请调用 dev_flow_doctor，汇报 project / active / 插件文件与接线是否正常
+```
+
+或自然语言：「跑一下 Dev Flow doctor」。
+
+#### 4. 开始第一个任务
+
+```text
+用 dev-flow-task（或：用 Dev Flow 开始任务）：
+功能是 ……；请先 classify 再 start。
+```
+
+之后固定习惯：
+
+1. 先 **`dev_flow_next`**，只执行返回的**一个**动作。  
+2. HUMAN GATE：展示后**停止**，等用户原话，再 `dev_flow_confirm_gate`（不可同回合确认）。  
+3. 需要 feature-check 的路线：检查通过后再 finalize。  
+4. **logic-complete 之前**，hooks 会拦截 Git 写操作（add/commit/push 等）。
+
+#### 5. 日常与收尾
+
+| 目的 | 怎么说 / 用什么 |
+|------|------------------|
+| 看状态 | `dev-flow-status` /「Dev Flow 状态」 |
+| 诊断 | `dev_flow_doctor` / `dev-flow-doctor` |
+| 收尾 | `dev-flow-finish` |
+| 需求拷问 | 标准 M/L 自动进 `dev-flow-grillme`，或显式说 grillme / 拷问 |
+
+### 安装后常见问题
+
+| 现象 | 处理 |
+|------|------|
+| 找不到 `/dev_flow_init_project` | 正常。用自然语言让模型调 **MCP 工具** `dev_flow_init_project` |
+| `/mcp` 里没有 dev-flow | 检查 `plugin list` 是否 enabled；reload；确认 install 的 scope 是否装在当前环境 |
+| 换项目后没有插件 | user 范围应全局有；若当时用了 project/local，只在对应仓库生效 |
+| 同事 clone 后没有插件 | project 范围需提交 `.claude/settings.json`，同事执行同 scope 的 install 或按团队文档安装 |
+| 卸了插件但 `.dev-flow` 还在 | 预期行为；需手动删 `.dev-flow` |
+| hooks 一直不拦/乱拦 | 确认已信任 hooks；并已 `init_project`；只读 Bash 与写保护策略见架构说明 |
 
 ### 宿主基线
 
@@ -48,16 +233,16 @@ HOST_E2E=1 npm run test:host-e2e
 
 ---
 
-## 第一次使用
+## 第一次使用（摘要）
 
-1. 在业务仓库中让智能体调用 **`dev_flow_init_project`**，生成 `.dev-flow/project.json`（强制模式、受保护根目录、允许的验证命令）。  
-2. 未初始化前**不能** `dev_flow_start`。  
-3. 用 **`dev-flow-task`**（或自然语言「用 Dev Flow 开始任务」）做分类并 `start`。  
-4. 始终先 **`dev_flow_next`**，只执行返回的**一个**动作。  
-5. 遇到 HUMAN GATE：输出后**停等**用户原话，再用 `dev_flow_confirm_gate`（不可同回合确认）。  
-6. 需要 `feature-check` 的路线通过检查后才 `finalize`；**logic-complete 之前 hooks 会拦截 Git 写操作**。
+1. 按上文完成 **插件安装**（user 或 project）。  
+2. 在业务仓调用 **`dev_flow_init_project`** → 得到 `.dev-flow/project.json`。  
+3. **`dev_flow_doctor`** 确认健康。  
+4. **`dev-flow-task`** 分类并 `start`。  
+5. 始终跟随 **`dev_flow_next`**；HUMAN GATE 停等用户原话。  
+6. feature-check（若需要）→ finalize；logic-complete 后才 Git 写。
 
-需求确认不等于需求拷问：标准 M/L 的 `missing-or-unclear` 与 `documented-unconfirmed` 需求会在 `requirements` 步骤内先进入 `dev-flow-grillme` 的逐题澄清；只有 `grill_status: complete` 且 requirements 已登记，才能展示需求确认门禁。`provided-confirmed` 默认不自动拷问，但可显式调用 `dev-flow-grillme` 压测。
+需求确认不等于需求拷问：标准 M/L 的 `missing-or-unclear` 与 `documented-unconfirmed` 会在 `requirements` 步骤内先进入 `dev-flow-grillme`；只有 `grill_status: complete` 且 requirements 已登记，才能展示需求确认门禁。`provided-confirmed` 默认不自动拷问，但可显式调用 `dev-flow-grillme`。
 
 项目侧状态（示意）：
 

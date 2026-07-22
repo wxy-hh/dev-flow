@@ -525,6 +525,8 @@ var init_state_store = __esm({
 
 // plugins/dev-flow/src/mcp/server.ts
 import readline from "node:readline";
+import { fileURLToPath } from "node:url";
+import path7 from "node:path";
 
 // plugins/dev-flow/src/core/artifacts.ts
 init_contract2();
@@ -757,8 +759,8 @@ async function runVerification(root2, id, expectedRevision, host, commandIds) {
   const output = [];
   for (const command of selected) {
     try {
-      const result2 = await run(command.command, command.args, { cwd: path5.resolve(root2, command.cwd), timeout: 12e4, maxBuffer: 1024 * 1024 });
-      output.push(`[${command.id}] ${result2.stdout}${result2.stderr}`);
+      const result = await run(command.command, command.args, { cwd: path5.resolve(root2, command.cwd), timeout: 12e4, maxBuffer: 1024 * 1024 });
+      output.push(`[${command.id}] ${result.stdout}${result.stderr}`);
     } catch (error) {
       const failure2 = error;
       exitCode = typeof failure2.code === "number" ? failure2.code : 1;
@@ -1046,20 +1048,67 @@ async function collectDoctorReport(root2, pluginRoot2, version, tools2) {
 }
 
 // plugins/dev-flow/src/mcp/server.ts
-import { fileURLToPath } from "node:url";
-import path7 from "node:path";
 var root = process.cwd();
 var moduleDirectory = path7.dirname(fileURLToPath(import.meta.url));
 var pluginRoot = path7.basename(moduleDirectory) === "dist" ? path7.resolve(moduleDirectory, "..") : path7.resolve(moduleDirectory, "../..");
-var tools = ["dev_flow_init_project", "dev_flow_classify", "dev_flow_start", "dev_flow_status", "dev_flow_next", "dev_flow_switch_active", "dev_flow_scaffold_artifact", "dev_flow_record_artifact", "dev_flow_record_step", "dev_flow_present_gate", "dev_flow_confirm_gate", "dev_flow_reclassify", "dev_flow_verify", "dev_flow_feature_check", "dev_flow_finalize", "dev_flow_abandon", "dev_flow_doctor"];
-var object = (required, properties = {}) => ({ type: "object", required, properties, additionalProperties: false });
+var tools = [
+  "dev_flow_init_project",
+  "dev_flow_classify",
+  "dev_flow_start",
+  "dev_flow_status",
+  "dev_flow_next",
+  "dev_flow_switch_active",
+  "dev_flow_scaffold_artifact",
+  "dev_flow_record_artifact",
+  "dev_flow_record_step",
+  "dev_flow_present_gate",
+  "dev_flow_confirm_gate",
+  "dev_flow_reclassify",
+  "dev_flow_verify",
+  "dev_flow_feature_check",
+  "dev_flow_finalize",
+  "dev_flow_abandon",
+  "dev_flow_doctor"
+];
+var object = (required, properties = {}) => ({
+  type: "object",
+  required,
+  properties,
+  additionalProperties: false
+});
 var string = { type: "string", minLength: 1 };
 var integer = { type: "integer", minimum: 0 };
-var featureMutation = (extra = {}) => object(["featureId", "expectedRevision"], { featureId: string, expectedRevision: integer, ...extra });
+var featureMutation = (extra = {}) => object(
+  ["featureId", "expectedRevision"],
+  { featureId: string, expectedRevision: integer, ...extra }
+);
 var toolSchemas = {
   dev_flow_init_project: { description: "Create strict project configuration.", inputSchema: object(["config"], { config: { type: "object" } }) },
-  dev_flow_classify: { description: "Pure route classification.", inputSchema: object(["level", "topology"], { level: { enum: ["XS", "S", "M", "L"] }, topology: { enum: ["local", "shared-contract", "multi-chain", "coordinated-rollback"] }, execution: { enum: ["light", "standard"] }, requirements: { enum: ["missing-or-unclear", "documented-unconfirmed", "provided-confirmed"] }, riskLabels: { type: "array" } }), annotations: { readOnlyHint: true } },
-  dev_flow_start: { description: "Create a classified feature.", inputSchema: object(["level", "topology"], { level: { enum: ["XS", "S", "M", "L"] }, topology: { enum: ["local", "shared-contract", "multi-chain", "coordinated-rollback"] }, execution: { enum: ["light", "standard"] }, requirements: { type: "string" }, riskLabels: { type: "array" }, featureId: string, activation: { enum: ["active", "paused"] }, scope: { type: "object" }, host: { enum: ["claude", "codex"] } }) },
+  dev_flow_classify: {
+    description: "Pure route classification.",
+    inputSchema: object(["level", "topology"], {
+      level: { enum: ["XS", "S", "M", "L"] },
+      topology: { enum: ["local", "shared-contract", "multi-chain", "coordinated-rollback"] },
+      execution: { enum: ["light", "standard"] },
+      requirements: { enum: ["missing-or-unclear", "documented-unconfirmed", "provided-confirmed"] },
+      riskLabels: { type: "array" }
+    }),
+    annotations: { readOnlyHint: true }
+  },
+  dev_flow_start: {
+    description: "Create a classified feature.",
+    inputSchema: object(["level", "topology"], {
+      level: { enum: ["XS", "S", "M", "L"] },
+      topology: { enum: ["local", "shared-contract", "multi-chain", "coordinated-rollback"] },
+      execution: { enum: ["light", "standard"] },
+      requirements: { type: "string" },
+      riskLabels: { type: "array" },
+      featureId: string,
+      activation: { enum: ["active", "paused"] },
+      scope: { type: "object" },
+      host: { enum: ["claude", "codex"] }
+    })
+  },
   dev_flow_status: { description: "Read one feature state.", inputSchema: object(["featureId"], { featureId: string }), annotations: { readOnlyHint: true } },
   dev_flow_next: { description: "Return the unique allowed next action.", inputSchema: object(["featureId"], { featureId: string }), annotations: { readOnlyHint: true } },
   dev_flow_switch_active: { description: "Atomically hand off the single active feature.", inputSchema: object(["fromFeatureId", "toFeatureId", "reason"], { fromFeatureId: string, toFeatureId: string, reason: string }) },
@@ -1067,7 +1116,16 @@ var toolSchemas = {
   dev_flow_record_artifact: { description: "Register an edited route artifact.", inputSchema: featureMutation({ kind: string }) },
   dev_flow_record_step: { description: "Record the current non-gate route step.", inputSchema: featureMutation({ step: string, evidence: {} }) },
   dev_flow_present_gate: { description: "Present a strict human gate.", inputSchema: featureMutation({ gate: { enum: ["requirement_confirmation", "implementation_approval"] } }) },
-  dev_flow_confirm_gate: { description: "Confirm a presented gate with later user evidence.", inputSchema: featureMutation({ gate: { enum: ["requirement_confirmation", "implementation_approval"] }, userReply: string, promptEventId: string, turnBoundaryEventId: string, host: { enum: ["claude", "codex"] } }) },
+  dev_flow_confirm_gate: {
+    description: "Confirm a presented gate with later user evidence.",
+    inputSchema: featureMutation({
+      gate: { enum: ["requirement_confirmation", "implementation_approval"] },
+      userReply: string,
+      promptEventId: string,
+      turnBoundaryEventId: string,
+      host: { enum: ["claude", "codex"] }
+    })
+  },
   dev_flow_reclassify: { description: "Monotonically increase route strictness.", inputSchema: featureMutation({ classification: { type: "object" }, reason: string }) },
   dev_flow_verify: { description: "Run only configured verification commands.", inputSchema: featureMutation({ commandIds: { type: "array", items: string }, host: { enum: ["claude", "codex"] } }) },
   dev_flow_feature_check: { description: "Check route completeness and fresh evidence.", inputSchema: featureMutation() },
@@ -1075,8 +1133,19 @@ var toolSchemas = {
   dev_flow_abandon: { description: "Terminally abandon a non-finalized feature.", inputSchema: featureMutation({ reason: string, userEvidence: string }) },
   dev_flow_doctor: { description: "Diagnose plugin and project wiring.", inputSchema: object([]), annotations: { readOnlyHint: true } }
 };
-function result(id, value) {
-  process.stdout.write(`${JSON.stringify({ jsonrpc: "2.0", id, result: { content: [{ type: "text", text: JSON.stringify(value) }], structuredContent: value } })}
+function protocolResult(id, value) {
+  process.stdout.write(`${JSON.stringify({ jsonrpc: "2.0", id, result: value })}
+`);
+}
+function toolResult(id, value) {
+  process.stdout.write(`${JSON.stringify({
+    jsonrpc: "2.0",
+    id,
+    result: {
+      content: [{ type: "text", text: JSON.stringify(value) }],
+      structuredContent: value
+    }
+  })}
 `);
 }
 function failure(id, error) {
@@ -1128,10 +1197,32 @@ for await (const line of readline.createInterface({ input: process.stdin, crlfDe
   let message = {};
   try {
     message = JSON.parse(line);
-    if (message.method === "initialize") result(message.id, { protocolVersion: "2024-11-05", serverInfo: { name: "dev-flow", version: "1.1.0" }, capabilities: { tools: {} }, instructions: "Classify before starting. Call dev_flow_next and execute exactly one returned action. Stop after presenting a HUMAN GATE." });
-    else if (message.method === "tools/list") result(message.id, { tools: tools.map((name) => ({ name, ...toolSchemas[name] })) });
-    else if (message.method === "tools/call") result(message.id, await call(message.params.name, message.params.arguments ?? {}));
+    if (!Object.hasOwn(message, "id") || message.id === void 0 || message.id === null) continue;
+    if (message.method === "initialize") {
+      protocolResult(message.id, {
+        protocolVersion: message.params?.protocolVersion || "2024-11-05",
+        serverInfo: { name: "dev-flow", version: "1.1.0" },
+        capabilities: { tools: {} },
+        instructions: "Classify before starting. Call dev_flow_next and execute exactly one returned action. Stop after presenting a HUMAN GATE. Use dev_flow_init_project before start."
+      });
+      continue;
+    }
+    if (message.method === "tools/list") {
+      protocolResult(message.id, {
+        tools: tools.map((name) => ({ name, ...toolSchemas[name] }))
+      });
+      continue;
+    }
+    if (message.method === "tools/call") {
+      toolResult(message.id, await call(message.params?.name, message.params?.arguments ?? {}));
+      continue;
+    }
+    if (message.method === "ping") {
+      protocolResult(message.id, {});
+      continue;
+    }
+    failure(message.id, new DevFlowError("UNKNOWN_METHOD", String(message.method ?? "missing method")));
   } catch (error) {
-    failure(message.id, error);
+    if (message?.id !== void 0 && message?.id !== null) failure(message.id, error);
   }
 }

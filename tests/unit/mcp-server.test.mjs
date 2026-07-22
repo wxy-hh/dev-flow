@@ -18,8 +18,16 @@ test("MCP server initializes, advertises the complete public interface, and maps
     { jsonrpc: "2.0", id: 2, method: "tools/list" },
     { jsonrpc: "2.0", id: 3, method: "tools/call", params: { name: "not_a_tool", arguments: {} } },
   ]);
-  assert.equal(responses[0].result.structuredContent.serverInfo.name, "dev-flow");
-  const names = responses[1].result.structuredContent.tools.map((tool) => tool.name);
-  for (const name of ["dev_flow_classify", "dev_flow_start", "dev_flow_next", "dev_flow_verify", "dev_flow_confirm_gate", "dev_flow_finalize"]) assert.ok(names.includes(name));
+  // initialize / tools/list must be bare protocol results (not tools/call content wrappers)
+  assert.equal(responses[0].result.serverInfo.name, "dev-flow");
+  assert.equal(responses[0].result.capabilities.tools !== undefined, true);
+  assert.equal(responses[0].result.content, undefined);
+  assert.ok(Array.isArray(responses[1].result.tools));
+  assert.equal(responses[1].result.content, undefined);
+  const names = responses[1].result.tools.map((tool) => tool.name);
+  for (const name of ["dev_flow_init_project", "dev_flow_classify", "dev_flow_start", "dev_flow_next", "dev_flow_verify", "dev_flow_confirm_gate", "dev_flow_finalize"]) {
+    assert.ok(names.includes(name), `missing tool ${name}`);
+  }
+  // tools/call keeps CallToolResult content shape
   assert.equal(responses[2].error.data.code, "UNKNOWN_TOOL");
 });
