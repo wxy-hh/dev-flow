@@ -44,3 +44,8 @@
 ## 回撤
 
 本次均为工作流说明和 doctor 静态检查。回撤相关文档与 doctor 断言即可恢复原行为，不涉及业务项目或状态迁移。
+
+## 后续校正
+
+- 自动续跑仅适用于 dev-flow 接管、存在 active `status.md` 且 code-review 是路线完成门的任务。用户明确只要求 code-review 或没有该状态时，审查报告就是终点。
+- “残余风险”停止条件仅指尚待用户接受的风险；已通过 `accept-risk` 形成的合规 partial 仍可自动进入 logic-complete，但不得自动接受新风险。

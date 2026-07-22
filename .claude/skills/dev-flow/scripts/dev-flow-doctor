@@ -557,6 +557,8 @@ require_pattern ".claude/skills/dev-flow/references/protocol.md" '当前回合�
 require_pattern ".claude/skills/dev-flow/references/protocol.md" '不能由实现后的' "protocol.md keeps plan-review from being replaced by code-review"
 require_pattern ".claude/skills/dev-flow/references/protocol.md" '本次实现范围' "protocol.md binds implementation approval to explicit scope"
 require_pattern ".claude/skills/dev-flow/references/protocol.md" 'report-mode 风险证据' "protocol.md requires full risk evidence before implementation approval"
+require_pattern ".claude/skills/dev-flow/references/protocol.md" '待接受的残余风险' "protocol.md stops only pending residual risks"
+require_pattern ".claude/skills/dev-flow/references/protocol.md" '禁止自动调用 `accept-risk`' "protocol.md never auto-accepts residual risks"
 require_pattern ".claude/skills/dev-flow/references/protocol.md" '\[HANDOFF\]' "protocol.md documents the HANDOFF format"
 require_pattern ".claude/skills/dev-flow/references/protocol.md" '资产读取优先级' "protocol.md documents asset read priority"
 require_pattern ".claude/skills/dev-flow/references/protocol.md" 'dev_flow_completion:' "protocol.md documents completion.md frontmatter schema"
@@ -582,6 +584,7 @@ require_pattern ".claude/skills/finishing-a-development-branch/SKILL.md" '\[ASSE
 require_pattern ".claude/skills/finishing-a-development-branch/SKILL.md" '--inventory' "finishing skill requires --inventory on confirm"
 require_pattern ".claude/skills/verification-before-completion/SKILL.md" '不得互相调用' "verification skill forbids complete-verification/feature-check wrapper calls"
 require_pattern ".claude/skills/code-review/SKILL.md" '不能把 `/finish` 留给用户记忆' "code-review auto-continues to verification"
+require_pattern ".claude/skills/code-review/SKILL.md" '用户明确只要求 code-review' "code-review keeps standalone reviews as a manual endpoint"
 require_pattern ".claude/skills/verification-before-completion/SKILL.md" '同一会话调用 `/finish`' "verification auto-continues to finish"
 require_pattern ".claude/hooks/dev-flow-finish-guard.sh" 'logic-complete' "finish-guard handles logic-complete without finalizer"
 

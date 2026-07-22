@@ -20,7 +20,7 @@
 
 ## 半自动推进边界
 
-无副作用、无阻塞的 writing-plans → coverage（触发时）→ plan-review → rollback/security，以及 code-review → verification → finish（至 logic-complete）可以自动推进；写业务代码前必须停在 implementation approval。以下情况必须停：需求缺口/冲突、CRITICAL/HIGH、无法验证或回撤、残余风险、重分级、提交/推送/合并/删除，以及任何 `Auto-continue: no`。
+无副作用、无阻塞的 writing-plans → coverage（触发时）→ plan-review → rollback/security，以及 code-review → verification → finish（至 logic-complete）可以自动推进；写业务代码前必须停在 implementation approval。以下情况必须停：需求缺口/冲突、CRITICAL/HIGH、无法验证或回撤、待接受的残余风险、重分级、提交/推送/合并/删除，以及任何 `Auto-continue: no`。已由 `accept-risk` 记录且满足路线要求的 partial 可以自动推进到 `logic-complete`，但禁止自动调用 `accept-risk`。
 
 retrospective 不追补 requirement confirmation、writing-plans、requirements-coverage 或 plan-review，但仍要求 implementation approval、风险门、至少 light code-review、行为验证和 feature-check；任何无风险 XS/S/light M 也必须有 status。该 approval 允许继续审查、修复和验证现有实现，不追认过去实现。
 

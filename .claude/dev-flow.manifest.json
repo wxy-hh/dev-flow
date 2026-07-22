@@ -1,7 +1,7 @@
 {
   "schema_version": "1",
   "workflow_version": "1.0.1",
-  "generated_at": "2026-07-22T03:11:48Z",
+  "generated_at": "2026-07-22T03:40:54Z",
   "files": [
     {
       "path": ".claude/agents/build-error-resolver.md",
@@ -90,7 +90,7 @@
     },
     {
       "path": ".claude/skills/code-review/SKILL.md",
-      "sha256": "18333b98383b2305d488fa4c91aa699dc41ac00a179aaf839d6a96bb5d6d8c58",
+      "sha256": "21c545d9ec38db0f172d9fe1e0932a53734c68234fdb0d67b10cc24bb827bd46",
       "strategy": "replace"
     },
     {
@@ -115,7 +115,7 @@
     },
     {
       "path": ".claude/skills/dev-flow/references/protocol.md",
-      "sha256": "bc7bdc19653737be6462b9664baa63e9d10432ca0723096778f928571dfb6489",
+      "sha256": "ff3bb2a22df498458bbd8f0952317bb8871fa98fced2ecee4a9c433e43a1ca36",
       "strategy": "replace"
     },
     {
@@ -140,7 +140,7 @@
     },
     {
       "path": ".claude/skills/dev-flow/scripts/dev-flow-doctor",
-      "sha256": "309f32fee532b02d69225da68854dd493c03601fd64e77ea72be14ffa7af7936",
+      "sha256": "51c1323c72d2c0a175bdd579acd766d558d9326ff1bef4ed2394e2eeeaf74702",
       "strategy": "replace"
     },
     {
@@ -190,7 +190,7 @@
     },
     {
       "path": ".claude/skills/dev-flow/scripts/tests/dev-flow-doctor-test",
-      "sha256": "529f5d544639c4afbd2087aea56a98144b30daac0bd4f37459540a62dd3533ea",
+      "sha256": "b0bf17e5f4c504fef38ebe71f5701226fae7215ad58aa3b30fa570ae2bf71a27",
       "strategy": "replace"
     },
     {

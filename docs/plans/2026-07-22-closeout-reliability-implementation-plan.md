@@ -88,3 +88,19 @@
 - Task 1: 协议文字与风险证据时序。
 - Task 2: 技能自动交接与 `/finish` 入口说明。
 - Task 3: doctor 的静态契约检查。
+
+### Task 4: 限定自动续跑与 partial 语义
+
+- [x] Completed
+
+**Requirements:** R-004
+**Depends on:** Task 2
+**Writes:**
+- Modify `.claude/skills/code-review/SKILL.md`
+- Modify `.claude/skills/dev-flow/references/protocol.md`
+- Modify `.claude/skills/dev-flow/scripts/dev-flow-doctor`
+- Modify `.claude/skills/dev-flow/scripts/tests/dev-flow-doctor-test`
+
+**Change:** 只对 dev-flow 状态型任务强制 code-review 自动进入 verification；将自动停止条件限定为待接受而非已接受的残余风险。
+**Verification:** doctor 与 doctor test 均报告两项限定存在。
+**Rollback:** 回退本任务四个文件及本计划 delta。
