@@ -7,9 +7,13 @@
 #   .claude/runtime/dev-flow/write-authorization.json
 # Approved state must pass validator authorization recompute (approval_basis).
 #
-# Bash: no large command whitelist. pending/stale/missing blocks non-control Bash
-# in strict/ask modes. Control: a single exact dev-flow status/validate/policy/doctor
-# invocation. Git close-out is delegated only for a single git command.
+# Bash:
+# - Readonly exploration (rg/ls/git status/…) always allowed — normal Q&A must not
+#   require /dev-task first.
+# - Mutating / unclassified Bash is gated when write-authorization is missing,
+#   pending, or stale (ask or deny per enforcement_mode).
+# - Control: a single exact dev-flow status/validate/policy/doctor invocation.
+# - Git close-out is delegated only for a single git command.
 # Guardrail, not a security boundary — see protocol.md.
 set -u
 
@@ -127,6 +131,7 @@ case "$tool_name" in
     classification=$(DEV_FLOW_REPO_ROOT="$root" node "$classifier" "$trimmed" 2>/dev/null)
     has_shell_control=$(node -e 'try { process.stdout.write(JSON.parse(process.argv[1]).has_shell_control ? "1" : "0") } catch { process.stdout.write("1") }' "$classification")
     is_control=$(node -e 'try { process.stdout.write(JSON.parse(process.argv[1]).is_control ? "1" : "0") } catch { process.stdout.write("0") }' "$classification")
+    is_readonly=$(node -e 'try { process.stdout.write(JSON.parse(process.argv[1]).is_readonly ? "1" : "0") } catch { process.stdout.write("0") }' "$classification")
     writes_secret_file=$(node -e 'try { process.stdout.write(JSON.parse(process.argv[1]).writes_secret_file ? "1" : "0") } catch { process.stdout.write("0") }' "$classification")
     command_kind=$(node -e 'try { process.stdout.write(JSON.parse(process.argv[1]).command_kind || "other") } catch { process.stdout.write("other") }' "$classification")
 
@@ -141,6 +146,11 @@ case "$tool_name" in
       exit 0
     fi
 
+    # Readonly exploration never requires /dev-task (normal Q&A / codebase search).
+    if [ "$is_readonly" = 1 ]; then
+      exit 0
+    fi
+
     if [ "$auth_valid" = 1 ]; then
       exit 0
     fi
@@ -151,16 +161,16 @@ case "$tool_name" in
 
     case "$auth_state" in
       approval-pending)
-        decide_for_mode "dev-flow write-authorization 仍为 approval-pending（feature ${auth_feature:-unknown}），非控制 Bash 需先确认 implementation_approval。${next_steps_pending}"
+        decide_for_mode "dev-flow write-authorization 仍为 approval-pending（feature ${auth_feature:-unknown}），变更类 Bash 需先确认 implementation_approval。${next_steps_pending}"
         ;;
       stale)
         decide_for_mode "dev-flow write-authorization approval_basis 已过期（feature ${auth_feature:-unknown}）。${next_steps_stale}"
         ;;
       closed|"")
-        decide_for_mode "dev-flow 无有效 write-authorization，Bash 受保护写入被拦截（enforcement_mode=${enforcement_mode}）。${next_steps_no_auth}"
+        decide_for_mode "dev-flow 无有效 write-authorization，变更类 Bash 被拦截（enforcement_mode=${enforcement_mode}）。只读探索（rg/git status 等）不受影响。若要按 dev-flow 改业务代码：${next_steps_no_auth}"
         ;;
       *)
-        decide_for_mode "dev-flow write-authorization 状态未知（${auth_state}）。${next_steps_no_auth}"
+        decide_for_mode "dev-flow write-authorization 状态未知（${auth_state}），变更类 Bash 被拦截。${next_steps_no_auth}"
         ;;
     esac
     ;;

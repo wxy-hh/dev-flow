@@ -132,10 +132,67 @@ function knownScript(token, root) {
   return null;
 }
 
+/** Exploration tools that do not mutate the worktree when run without shell control. */
+const READONLY_BINARIES = new Set([
+  'rg', 'grep', 'egrep', 'fgrep', 'ag', 'ack', 'fd', 'find', 'locate',
+  'ls', 'll', 'dir', 'tree', 'cat', 'head', 'tail', 'less', 'more',
+  'stat', 'file', 'wc', 'pwd', 'which', 'type', 'command', 'echo', 'printf',
+  'basename', 'dirname', 'realpath', 'readlink', 'uname', 'date', 'env', 'printenv',
+  'diff', 'cmp', 'md5', 'md5sum', 'sha256sum', 'shasum',
+]);
+
+const READONLY_GIT = new Set([
+  'status', 'rev-parse', 'log', 'show', 'diff', 'branch', 'remote',
+  'describe', 'ls-files', 'ls-tree', 'cat-file', 'blame', 'shortlog',
+  'config', 'version', 'help', 'stash',
+]);
+
+function commandBase(tokens) {
+  if (!tokens.length) return '';
+  if (['node', 'bash', 'sh'].includes(tokens[0]) && tokens[1]) {
+    return path.posix.basename(tokens[1]);
+  }
+  return path.posix.basename(tokens[0]);
+}
+
+/**
+ * True when the single shell command is exploration-only (no unquoted control).
+ * git checkout/switch/tag -a/etc. are intentionally not readonly.
+ */
+function isReadonlyCommand(tokens, depth = 0) {
+  if (!tokens.length || depth > 2) return false;
+  const outer = path.posix.basename(tokens[0] || '');
+  if (['bash', 'sh'].includes(outer)) {
+    const flag = tokens.findIndex((token, index) => index > 0 && token === '-c');
+    if (flag >= 0 && tokens[flag + 1]) {
+      const inner = tokenizeShell(tokens[flag + 1]);
+      if (inner.has_shell_control) return false;
+      return isReadonlyCommand(inner.tokens, depth + 1);
+    }
+  }
+  if (tokens[0] === 'git') {
+    const sub = tokens[1];
+    if (!sub || sub.startsWith('-')) return false;
+    // Never treat worktree-mutating git as readonly.
+    if (['checkout', 'switch', 'restore', 'reset', 'clean', 'rebase', 'cherry-pick', 'am', 'pull', 'fetch', 'clone', 'init', 'mv', 'rm', 'apply', 'commit', 'add', 'push', 'merge', 'tag', 'worktree'].includes(sub)) {
+      return false;
+    }
+    // bare `git stash` defaults to push (mutates); only list/show are readonly
+    if (sub === 'stash') return tokens[2] === 'list' || tokens[2] === 'show';
+    if (sub === 'config') {
+      return tokens.includes('--get') || tokens.includes('--get-regexp') || tokens.includes('-l') || tokens.includes('--list');
+    }
+    return READONLY_GIT.has(sub);
+  }
+  const base = commandBase(tokens);
+  return READONLY_BINARIES.has(base);
+}
+
 export function classifyCommand(command, { root = '' } = {}) {
   const parsed = tokenizeShell(String(command ?? ''));
   const result = {
     is_control: false,
+    is_readonly: false,
     has_shell_control: parsed.has_shell_control,
     writes_secret_file: writesSecretFile(parsed.tokens),
     command_kind: 'other',
@@ -149,6 +206,7 @@ export function classifyCommand(command, { root = '' } = {}) {
   if (script) {
     return {
       is_control: true,
+      is_readonly: true,
       has_shell_control: false,
       writes_secret_file: result.writes_secret_file,
       command_kind: script.kind,
@@ -158,7 +216,16 @@ export function classifyCommand(command, { root = '' } = {}) {
   if (parsed.tokens[0] === 'git' && ['add', 'commit', 'push', 'merge'].includes(parsed.tokens[1])) {
     result.command_kind = 'git-closeout';
     result.reason = 'single Git close-out command';
+    return result;
   }
+  if (isReadonlyCommand(parsed.tokens)) {
+    result.is_readonly = true;
+    result.command_kind = 'readonly';
+    result.reason = 'readonly exploration command';
+    return result;
+  }
+  result.command_kind = 'mutate';
+  result.reason = 'mutating or unclassified shell command';
   return result;
 }
 

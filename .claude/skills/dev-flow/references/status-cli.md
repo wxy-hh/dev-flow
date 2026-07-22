@@ -82,6 +82,6 @@ manual-test 的 `delegated` 表示已交给人或运行环境但仍 pending；fi
 
 一个 worktree 只有 `.claude/runtime/dev-flow/write-authorization.json`。状态为 `classified|approval-pending|approved|closed`；approved 必须是当前 schema/version、有 active status，且 approval basis 匹配。finalizer 后保留 closed 记录；finalized 查询不依赖写授权。
 
-只在命中 `protected_write_roots` 时应用 `off|ask|strict`；`.claude/**`、feature/review roots、`openspec/**` 永远是流程资产。pending、closed 或无授权时，Bash 只放行单条受管控制命令。单/双引号或转义中的管道、重定向、连接、后台等普通元字符作为字面量时不算 shell control；未引用的管道、重定向、连接、后台和换行会阻断。命令替换是例外：反引号与 `$()` 在未引用或双引号内都会执行，因此均阻断；只有位于单引号内或已转义为字面量时才放行。Git close-out 交给 finish guard。
+只在命中 `protected_write_roots` 时应用 `off|ask|strict`；`.claude/**`、feature/review roots、`openspec/**` 永远是流程资产。Bash：只读探索（`rg`/`ls`/`git status` 等，见 `dev-flow-command` 的 `is_readonly`）始终放行，不要求先 `/dev-task`；pending、closed 或无授权时只闸变更类 Bash 与单条受管控制命令以外的 mutate。单/双引号或转义中的管道、重定向、连接、后台等普通元字符作为字面量时不算 shell control；未引用的管道、重定向、连接、后台和换行会阻断（且不算只读）。命令替换是例外：反引号与 `$()` 在未引用或双引号内都会执行，因此均阻断；只有位于单引号内或已转义为字面量时才放行。Git close-out 交给 finish guard。
 
 真实 secret 文件写入要求确认，`.env.example` 放行。validator 只扫描受管流程/最终资产中的高置信 secret assignment，错误只报告 path/key，不打印值。该护栏不是系统安全边界。
