@@ -2,7 +2,7 @@
   "$schema": "https://json.schemastore.org/claude-code-plugin-manifest.json",
   "name": "dev-flow",
   "displayName": "Dev Flow",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Risk-aware multi-route development orchestration for Claude Code and Codex CLI.",
   "author": {
     "name": "wxy-hh",
@@ -11,13 +11,20 @@
   "homepage": "https://github.com/wxy-hh/dev-flow",
   "repository": "https://github.com/wxy-hh/dev-flow",
   "license": "MIT",
-  "keywords": ["development", "workflow", "review", "verification"],
+  "keywords": [
+    "development",
+    "workflow",
+    "review",
+    "verification"
+  ],
   "skills": "./skills/",
   "hooks": "./hosts/claude/hooks.json",
   "mcpServers": {
     "dev-flow": {
       "command": "node",
-      "args": ["${CLAUDE_PLUGIN_ROOT}/dist/mcp-server.mjs"]
+      "args": [
+        "${CLAUDE_PLUGIN_ROOT}/dist/mcp-server.mjs"
+      ]
     }
   }
 }

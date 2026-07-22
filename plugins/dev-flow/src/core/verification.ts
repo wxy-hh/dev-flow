@@ -3,15 +3,19 @@ import { promisify } from "node:util";
 import path from "node:path";
 import { DevFlowError } from "./errors.js";
 import { fingerprintProtectedRoots } from "./fingerprint.js";
-import { readProjectConfig } from "./state-store.js";
+import { readProjectConfig, readState } from "./state-store.js";
 import { mutate, type FeatureState } from "./state-store.js";
 import { assertCurrentStep } from "./step-order.js";
 import { deriveRiskRequirements } from "../policy/route.js";
+import { assertRequirementsGrillSatisfied } from "./requirements-grill.js";
 
 const run = promisify(execFile);
 type Attempt = { id: number; commandIds: string[]; kinds: string[]; startedAt: string; finishedAt: string; exitCode: number; output: string; fingerprint: string; host: "claude" | "codex" };
 
 export async function runVerification(root: string, id: string, expectedRevision: number, host: "claude" | "codex", commandIds?: string[]): Promise<FeatureState> {
+  const initial = await readState(root, id);
+  if (initial.revision !== expectedRevision) throw new DevFlowError("STATE_REVISION_CONFLICT", "state revision changed", { currentRevision: initial.revision });
+  await assertRequirementsGrillSatisfied(root, id, initial);
   const config = await readProjectConfig(root);
   const selected = commandIds?.length
     ? config.verification.commands.filter((command) => commandIds.includes(command.id))
@@ -33,9 +37,10 @@ export async function runVerification(root: string, id: string, expectedRevision
     }
   }
   const finishedAt = new Date().toISOString();
-  return mutate(root, id, expectedRevision, "verification-recorded", (state) => {
+  return mutate(root, id, expectedRevision, "verification-recorded", async (state) => {
     if (state.lifecycle !== "active") throw new DevFlowError("INVALID_LIFECYCLE", "only active features can verify");
     assertCurrentStep(state, "verification");
+    await assertRequirementsGrillSatisfied(root, id, state);
     const kinds = state.classification.riskLabels.length ? deriveRiskRequirements(state.classification.riskLabels).verification : ["targeted"];
     const attempt: Attempt = { id: state.verification.attempts.length + 1, commandIds: selected.map((item) => item.id), kinds, startedAt, finishedAt, exitCode, output: output.join("\n").slice(-32_000), fingerprint, host };
     state.verification.attempts.push(attempt);

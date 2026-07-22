@@ -8,6 +8,7 @@ import { fileURLToPath } from "node:url";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 const script = path.join(root, "scripts", "sync-version.mjs");
+const version = JSON.parse(await readFile(path.join(root, "package.json"), "utf8")).version;
 
 function run(rootPath) {
   return spawnSync(process.execPath, [script, "--check", "--root", rootPath], {
@@ -39,7 +40,7 @@ test("version check rejects a manifest drift", async () => {
     await writeFile(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
     const result = run(tempRoot);
     assert.notEqual(result.status, 0);
-    assert.match(result.stderr, /expected 1\.0\.0/);
+    assert.match(result.stderr, new RegExp(`expected ${version.replaceAll(".", "\\.")}`));
   } finally {
     await rm(tempRoot, { recursive: true, force: true });
   }

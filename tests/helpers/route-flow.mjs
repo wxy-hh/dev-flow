@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { loadSource } from "./load-source.mjs";
@@ -19,6 +19,11 @@ export async function runRoute(input, expectedRoute) {
     for (const step of def.orderedSteps) {
       if (["feature_check", "finalize"].includes(step)) continue;
       for (const kind of def.artifactSteps?.[step] ?? []) state = await artifacts.scaffoldArtifact(root, "feature", state.revision, kind);
+      if (step === "requirements" && ["missing-or-unclear", "documented-unconfirmed"].includes(input.requirements)) {
+        const file = path.join(root, ".dev-flow", "features", "feature", "requirements.md");
+        await writeFile(file, (await readFile(file, "utf8")).replace(/^  grill_status: pending$/m, "  grill_status: complete"));
+        state = await artifacts.recordArtifact(root, "feature", state.revision, "requirements");
+      }
       if (["requirement_confirmation", "implementation_approval"].includes(step)) { state = await gates.presentGate(root, "feature", state.revision, step); await store.recordHostEvent(root, { eventId: `${step}-prompt`, type: "user-prompt", host: "claude", text: `approve ${step}` }); state = await gates.confirmGate(root, "feature", state.revision, step, `approve ${step}`, { promptEventId: `${step}-prompt` }, "claude"); }
       else if (step === "verification") state = await verification.runVerification(root, "feature", state.revision, "claude");
       else {

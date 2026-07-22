@@ -1,4 +1,4 @@
-/* dev-flow 1.0.0; built from source, deterministic build */
+/* dev-flow 1.1.0; built from source, deterministic build */
 
 // plugins/dev-flow/src/core/state-store.ts
 import { mkdir, open, readFile, rename, rm, writeFile } from "node:fs/promises";

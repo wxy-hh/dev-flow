@@ -57,6 +57,8 @@ HOST_E2E=1 npm run test:host-e2e
 5. 遇到 HUMAN GATE：输出后**停等**用户原话，再用 `dev_flow_confirm_gate`（不可同回合确认）。  
 6. 需要 `feature-check` 的路线通过检查后才 `finalize`；**logic-complete 之前 hooks 会拦截 Git 写操作**。
 
+需求确认不等于需求拷问：标准 M/L 的 `missing-or-unclear` 与 `documented-unconfirmed` 需求会在 `requirements` 步骤内先进入 `dev-flow-grillme` 的逐题澄清；只有 `grill_status: complete` 且 requirements 已登记，才能展示需求确认门禁。`provided-confirmed` 默认不自动拷问，但可显式调用 `dev-flow-grillme` 压测。
+
 项目侧状态（示意）：
 
 ```text
@@ -81,9 +83,9 @@ HOST_E2E=1 npm run test:host-e2e
 | **S** | 单模块、local、无风险 | 边界 → 实现 → 验证 → 自审 | 无 | 否 |
 | **risk-minimal** | XS/S 或 light M 且带风险标签 | 风险卡 → 控制项 → **实现批准** → 实现 → 代码审查 → 验证 | status、risk-card | **是** |
 | **light M** | M + light + 无风险 | 边界/短计划 → 实现 → 代码审查 → 验证 | 无（审查为步骤，不强制独立 md） | 否 |
-| **standard M** | M + standard + 需求状态 | 需求 → **需求确认** → 计划 → 覆盖 → 回撤 → 计划审查 → **实现批准** → 实现 → 代码审查 → 验证 | requirements、plan、status、coverage | **是** |
+| **standard M** | M + standard + 需求状态 | 需求（含强制 grill 子流程）→ **需求确认** → 计划 → 覆盖 → 回撤 → 计划审查 → **实现批准** → 实现 → 代码审查 → 验证 | requirements、plan、status、coverage | **是** |
 | **light L** | L + light | 边界卡 → 回撤/安全 → **实现批准** → 实现 → 代码审查 → 验证 | boundary、rollback-safety、verification | **是** |
-| **standard L** | L + standard + 需求状态 | 与标准 M 同骨架，证据/独立资产更全 | 需求/计划/覆盖/回撤/计划审查/代码审查/验证 | **是** |
+| **standard L** | L + standard + 需求状态 | 与标准 M 同骨架，含强制 grill 子流程，证据/独立资产更全 | 需求/计划/覆盖/回撤/计划审查/代码审查/验证 | **是** |
 
 分类输入要点：
 
@@ -104,7 +106,11 @@ HOST_E2E=1 npm run test:host-e2e
 | 状态 / 接力 | `dev-flow-status` |
 | 诊断 | `dev-flow-doctor` |
 | 收尾 | `dev-flow-finish` |
-| 需求 / 风险 / 计划 / 覆盖 / 回撤 / 计划审查 / 实现 / 代码审查 / 验证 / feature-check | 对应 `dev-flow-*` |
+| 需求采集与登记 | `dev-flow-requirements` |
+| 需求/方案逐题拷问（grillme） | `dev-flow-grillme` |
+| 风险 / 计划 / 覆盖 / 回撤 / 计划审查 / 实现 / 代码审查 / 验证 / feature-check | 对应 `dev-flow-*` |
+
+`dev-flow-requirements` 是需求链唯一编排者与 MCP 写入者；`dev-flow-grillme` 只做逐题压测（可写 `requirements.md` 的 Decision Log / Open Questions / `grill_status`，**禁止** mutation/gate）。触发词含 grillme、拷问、压测方案等。
 
 状态只通过 MCP（如 `dev_flow_start`、`dev_flow_next`、`dev_flow_confirm_gate`、`dev_flow_finalize` 等）变更。
 

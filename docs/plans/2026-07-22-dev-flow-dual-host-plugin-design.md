@@ -862,3 +862,12 @@ codex plugin add dev-flow@dev-flow-marketplace
 11. verification 采用 append-only attempts；失败阻塞、允许重跑、历史不删除。
 12. Git 只读能力使用精确 command/flag 白名单，未知形式在 strict mode 下拒绝。
 13. state lock 默认 5 秒超时、50 ms 加抖动重试、30 秒 stale 候选阈值，并区分 lock timeout 与 revision conflict。
+
+## 1.1.0 补充：grillme
+
+自 **1.1.0** 起（不改 route/MCP 工具/HUMAN GATE 数量）：
+
+- 公开技能 `dev-flow-grillme`：标准 M/L 的 `requirements` 步骤内逐题压测；`dev-flow-requirements` 仍是唯一编排与状态写入者。
+- `missing-or-unclear` / `documented-unconfirmed` 强制 grill；`provided-confirmed` 默认 `grill_status: not_required`，可显式拷问。
+- `requirements.md` front matter 字段 `grill_status` 为 core 唯一强制枚举；`recordStep(requirements)` 与 `presentGate(requirement_confirmation)` 在自动态未 `complete` 时拒绝。
+- 详述见根 README、`docs/routes.md`、`docs/architecture.md`。
