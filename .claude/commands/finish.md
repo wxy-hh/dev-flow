@@ -14,7 +14,7 @@
 node .claude/skills/dev-flow/scripts/dev-flow-status.mjs next [feature-id]
 ```
 
-每次调用只推进输出中的一条 `command`；若仍有 blocker，执行后停止并让下一次 `/finish` 重新 `next`。不得一次跨过多个 gate。已 finalized 时只读返回，不依赖 write authorization。
+每次调用只推进输出中的一条 `command`；若仍有 blocker，执行后停止并让下一次 `/finish` 重新 `next`。由 verification 的 `Auto-continue: yes` 自动进入、且 `next` 已到 `finish` 时，当前调用连续执行 feature-check、最终资产和 finalizer dry-run，直到 `[ASSET FINALIZATION]`；不得跨过任何失败、待接受的风险、资产处置或 Git gate。已 finalized 时只读返回，不依赖 write authorization。
 
 ## 状态机
 
@@ -123,7 +123,7 @@ Auto-continue: no
 | `retain full` | confirm + retention=full + inventory |
 | `not now` | 不 finalizer；保留 check-ok；**Git 不阻塞** |
 
-禁止模糊匹配。`--confirm` 必须带 `--inventory <sha256>`，且不得与 dry-run 同回合。
+禁止模糊匹配或自动纠错：除表中三个字符串外（包括 `compack`）均须追问，且不得调用 finalizer。`--confirm` 必须带 `--inventory <sha256>`，且不得与 dry-run 同回合。
 
 ## 输出要求
 

@@ -84,4 +84,4 @@ STATUS: 当前 status.md 路径和状态
 
 对话输出开头先给 3-5 行用户决策摘要：结论、阻塞项、需要决定的事项和下一步；完整发现、证据和修复建议写入报告。
 
-`[HANDOFF]` 格式见 `dev-flow/references/protocol.md`。无 CRITICAL/HIGH 阻塞项时，`Current gate: code-review`，`Next skill: verification-before-completion`，`Auto-continue: yes`。存在 CRITICAL/HIGH 时，`Next skill: code-review`，`Auto-continue: no`，`Stop reason` 写明需要修复或用户明确接受风险的问题。
+`[HANDOFF]` 格式见 `dev-flow/references/protocol.md`。无 CRITICAL/HIGH 阻塞项时，`Current gate: code-review`，`Next skill: verification-before-completion`，`Auto-continue: yes`；控制者必须在同一会话直接进入 verification，不能把 `/finish` 留给用户记忆。存在 CRITICAL/HIGH 时，`Next skill: code-review`，`Auto-continue: no`，`Stop reason` 写明需要修复或用户明确接受风险的问题。

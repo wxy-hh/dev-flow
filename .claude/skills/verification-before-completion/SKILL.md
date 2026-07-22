@@ -122,4 +122,4 @@ manual_test_steps:
 
 检查失败时只能输出部分验证或阻塞结论，不得进入"验证通过"的分支收尾。`outcome: partial` 时 completion、check stamp 与收尾输出必须写 `partial`，展示未验证步骤和风险摘要，禁止使用「验证通过」；partial 在 **logic-complete** 后仍允许正常提交/推送/合并/PR（finalization 可选）。`outcome: verified` 时 `accepted_risks` 必须为空且不得保留未关闭 partial-acceptance。
 
-验证通过或 partial 可收尾时按 `dev-flow/references/protocol.md` 输出 `[HANDOFF]`（`Current gate: verification-before-completion`，`Next skill: finishing-a-development-branch`，`Auto-continue: no`，`Stop reason: verification verified|partial; logic-complete then optional asset finalization / Git`），但不要自动提交、合并、推送或创建 PR。验证失败时同样 `Auto-continue: no`，`Stop reason` 写失败命令和推荐下一步。
+验证通过或 partial 可收尾时按 `dev-flow/references/protocol.md` 输出 `[HANDOFF]`（`Current gate: verification-before-completion`，`Next skill: finishing-a-development-branch`，`Auto-continue: yes`）；控制者必须在同一会话调用 `/finish`，完成 feature-check、final assets 与 finalizer dry-run，再在 `[ASSET FINALIZATION]` 停下。不得自动 compact/full、提交、合并、推送或创建 PR。验证失败时同样 `Auto-continue: no`，`Stop reason` 写失败命令和推荐下一步。

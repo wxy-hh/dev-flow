@@ -1,7 +1,7 @@
 {
   "schema_version": "1",
   "workflow_version": "1.0.1",
-  "generated_at": "2026-07-21T06:49:34Z",
+  "generated_at": "2026-07-22T03:11:48Z",
   "files": [
     {
       "path": ".claude/agents/build-error-resolver.md",
@@ -35,7 +35,7 @@
     },
     {
       "path": ".claude/commands/finish.md",
-      "sha256": "b3371962b300748ce9769b57ee52c7ace34ac8fda58b3398919ab01a51870b6d",
+      "sha256": "ff3491e001a8d28fe4f85dc2b44841f643b3d27d016e7c834f6e6ebdddc125e2",
       "strategy": "replace"
     },
     {
@@ -90,7 +90,7 @@
     },
     {
       "path": ".claude/skills/code-review/SKILL.md",
-      "sha256": "48d09e4cebcd3a09cc939b95b83a70ec948c702e64581f918e5a129317255fa4",
+      "sha256": "18333b98383b2305d488fa4c91aa699dc41ac00a179aaf839d6a96bb5d6d8c58",
       "strategy": "replace"
     },
     {
@@ -100,7 +100,7 @@
     },
     {
       "path": ".claude/skills/dev-flow/SKILL.md",
-      "sha256": "425b94951967843392d2b34d9a0e6ca20e7093a82b98bc75c871eeb737ba9425",
+      "sha256": "b470c244f9b36c836a6fcbd36c90365c0abd040d52f30d516373db284f2a3845",
       "strategy": "replace"
     },
     {
@@ -115,7 +115,7 @@
     },
     {
       "path": ".claude/skills/dev-flow/references/protocol.md",
-      "sha256": "763d5a37630ec0a9da422d9381763da65a6a483bd02a216ad8a458ee6dcae0bc",
+      "sha256": "bc7bdc19653737be6462b9664baa63e9d10432ca0723096778f928571dfb6489",
       "strategy": "replace"
     },
     {
@@ -140,7 +140,7 @@
     },
     {
       "path": ".claude/skills/dev-flow/scripts/dev-flow-doctor",
-      "sha256": "aec187ad0f528470e70fa19977323741df52845b0170cee69a003f693ba0797a",
+      "sha256": "309f32fee532b02d69225da68854dd493c03601fd64e77ea72be14ffa7af7936",
       "strategy": "replace"
     },
     {
@@ -190,7 +190,7 @@
     },
     {
       "path": ".claude/skills/dev-flow/scripts/tests/dev-flow-doctor-test",
-      "sha256": "99246cca5fe2b2f4f6531b682d604593bef280238205bb99de6f54b5959a0356",
+      "sha256": "529f5d544639c4afbd2087aea56a98144b30daac0bd4f37459540a62dd3533ea",
       "strategy": "replace"
     },
     {
@@ -270,7 +270,7 @@
     },
     {
       "path": ".claude/skills/finishing-a-development-branch/SKILL.md",
-      "sha256": "ac04fdc195c5981b425dad5625093498ce31acbd461eb98c27a99e8529d9a5c6",
+      "sha256": "e942b5f72e92695eeeda129f67e762fb80143ed8180aa93d3aef3dbcee4ea39e",
       "strategy": "replace"
     },
     {
@@ -335,7 +335,7 @@
     },
     {
       "path": ".claude/skills/verification-before-completion/SKILL.md",
-      "sha256": "2eab0fd778f98fdbe63596a0766fdcebdbf650de2af8e944fbeb733bb3db14eb",
+      "sha256": "e67b83cd8e974f287cc3d95225eccb0b9c788ff0d255efb4c8c758f62c2783d4",
       "strategy": "replace"
     },
     {

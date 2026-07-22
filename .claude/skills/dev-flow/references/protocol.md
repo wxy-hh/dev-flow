@@ -13,13 +13,14 @@
 
 - 输出 HUMAN GATE，或 `[HANDOFF]` 中出现 `Auto-continue: no` 后，当前回合必须停止；不得继续计划、写业务代码、跑后续门禁或把 `auto_continue` 改为 true。
 - `implementation_approval` 前，实现任务只能列出，不能标记进行中/完成。标准 M/L 需要两个 HUMAN GATE；轻量 L 与 risk-minimal 只需 implementation approval。两个 gate 不能复用同一回复。
+- implementation approval 卡必须分别列出“本次实现范围”和“明确不做范围”。存在可选方案时，未被用户明确选择的项默认归入不做范围；“确认”只批准卡中已经确定的范围，不能把可选项一并推断为已批准。派生 full 风险门时，必须先落盘并登记 report-mode 风险证据，再输出该卡。
 - 只有用户后续明确“确认”“继续”或“接受风险并继续”才能 `confirm-human`；保存原话。外部消息已明确确认需求基线且无未决时，可直接登记 requirement evidence。
 - process/risk gate 不能用 HUMAN GATE 代替；plan-review 不能由实现后的 code-review 替代，反向也不成立。
 - `accept-risk` 比通用 HUMAN GATE 严格：必须接受刚列出的具名残余风险并明确继续/收尾。“确认”“继续”“完成吧”“行”不能消费 risk proposal。
 
 ## 半自动推进边界
 
-无副作用、无阻塞的 writing-plans → coverage（触发时）→ plan-review → rollback/security 可以自动推进；写业务代码前必须停在 implementation approval。以下情况必须停：需求缺口/冲突、CRITICAL/HIGH、无法验证或回撤、残余风险、重分级、提交/推送/合并/删除，以及任何 `Auto-continue: no`。
+无副作用、无阻塞的 writing-plans → coverage（触发时）→ plan-review → rollback/security，以及 code-review → verification → finish（至 logic-complete）可以自动推进；写业务代码前必须停在 implementation approval。以下情况必须停：需求缺口/冲突、CRITICAL/HIGH、无法验证或回撤、残余风险、重分级、提交/推送/合并/删除，以及任何 `Auto-continue: no`。
 
 retrospective 不追补 requirement confirmation、writing-plans、requirements-coverage 或 plan-review，但仍要求 implementation approval、风险门、至少 light code-review、行为验证和 feature-check；任何无风险 XS/S/light M 也必须有 status。该 approval 允许继续审查、修复和验证现有实现，不追认过去实现。
 
@@ -130,4 +131,4 @@ Reply exactly:
 Auto-continue: no
 ```
 
-本回合立即停止。下一回合仅精确回复有效：`compact` 删除中间资产，untracked 另需 dry-run 给出的 exact token；`retain full` 归档；`not now` 保留资产且不阻塞 Git。confirm 必须带同一 inventory；漂移零修改失败并重新 dry-run。finalized 查询不依赖 write authorization。
+本回合立即停止。下一回合仅逐字匹配的精确回复有效：`compact` 删除中间资产，untracked 另需 dry-run 给出的 exact token；`retain full` 归档；`not now` 保留资产且不阻塞 Git。拼写错误、同义表达或推测意图（如 `compack`）一律无效，必须请求用户重发三项之一且不得调用 finalizer。confirm 必须带同一 inventory；漂移零修改失败并重新 dry-run。finalized 查询不依赖 write authorization。

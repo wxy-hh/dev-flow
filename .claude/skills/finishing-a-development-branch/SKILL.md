@@ -7,7 +7,7 @@ description: 实现完成且需要决定如何收尾时使用：先验证与 fea
 
 实现完成后的收尾。验证前不给「完成」结论；用户未精确确认前不删除/压缩中间资产。
 
-先读项目 workflow 与 protocol。有新鲜验证时仍核对无新改动。每轮第一条控制命令固定为 `node .claude/skills/dev-flow/scripts/dev-flow-status.mjs next [feature-id]`（在仓库根目录执行）；只推进它输出的一条 command，然后重新 next。这样重复调用幂等，不跨 blocker。
+先读项目 workflow 与 protocol。有新鲜验证时仍核对无新改动。每轮第一条控制命令固定为 `node .claude/skills/dev-flow/scripts/dev-flow-status.mjs next [feature-id]`（在仓库根目录执行）；只推进它输出的一条 command，然后重新 next。由 verification 的 `Auto-continue: yes` 进入且当前 gate 为 `finish` 时，连续完成 feature-check、final assets 和 finalizer dry-run，直到 `[ASSET FINALIZATION]` 为止；不得跨过任何失败、待接受的 partial/残余风险、资产处置或 Git blocker。
 
 ## 第 1 步：完成前验证（状态 A）
 
@@ -59,7 +59,7 @@ Reply exactly:
 Auto-continue: no
 ```
 
-禁止同回合 `--confirm`；禁止模糊回复当 finalization 授权；禁止 token 不匹配时删 untracked。
+禁止同回合 `--confirm`；只有 `compact`、`retain full`、`not now` 逐字匹配时才能进入第 2.5 步。不得纠正拼写、把同义表达或推测意图（如 `compack`）当 finalization 授权；无效回复必须请求用户重发三项之一，且不得调用 finalizer。禁止 token 不匹配时删 untracked。
 
 ## 第 2.5 步：精确选择（C/D/E）
 
