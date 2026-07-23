@@ -5,68 +5,72 @@ import test from "node:test";
 
 const skillsRoot = path.resolve("plugins/dev-flow/skills");
 
-/** Canonical short names (df-*) and legacy aliases kept in description for host matching. */
+/**
+ * Canonical short skill ids (slash: /dev-flow:<id>).
+ * description must keep df-* and dev-flow-* aliases for host matching after renames.
+ */
 const SKILL_ALIASES = {
-  "df-task": "dev-flow-task",
-  "df-status": "dev-flow-status",
-  "df-doctor": "dev-flow-doctor",
-  "df-requirements": "dev-flow-requirements",
-  "df-grillme": "dev-flow-grillme",
-  "df-plan": "dev-flow-plan",
-  "df-coverage-review": "dev-flow-coverage-review",
-  "df-rollback-safety": "dev-flow-rollback-safety",
-  "df-plan-review": "dev-flow-plan-review",
-  "df-implement": "dev-flow-implement",
-  "df-code-review": "dev-flow-code-review",
-  "df-verify": "dev-flow-verify",
-  "df-feature-check": "dev-flow-feature-check",
-  "df-finish": "dev-flow-finish",
-  "df-risk-review": "dev-flow-risk-review",
+  task: ["df-task", "dev-flow-task"],
+  status: ["df-status", "dev-flow-status"],
+  doctor: ["df-doctor", "dev-flow-doctor"],
+  requirements: ["df-requirements", "dev-flow-requirements"],
+  grillme: ["df-grillme", "dev-flow-grillme"],
+  plan: ["df-plan", "dev-flow-plan"],
+  "coverage-review": ["df-coverage-review", "dev-flow-coverage-review"],
+  "rollback-safety": ["df-rollback-safety", "dev-flow-rollback-safety"],
+  "plan-review": ["df-plan-review", "dev-flow-plan-review"],
+  implement: ["df-implement", "dev-flow-implement"],
+  "code-review": ["df-code-review", "dev-flow-code-review"],
+  verify: ["df-verify", "dev-flow-verify"],
+  "feature-check": ["df-feature-check", "dev-flow-feature-check"],
+  finish: ["df-finish", "dev-flow-finish"],
+  "risk-review": ["df-risk-review", "dev-flow-risk-review"],
 };
 
-/** Route / MCP tokens that must remain so workflow next-action can still hit the skill. */
 const ROUTE_HIT_TOKENS = {
-  "df-plan-review": [/plan_review/, /reviewType: "plan"/],
-  "df-code-review": [/code_review/, /reviewType: "code"/],
-  "df-implement": [/implementation/],
-  "df-verify": [/verification/, /dev_flow_verify/],
-  "df-feature-check": [/feature-check/, /dev_flow_feature_check/],
-  "df-finish": [/finalize/, /dev_flow_finalize/, /logic-complete/],
-  "df-requirements": [/requirements/, /requirement_confirmation/, /dev_flow_record_artifact/],
-  "df-grillme": [/grill me/, /requirements/, /每轮只问一个阻塞问题/, /禁止调用任何 MCP mutation/],
-  "df-coverage-review": [/coverage/],
-  "df-rollback-safety": [/rollback/],
-  "df-task": [/does not integrate OpenSpec/, /dev_flow_next/],
-  "df-status": [/dev_flow_status/, /dev_flow_next/],
-  "df-doctor": [/dev_flow_doctor/],
-  "df-plan": [/dev_flow_next/],
-  "df-risk-review": [/dev_flow_record_step|risk-card/],
+  "plan-review": [/plan_review/, /reviewType: "plan"/],
+  "code-review": [/code_review/, /reviewType: "code"/],
+  implement: [/implementation/],
+  verify: [/verification/, /dev_flow_verify/],
+  "feature-check": [/feature-check/, /dev_flow_feature_check/],
+  finish: [/finalize/, /dev_flow_finalize/, /logic-complete/],
+  requirements: [/requirements/, /requirement_confirmation/, /dev_flow_record_artifact/],
+  grillme: [/grill me/, /requirements/, /每轮只问一个阻塞问题/, /禁止调用任何 MCP mutation/],
+  "coverage-review": [/coverage/],
+  "rollback-safety": [/rollback/],
+  task: [/does not integrate OpenSpec/, /dev_flow_next/],
+  status: [/dev_flow_status/, /dev_flow_next/],
+  doctor: [/dev_flow_doctor/],
+  plan: [/dev_flow_next/],
+  "risk-review": [/dev_flow_record_step|risk-card/],
 };
 
-test("all shared skills use df-* ids with MCP-only contract and legacy alias hit surface", async () => {
+test("skills use short ids under plugin namespace with legacy alias hit surface", async () => {
   const names = (await readdir(skillsRoot)).filter((n) => !n.startsWith(".")).sort();
   assert.deepEqual(names, Object.keys(SKILL_ALIASES).sort());
 
   for (const name of names) {
     const content = await readFile(path.join(skillsRoot, name, "SKILL.md"), "utf8");
-    const legacy = SKILL_ALIASES[name];
+    const aliases = SKILL_ALIASES[name];
 
     assert.match(content, new RegExp(`^---\\nname: ${name}\\n`), `${name} frontmatter name must match directory`);
     assert.match(content, /Dev Flow MCP/, `${name} must keep Dev Flow MCP authority`);
     assert.match(content, /[\u4e00-\u9fff]/, `${name} should be Chinese-localized`);
-    // Host skill matching: keep both new id and old id in description for migration / habit.
-    assert.match(content, new RegExp(name), `${name} description/body must mention canonical id`);
-    assert.match(content, new RegExp(legacy), `${name} must keep legacy alias ${legacy} for matching`);
+    assert.match(content, new RegExp(`\\b${name}\\b|${name}、|${name}。|${name}$`), `${name} must appear for matching`);
+
+    for (const alias of aliases) {
+      assert.match(content, new RegExp(alias), `${name} must keep alias ${alias}`);
+    }
 
     for (const token of ROUTE_HIT_TOKENS[name] ?? []) {
       assert.match(content, token, `${name} missing route-hit token ${token}`);
     }
   }
 
-  const requirements = await readFile(path.join(skillsRoot, "df-requirements", "SKILL.md"), "utf8");
-  const grillme = await readFile(path.join(skillsRoot, "df-grillme", "SKILL.md"), "utf8");
+  const requirements = await readFile(path.join(skillsRoot, "requirements", "SKILL.md"), "utf8");
+  const grillme = await readFile(path.join(skillsRoot, "grillme", "SKILL.md"), "utf8");
   assert.match(requirements, /missing-or-unclear/);
   assert.match(requirements, /documented-unconfirmed/);
-  assert.match(requirements, /df-grillme/);
-  assert.match(grillme, /df-requirements/);
+  assert.match(requirements, /`grillme`/);
+  assert.match(grillme, /`requirements`/);
 });

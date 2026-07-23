@@ -1,4 +1,4 @@
-/* dev-flow 1.1.0; built from source, deterministic build */
+/* dev-flow 1.2.0; built from source, deterministic build */
 var __defProp = Object.defineProperty;
 var __getOwnPropNames = Object.getOwnPropertyNames;
 var __esm = (fn, res) => function __init() {
@@ -415,7 +415,7 @@ async function startFeature(root2, input) {
     if (lifecycle === "active" && active) throw new DevFlowError("ACTIVE_FEATURE_CONFLICT", "an active feature already exists");
     const { classification, route } = selectRoute(input);
     await mkdir(path2.join(features(root2), id), { recursive: true });
-    const state = { schemaVersion: 1, featureId: id, revision: 0, lifecycle, route, classification, scope: input.scope ?? { inScope: [], outOfScope: [] }, steps: {}, humanGates: {}, artifacts: {}, verification: { attempts: [] }, featureCheck: {}, blockingFindings: [], logicComplete: false, lastUpdatedBy: { host: input.host, pluginVersion: "1.1.0" } };
+    const state = { schemaVersion: 1, featureId: id, revision: 0, lifecycle, route, classification, scope: input.scope ?? { inScope: [], outOfScope: [] }, steps: {}, humanGates: {}, artifacts: {}, verification: { attempts: [] }, featureCheck: {}, blockingFindings: [], logicComplete: false, lastUpdatedBy: { host: input.host, pluginVersion: "1.2.0" } };
     await writeAtomic(statePath(root2, id), state);
     await appendEvent(root2, id, 0, "started", { lifecycle, route });
     if (lifecycle === "active") await writeAtomic(activePath(root2), { featureId: id, revision: 0, updatedAt: (/* @__PURE__ */ new Date()).toISOString() });
@@ -785,7 +785,7 @@ async function runVerification(root2, id, expectedRevision, host, commandIds) {
       state.businessFingerprint = fingerprint;
       state.steps.verification = { status: "satisfied", evidence: { attemptId: attempt.id, commandIds: attempt.commandIds, kinds: attempt.kinds, fingerprint } };
     }
-    state.lastUpdatedBy = { host, pluginVersion: "1.1.0" };
+    state.lastUpdatedBy = { host, pluginVersion: "1.2.0" };
   });
 }
 async function invalidateStaleVerification(root2, id, expectedRevision) {
@@ -909,7 +909,7 @@ async function confirmGate(root2, id, expectedRevision, gate, userReply, provena
     if (basisHash !== current.basisHash) throw new DevFlowError("HUMAN_GATE_BASIS_CHANGED", gate);
     state.humanGates[gate] = { ...current, status: "confirmed", confirmation: { userReply, ...provenance, host, confirmedAt: (/* @__PURE__ */ new Date()).toISOString() } };
     state.steps[gate] = { status: "satisfied" };
-    state.lastUpdatedBy = { host, pluginVersion: "1.1.0" };
+    state.lastUpdatedBy = { host, pluginVersion: "1.2.0" };
   });
 }
 
@@ -1188,7 +1188,7 @@ async function call(name, a) {
     case "dev_flow_abandon":
       return abandonFeature(root, a.featureId, a.expectedRevision, a.reason, a.userEvidence);
     case "dev_flow_doctor":
-      return collectDoctorReport(root, pluginRoot, "1.1.0", tools);
+      return collectDoctorReport(root, pluginRoot, "1.2.0", tools);
     default:
       throw new DevFlowError("UNKNOWN_TOOL", name);
   }
@@ -1201,7 +1201,7 @@ for await (const line of readline.createInterface({ input: process.stdin, crlfDe
     if (message.method === "initialize") {
       protocolResult(message.id, {
         protocolVersion: message.params?.protocolVersion || "2024-11-05",
-        serverInfo: { name: "dev-flow", version: "1.1.0" },
+        serverInfo: { name: "dev-flow", version: "1.2.0" },
         capabilities: { tools: {} },
         instructions: "Classify before starting. Call dev_flow_next and execute exactly one returned action. Stop after presenting a HUMAN GATE. Use dev_flow_init_project before start."
       });

@@ -1,6 +1,6 @@
 {
   "name": "dev-flow",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "description": "Risk-aware multi-route development orchestration for Claude Code and Codex CLI.",
   "author": {
     "name": "wxy-hh",

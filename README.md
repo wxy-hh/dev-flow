@@ -182,7 +182,7 @@ claude plugin list
 #### 4. 开始第一个任务
 
 ```text
-用 df-task（或：用 Dev Flow 开始任务）：
+用 /dev-flow:task（或：用 Dev Flow 开始任务）：
 功能是 ……；请先 classify 再 start。
 ```
 
@@ -197,10 +197,10 @@ claude plugin list
 
 | 目的 | 怎么说 / 用什么 |
 |------|------------------|
-| 看状态 | `df-status` /「Dev Flow 状态」 |
-| 诊断 | `dev_flow_doctor` / `df-doctor` |
-| 收尾 | `df-finish` |
-| 需求拷问 | 标准 M/L 自动进 `df-grillme`，或显式说 grillme / 拷问 |
+| 看状态 | `/dev-flow:status` /「Dev Flow 状态」 |
+| 诊断 | `dev_flow_doctor` / `/dev-flow:doctor` |
+| 收尾 | `/dev-flow:finish` |
+| 需求拷问 | 标准 M/L 自动进 `/dev-flow:grillme`，或显式说 grillme / 拷问 |
 
 ### 安装后常见问题
 
@@ -238,11 +238,11 @@ HOST_E2E=1 npm run test:host-e2e
 1. 按上文完成 **插件安装**（user 或 project）。  
 2. 在业务仓调用 **`dev_flow_init_project`** → 得到 `.dev-flow/project.json`。  
 3. **`dev_flow_doctor`** 确认健康。  
-4. **`df-task`** 分类并 `start`。  
+4. **`/dev-flow:task`** 分类并 `start`。  
 5. 始终跟随 **`dev_flow_next`**；HUMAN GATE 停等用户原话。  
 6. feature-check（若需要）→ finalize；logic-complete 后才 Git 写。
 
-需求确认不等于需求拷问：标准 M/L 的 `missing-or-unclear` 与 `documented-unconfirmed` 会在 `requirements` 步骤内先进入 `df-grillme`；只有 `grill_status: complete` 且 requirements 已登记，才能展示需求确认门禁。`provided-confirmed` 默认不自动拷问，但可显式调用 `df-grillme`。
+需求确认不等于需求拷问：标准 M/L 的 `missing-or-unclear` 与 `documented-unconfirmed` 会在 `requirements` 步骤内先进入 `grillme`；只有 `grill_status: complete` 且 requirements 已登记，才能展示需求确认门禁。`provided-confirmed` 默认不自动拷问，但可显式调用 `/dev-flow:grillme`。
 
 项目侧状态（示意）：
 
@@ -285,27 +285,28 @@ HOST_E2E=1 npm run test:host-e2e
 
 ## 入口与 Skills
 
-技能 id 使用短前缀 **`df-*`**（插件名已是 `dev-flow`，不再重复）。各技能 description 仍保留旧名 `dev-flow-*` 作为匹配兼容，习惯旧叫法也能命中。
+技能 id 为**短名**（无 `dev-flow-` / `df-` 前缀）。Claude 斜杠形式为 **`/dev-flow:<skill>`**，例如 `/dev-flow:task`。  
+description 仍保留 `df-*`、`dev-flow-*` 旧名作匹配兼容。
 
-| 用途 | Skill（两端共用名） | 旧名兼容 | 主要 next 动作 / 场景 |
-|------|---------------------|----------|----------------------|
-| 开任务 / 分类 | `df-task` | `dev-flow-task` | classify + `dev_flow_start` |
-| 状态 / 接力 | `df-status` | `dev-flow-status` | 只读 status / next |
-| 诊断 | `df-doctor` | `dev-flow-doctor` | `dev_flow_doctor` |
-| 需求采集与登记 | `df-requirements` | `dev-flow-requirements` | `requirements` / `requirement_confirmation` |
-| 需求/方案逐题拷问 | `df-grillme` | `dev-flow-grillme` | requirements 内 grill 子流程 |
-| 风险审查 | `df-risk-review` | `dev-flow-risk-review` | risk 相关 step |
-| 写计划 | `df-plan` | `dev-flow-plan` | plan 相关 step |
-| 覆盖审查 | `df-coverage-review` | `dev-flow-coverage-review` | coverage |
-| 回撤安全 | `df-rollback-safety` | `dev-flow-rollback-safety` | rollback / safety |
-| 计划审查 | `df-plan-review` | `dev-flow-plan-review` | `plan_review` |
-| 实现 | `df-implement` | `dev-flow-implement` | `implementation` |
-| 代码审查 | `df-code-review` | `dev-flow-code-review` | `code_review` |
-| 验证 | `df-verify` | `dev-flow-verify` | `verification` |
-| 完备检查 | `df-feature-check` | `dev-flow-feature-check` | `feature-check` |
-| 收尾 | `df-finish` | `dev-flow-finish` | `finalize` |
+| 用途 | Skill id | 斜杠 | 旧名兼容 | 主要 next 动作 / 场景 |
+|------|----------|------|----------|----------------------|
+| 开任务 / 分类 | `task` | `/dev-flow:task` | `df-task`、`dev-flow-task` | classify + `dev_flow_start` |
+| 状态 / 接力 | `status` | `/dev-flow:status` | `df-status`、`dev-flow-status` | 只读 status / next |
+| 诊断 | `doctor` | `/dev-flow:doctor` | `df-doctor`、`dev-flow-doctor` | `dev_flow_doctor` |
+| 需求采集与登记 | `requirements` | `/dev-flow:requirements` | `df-requirements`、`dev-flow-requirements` | `requirements` / `requirement_confirmation` |
+| 需求/方案逐题拷问 | `grillme` | `/dev-flow:grillme` | `df-grillme`、`dev-flow-grillme` | requirements 内 grill 子流程 |
+| 风险审查 | `risk-review` | `/dev-flow:risk-review` | `df-risk-review`、`dev-flow-risk-review` | risk 相关 step |
+| 写计划 | `plan` | `/dev-flow:plan` | `df-plan`、`dev-flow-plan` | plan 相关 step |
+| 覆盖审查 | `coverage-review` | `/dev-flow:coverage-review` | `df-coverage-review`… | coverage |
+| 回撤安全 | `rollback-safety` | `/dev-flow:rollback-safety` | `df-rollback-safety`… | rollback / safety |
+| 计划审查 | `plan-review` | `/dev-flow:plan-review` | `df-plan-review`… | `plan_review` |
+| 实现 | `implement` | `/dev-flow:implement` | `df-implement`… | `implementation` |
+| 代码审查 | `code-review` | `/dev-flow:code-review` | `df-code-review`… | `code_review` |
+| 验证 | `verify` | `/dev-flow:verify` | `df-verify`… | `verification` |
+| 完备检查 | `feature-check` | `/dev-flow:feature-check` | `df-feature-check`… | `feature-check` |
+| 收尾 | `finish` | `/dev-flow:finish` | `df-finish`… | `finalize` |
 
-`df-requirements` 是需求链唯一编排者与 MCP 写入者；`df-grillme` 只做逐题压测（可写 `requirements.md` 的 Decision Log / Open Questions / `grill_status`，**禁止** mutation/gate）。触发词含 grillme、拷问、压测方案等。
+`requirements` 是需求链唯一编排者与 MCP 写入者；`grillme` 只做逐题压测（可写 `requirements.md` 的 Decision Log / Open Questions / `grill_status`，**禁止** mutation/gate）。触发词含 grillme、拷问、压测方案等。
 
 **工作流命中不依赖技能长名**：状态机只认 MCP（`dev_flow_next` 返回的 step / tool）。技能 description 同时写明对应 step（如 `plan_review`、`code_review`、`implementation`），保证模型按 next 动作选对技能。
 

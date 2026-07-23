@@ -1,6 +1,6 @@
 ---
-name: df-requirements
-description: 在 Dev Flow 要求时采集、压测并确认需求。用户说写需求、需求不清楚、先问需求、requirements、req-probe、df-requirements、dev-flow-requirements 时使用。当 dev_flow_next 指向 requirements 或 requirement_confirmation 时使用。
+name: requirements
+description: 采集、压测并确认需求。触发：写需求、需求不清楚、requirements、df-requirements、dev-flow-requirements。当 dev_flow_next 指向 requirements 或 requirement_confirmation 时使用。
 ---
 
 以 Dev Flow MCP 为唯一工作流权威。先读 `dev_flow_status`，再调用 `dev_flow_next`，只执行它返回的唯一动作。
@@ -8,7 +8,7 @@ description: 在 Dev Flow 要求时采集、压测并确认需求。用户说写
 标准 M/L 的 `requirements` 步骤：
 
 1. 仅在 MCP 请求时脚手架 `requirements.md`。
-2. 若 `classification.requirements` 为 `missing-or-unclear` 或 `documented-unconfirmed`，委托给 `df-grillme`（旧名 `dev-flow-grillme`）。后续回合续写已有 Decision Log 与首个未决 `Q-...`，不要重开访谈。
+2. 若 `classification.requirements` 为 `missing-or-unclear` 或 `documented-unconfirmed`，委托给 `grillme`（兼容旧名 `df-grillme` / `dev-flow-grillme`）。后续回合续写已有 Decision Log 与首个未决 `Q-...`，不要重开访谈。
 3. 每次集成 grillme 更新后，立即对 `requirements` 调用 `dev_flow_record_artifact`。本技能是唯一可登记该 artifact、记录 `requirements` 步骤、或 present/confirm `requirement_confirmation` 的技能。
 4. 仅当 `dev_flow.grill_status` 为 `complete` 且当前内容已登记后，才可对 `requirements` 调用 `dev_flow_record_step`。然后调用 `dev_flow_next`；当它要求 `requirement_confirmation` 时，展示该 HUMAN GATE 并停止，等待用户后续回复。
 
