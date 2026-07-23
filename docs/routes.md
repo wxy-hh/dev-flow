@@ -17,6 +17,6 @@
 - `plan_review` 与 `code_review` 是不同步骤，证据类型不兼容，不可互替。
 - standard M/L **必须** feature-check；XS/S 与 light M **不**强制。
 - v1 **不**集成 OpenSpec；相关文件仅可当作普通需求输入。
-- **grill 子流程（1.1.0+）**：不增加独立 route step。技能 `dev-flow-grillme` 做逐题拷问；`dev-flow-requirements` 负责登记与需求确认门禁。机器字段 `grill_status`（`not_required|pending|in_progress|complete`）由 core 在 `recordStep(requirements)` / `presentGate(requirement_confirmation)` 时强制校验。详见 [architecture.md](./architecture.md)。
+- **grill 子流程（1.1.0+）**：不增加独立 route step。技能 `df-grillme` 做逐题拷问；`df-requirements` 负责登记与需求确认门禁。机器字段 `grill_status`（`not_required|pending|in_progress|complete`）由 core 在 `recordStep(requirements)` / `presentGate(requirement_confirmation)` 时强制校验。详见 [architecture.md](./architecture.md)。
 
 机器权威：`plugins/dev-flow/policy/contract.json`。本文件须与 contract 一致（由 `tests/unit/routes-doc.test.mjs` 核对）。
