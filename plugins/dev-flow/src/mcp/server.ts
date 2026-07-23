@@ -5,8 +5,11 @@ import { recordArtifact, scaffoldArtifact } from "../core/artifacts.js";
 import { DevFlowError } from "../core/errors.js";
 import { featureCheck, finalize, recordStep } from "../core/feature-check.js";
 import { confirmGate, presentGate } from "../core/human-gates.js";
-import { initProject, readState, startFeature, abandonFeature, reclassifyFeature, switchActive } from "../core/state-store.js";
+import {
+  initProject, startFeature, abandonFeature, reclassifyFeature, switchActive, recoverCorruptFeature,
+} from "../core/state-store.js";
 import { nextAction } from "../core/next.js";
+import { readStatusView } from "../core/status.js";
 import { runVerification } from "../core/verification.js";
 import { selectRoute } from "../policy/route.js";
 import { collectDoctorReport } from "./doctor.js";
@@ -19,6 +22,7 @@ const tools = [
   "dev_flow_switch_active", "dev_flow_scaffold_artifact", "dev_flow_record_artifact", "dev_flow_record_step",
   "dev_flow_present_gate", "dev_flow_confirm_gate", "dev_flow_reclassify", "dev_flow_verify",
   "dev_flow_feature_check", "dev_flow_finalize", "dev_flow_abandon", "dev_flow_doctor",
+  "dev_flow_recover_corrupt_feature",
 ];
 
 const object = (required: string[], properties: Record<string, unknown> = {}) => ({
@@ -30,6 +34,16 @@ const featureMutation = (extra: Record<string, unknown> = {}) => object(
   ["featureId", "expectedRevision"],
   { featureId: string, expectedRevision: integer, ...extra },
 );
+
+const scopeSchema = {
+  type: "object",
+  required: ["inScope", "outOfScope"],
+  additionalProperties: false,
+  properties: {
+    inScope: { type: "array", items: { type: "string" } },
+    outOfScope: { type: "array", items: { type: "string" } },
+  },
+};
 
 const toolSchemas: Record<string, { description: string; inputSchema: Record<string, unknown>; annotations?: Record<string, boolean> }> = {
   dev_flow_init_project: { description: "Create strict project configuration.", inputSchema: object(["config"], { config: { type: "object" } }) },
@@ -54,11 +68,11 @@ const toolSchemas: Record<string, { description: string; inputSchema: Record<str
       riskLabels: { type: "array" },
       featureId: string,
       activation: { enum: ["active", "paused"] },
-      scope: { type: "object" },
+      scope: scopeSchema,
       host: { enum: ["claude", "codex"] },
     }),
   },
-  dev_flow_status: { description: "Read one feature state.", inputSchema: object(["featureId"], { featureId: string }), annotations: { readOnlyHint: true } },
+  dev_flow_status: { description: "Read one feature StatusView (state + progress).", inputSchema: object(["featureId"], { featureId: string }), annotations: { readOnlyHint: true } },
   dev_flow_next: { description: "Return the unique allowed next action.", inputSchema: object(["featureId"], { featureId: string }), annotations: { readOnlyHint: true } },
   dev_flow_switch_active: { description: "Atomically hand off the single active feature.", inputSchema: object(["fromFeatureId", "toFeatureId", "reason"], { fromFeatureId: string, toFeatureId: string, reason: string }) },
   dev_flow_scaffold_artifact: { description: "Create only the current route artifact.", inputSchema: featureMutation({ kind: string }) },
@@ -75,12 +89,30 @@ const toolSchemas: Record<string, { description: string; inputSchema: Record<str
       host: { enum: ["claude", "codex"] },
     }),
   },
-  dev_flow_reclassify: { description: "Monotonically increase route strictness.", inputSchema: featureMutation({ classification: { type: "object" }, reason: string }) },
+  dev_flow_reclassify: {
+    description: "Reclassify route (stricter always; same-level standard→light with userEvidence before implementation).",
+    inputSchema: featureMutation({ classification: { type: "object" }, reason: string, userEvidence: string }),
+  },
   dev_flow_verify: { description: "Run only configured verification commands.", inputSchema: featureMutation({ commandIds: { type: "array", items: string }, host: { enum: ["claude", "codex"] } }) },
   dev_flow_feature_check: { description: "Check route completeness and fresh evidence.", inputSchema: featureMutation() },
   dev_flow_finalize: { description: "Set logic-complete after all obligations pass.", inputSchema: featureMutation() },
   dev_flow_abandon: { description: "Terminally abandon a non-finalized feature.", inputSchema: featureMutation({ reason: string, userEvidence: string }) },
   dev_flow_doctor: { description: "Diagnose plugin and project wiring.", inputSchema: object([]), annotations: { readOnlyHint: true } },
+  dev_flow_recover_corrupt_feature: {
+    description: "Backup and abandon a corrupt active feature, or resume its doctor-reported recovery journal.",
+    inputSchema: object(
+      ["featureId", "stateSha256", "action", "reason", "userEvidence", "host"],
+      {
+        featureId: string,
+        stateSha256: string,
+        activeSha256: string,
+        action: { enum: ["abandon"] },
+        reason: string,
+        userEvidence: string,
+        host: { enum: ["claude", "codex"] },
+      },
+    ),
+  },
 };
 
 /** Protocol-level JSON-RPC result (initialize, tools/list, …). */
@@ -112,7 +144,7 @@ async function call(name: string, a: any) {
     case "dev_flow_init_project": return initProject(root, a.config);
     case "dev_flow_classify": return selectRoute(a);
     case "dev_flow_start": return startFeature(root, { ...a, host: a.host ?? "codex" });
-    case "dev_flow_status": return readState(root, a.featureId);
+    case "dev_flow_status": return readStatusView(root, a.featureId);
     case "dev_flow_next": return nextAction(root, a.featureId);
     case "dev_flow_switch_active": return switchActive(root, a.fromFeatureId, a.toFeatureId, a.reason);
     case "dev_flow_scaffold_artifact": return scaffoldArtifact(root, a.featureId, a.expectedRevision, a.kind);
@@ -120,12 +152,21 @@ async function call(name: string, a: any) {
     case "dev_flow_record_step": return recordStep(root, a.featureId, a.expectedRevision, a.step, a.evidence);
     case "dev_flow_present_gate": return presentGate(root, a.featureId, a.expectedRevision, a.gate);
     case "dev_flow_confirm_gate": return confirmGate(root, a.featureId, a.expectedRevision, a.gate, a.userReply, { promptEventId: a.promptEventId, turnBoundaryEventId: a.turnBoundaryEventId }, a.host ?? "codex");
-    case "dev_flow_reclassify": return reclassifyFeature(root, a.featureId, a.expectedRevision, a.classification, a.reason);
+    case "dev_flow_reclassify": return reclassifyFeature(root, a.featureId, a.expectedRevision, a.classification, a.reason, a.userEvidence);
     case "dev_flow_verify": return runVerification(root, a.featureId, a.expectedRevision, a.host ?? "codex", a.commandIds);
     case "dev_flow_feature_check": return featureCheck(root, a.featureId, a.expectedRevision);
     case "dev_flow_finalize": return finalize(root, a.featureId, a.expectedRevision);
     case "dev_flow_abandon": return abandonFeature(root, a.featureId, a.expectedRevision, a.reason, a.userEvidence);
     case "dev_flow_doctor": return collectDoctorReport(root, pluginRoot, __DEV_FLOW_VERSION__, tools);
+    case "dev_flow_recover_corrupt_feature": return recoverCorruptFeature(root, {
+      featureId: a.featureId,
+      stateSha256: a.stateSha256,
+      activeSha256: a.activeSha256,
+      action: a.action,
+      reason: a.reason,
+      userEvidence: a.userEvidence,
+      host: a.host ?? "codex",
+    });
     default: throw new DevFlowError("UNKNOWN_TOOL", name);
   }
 }
@@ -142,7 +183,7 @@ for await (const line of readline.createInterface({ input: process.stdin, crlfDe
         protocolVersion: message.params?.protocolVersion || "2024-11-05",
         serverInfo: { name: "dev-flow", version: __DEV_FLOW_VERSION__ },
         capabilities: { tools: {} },
-        instructions: "Classify before starting. Call dev_flow_next and execute exactly one returned action. Stop after presenting a HUMAN GATE. Use dev_flow_init_project before start.",
+        instructions: "Classify before starting. Call dev_flow_next and execute exactly one returned action. Stop after presenting a HUMAN GATE. Use dev_flow_init_project before start. Prefer light routes for small clear tasks. On wait, use dev_flow_status progress.",
       });
       continue;
     }

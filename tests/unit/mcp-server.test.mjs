@@ -25,7 +25,7 @@ test("MCP server initializes, advertises the complete public interface, and maps
   assert.ok(Array.isArray(responses[1].result.tools));
   assert.equal(responses[1].result.content, undefined);
   const names = responses[1].result.tools.map((tool) => tool.name);
-  for (const name of ["dev_flow_init_project", "dev_flow_classify", "dev_flow_start", "dev_flow_next", "dev_flow_verify", "dev_flow_confirm_gate", "dev_flow_finalize"]) {
+  for (const name of ["dev_flow_init_project", "dev_flow_classify", "dev_flow_start", "dev_flow_next", "dev_flow_verify", "dev_flow_confirm_gate", "dev_flow_finalize", "dev_flow_recover_corrupt_feature", "dev_flow_status"]) {
     assert.ok(names.includes(name), `missing tool ${name}`);
   }
   // tools/call keeps CallToolResult content shape

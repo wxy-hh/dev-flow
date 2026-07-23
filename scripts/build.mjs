@@ -8,6 +8,9 @@ const packageJson = JSON.parse(
   await readFile(path.join(repositoryRoot, "package.json"), "utf8"),
 );
 const pluginRoot = path.join(repositoryRoot, "plugins", "dev-flow");
+const outputDirectory = process.env.DEV_FLOW_DIST_DIR
+  ? path.resolve(process.env.DEV_FLOW_DIST_DIR)
+  : path.join(pluginRoot, "dist");
 const version = packageJson.version;
 
 const entries = [
@@ -20,7 +23,7 @@ await Promise.all(
   entries.map(async ([name, entryPoint]) =>
     build({
       entryPoints: [entryPoint],
-      outfile: path.join(pluginRoot, "dist", `${name}.mjs`),
+      outfile: path.join(outputDirectory, `${name}.mjs`),
       bundle: true,
       platform: "node",
       target: "node20",

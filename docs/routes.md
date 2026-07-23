@@ -17,6 +17,20 @@
 - `plan_review` 与 `code_review` 是不同步骤，证据类型不兼容，不可互替。
 - standard M/L **必须** feature-check；XS/S 与 light M **不**强制。
 - v1 **不**集成 OpenSpec；相关文件仅可当作普通需求输入。
-- **grill 子流程（1.1.0+）**：不增加独立 route step。技能 `grillme`（`/dev-flow:grillme`）做逐题拷问；`requirements`（`/dev-flow:requirements`）负责登记与需求确认门禁。机器字段 `grill_status`（`not_required|pending|in_progress|complete`）由 core 在 `recordStep(requirements)` / `presentGate(requirement_confirmation)` 时强制校验。详见 [architecture.md](./architecture.md)。
+- **grill 子流程（1.1.0+）**：不增加独立 route step。技能 `grillme`（`/dev-flow:grillme`）做逐题拷问；`requirements`（`/dev-flow:requirements`）负责登记与需求确认门禁。机器字段 `grill_status`（`not_required|pending|in_progress|complete`）及可选 `grill_question_id` / `grill_response_hint` / `grill_question_limit` 由 core 校验；`dev_flow_status` 的 `progress` 用其报告等待状态。详见 [architecture.md](./architecture.md)。
+
+### 如何选 light vs standard（1.3.0+）
+
+| 信号 | 建议 |
+| --- | --- |
+| 单文件 / 纯样式文案、范围清晰 | XS 或 S |
+| 多文件但边界清晰、无契约、需求够做 | **M + light** |
+| 需求分叉多、跨模块行为、需 prioritization | M + standard + 合适 requirements 态 |
+| 截图 + 参考实现 + 明确视觉目标 | 优先 light；勿默认 missing-or-unclear standard |
+
+### reclassify（1.3.0+）
+
+- **升严**：始终允许（既有规则）。
+- **降级**：仅同 level / topology / risk 的 **standard → light**；须 `userEvidence`；implementation 未做；`implementation_approval` 既未 present 也未 confirmed；`startBusinessFingerprint` 与当前 protected roots 一致。不允许 `M → S`。指纹已变时只能走完 standard 或 abandon 重开。
 
 机器权威：`plugins/dev-flow/policy/contract.json`。本文件须与 contract 一致（由 `tests/unit/routes-doc.test.mjs` 核对）。

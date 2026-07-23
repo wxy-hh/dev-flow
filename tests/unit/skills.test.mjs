@@ -28,20 +28,20 @@ const SKILL_ALIASES = {
 };
 
 const ROUTE_HIT_TOKENS = {
-  "plan-review": [/plan_review/, /reviewType: "plan"/],
+  "plan-review": [/plan_review/, /reviewType: "plan"/, /implementation_approval/],
   "code-review": [/code_review/, /reviewType: "code"/],
-  implement: [/implementation/],
+  implement: [/implementation/, /implementation_approval/],
   verify: [/verification/, /dev_flow_verify/],
   "feature-check": [/feature-check/, /dev_flow_feature_check/],
   finish: [/finalize/, /dev_flow_finalize/, /logic-complete/],
-  requirements: [/requirements/, /requirement_confirmation/, /dev_flow_record_artifact/],
-  grillme: [/grill me/, /requirements/, /每轮只问一个阻塞问题/, /禁止调用任何 MCP mutation/],
+  requirements: [/requirements/, /requirement_confirmation/, /dev_flow_record_artifact/, /scaffold_artifact/],
+  grillme: [/grill me/, /requirements/, /每轮只问一个阻塞问题/, /禁止调用任何 MCP mutation/, /grill_question_id/, /dev_flow_record_artifact/, /Source: codebase/],
   "coverage-review": [/coverage/],
   "rollback-safety": [/rollback/],
-  task: [/does not integrate OpenSpec/, /dev_flow_next/],
-  status: [/dev_flow_status/, /dev_flow_next/],
+  task: [/does not integrate OpenSpec/, /dev_flow_next/, /execution: light/, /documented-unconfirmed/, /scaffold_artifact/],
+  status: [/dev_flow_status/, /dev_flow_next/, /progress\.wait/, /继续/],
   doctor: [/dev_flow_doctor/],
-  plan: [/dev_flow_next/],
+  plan: [/dev_flow_next/, /scaffold_artifact/],
   "risk-review": [/dev_flow_record_step|risk-card/],
 };
 

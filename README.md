@@ -244,6 +244,8 @@ HOST_E2E=1 npm run test:host-e2e
 
 需求确认不等于需求拷问：标准 M/L 的 `missing-or-unclear` 与 `documented-unconfirmed` 会在 `requirements` 步骤内先进入 `grillme`；只有 `grill_status: complete` 且 requirements 已登记，才能展示需求确认门禁。`provided-confirmed` 默认不自动拷问，但可显式调用 `/dev-flow:grillme`。
 
+**1.3.0+ 等待与恢复**：`dev_flow_status` 返回 `progress`（当前步骤、是否等人、Q-id/gate 提示），不会修改 revision；用户说「继续」时先 status，再按 wait 提示回复——合法等待不是失败。损坏的 active state 用 `dev_flow_doctor` + `dev_flow_recover_corrupt_feature`（备份 abandon）；若 pointer 本身损坏，必须使用 doctor 给出的 `activeSha256`、目标 feature 与证据续办，禁止手改 `.dev-flow`。agent 只能编辑 MCP 已登记的 artifact；控制文件仅 MCP 可写。同 level 的 `standard → light` 可在用户明确要求、无 protected-root 变更、且实现门禁从未展示时 `dev_flow_reclassify`（需 `userEvidence`）。
+
 项目侧状态（示意）：
 
 ```text

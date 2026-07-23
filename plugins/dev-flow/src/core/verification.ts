@@ -5,7 +5,7 @@ import { DevFlowError } from "./errors.js";
 import { fingerprintProtectedRoots } from "./fingerprint.js";
 import { readProjectConfig, readState } from "./state-store.js";
 import { mutate, type FeatureState } from "./state-store.js";
-import { assertCurrentStep } from "./step-order.js";
+import { assertCurrentStep, currentOpenStep } from "./step-order.js";
 import { deriveRiskRequirements } from "../policy/route.js";
 import { assertRequirementsGrillSatisfied } from "./requirements-grill.js";
 
@@ -24,6 +24,7 @@ export async function runVerification(root: string, id: string, expectedRevision
     throw new DevFlowError("UNKNOWN_VERIFICATION_COMMAND", "verification command is not configured");
   }
   const fingerprint = await fingerprintProtectedRoots(root, config.protectedRoots);
+  const replacingStaleVerification = Boolean(initial.verification.verifiedFingerprint && initial.verification.verifiedFingerprint !== fingerprint);
   const startedAt = new Date().toISOString(); let exitCode = 0; const output: string[] = [];
   for (const command of selected) {
     try {
@@ -39,7 +40,9 @@ export async function runVerification(root: string, id: string, expectedRevision
   const finishedAt = new Date().toISOString();
   return mutate(root, id, expectedRevision, "verification-recorded", async (state) => {
     if (state.lifecycle !== "active") throw new DevFlowError("INVALID_LIFECYCLE", "only active features can verify");
-    assertCurrentStep(state, "verification");
+    if (currentOpenStep(state) !== "verification" && !(replacingStaleVerification && state.steps.verification?.status === "satisfied")) {
+      assertCurrentStep(state, "verification");
+    }
     await assertRequirementsGrillSatisfied(root, id, state);
     const kinds = state.classification.riskLabels.length ? deriveRiskRequirements(state.classification.riskLabels).verification : ["targeted"];
     const attempt: Attempt = { id: state.verification.attempts.length + 1, commandIds: selected.map((item) => item.id), kinds, startedAt, finishedAt, exitCode, output: output.join("\n").slice(-32_000), fingerprint, host };
@@ -54,6 +57,13 @@ export async function runVerification(root: string, id: string, expectedRevision
     }
     state.lastUpdatedBy = { host, pluginVersion: __DEV_FLOW_VERSION__ };
   });
+}
+
+/** Read-only freshness check used by status/next; callers must not mutate state. */
+export async function verificationIsStale(root: string, state: FeatureState): Promise<boolean> {
+  if (!state.verification.verifiedFingerprint) return false;
+  const config = await readProjectConfig(root);
+  return state.verification.verifiedFingerprint !== await fingerprintProtectedRoots(root, config.protectedRoots);
 }
 
 /** Invalidates downstream claims when protected business files changed after a successful verification. */
