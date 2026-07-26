@@ -53,6 +53,9 @@ Dev Flow 以**一个预构建插件包**同时服务 Claude Code 与 Codex CLI�
 - `dev_flow_doctor` 只读：报告项目配置、active 有效性、corrupt feature digest、manifest、bundle、hook/MCP JSON 接线与可用性。
 - **1.3.0+ hooks**：仅允许编辑 active feature 已登记的非 status Markdown artifact；控制文件始终拒绝；Bash 按解析出的写目标判定，不扫描 heredoc 正文；active state 损坏时 fail closed。
 - **1.3.0+ status**：`dev_flow_status` 返回 `StatusView = state + progress`（不改 state schema）。
+- **1.4.0+ evidence policy**：统一派生逐步 RequiredEvidence；recordStep 首检、feature-check 回读二检；`full-code-review` 转换为 reviewDepth。
+- **1.4.0+ status**：progress 增加当前 requiredEvidence 与 verificationFreshness；均为只读投影，FeatureState schemaVersion 仍为 1。
+- **1.4.0+ manual acceptance**：只扩展 verification attempts/step evidence 的内部形状；是否声明 UI 验收由 Skills 判断，Core 不新增关键词 gate。
 - **1.3.0+ recovery**：`dev_flow_recover_corrupt_feature` 将损坏 feature 目录备份到 `.dev-flow/recovered/` 并清除 active，不重建业务流程。
 
 发布包自包含 `dist/mcp-server.mjs`、`dist/claude-hook.mjs`、`dist/codex-hook.mjs`，用户安装后无需 `npm install`。

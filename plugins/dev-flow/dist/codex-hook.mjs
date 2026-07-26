@@ -1,4 +1,4 @@
-/* dev-flow 1.3.0; built from source, deterministic build */
+/* dev-flow 1.4.0; built from source, deterministic build */
 
 // plugins/dev-flow/src/hosts/codex-adapter.ts
 import { lstat } from "node:fs/promises";
@@ -76,6 +76,7 @@ var contract = contract_default;
 if (contract.schemaVersion !== 1) {
   throw new Error(`unsupported contract schema ${String(contract.schemaVersion)}`);
 }
+var allowedRiskLabels = Object.freeze(Object.keys(contract.riskEnhancements));
 function routeDefinition(route) {
   return contract.routes[route];
 }

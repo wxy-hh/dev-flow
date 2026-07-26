@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -10,6 +10,7 @@ const artifacts = await loadSource("plugins/dev-flow/src/core/artifacts.ts");
 const status = await loadSource("plugins/dev-flow/src/core/status.ts");
 const checks = await loadSource("plugins/dev-flow/src/core/feature-check.ts");
 const gates = await loadSource("plugins/dev-flow/src/core/human-gates.ts");
+const verification = await loadSource("plugins/dev-flow/src/core/verification.ts");
 const config = {
   schemaVersion: 1,
   verification: { commands: [{ id: "unit", command: "node", args: ["-e", "process.exit(0)"], cwd: "." }], behaviorCommands: [] },
@@ -71,6 +72,8 @@ test("status progress reports human gates", async () => {
     const view = await status.readStatusView(root, "f");
     assert.equal(view.progress.wait.kind, "human-gate");
     assert.equal(view.progress.wait.gate, "requirement_confirmation");
+    assert.match(view.progress.wait.replyHint, /LGTM/);
+    assert.equal(view.progress.wait.replyHint.includes("lgtm"), false);
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 
@@ -87,11 +90,44 @@ test("status and next report stale verification without changing revision", asyn
     raw.verification = { attempts: [], verifiedFingerprint: "obsolete", satisfiedByAttemptId: 1 };
     raw.businessFingerprint = "obsolete";
     await writeFile(file, `${JSON.stringify(raw, null, 2)}\n`);
+    const eventsFile = path.join(root, ".dev-flow", "features", "f", "events.jsonl");
+    const eventsSize = (await stat(eventsFile)).size;
     const view = await status.readStatusView(root, "f");
     assert.equal(view.revision, state.revision);
-    assert.deepEqual(view.progress.nextAction, { kind: "run-step", step: "verification" });
+    assert.equal((await stat(eventsFile)).size, eventsSize);
+    assert.deepEqual(view.progress.nextAction, {
+      kind: "run-step",
+      step: "verification",
+      requiredEvidence: { fields: {}, checks: [], verificationKinds: ["targeted"] },
+    });
+    assert.equal(view.progress.requiredEvidence.verificationKinds[0], "targeted");
+    assert.equal(view.progress.verificationFreshness.status, "stale");
+    assert.equal(view.progress.verificationFreshness.reasonCode, "VERIFICATION_STALE");
+    assert.equal(view.progress.verificationFreshness.recoveryHint, "Protected files changed; rerun verification before feature-check or finalize");
     assert.equal(view.progress.currentStep, "verification");
     assert.ok(view.progress.remainingSteps.includes("verification"));
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test("status reports missing and fresh verification without mutation", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "dev-flow-status-freshness-"));
+  try {
+    await store.initProject(root, config);
+    await mkdir(path.join(root, "src"));
+    await writeFile(path.join(root, "src", "app.js"), "export const value = 1;\n");
+    let state = await store.startFeature(root, { featureId: "f", host: "codex", level: "XS", topology: "local" });
+    const missing = await status.readStatusView(root, "f");
+    assert.equal(missing.progress.verificationFreshness.status, "missing");
+    state = await checks.recordStep(root, "f", state.revision, "locate", {});
+    state = await checks.recordStep(root, "f", state.revision, "implementation", {});
+    state = await verification.runVerification(root, "f", state.revision, "codex");
+    const eventsFile = path.join(root, ".dev-flow", "features", "f", "events.jsonl");
+    const revision = state.revision;
+    const eventsSize = (await stat(eventsFile)).size;
+    const fresh = await status.readStatusView(root, "f");
+    assert.equal(fresh.revision, revision);
+    assert.equal((await stat(eventsFile)).size, eventsSize);
+    assert.equal(fresh.progress.verificationFreshness.status, "fresh");
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 

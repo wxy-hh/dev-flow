@@ -226,7 +226,7 @@ v1 经 release-smoke 验证的最低组合：
 本机真机安装与跨宿主接力（可选）：
 
 ```bash
-HOST_E2E=1 npm run test:host-e2e
+npm run test:host-e2e
 ```
 
 日常 `npm test` 会跳过该层，仍覆盖全路线、资产、门禁与 adapter。
@@ -239,12 +239,13 @@ HOST_E2E=1 npm run test:host-e2e
 2. 在业务仓调用 **`dev_flow_init_project`** → 得到 `.dev-flow/project.json`。  
 3. **`dev_flow_doctor`** 确认健康。  
 4. **`/dev-flow:task`** 分类并 `start`。  
-5. 始终跟随 **`dev_flow_next`**；HUMAN GATE 停等用户原话。  
+5. 始终跟随 **`dev_flow_next`**；HUMAN GATE present 成功后停等用户下一条消息，并使用 status 给出的整句批准词。
 6. feature-check（若需要）→ finalize；logic-complete 后才 Git 写。
 
 需求确认不等于需求拷问：标准 M/L 的 `missing-or-unclear` 与 `documented-unconfirmed` 会在 `requirements` 步骤内先进入 `grillme`；只有 `grill_status: complete` 且 requirements 已登记，才能展示需求确认门禁。`provided-confirmed` 默认不自动拷问，但可显式调用 `/dev-flow:grillme`。
 
 **1.3.0+ 等待与恢复**：`dev_flow_status` 返回 `progress`（当前步骤、是否等人、Q-id/gate 提示），不会修改 revision；用户说「继续」时先 status，再按 wait 提示回复——合法等待不是失败。损坏的 active state 用 `dev_flow_doctor` + `dev_flow_recover_corrupt_feature`（备份 abandon）；若 pointer 本身损坏，必须使用 doctor 给出的 `activeSha256`、目标 feature 与证据续办，禁止手改 `.dev-flow`。agent 只能编辑 MCP 已登记的 artifact；控制文件仅 MCP 可写。同 level 的 `standard → light` 可在用户明确要求、无 protected-root 变更、且实现门禁从未展示时 `dev_flow_reclassify`（需 `userEvidence`）。
+**1.4.0+ 可发现证据**：classify/start 的 `riskLabels` schema 直接列出合同标签；classify 返回派生 checks/kinds；next/status 在当前动作上给出 `requiredEvidence`，status 同时报告 verification 的 missing/fresh/stale。风险 checks 在 risk-minimal、light-L、standard-M/L 中一致强制。明确人工/UI 验收在 verification 阶段完成：可保存浏览器证据，缺少浏览器时允许用户按场景书面签收，但不得冒充 browser pass。
 
 项目侧状态（示意）：
 
@@ -274,8 +275,9 @@ HOST_E2E=1 npm run test:host-e2e
 | **light L** | L + light | 边界卡 → 回撤/安全 → **实现批准** → 实现 → 代码审查 → 验证 | boundary、rollback-safety、verification | **是** |
 | **standard L** | L + standard + 需求状态 | 与标准 M 同骨架，含强制 grill 子流程，证据/独立资产更全 | 需求/计划/覆盖/回撤/计划审查/代码审查/验证 | **是** |
 
-分类输入要点：
+分类顺序固定为 topology → 具体风险后果 → light/standard 未决策程度 → standard requirements。范围、接口、回滚和验收均已锁定时优先 light；multi-chain 仍为 L，但可使用 light-L。风险标签以 [`policy/contract.json`](plugins/dev-flow/policy/contract.json) 和 `dev_flow_classify` / `dev_flow_start` 的 MCP schema 为唯一权威；禁止堆叠“相关”标签或发明领域标签。
 
+分类输入要点：
 - XS/S：**不要**传 `execution`  
 - M/L：**必须** `execution: light | standard`  
 - standard M/L：**必须** `requirements`：`missing-or-unclear` / `documented-unconfirmed` / `provided-confirmed`  
@@ -321,7 +323,7 @@ description 仍保留 `df-*`、`dev-flow-*` 旧名作匹配兼容。
 ```bash
 npm ci
 npm test                 # typecheck + 单测 + 路线 E2E + dist/版本检查
-HOST_E2E=1 npm run test:host-e2e   # 真机 marketplace（需本机 claude/codex）
+npm run test:host-e2e   # 真机 marketplace（需本机 claude/codex）
 ```
 
 插件运行时为零 npm 依赖；`dist/*.mjs` 随包发布。

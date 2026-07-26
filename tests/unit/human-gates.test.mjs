@@ -23,9 +23,24 @@ test("human confirmation is explicit, later, and tied to the artifact basis", as
     state = await (await loadSource("plugins/dev-flow/src/core/feature-check.ts")).recordStep(root, "f", state.revision, "requirements", {});
     state = await gates.presentGate(root, "f", state.revision, "requirement_confirmation");
     await assert.rejects(() => gates.confirmGate(root, "f", state.revision, "requirement_confirmation", "", { promptEventId: "p1" }, "claude"), /HUMAN_GATE_REPLY_REQUIRED/);
+    for (const rejected of [
+      "不批准",
+      "先等等",
+      "确认需求，可以继续",
+      "批准实现，但先别改",
+      "这是普通问题",
+      "批准实现",
+    ]) {
+      await assert.rejects(
+        () => gates.confirmGate(root, "f", state.revision, "requirement_confirmation", rejected, { promptEventId: "p1" }, "claude"),
+        (error) => error.code === "HUMAN_GATE_APPROVAL_NOT_EXPLICIT"
+          && error.details.allowed.includes("LGTM"),
+      );
+      assert.equal((await store.readState(root, "f")).revision, state.revision);
+    }
     await assert.rejects(() => gates.confirmGate(root, "f", state.revision, "requirement_confirmation", "approved", {}, "claude"), /HUMAN_GATE_PROVENANCE_UNAVAILABLE/);
-    await store.recordHostEvent(root, { eventId: "p1", type: "user-prompt", host: "claude", text: "approved" });
-    state = await gates.confirmGate(root, "f", state.revision, "requirement_confirmation", "approved", { promptEventId: "p1" }, "claude");
+    await store.recordHostEvent(root, { eventId: "p1", type: "user-prompt", host: "claude", text: "lgtm" });
+    state = await gates.confirmGate(root, "f", state.revision, "requirement_confirmation", "lgtm", { promptEventId: "p1" }, "claude");
     assert.equal(state.steps.requirement_confirmation.status, "satisfied");
   } finally { await rm(root, { recursive: true, force: true }); }
 });

@@ -13,7 +13,7 @@ description: 一问一答压测需求/方案/计划。触发：grillme、grill m
 
 ### 合法写盘顺序
 
-**先确保 requirements 已由 MCP scaffold 并登记**。禁止抢先 Write 未登记路径。
+**先确保 requirements 已由 `dev_flow_scaffold_artifact` scaffold 并登记，再 Read 已登记路径**。随后编辑并交回 `requirements` 调用 `dev_flow_record_artifact`；禁止抢先 Write 未登记路径。
 每轮固定顺序：
 
 ```text

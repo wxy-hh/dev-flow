@@ -1,4 +1,5 @@
-import type { Classification, ClassificationInput, Level, RiskLabel, Topology } from "./types.js";
+import { allowedRiskLabels } from "./contract.js";
+import type { Classification, ClassificationInput, Level, Topology } from "./types.js";
 
 export class PolicyError extends Error {
   constructor(
@@ -12,15 +13,6 @@ export class PolicyError extends Error {
 
 const levels: Level[] = ["XS", "S", "M", "L"];
 const topologies: Topology[] = ["local", "shared-contract", "multi-chain", "coordinated-rollback"];
-const risks: RiskLabel[] = [
-  "security",
-  "data",
-  "money",
-  "external",
-  "availability",
-  "critical_correctness",
-  "irreversible_consequence",
-];
 
 export function normalizeClassification(input: ClassificationInput): Classification {
   if (!levels.includes(input.level)) throw new PolicyError("INVALID_LEVEL", "level is invalid");
@@ -32,8 +24,11 @@ export function normalizeClassification(input: ClassificationInput): Classificat
     throw new PolicyError("INVALID_REQUIREMENTS_STATE", "requirements state is invalid");
   }
   const riskLabels = [...new Set(input.riskLabels ?? [])];
-  if (riskLabels.some((label) => !risks.includes(label))) {
-    throw new PolicyError("INVALID_RISK_LABEL", "risk label is invalid");
+  if (riskLabels.some((label) => !allowedRiskLabels.includes(label))) {
+    throw new PolicyError("INVALID_RISK_LABEL", "risk label is invalid", {
+      allowed: allowedRiskLabels,
+      recoveryHint: "Choose only contract-defined risk labels; do not invent domain labels",
+    });
   }
   return { ...input, riskLabels };
 }

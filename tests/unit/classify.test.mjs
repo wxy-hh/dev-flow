@@ -3,6 +3,7 @@ import test from "node:test";
 import { loadSource } from "../helpers/load-source.mjs";
 
 const { selectRoute, deriveRiskRequirements } = await loadSource("plugins/dev-flow/src/policy/route.ts");
+const { allowedRiskLabels } = await loadSource("plugins/dev-flow/src/policy/contract.ts");
 
 test("classifies each required route", () => {
   assert.equal(selectRoute({ level: "XS", topology: "local" }).route, "xs");
@@ -30,4 +31,13 @@ test("risk enhancements are contract-derived, unioned, and never add plan-review
   assert.deepEqual(requirements.checks, ["full-code-review", "rollback", "security"]);
   assert.deepEqual(requirements.verification, ["behavior", "full"]);
   assert.equal(requirements.checks.includes("plan-review"), false);
+});
+
+test("invalid risk labels report the contract-derived allowed set", () => {
+  assert.throws(
+    () => selectRoute({ level: "XS", topology: "local", riskLabels: ["product-ux"] }),
+    (error) => error.code === "INVALID_RISK_LABEL"
+      && error.details.recoveryHint === "Choose only contract-defined risk labels; do not invent domain labels"
+      && assert.deepEqual(error.details.allowed, allowedRiskLabels) === undefined,
+  );
 });

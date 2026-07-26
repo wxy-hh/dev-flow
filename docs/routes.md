@@ -12,6 +12,19 @@
 | light L | boundary → rollback safety → approval → implement → code review → verify | boundary card、rollback safety、verification | 是 |
 | standard L | requirements（同 standard M 的强制 grill 子流程）→ requirement gate → plan → coverage → rollback → plan review → approval → implement → code review → verify | requirements、plan、coverage、rollback units、plan review、code review、verification | 是 |
 
+## 风险 evidence 与可发现性（1.4.0+）
+
+- risk 标签来自 `policy/contract.json`；MCP schema、非法标签提示和 classify 的 riskRequirements 共用该事实源。
+- `security` 在有 `risk_controls` 的路线落到该步，否则落到 `code_review.checks`。
+- `rollback` / `full-rollback` 优先落到 `risk_controls`，否则落到 `rollback_safety` 或 `rollback_unit`。
+- `full-code-review` 永不写入 `evidence.checks`，只转换为 `code_review.reviewDepth: "full"`。
+- 无风险路线的 verification 基线为 `targeted`；风险路线使用派生的 behavior / integration / full。
+- `recordStep` 首次校验，feature-check 从 `state.steps.*.evidence` 二次校验；路线轻重不能绕过风险义务。
+
+HUMAN GATE 只接受 status `replyHint` 所列整句批准词；trim 后英文大小写不敏感，但不接受前缀、子串或附加说明。present 前不得邀请确认，present 后必须等待下一条用户消息。
+
+verification 命令 attempt 与人类可读 narrative 分轨：protected-root 指纹决定命令 fresh/stale；已登记的 `verification.md` 更新只重开 feature-check。需求明确要求人工/UI 验收时，verify Skill 在 finalize 前保存 browser evidence；无浏览器时可保存逐场景 user-signoff，禁止声称已执行浏览器。
+
 补充约定：
 
 - `plan_review` 与 `code_review` 是不同步骤，证据类型不兼容，不可互替。
@@ -27,6 +40,7 @@
 | 多文件但边界清晰、无契约、需求够做 | **M + light** |
 | 需求分叉多、跨模块行为、需 prioritization | M + standard + 合适 requirements 态 |
 | 截图 + 参考实现 + 明确视觉目标 | 优先 light；勿默认 missing-or-unclear standard |
+| multi-chain 且范围/接口/回滚/验收均锁定 | 保持 L，优先 light-L |
 
 ### reclassify（1.3.0+）
 

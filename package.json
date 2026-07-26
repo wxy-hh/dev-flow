@@ -1,6 +1,6 @@
 {
   "name": "dev-flow",
-  "version": "1.3.0",
+  "version": "1.4.0",
   "private": true,
   "description": "Dual-host development workflow plugin for Claude Code and Codex CLI.",
   "type": "module",
@@ -17,7 +17,7 @@
     "test:routes": "node --test tests/e2e/routes/*.test.mjs",
     "test:interop": "node --test tests/e2e/cross-host/*.test.mjs",
     "test:e2e": "node --test tests/e2e/*.test.mjs tests/e2e/routes/*.test.mjs tests/e2e/cross-host/*.test.mjs",
-    "test:host-e2e": "HOST_E2E=1 node --test tests/e2e/native-*.test.mjs",
+    "test:host-e2e": "node scripts/run-host-e2e.mjs",
     "test": "npm run version:check && npm run build && npm run typecheck && npm run test:unit && npm run test:e2e && npm run build:check"
   },
   "devDependencies": {

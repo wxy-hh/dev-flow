@@ -1,113 +1,112 @@
-/* dev-flow 1.3.0; built from source, deterministic build */
-var __defProp = Object.defineProperty;
-var __getOwnPropNames = Object.getOwnPropertyNames;
-var __esm = (fn, res) => function __init() {
-  return fn && (res = (0, fn[__getOwnPropNames(fn)[0]])(fn = 0)), res;
-};
-var __export = (target, all) => {
-  for (var name in all)
-    __defProp(target, name, { get: all[name], enumerable: true });
-};
+/* dev-flow 1.4.0; built from source, deterministic build */
+
+// plugins/dev-flow/src/mcp/server.ts
+import readline from "node:readline";
+import { fileURLToPath } from "node:url";
+import path8 from "node:path";
+
+// plugins/dev-flow/src/core/artifacts.ts
+import { createHash as createHash3 } from "node:crypto";
+import { readFile as readFile3, writeFile as writeFile2 } from "node:fs/promises";
+import path4 from "node:path";
 
 // plugins/dev-flow/policy/contract.json
-var contract_default;
-var init_contract = __esm({
-  "plugins/dev-flow/policy/contract.json"() {
-    contract_default = {
-      schemaVersion: 1,
-      routes: {
-        xs: {
-          orderedSteps: ["locate", "implementation", "verification", "finalize"],
-          requiredArtifacts: [],
-          featureCheckRequired: false
-        },
-        s: {
-          orderedSteps: ["boundary", "implementation", "verification", "self_review", "finalize"],
-          requiredArtifacts: [],
-          featureCheckRequired: false
-        },
-        "risk-minimal": {
-          orderedSteps: ["risk_review", "risk_controls", "implementation_approval", "implementation", "code_review", "verification", "feature_check", "finalize"],
-          requiredArtifacts: ["status", "risk-card"],
-          artifactSteps: { risk_review: ["risk-card"], risk_controls: ["status"] },
-          featureCheckRequired: true
-        },
-        "light-m": {
-          orderedSteps: ["boundary_plan", "implementation", "code_review", "verification", "finalize"],
-          requiredArtifacts: [],
-          featureCheckRequired: false
-        },
-        "standard-m": {
-          orderedSteps: ["requirements", "requirement_confirmation", "implementation_plan", "coverage_review", "rollback_unit", "plan_review", "implementation_approval", "implementation", "code_review", "verification", "feature_check", "finalize"],
-          requiredArtifacts: ["requirements", "implementation-plan", "status", "coverage-matrix"],
-          artifactSteps: { requirements: ["requirements"], implementation_plan: ["implementation-plan"], coverage_review: ["coverage-matrix"], implementation_approval: ["status"] },
-          featureCheckRequired: true
-        },
-        "light-l": {
-          orderedSteps: ["boundary", "rollback_safety", "implementation_approval", "implementation", "code_review", "verification", "feature_check", "finalize"],
-          requiredArtifacts: ["boundary-card", "rollback-safety", "verification"],
-          artifactSteps: { boundary: ["boundary-card"], rollback_safety: ["rollback-safety"], verification: ["verification"] },
-          featureCheckRequired: true
-        },
-        "standard-l": {
-          orderedSteps: ["requirements", "requirement_confirmation", "implementation_plan", "coverage_review", "rollback_unit", "plan_review", "implementation_approval", "implementation", "code_review", "verification", "feature_check", "finalize"],
-          requiredArtifacts: ["requirements", "implementation-plan", "coverage-matrix", "rollback-units", "plan-review", "code-review", "verification"],
-          artifactSteps: { requirements: ["requirements"], implementation_plan: ["implementation-plan"], coverage_review: ["coverage-matrix"], rollback_unit: ["rollback-units"], plan_review: ["plan-review"], code_review: ["code-review"], verification: ["verification"] },
-          featureCheckRequired: true
-        }
-      },
-      riskEnhancements: {
-        security: { checks: ["security"], verification: "behavior" },
-        data: { checks: ["rollback"], verification: "behavior" },
-        money: { checks: ["rollback"], verification: "behavior" },
-        external: { checks: [], verification: "integration" },
-        availability: { checks: [], verification: "integration" },
-        critical_correctness: { checks: ["full-code-review"], verification: "full" },
-        irreversible_consequence: { checks: ["full-rollback", "full-code-review"], verification: "full" }
-      },
-      topologyMinimumLevel: {
-        local: "XS",
-        "shared-contract": "M",
-        "multi-chain": "L",
-        "coordinated-rollback": "L"
-      },
-      topologyStrictOrder: ["local", "shared-contract", "multi-chain", "coordinated-rollback"]
-    };
-  }
-});
+var contract_default = {
+  schemaVersion: 1,
+  routes: {
+    xs: {
+      orderedSteps: ["locate", "implementation", "verification", "finalize"],
+      requiredArtifacts: [],
+      featureCheckRequired: false
+    },
+    s: {
+      orderedSteps: ["boundary", "implementation", "verification", "self_review", "finalize"],
+      requiredArtifacts: [],
+      featureCheckRequired: false
+    },
+    "risk-minimal": {
+      orderedSteps: ["risk_review", "risk_controls", "implementation_approval", "implementation", "code_review", "verification", "feature_check", "finalize"],
+      requiredArtifacts: ["status", "risk-card"],
+      artifactSteps: { risk_review: ["risk-card"], risk_controls: ["status"] },
+      featureCheckRequired: true
+    },
+    "light-m": {
+      orderedSteps: ["boundary_plan", "implementation", "code_review", "verification", "finalize"],
+      requiredArtifacts: [],
+      featureCheckRequired: false
+    },
+    "standard-m": {
+      orderedSteps: ["requirements", "requirement_confirmation", "implementation_plan", "coverage_review", "rollback_unit", "plan_review", "implementation_approval", "implementation", "code_review", "verification", "feature_check", "finalize"],
+      requiredArtifacts: ["requirements", "implementation-plan", "status", "coverage-matrix"],
+      artifactSteps: { requirements: ["requirements"], implementation_plan: ["implementation-plan"], coverage_review: ["coverage-matrix"], implementation_approval: ["status"] },
+      featureCheckRequired: true
+    },
+    "light-l": {
+      orderedSteps: ["boundary", "rollback_safety", "implementation_approval", "implementation", "code_review", "verification", "feature_check", "finalize"],
+      requiredArtifacts: ["boundary-card", "rollback-safety", "verification"],
+      artifactSteps: { boundary: ["boundary-card"], rollback_safety: ["rollback-safety"], verification: ["verification"] },
+      featureCheckRequired: true
+    },
+    "standard-l": {
+      orderedSteps: ["requirements", "requirement_confirmation", "implementation_plan", "coverage_review", "rollback_unit", "plan_review", "implementation_approval", "implementation", "code_review", "verification", "feature_check", "finalize"],
+      requiredArtifacts: ["requirements", "implementation-plan", "coverage-matrix", "rollback-units", "plan-review", "code-review", "verification"],
+      artifactSteps: { requirements: ["requirements"], implementation_plan: ["implementation-plan"], coverage_review: ["coverage-matrix"], rollback_unit: ["rollback-units"], plan_review: ["plan-review"], code_review: ["code-review"], verification: ["verification"] },
+      featureCheckRequired: true
+    }
+  },
+  riskEnhancements: {
+    security: { checks: ["security"], verification: "behavior" },
+    data: { checks: ["rollback"], verification: "behavior" },
+    money: { checks: ["rollback"], verification: "behavior" },
+    external: { checks: [], verification: "integration" },
+    availability: { checks: [], verification: "integration" },
+    critical_correctness: { checks: ["full-code-review"], verification: "full" },
+    irreversible_consequence: { checks: ["full-rollback", "full-code-review"], verification: "full" }
+  },
+  topologyMinimumLevel: {
+    local: "XS",
+    "shared-contract": "M",
+    "multi-chain": "L",
+    "coordinated-rollback": "L"
+  },
+  topologyStrictOrder: ["local", "shared-contract", "multi-chain", "coordinated-rollback"]
+};
 
 // plugins/dev-flow/src/policy/contract.ts
+var contract = contract_default;
+if (contract.schemaVersion !== 1) {
+  throw new Error(`unsupported contract schema ${String(contract.schemaVersion)}`);
+}
+var allowedRiskLabels = Object.freeze(Object.keys(contract.riskEnhancements));
 function routeDefinition(route) {
   return contract.routes[route];
 }
-var contract;
-var init_contract2 = __esm({
-  "plugins/dev-flow/src/policy/contract.ts"() {
-    "use strict";
-    init_contract();
-    contract = contract_default;
-    if (contract.schemaVersion !== 1) {
-      throw new Error(`unsupported contract schema ${String(contract.schemaVersion)}`);
-    }
-  }
-});
 
 // plugins/dev-flow/src/core/errors.ts
-var DevFlowError;
-var init_errors = __esm({
-  "plugins/dev-flow/src/core/errors.ts"() {
-    "use strict";
-    DevFlowError = class extends Error {
-      constructor(code, message, details = {}) {
-        super(`${code}: ${message}`);
-        this.code = code;
-        this.details = details;
-      }
-    };
+var DevFlowError = class extends Error {
+  constructor(code, message, details = {}) {
+    super(`${code}: ${message}`);
+    this.code = code;
+    this.details = details;
   }
-});
+};
+
+// plugins/dev-flow/src/core/state-store.ts
+import { randomUUID, createHash as createHash2 } from "node:crypto";
+import { access, mkdir, open, readFile as readFile2, rename, rm, writeFile } from "node:fs/promises";
+import { hostname } from "node:os";
+import path3 from "node:path";
 
 // plugins/dev-flow/src/policy/validation.ts
+var PolicyError = class extends Error {
+  constructor(code, message, details = {}) {
+    super(`${code}: ${message}`);
+    this.code = code;
+    this.details = details;
+  }
+};
+var levels = ["XS", "S", "M", "L"];
+var topologies = ["local", "shared-contract", "multi-chain", "coordinated-rollback"];
 function normalizeClassification(input) {
   if (!levels.includes(input.level)) throw new PolicyError("INVALID_LEVEL", "level is invalid");
   if (!topologies.includes(input.topology)) throw new PolicyError("INVALID_TOPOLOGY", "topology is invalid");
@@ -118,37 +117,17 @@ function normalizeClassification(input) {
     throw new PolicyError("INVALID_REQUIREMENTS_STATE", "requirements state is invalid");
   }
   const riskLabels = [...new Set(input.riskLabels ?? [])];
-  if (riskLabels.some((label) => !risks.includes(label))) {
-    throw new PolicyError("INVALID_RISK_LABEL", "risk label is invalid");
+  if (riskLabels.some((label) => !allowedRiskLabels.includes(label))) {
+    throw new PolicyError("INVALID_RISK_LABEL", "risk label is invalid", {
+      allowed: allowedRiskLabels,
+      recoveryHint: "Choose only contract-defined risk labels; do not invent domain labels"
+    });
   }
   return { ...input, riskLabels };
 }
-var PolicyError, levels, topologies, risks;
-var init_validation = __esm({
-  "plugins/dev-flow/src/policy/validation.ts"() {
-    "use strict";
-    PolicyError = class extends Error {
-      constructor(code, message, details = {}) {
-        super(`${code}: ${message}`);
-        this.code = code;
-        this.details = details;
-      }
-    };
-    levels = ["XS", "S", "M", "L"];
-    topologies = ["local", "shared-contract", "multi-chain", "coordinated-rollback"];
-    risks = [
-      "security",
-      "data",
-      "money",
-      "external",
-      "availability",
-      "critical_correctness",
-      "irreversible_consequence"
-    ];
-  }
-});
 
 // plugins/dev-flow/src/policy/route.ts
+var levelRank = { XS: 0, S: 1, M: 2, L: 3 };
 function minimumLevelForTopology(topology) {
   return contract.topologyMinimumLevel[topology];
 }
@@ -189,20 +168,12 @@ function deriveRiskRequirements(riskLabels) {
   }
   return { checks: [...checks].sort(), verification: [...verification].sort() };
 }
-var levelRank;
-var init_route = __esm({
-  "plugins/dev-flow/src/policy/route.ts"() {
-    "use strict";
-    init_contract2();
-    init_validation();
-    levelRank = { XS: 0, S: 1, M: 2, L: 3 };
-  }
-});
 
 // plugins/dev-flow/src/core/fingerprint.ts
 import { createHash } from "node:crypto";
 import { readdir, readFile, lstat } from "node:fs/promises";
 import path from "node:path";
+var ignored = /* @__PURE__ */ new Set([".git", ".dev-flow", "node_modules"]);
 async function collect(root2, relative, files) {
   const absolute = path.join(root2, relative);
   let entries;
@@ -234,14 +205,6 @@ async function fingerprintProtectedRoots(root2, protectedRoots) {
   }
   return digest2.digest("hex");
 }
-var ignored;
-var init_fingerprint = __esm({
-  "plugins/dev-flow/src/core/fingerprint.ts"() {
-    "use strict";
-    init_errors();
-    ignored = /* @__PURE__ */ new Set([".git", ".dev-flow", "node_modules"]);
-  }
-});
 
 // plugins/dev-flow/src/core/project-config.ts
 import path2 from "node:path";
@@ -270,38 +233,9 @@ function validateProjectConfig(value) {
     throw new DevFlowError("INVALID_PROJECT_CONFIG", "behaviorCommands must reference configured command ids");
   }
 }
-var init_project_config = __esm({
-  "plugins/dev-flow/src/core/project-config.ts"() {
-    "use strict";
-    init_errors();
-  }
-});
 
 // plugins/dev-flow/src/core/state-store.ts
-var state_store_exports = {};
-__export(state_store_exports, {
-  abandonFeature: () => abandonFeature,
-  businessFingerprint: () => businessFingerprint,
-  initProject: () => initProject,
-  mutate: () => mutate,
-  readActive: () => readActive,
-  readFeatureEvents: () => readFeatureEvents,
-  readProjectConfig: () => readProjectConfig,
-  readRecoveryTransaction: () => readRecoveryTransaction,
-  readState: () => readState,
-  reclassifyFeature: () => reclassifyFeature,
-  recordHostEvent: () => recordHostEvent,
-  recoverCorruptFeature: () => recoverCorruptFeature,
-  startFeature: () => startFeature,
-  stateFileSha256: () => stateFileSha256,
-  switchActive: () => switchActive,
-  validateFeatureState: () => validateFeatureState,
-  validateScopeInput: () => validateScopeInput
-});
-import { randomUUID, createHash as createHash2 } from "node:crypto";
-import { access, mkdir, open, readFile as readFile2, rename, rm, writeFile } from "node:fs/promises";
-import { hostname } from "node:os";
-import path3 from "node:path";
+var lifecycles = /* @__PURE__ */ new Set(["active", "paused", "finalized", "abandoned"]);
 function validateFeatureState(value) {
   const state = value;
   if (state?.schemaVersion !== 1) throw new DevFlowError("UNSUPPORTED_STATE_SCHEMA", "only state schema v1 is supported");
@@ -335,6 +269,14 @@ function validateScopeInput(scope) {
   }
   return { inScope: value.inScope, outOfScope: value.outOfScope };
 }
+var delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+var devFlow = (root2) => path3.join(root2, ".dev-flow");
+var features = (root2) => path3.join(devFlow(root2), "features");
+var statePath = (root2, id) => path3.join(features(root2), id, "state.json");
+var eventPath = (root2, id) => path3.join(features(root2), id, "events.jsonl");
+var activePath = (root2) => path3.join(devFlow(root2), "active.json");
+var recoveryTxnPath = (root2) => path3.join(devFlow(root2), "recovery-transaction.json");
+var recoveryEventsPath = (root2) => path3.join(devFlow(root2), "recovery-events.jsonl");
 async function readProjectConfig(root2) {
   try {
     const value = JSON.parse(await readFile2(path3.join(devFlow(root2), "project.json"), "utf8"));
@@ -480,17 +422,6 @@ async function stateFileSha256(root2, featureId) {
   const contents = await readFile2(statePath(root2, featureId));
   return createHash2("sha256").update(contents).digest("hex");
 }
-async function recordHostEvent(root2, hostEvent) {
-  const active = await readActive(root2);
-  if (!active) return;
-  const release = await lock(root2, active.featureId, "host-event");
-  try {
-    const state = await readState(root2, active.featureId);
-    await appendEvent(root2, active.featureId, state.revision, "host-event", { ...hostEvent, at: hostEvent.at ?? (/* @__PURE__ */ new Date()).toISOString() });
-  } finally {
-    await release();
-  }
-}
 async function readFeatureEvents(root2, id) {
   try {
     return (await readFile2(eventPath(root2, id), "utf8")).split("\n").filter(Boolean).map((line) => JSON.parse(line));
@@ -530,7 +461,7 @@ async function startFeature(root2, input) {
       startBusinessFingerprint,
       blockingFindings: [],
       logicComplete: false,
-      lastUpdatedBy: { host: input.host, pluginVersion: "1.3.0" }
+      lastUpdatedBy: { host: input.host, pluginVersion: "1.4.0" }
     };
     await writeAtomic(statePath(root2, id), state);
     await appendEvent(root2, id, 0, "started", { lifecycle, route });
@@ -771,6 +702,9 @@ async function recoverCorruptFeature(root2, input) {
     await release();
   }
 }
+var levelRank2 = { XS: 0, S: 1, M: 2, L: 3 };
+var topologyRank = { local: 0, "shared-contract": 1, "multi-chain": 2, "coordinated-rollback": 3 };
+var sameRisk = (a, b) => a.length === b.length && [...a].sort().every((value, index) => value === [...b].sort()[index]);
 function isDowngrade(before, after) {
   const riskRemoved = before.riskLabels.some((risk) => !after.riskLabels.includes(risk));
   return levelRank2[after.level] < levelRank2[before.level] || topologyRank[after.topology] < topologyRank[before.topology] || before.execution === "standard" && after.execution === "light" || riskRemoved;
@@ -908,49 +842,8 @@ async function reclassifyFeature(root2, id, expectedRevision, next, reason, user
     await release();
   }
 }
-function businessFingerprint(contents) {
-  return createHash2("sha256").update(contents).digest("hex");
-}
-var lifecycles, delay, devFlow, features, statePath, eventPath, activePath, recoveryTxnPath, recoveryEventsPath, levelRank2, topologyRank, sameRisk;
-var init_state_store = __esm({
-  "plugins/dev-flow/src/core/state-store.ts"() {
-    "use strict";
-    init_contract2();
-    init_route();
-    init_errors();
-    init_fingerprint();
-    init_project_config();
-    lifecycles = /* @__PURE__ */ new Set(["active", "paused", "finalized", "abandoned"]);
-    delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-    devFlow = (root2) => path3.join(root2, ".dev-flow");
-    features = (root2) => path3.join(devFlow(root2), "features");
-    statePath = (root2, id) => path3.join(features(root2), id, "state.json");
-    eventPath = (root2, id) => path3.join(features(root2), id, "events.jsonl");
-    activePath = (root2) => path3.join(devFlow(root2), "active.json");
-    recoveryTxnPath = (root2) => path3.join(devFlow(root2), "recovery-transaction.json");
-    recoveryEventsPath = (root2) => path3.join(devFlow(root2), "recovery-events.jsonl");
-    levelRank2 = { XS: 0, S: 1, M: 2, L: 3 };
-    topologyRank = { local: 0, "shared-contract": 1, "multi-chain": 2, "coordinated-rollback": 3 };
-    sameRisk = (a, b) => a.length === b.length && [...a].sort().every((value, index) => value === [...b].sort()[index]);
-  }
-});
-
-// plugins/dev-flow/src/mcp/server.ts
-import readline from "node:readline";
-import { fileURLToPath } from "node:url";
-import path8 from "node:path";
-
-// plugins/dev-flow/src/core/artifacts.ts
-init_contract2();
-init_errors();
-init_state_store();
-import { createHash as createHash3 } from "node:crypto";
-import { readFile as readFile3, writeFile as writeFile2 } from "node:fs/promises";
-import path4 from "node:path";
 
 // plugins/dev-flow/src/core/step-order.ts
-init_contract2();
-init_errors();
 function currentOpenStep(state) {
   return routeDefinition(state.route).orderedSteps.find((step) => state.steps[step]?.status !== "satisfied");
 }
@@ -1057,26 +950,59 @@ async function assertArtifactIntegrity(root2, id) {
   for (const required of routeDefinition(state.route).requiredArtifacts) await assertArtifactCurrent(root2, id, state, required);
 }
 
-// plugins/dev-flow/src/mcp/server.ts
-init_errors();
-
-// plugins/dev-flow/src/core/feature-check.ts
-init_contract2();
-init_errors();
-init_state_store();
-
-// plugins/dev-flow/src/core/verification.ts
-init_errors();
-init_fingerprint();
-init_state_store();
-init_state_store();
-import { execFile } from "node:child_process";
-import { promisify } from "node:util";
-import path5 from "node:path";
-init_route();
+// plugins/dev-flow/src/policy/evidence.ts
+var emptyEvidence = () => ({
+  fields: {},
+  checks: [],
+  verificationKinds: []
+});
+function addChecks(target, checks) {
+  for (const check of checks) if (!target.includes(check)) target.push(check);
+}
+function requiredEvidenceForStep(route, riskLabels, step) {
+  const required = emptyEvidence();
+  const orderedSteps = routeDefinition(route).orderedSteps;
+  const risk = deriveRiskRequirements(riskLabels);
+  if (step === "plan_review") required.fields.reviewType = "plan";
+  if (step === "code_review") required.fields.reviewType = "code";
+  if (step === "code_review" && risk.checks.includes("full-code-review")) {
+    required.fields.reviewDepth = "full";
+  }
+  if (risk.checks.includes("security")) {
+    const target = orderedSteps.includes("risk_controls") ? "risk_controls" : "code_review";
+    if (step === target) addChecks(required.checks, ["security"]);
+  }
+  const rollbackChecks = risk.checks.filter((check) => check === "rollback" || check === "full-rollback");
+  if (rollbackChecks.length) {
+    const target = orderedSteps.includes("risk_controls") ? "risk_controls" : orderedSteps.includes("rollback_safety") ? "rollback_safety" : "rollback_unit";
+    if (step === target) addChecks(required.checks, rollbackChecks);
+  }
+  if (step === "verification" || step === "feature_check") {
+    required.verificationKinds = riskLabels.length ? [...risk.verification] : ["targeted"];
+  }
+  required.checks.sort();
+  return required;
+}
+function requiredEvidenceIsEmpty(required) {
+  return Object.keys(required.fields).length === 0 && required.checks.length === 0 && required.verificationKinds.length === 0;
+}
+function missingRequiredEvidence(required, evidence) {
+  const missing = emptyEvidence();
+  const supplied = typeof evidence === "object" && evidence !== null && !Array.isArray(evidence) ? evidence : {};
+  if (required.fields.reviewType !== void 0 && supplied.reviewType !== required.fields.reviewType) {
+    missing.fields.reviewType = required.fields.reviewType;
+  }
+  if (required.fields.reviewDepth !== void 0 && supplied.reviewDepth !== required.fields.reviewDepth) {
+    missing.fields.reviewDepth = required.fields.reviewDepth;
+  }
+  const suppliedChecks = Array.isArray(supplied.checks) ? supplied.checks.filter((value) => typeof value === "string") : [];
+  missing.checks = required.checks.filter((check) => !suppliedChecks.includes(check));
+  const kinds = Array.isArray(supplied.kinds) ? supplied.kinds.filter((value) => typeof value === "string") : [];
+  missing.verificationKinds = required.verificationKinds.filter((kind) => !kinds.includes(kind));
+  return missing;
+}
 
 // plugins/dev-flow/src/core/requirements-grill.ts
-init_errors();
 var statuses = ["not_required", "pending", "in_progress", "complete"];
 function allowedStatuses(state) {
   return state.classification.requirements === "provided-confirmed" ? ["not_required", "complete"] : ["complete"];
@@ -1165,24 +1091,71 @@ async function assertRequirementsGrillSatisfied(root2, id, state) {
 }
 
 // plugins/dev-flow/src/core/verification.ts
+import { execFile } from "node:child_process";
+import path5 from "node:path";
+import { promisify } from "node:util";
 var run = promisify(execFile);
-async function runVerification(root2, id, expectedRevision, host, commandIds) {
+function quoteForWindowsCommandProcessor(value) {
+  if (value.length > 0 && !/[\s"&|<>()^%!]/u.test(value)) return value;
+  return `"${value.replace(/(["^&|<>()%!])/gu, "^$1")}"`;
+}
+function verificationInvocation(command, platform = process.platform, commandProcessor = process.env.ComSpec ?? "cmd.exe") {
+  if (platform !== "win32") return { executable: command.command, args: command.args };
+  return {
+    executable: commandProcessor,
+    args: ["/d", "/s", "/c", [command.command, ...command.args].map(quoteForWindowsCommandProcessor).join(" ")]
+  };
+}
+function validateManualAcceptance(value) {
+  if (value === void 0) return void 0;
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new DevFlowError("INVALID_MANUAL_ACCEPTANCE", "manualAcceptance must be an object");
+  }
+  const input = value;
+  if (input.mode !== "browser" && input.mode !== "user-signoff" || typeof input.source !== "string" || !input.source.trim() || !Array.isArray(input.scenarios) || input.scenarios.length === 0 || "outcome" in input) {
+    throw new DevFlowError("INVALID_MANUAL_ACCEPTANCE", "manualAcceptance is incomplete or invalid");
+  }
+  const scenarios = input.scenarios.map((scenario) => {
+    if (typeof scenario !== "object" || scenario === null || Array.isArray(scenario)) {
+      throw new DevFlowError("INVALID_MANUAL_ACCEPTANCE", "manualAcceptance scenarios must be objects");
+    }
+    const item = scenario;
+    if (typeof item.name !== "string" || !item.name.trim() || typeof item.evidence !== "string" || !item.evidence.trim()) {
+      throw new DevFlowError("INVALID_MANUAL_ACCEPTANCE", "manualAcceptance scenarios require name and evidence");
+    }
+    return { name: item.name.trim(), evidence: item.evidence.trim() };
+  });
+  return { mode: input.mode, source: input.source.trim(), scenarios };
+}
+async function runVerification(root2, id, expectedRevision, host, commandIds, manualAcceptanceInput) {
   const initial = await readState(root2, id);
-  if (initial.revision !== expectedRevision) throw new DevFlowError("STATE_REVISION_CONFLICT", "state revision changed", { currentRevision: initial.revision });
+  if (initial.revision !== expectedRevision) {
+    throw new DevFlowError("STATE_REVISION_CONFLICT", "state revision changed", {
+      currentRevision: initial.revision
+    });
+  }
   await assertRequirementsGrillSatisfied(root2, id, initial);
+  const manualAcceptance = validateManualAcceptance(manualAcceptanceInput);
   const config = await readProjectConfig(root2);
   const selected = commandIds?.length ? config.verification.commands.filter((command) => commandIds.includes(command.id)) : config.verification.commands;
   if (!selected.length || commandIds?.some((command) => !selected.some((item) => item.id === command))) {
     throw new DevFlowError("UNKNOWN_VERIFICATION_COMMAND", "verification command is not configured");
   }
   const fingerprint = await fingerprintProtectedRoots(root2, config.protectedRoots);
-  const replacingStaleVerification = Boolean(initial.verification.verifiedFingerprint && initial.verification.verifiedFingerprint !== fingerprint);
+  const replacingStaleVerification = Boolean(
+    initial.verification.verifiedFingerprint && initial.verification.verifiedFingerprint !== fingerprint
+  );
   const startedAt = (/* @__PURE__ */ new Date()).toISOString();
   let exitCode = 0;
   const output = [];
   for (const command of selected) {
     try {
-      const result = await run(command.command, command.args, { cwd: path5.resolve(root2, command.cwd), timeout: 12e4, maxBuffer: 1024 * 1024 });
+      const invocation = verificationInvocation(command);
+      const result = await run(invocation.executable, invocation.args, {
+        cwd: path5.resolve(root2, command.cwd),
+        timeout: 12e4,
+        maxBuffer: 1024 * 1024
+      });
       output.push(`[${command.id}] ${result.stdout}${result.stderr}`);
     } catch (error) {
       const failure2 = error;
@@ -1193,13 +1166,26 @@ async function runVerification(root2, id, expectedRevision, host, commandIds) {
   }
   const finishedAt = (/* @__PURE__ */ new Date()).toISOString();
   return mutate(root2, id, expectedRevision, "verification-recorded", async (state) => {
-    if (state.lifecycle !== "active") throw new DevFlowError("INVALID_LIFECYCLE", "only active features can verify");
+    if (state.lifecycle !== "active") {
+      throw new DevFlowError("INVALID_LIFECYCLE", "only active features can verify");
+    }
     if (currentOpenStep(state) !== "verification" && !(replacingStaleVerification && state.steps.verification?.status === "satisfied")) {
       assertCurrentStep(state, "verification");
     }
     await assertRequirementsGrillSatisfied(root2, id, state);
     const kinds = state.classification.riskLabels.length ? deriveRiskRequirements(state.classification.riskLabels).verification : ["targeted"];
-    const attempt = { id: state.verification.attempts.length + 1, commandIds: selected.map((item) => item.id), kinds, startedAt, finishedAt, exitCode, output: output.join("\n").slice(-32e3), fingerprint, host };
+    const attempt = {
+      id: state.verification.attempts.length + 1,
+      commandIds: selected.map((item) => item.id),
+      kinds,
+      startedAt,
+      finishedAt,
+      exitCode,
+      output: output.join("\n").slice(-32e3),
+      fingerprint,
+      host,
+      ...manualAcceptance ? { manualAcceptance } : {}
+    };
     state.verification.attempts.push(attempt);
     delete state.verification.satisfiedByAttemptId;
     delete state.verification.verifiedFingerprint;
@@ -1208,22 +1194,44 @@ async function runVerification(root2, id, expectedRevision, host, commandIds) {
       state.verification.satisfiedByAttemptId = attempt.id;
       state.verification.verifiedFingerprint = fingerprint;
       state.businessFingerprint = fingerprint;
-      state.steps.verification = { status: "satisfied", evidence: { attemptId: attempt.id, commandIds: attempt.commandIds, kinds: attempt.kinds, fingerprint } };
+      state.steps.verification = {
+        status: "satisfied",
+        evidence: {
+          attemptId: attempt.id,
+          commandIds: attempt.commandIds,
+          kinds: attempt.kinds,
+          fingerprint,
+          ...manualAcceptance ? { manualAcceptance } : {}
+        }
+      };
     }
-    state.lastUpdatedBy = { host, pluginVersion: "1.3.0" };
+    state.lastUpdatedBy = { host, pluginVersion: "1.4.0" };
   });
 }
-async function verificationIsStale(root2, state) {
-  if (!state.verification.verifiedFingerprint) return false;
+async function readVerificationFreshness(root2, state) {
+  if (!state.verification.verifiedFingerprint) return { status: "missing" };
   const config = await readProjectConfig(root2);
-  return state.verification.verifiedFingerprint !== await fingerprintProtectedRoots(root2, config.protectedRoots);
+  const current = await fingerprintProtectedRoots(root2, config.protectedRoots);
+  if (state.verification.verifiedFingerprint === current) return { status: "fresh" };
+  return {
+    status: "stale",
+    reasonCode: "VERIFICATION_STALE",
+    recoveryHint: "Protected files changed; rerun verification before feature-check or finalize"
+  };
+}
+async function verificationIsStale(root2, state) {
+  return (await readVerificationFreshness(root2, state)).status === "stale";
 }
 async function invalidateStaleVerification(root2, id, expectedRevision) {
   const config = await readProjectConfig(root2);
   const current = await fingerprintProtectedRoots(root2, config.protectedRoots);
-  const state = await Promise.resolve().then(() => (init_state_store(), state_store_exports)).then(({ readState: readState3 }) => readState3(root2, id));
+  const state = await readState(root2, id);
   if (!state.verification.verifiedFingerprint || state.verification.verifiedFingerprint === current) return void 0;
-  if (state.revision !== expectedRevision) throw new DevFlowError("STATE_REVISION_CONFLICT", "state revision changed", { currentRevision: state.revision });
+  if (state.revision !== expectedRevision) {
+    throw new DevFlowError("STATE_REVISION_CONFLICT", "state revision changed", {
+      currentRevision: state.revision
+    });
+  }
   return mutate(root2, id, expectedRevision, "verification-invalidated", (draft) => {
     delete draft.verification.satisfiedByAttemptId;
     delete draft.verification.verifiedFingerprint;
@@ -1236,57 +1244,91 @@ async function invalidateStaleVerification(root2, id, expectedRevision) {
 }
 
 // plugins/dev-flow/src/core/feature-check.ts
-init_route();
+function assertRequiredEvidence(step, required, evidence) {
+  const missing = missingRequiredEvidence(required, evidence);
+  if (requiredEvidenceIsEmpty(missing)) return;
+  const details = { step, requiredEvidence: required, missing };
+  if (missing.fields.reviewType !== void 0) {
+    throw new DevFlowError("REVIEW_TYPE_MISMATCH", `${step} reviewType is missing or incorrect`, details);
+  }
+  throw new DevFlowError("RISK_EVIDENCE_INCOMPLETE", `${step} evidence is incomplete`, details);
+}
 async function recordStep(root2, id, expectedRevision, step, evidence) {
   return mutate(root2, id, expectedRevision, "step-recorded", async (state) => {
-    if (state.lifecycle !== "active") throw new DevFlowError("INVALID_LIFECYCLE", "only active features can record steps");
-    if (["requirement_confirmation", "implementation_approval", "verification", "feature_check", "finalize"].includes(step) || !routeDefinition(state.route).orderedSteps.includes(step)) throw new DevFlowError("INVALID_STEP", step);
+    if (state.lifecycle !== "active") {
+      throw new DevFlowError("INVALID_LIFECYCLE", "only active features can record steps");
+    }
+    const route = routeDefinition(state.route);
+    if (["requirement_confirmation", "implementation_approval", "verification", "feature_check", "finalize"].includes(step) || !route.orderedSteps.includes(step)) {
+      throw new DevFlowError("INVALID_STEP", step);
+    }
     assertCurrentStep(state, step);
     await assertRequirementsGrillSatisfied(root2, id, state);
-    const reviewType = evidence?.reviewType;
-    if (step === "plan_review" && reviewType !== "plan" || step === "code_review" && reviewType !== "code") throw new DevFlowError("REVIEW_TYPE_MISMATCH", step);
-    const risk = deriveRiskRequirements(state.classification.riskLabels);
-    if (step === "risk_controls") {
-      const supplied = evidence?.checks;
-      const required = risk.checks.filter((check) => check !== "full-code-review");
-      if (!Array.isArray(supplied) || required.some((check) => !supplied.includes(check))) throw new DevFlowError("RISK_EVIDENCE_INCOMPLETE", "risk controls do not cover route risk obligations", { required });
-    }
-    if (step === "code_review" && risk.checks.includes("full-code-review") && evidence?.reviewDepth !== "full") throw new DevFlowError("RISK_EVIDENCE_INCOMPLETE", "full code review is required");
+    const required = requiredEvidenceForStep(state.route, state.classification.riskLabels, step);
+    assertRequiredEvidence(step, required, evidence);
     state.steps[step] = { status: "satisfied", evidence };
   });
 }
 async function invalidateBeforeFinalClaim(root2, id, expectedRevision) {
   const invalidated = await invalidateStaleVerification(root2, id, expectedRevision);
-  if (invalidated) throw new DevFlowError("VERIFICATION_STALE", "protected files changed; rerun verification", { currentRevision: invalidated.revision });
+  if (invalidated) {
+    throw new DevFlowError("VERIFICATION_STALE", "protected files changed; rerun verification", {
+      currentRevision: invalidated.revision
+    });
+  }
+}
+function assertVerificationWasNotInvalidated(state) {
+  const evidence = state.steps.verification?.evidence;
+  if (evidence?.reason === "protected-files-changed") {
+    throw new DevFlowError("VERIFICATION_STALE", "protected files changed; rerun verification");
+  }
 }
 async function featureCheck(root2, id, expectedRevision) {
   const initial = await readState(root2, id);
-  if (initial.revision !== expectedRevision) throw new DevFlowError("STATE_REVISION_CONFLICT", "state revision changed", { currentRevision: initial.revision });
+  if (initial.revision !== expectedRevision) {
+    throw new DevFlowError("STATE_REVISION_CONFLICT", "state revision changed", {
+      currentRevision: initial.revision
+    });
+  }
   await assertRequirementsGrillSatisfied(root2, id, initial);
   await invalidateBeforeFinalClaim(root2, id, expectedRevision);
   await assertArtifactIntegrity(root2, id);
   return mutate(root2, id, expectedRevision, "feature-checked", async (state) => {
     await assertRequirementsGrillSatisfied(root2, id, state);
+    assertVerificationWasNotInvalidated(state);
     assertCurrentStep(state, "feature_check");
-    if (state.verification.verifiedFingerprint !== state.businessFingerprint) throw new DevFlowError("VERIFICATION_STALE", "protected files changed or verification did not pass");
-    const evidence = state.steps.verification?.evidence;
-    const requiredKinds = state.classification.riskLabels.length ? deriveRiskRequirements(state.classification.riskLabels).verification : ["targeted"];
-    if (!Array.isArray(evidence?.kinds) || requiredKinds.some((kind) => !evidence.kinds?.includes(kind))) throw new DevFlowError("RISK_EVIDENCE_INCOMPLETE", "verification did not satisfy risk evidence kinds", { requiredKinds });
+    if (state.verification.verifiedFingerprint !== state.businessFingerprint) {
+      throw new DevFlowError("VERIFICATION_STALE", "protected files changed or verification did not pass");
+    }
+    const orderedSteps = routeDefinition(state.route).orderedSteps;
+    const featureCheckIndex = orderedSteps.indexOf("feature_check");
+    for (const step of orderedSteps.slice(0, featureCheckIndex)) {
+      const required = requiredEvidenceForStep(state.route, state.classification.riskLabels, step);
+      if (requiredEvidenceIsEmpty(required)) continue;
+      assertRequiredEvidence(step, required, state.steps[step]?.evidence);
+    }
     state.featureCheck = { passed: true, fingerprint: state.businessFingerprint };
     state.steps.feature_check = { status: "satisfied" };
   });
 }
 async function finalize(root2, id, expectedRevision) {
   const initial = await readState(root2, id);
-  if (initial.revision !== expectedRevision) throw new DevFlowError("STATE_REVISION_CONFLICT", "state revision changed", { currentRevision: initial.revision });
+  if (initial.revision !== expectedRevision) {
+    throw new DevFlowError("STATE_REVISION_CONFLICT", "state revision changed", {
+      currentRevision: initial.revision
+    });
+  }
   await assertRequirementsGrillSatisfied(root2, id, initial);
   await invalidateBeforeFinalClaim(root2, id, expectedRevision);
   await assertArtifactIntegrity(root2, id);
   return mutate(root2, id, expectedRevision, "finalized", async (state) => {
     await assertRequirementsGrillSatisfied(root2, id, state);
+    assertVerificationWasNotInvalidated(state);
     const route = routeDefinition(state.route);
     assertCurrentStep(state, "finalize");
-    if (route.featureCheckRequired && (!state.featureCheck.passed || state.featureCheck.fingerprint !== state.businessFingerprint)) throw new DevFlowError("FEATURE_CHECK_REQUIRED", "feature check is required");
+    if (route.featureCheckRequired && (!state.featureCheck.passed || state.featureCheck.fingerprint !== state.businessFingerprint)) {
+      throw new DevFlowError("FEATURE_CHECK_REQUIRED", "feature check is required");
+    }
     state.logicComplete = true;
     state.lifecycle = "finalized";
     state.steps.finalize = { status: "satisfied" };
@@ -1294,63 +1336,168 @@ async function finalize(root2, id, expectedRevision) {
 }
 
 // plugins/dev-flow/src/core/human-gates.ts
-init_contract2();
-init_errors();
-init_state_store();
 import { createHash as createHash4 } from "node:crypto";
+
+// plugins/dev-flow/src/core/gate-approval.ts
+var gateApprovalPhrases = {
+  requirement_confirmation: [
+    "\u786E\u8BA4\u9700\u6C42",
+    "\u9700\u6C42\u5DF2\u786E\u8BA4",
+    "\u540C\u610F\u9700\u6C42",
+    "approved",
+    "LGTM"
+  ],
+  implementation_approval: [
+    "\u6279\u51C6\u5B9E\u73B0",
+    "\u540C\u610F\u5B9E\u73B0",
+    "\u5F00\u59CB\u5B9E\u73B0",
+    "approved",
+    "LGTM"
+  ]
+};
+var normalizeGateReply = (value) => value.trim().toLocaleLowerCase("en-US");
+function gateReplyHint(gate) {
+  return gateApprovalPhrases[gate].join(" / ");
+}
+function isExplicitGateApproval(gate, userReply) {
+  const normalized = normalizeGateReply(userReply);
+  return gateApprovalPhrases[gate].some((phrase) => normalizeGateReply(phrase) === normalized);
+}
+
+// plugins/dev-flow/src/core/human-gates.ts
 var digest = (value) => createHash4("sha256").update(JSON.stringify(value)).digest("hex");
 var gates = /* @__PURE__ */ new Set(["requirement_confirmation", "implementation_approval"]);
+function gateId(value) {
+  if (!gates.has(value)) throw new DevFlowError("INVALID_GATE", value);
+  return value;
+}
 function gateBasis(state, gate) {
-  if (gate === "requirement_confirmation") return { route: state.route, scope: state.scope, requirements: state.artifacts.requirements, classification: state.classification };
-  return { route: state.route, scope: state.scope, classification: state.classification, plan: state.artifacts["implementation-plan"], coverage: state.artifacts["coverage-matrix"], rollback: state.artifacts["rollback-units"] ?? state.artifacts["rollback-safety"], risk: state.artifacts["risk-card"], boundary: state.artifacts["boundary-card"] };
+  if (gate === "requirement_confirmation") {
+    return {
+      route: state.route,
+      scope: state.scope,
+      requirements: state.artifacts.requirements,
+      classification: state.classification
+    };
+  }
+  return {
+    route: state.route,
+    scope: state.scope,
+    classification: state.classification,
+    plan: state.artifacts["implementation-plan"],
+    coverage: state.artifacts["coverage-matrix"],
+    rollback: state.artifacts["rollback-units"] ?? state.artifacts["rollback-safety"],
+    risk: state.artifacts["risk-card"],
+    boundary: state.artifacts["boundary-card"]
+  };
 }
 async function presentGate(root2, id, expectedRevision, gate) {
-  if (!gates.has(gate)) throw new DevFlowError("INVALID_GATE", gate);
+  const selectedGate = gateId(gate);
   return mutate(root2, id, expectedRevision, "gate-presented", async (state) => {
-    if (state.lifecycle !== "active") throw new DevFlowError("INVALID_LIFECYCLE", "gate requires active feature");
-    if (!routeDefinition(state.route).orderedSteps.includes(gate)) throw new DevFlowError("INVALID_GATE", gate);
-    if (state.humanGates[gate]) throw new DevFlowError("HUMAN_GATE_ALREADY_PRESENTED", gate);
-    assertCurrentStep(state, gate);
-    const missing = artifactsRequiredBeforeGate(state, gate).find((kind) => !state.artifacts[kind]);
+    if (state.lifecycle !== "active") {
+      throw new DevFlowError("INVALID_LIFECYCLE", "gate requires active feature");
+    }
+    if (!routeDefinition(state.route).orderedSteps.includes(selectedGate)) {
+      throw new DevFlowError("INVALID_GATE", selectedGate);
+    }
+    if (state.humanGates[selectedGate]) {
+      throw new DevFlowError("HUMAN_GATE_ALREADY_PRESENTED", selectedGate);
+    }
+    assertCurrentStep(state, selectedGate);
+    const missing = artifactsRequiredBeforeGate(state, selectedGate).find((kind) => !state.artifacts[kind]);
     if (missing) throw new DevFlowError("MISSING_REQUIRED_ARTIFACT", missing);
     await assertRequirementsGrillSatisfied(root2, id, state);
-    state.humanGates[gate] = { status: "pending", presentedRevision: state.revision, presentedAt: (/* @__PURE__ */ new Date()).toISOString(), basisHash: digest(gateBasis(state, gate)) };
-  }, { gate });
+    state.humanGates[selectedGate] = {
+      status: "pending",
+      presentedRevision: state.revision,
+      presentedAt: (/* @__PURE__ */ new Date()).toISOString(),
+      basisHash: digest(gateBasis(state, selectedGate))
+    };
+  }, { gate: selectedGate });
 }
 async function confirmGate(root2, id, expectedRevision, gate, userReply, provenance, host) {
-  if (!gates.has(gate)) throw new DevFlowError("INVALID_GATE", gate);
+  const selectedGate = gateId(gate);
   if (!userReply.trim()) throw new DevFlowError("HUMAN_GATE_REPLY_REQUIRED", "userReply is required");
-  if (!provenance.promptEventId && !provenance.turnBoundaryEventId) throw new DevFlowError("HUMAN_GATE_PROVENANCE_UNAVAILABLE", "a post-presentation prompt or turn boundary is required");
+  if (!isExplicitGateApproval(selectedGate, userReply)) {
+    throw new DevFlowError(
+      "HUMAN_GATE_APPROVAL_NOT_EXPLICIT",
+      "userReply is not an exact approval phrase",
+      {
+        gate: selectedGate,
+        allowed: gateApprovalPhrases[selectedGate],
+        recoveryHint: "Reply with one exact approval phrase after the gate is presented"
+      }
+    );
+  }
+  if (!provenance.promptEventId && !provenance.turnBoundaryEventId) {
+    throw new DevFlowError(
+      "HUMAN_GATE_PROVENANCE_UNAVAILABLE",
+      "a post-presentation prompt or turn boundary is required",
+      { recoveryHint: "Capture a later user prompt or turn boundary, then confirm the gate" }
+    );
+  }
   const marker = provenance.promptEventId ?? provenance.turnBoundaryEventId;
-  if (!marker) throw new DevFlowError("HUMAN_GATE_PROVENANCE_UNAVAILABLE", "a post-presentation prompt or turn boundary is required");
+  if (!marker) {
+    throw new DevFlowError(
+      "HUMAN_GATE_PROVENANCE_UNAVAILABLE",
+      "a post-presentation prompt or turn boundary is required",
+      { recoveryHint: "Capture a later user prompt or turn boundary, then confirm the gate" }
+    );
+  }
   const events = await readFeatureEvents(root2, id);
   return mutate(root2, id, expectedRevision, "gate-confirmed", async (state) => {
     await assertRequirementsGrillSatisfied(root2, id, state);
-    const current = state.humanGates[gate];
-    if (current?.status !== "pending") throw new DevFlowError("HUMAN_GATE_NOT_PENDING", gate);
-    if ((current.presentedRevision ?? state.revision) >= state.revision) throw new DevFlowError("HUMAN_GATE_SAME_TURN", "confirmation must occur after presentation");
+    const current = state.humanGates[selectedGate];
+    if (current?.status !== "pending") {
+      throw new DevFlowError("HUMAN_GATE_NOT_PENDING", selectedGate, {
+        recoveryHint: "Present the current gate before attempting confirmation"
+      });
+    }
+    if ((current.presentedRevision ?? state.revision) >= state.revision) {
+      throw new DevFlowError("HUMAN_GATE_SAME_TURN", "confirmation must occur after presentation", {
+        recoveryHint: "Wait for a later user turn before confirming the gate"
+      });
+    }
     const eventRecord = events.find((item) => item.type === "host-event" && item.data.eventId === marker);
     const event = eventRecord?.data;
-    if (!event || !current.presentedAt || (eventRecord?.revision ?? -1) <= (current.presentedRevision ?? -1) || Date.parse(event.at ?? "") < Date.parse(current.presentedAt)) throw new DevFlowError("HUMAN_GATE_SAME_TURN", "confirmation evidence must be later than gate presentation");
-    if (provenance.promptEventId && (event.type !== "user-prompt" || event.text !== userReply)) throw new DevFlowError("HUMAN_GATE_REPLY_MISMATCH", "userReply must match the captured prompt");
-    if (provenance.turnBoundaryEventId && event.type !== "turn-boundary") throw new DevFlowError("HUMAN_GATE_PROVENANCE_UNAVAILABLE", "turn boundary was not captured");
-    for (const [otherGate, value] of Object.entries(state.humanGates)) if (otherGate !== gate && value.confirmation && Object.values(value.confirmation).includes(marker)) throw new DevFlowError("HUMAN_GATE_EVENT_CONSUMED", String(marker));
-    const basisHash = digest(gateBasis(state, gate));
-    if (basisHash !== current.basisHash) throw new DevFlowError("HUMAN_GATE_BASIS_CHANGED", gate);
-    state.humanGates[gate] = { ...current, status: "confirmed", confirmation: { userReply, ...provenance, host, confirmedAt: (/* @__PURE__ */ new Date()).toISOString() } };
-    state.steps[gate] = { status: "satisfied" };
-    state.lastUpdatedBy = { host, pluginVersion: "1.3.0" };
-  }, { gate });
+    if (!event || !current.presentedAt || (eventRecord?.revision ?? -1) <= (current.presentedRevision ?? -1) || Date.parse(event.at ?? "") < Date.parse(current.presentedAt)) {
+      throw new DevFlowError("HUMAN_GATE_SAME_TURN", "confirmation evidence must be later than gate presentation", {
+        recoveryHint: "Capture confirmation from a later user turn"
+      });
+    }
+    if (provenance.promptEventId && (event.type !== "user-prompt" || event.text !== userReply)) {
+      throw new DevFlowError("HUMAN_GATE_REPLY_MISMATCH", "userReply must match the captured prompt", {
+        recoveryHint: "Pass the captured user prompt text exactly"
+      });
+    }
+    if (provenance.turnBoundaryEventId && event.type !== "turn-boundary") {
+      throw new DevFlowError("HUMAN_GATE_PROVENANCE_UNAVAILABLE", "turn boundary was not captured", {
+        recoveryHint: "Use a captured turn-boundary event or later user prompt"
+      });
+    }
+    for (const [otherGate, value] of Object.entries(state.humanGates)) {
+      const confirmation = value.confirmation;
+      if (otherGate !== selectedGate && confirmation && Object.values(confirmation).includes(marker)) {
+        throw new DevFlowError("HUMAN_GATE_EVENT_CONSUMED", String(marker));
+      }
+    }
+    const basisHash = digest(gateBasis(state, selectedGate));
+    if (basisHash !== current.basisHash) {
+      throw new DevFlowError("HUMAN_GATE_BASIS_CHANGED", selectedGate, {
+        recoveryHint: "Present the gate again after updating its approval basis"
+      });
+    }
+    state.humanGates[selectedGate] = {
+      ...current,
+      status: "confirmed",
+      confirmation: { userReply, ...provenance, host, confirmedAt: (/* @__PURE__ */ new Date()).toISOString() }
+    };
+    state.steps[selectedGate] = { status: "satisfied" };
+    state.lastUpdatedBy = { host, pluginVersion: "1.4.0" };
+  }, { gate: selectedGate });
 }
 
-// plugins/dev-flow/src/mcp/server.ts
-init_state_store();
-
-// plugins/dev-flow/src/core/next.ts
-init_contract2();
-
 // plugins/dev-flow/src/policy/derive-next.ts
-init_contract2();
 var humanGates = /* @__PURE__ */ new Set(["requirement_confirmation", "implementation_approval"]);
 function deriveNext(state) {
   if (state.schemaVersion !== 1) throw new Error("UNSUPPORTED_STATE_SCHEMA");
@@ -1374,7 +1521,6 @@ function deriveNext(state) {
 }
 
 // plugins/dev-flow/src/core/next.ts
-init_state_store();
 function toDerivedState(state, verificationStale) {
   const steps = { ...state.steps };
   if (verificationStale) steps.verification = { status: "pending" };
@@ -1388,33 +1534,41 @@ function toDerivedState(state, verificationStale) {
     route: state.route,
     steps,
     blockingFindings: state.blockingFindings,
-    verificationFresh: !verificationStale && Boolean(state.verification.verifiedFingerprint && state.verification.verifiedFingerprint === state.businessFingerprint),
-    featureCheckFresh: !verificationStale && Boolean(state.featureCheck.passed && state.featureCheck.fingerprint === state.businessFingerprint),
+    verificationFresh: !verificationStale && Boolean(
+      state.verification.verifiedFingerprint && state.verification.verifiedFingerprint === state.businessFingerprint
+    ),
+    featureCheckFresh: !verificationStale && Boolean(
+      state.featureCheck.passed && state.featureCheck.fingerprint === state.businessFingerprint
+    ),
     logicComplete: state.logicComplete
   };
+}
+function enrichRunStep(state, step) {
+  const requiredEvidence = requiredEvidenceForStep(state.route, state.classification.riskLabels, step);
+  return requiredEvidenceIsEmpty(requiredEvidence) ? { kind: "run-step", step } : { kind: "run-step", step, requiredEvidence };
+}
+function enrichFeatureCheck(state) {
+  const requiredEvidence = requiredEvidenceForStep(state.route, state.classification.riskLabels, "feature_check");
+  return requiredEvidenceIsEmpty(requiredEvidence) ? { kind: "feature-check" } : { kind: "feature-check", requiredEvidence };
 }
 async function nextAction(root2, id) {
   const state = await readState(root2, id);
   const action = deriveNext(toDerivedState(state, await verificationIsStale(root2, state)));
-  if (action.kind === "run-step" && action.step === "feature_check") return { kind: "feature-check" };
-  if (action.kind === "run-step" && action.step === "finalize") return { kind: "finalize" };
   if (action.kind === "run-step" || action.kind === "present-human-gate") {
     const requiredNow = routeDefinition(state.route).artifactSteps?.[action.step] ?? [];
     const missing = requiredNow.find((artifact) => !state.artifacts[artifact]);
     if (missing) return { kind: "scaffold-artifact", step: missing };
   }
+  if (action.kind === "run-step" && action.step === "feature_check") return enrichFeatureCheck(state);
+  if (action.kind === "run-step" && action.step === "finalize") return { kind: "finalize" };
+  if (action.kind === "run-step") return enrichRunStep(state, action.step);
+  if (action.kind === "feature-check") return enrichFeatureCheck(state);
   return action;
 }
 
 // plugins/dev-flow/src/core/status.ts
-init_contract2();
-import path6 from "node:path";
 import { readFile as readFile4 } from "node:fs/promises";
-init_state_store();
-init_errors();
-function gateReplyHint(gate) {
-  return gate === "requirement_confirmation" ? "\u786E\u8BA4\u9700\u6C42 / approved / LGTM" : "\u6279\u51C6\u5B9E\u73B0 / approved / LGTM";
-}
+import path6 from "node:path";
 async function grillWait(root2, state, action) {
   if (action.kind !== "run-step" || action.step !== "requirements") return { kind: "none" };
   const artifact = state.artifacts.requirements;
@@ -1461,7 +1615,17 @@ async function buildProgress(root2, state, action) {
     wait = await grillWait(root2, state, action);
   }
   const remainingSteps = ordered.filter((step) => state.steps[step]?.status !== "satisfied" || step === "verification" && action.kind === "run-step" && action.step === "verification");
-  return { stepIndex, stepTotal, currentStep, nextAction: action, wait, remainingSteps };
+  const requiredEvidence = action.kind === "run-step" || action.kind === "feature-check" ? action.requiredEvidence : void 0;
+  return {
+    stepIndex,
+    stepTotal,
+    currentStep,
+    nextAction: action,
+    wait,
+    remainingSteps,
+    ...requiredEvidence ? { requiredEvidence } : {},
+    verificationFreshness: await readVerificationFreshness(root2, state)
+  };
 }
 async function readStatusView(root2, featureId) {
   const state = await readState(root2, featureId);
@@ -1470,11 +1634,7 @@ async function readStatusView(root2, featureId) {
   return { ...state, progress };
 }
 
-// plugins/dev-flow/src/mcp/server.ts
-init_route();
-
 // plugins/dev-flow/src/mcp/doctor.ts
-init_state_store();
 import { lstat as lstat2, readdir as readdir2, readFile as readFile5 } from "node:fs/promises";
 import path7 from "node:path";
 import { createHash as createHash5 } from "node:crypto";
@@ -1673,6 +1833,7 @@ var featureMutation = (extra = {}) => object(
   ["featureId", "expectedRevision"],
   { featureId: string, expectedRevision: integer, ...extra }
 );
+var riskLabelsSchema = { type: "array", items: { enum: allowedRiskLabels }, uniqueItems: true };
 var scopeSchema = {
   type: "object",
   required: ["inScope", "outOfScope"],
@@ -1682,6 +1843,15 @@ var scopeSchema = {
     outOfScope: { type: "array", items: { type: "string" } }
   }
 };
+var manualAcceptanceSchema = object(["mode", "source", "scenarios"], {
+  mode: { enum: ["browser", "user-signoff"] },
+  source: string,
+  scenarios: {
+    type: "array",
+    minItems: 1,
+    items: object(["name", "evidence"], { name: string, evidence: string })
+  }
+});
 var toolSchemas = {
   dev_flow_init_project: { description: "Create strict project configuration.", inputSchema: object(["config"], { config: { type: "object" } }) },
   dev_flow_classify: {
@@ -1691,7 +1861,7 @@ var toolSchemas = {
       topology: { enum: ["local", "shared-contract", "multi-chain", "coordinated-rollback"] },
       execution: { enum: ["light", "standard"] },
       requirements: { enum: ["missing-or-unclear", "documented-unconfirmed", "provided-confirmed"] },
-      riskLabels: { type: "array" }
+      riskLabels: riskLabelsSchema
     }),
     annotations: { readOnlyHint: true }
   },
@@ -1701,8 +1871,8 @@ var toolSchemas = {
       level: { enum: ["XS", "S", "M", "L"] },
       topology: { enum: ["local", "shared-contract", "multi-chain", "coordinated-rollback"] },
       execution: { enum: ["light", "standard"] },
-      requirements: { type: "string" },
-      riskLabels: { type: "array" },
+      requirements: { enum: ["missing-or-unclear", "documented-unconfirmed", "provided-confirmed"] },
+      riskLabels: riskLabelsSchema,
       featureId: string,
       activation: { enum: ["active", "paused"] },
       scope: scopeSchema,
@@ -1712,7 +1882,7 @@ var toolSchemas = {
   dev_flow_status: { description: "Read one feature StatusView (state + progress).", inputSchema: object(["featureId"], { featureId: string }), annotations: { readOnlyHint: true } },
   dev_flow_next: { description: "Return the unique allowed next action.", inputSchema: object(["featureId"], { featureId: string }), annotations: { readOnlyHint: true } },
   dev_flow_switch_active: { description: "Atomically hand off the single active feature.", inputSchema: object(["fromFeatureId", "toFeatureId", "reason"], { fromFeatureId: string, toFeatureId: string, reason: string }) },
-  dev_flow_scaffold_artifact: { description: "Create only the current route artifact.", inputSchema: featureMutation({ kind: string }) },
+  dev_flow_scaffold_artifact: { description: "Create only the current route artifact. For editable artifacts, read the registered path before editing, then record it. Generated status artifacts are read-only: scaffold them and continue with the requested step; do not edit or record them.", inputSchema: featureMutation({ kind: string }) },
   dev_flow_record_artifact: { description: "Register an edited route artifact.", inputSchema: featureMutation({ kind: string }) },
   dev_flow_record_step: { description: "Record the current non-gate route step.", inputSchema: featureMutation({ step: string, evidence: {} }) },
   dev_flow_present_gate: { description: "Present a strict human gate.", inputSchema: featureMutation({ gate: { enum: ["requirement_confirmation", "implementation_approval"] } }) },
@@ -1730,7 +1900,14 @@ var toolSchemas = {
     description: "Reclassify route (stricter always; same-level standard\u2192light with userEvidence before implementation).",
     inputSchema: featureMutation({ classification: { type: "object" }, reason: string, userEvidence: string })
   },
-  dev_flow_verify: { description: "Run only configured verification commands.", inputSchema: featureMutation({ commandIds: { type: "array", items: string }, host: { enum: ["claude", "codex"] } }) },
+  dev_flow_verify: {
+    description: "Run only configured verification commands and optionally record manual acceptance.",
+    inputSchema: featureMutation({
+      commandIds: { type: "array", items: string },
+      host: { enum: ["claude", "codex"] },
+      manualAcceptance: manualAcceptanceSchema
+    })
+  },
   dev_flow_feature_check: { description: "Check route completeness and fresh evidence.", inputSchema: featureMutation() },
   dev_flow_finalize: { description: "Set logic-complete after all obligations pass.", inputSchema: featureMutation() },
   dev_flow_abandon: { description: "Terminally abandon a non-finalized feature.", inputSchema: featureMutation({ reason: string, userEvidence: string }) },
@@ -1775,8 +1952,13 @@ async function call(name, a) {
   switch (name) {
     case "dev_flow_init_project":
       return initProject(root, a.config);
-    case "dev_flow_classify":
-      return selectRoute(a);
+    case "dev_flow_classify": {
+      const selected = selectRoute(a);
+      return {
+        ...selected,
+        riskRequirements: deriveRiskRequirements(selected.classification.riskLabels)
+      };
+    }
     case "dev_flow_start":
       return startFeature(root, { ...a, host: a.host ?? "codex" });
     case "dev_flow_status":
@@ -1798,7 +1980,14 @@ async function call(name, a) {
     case "dev_flow_reclassify":
       return reclassifyFeature(root, a.featureId, a.expectedRevision, a.classification, a.reason, a.userEvidence);
     case "dev_flow_verify":
-      return runVerification(root, a.featureId, a.expectedRevision, a.host ?? "codex", a.commandIds);
+      return runVerification(
+        root,
+        a.featureId,
+        a.expectedRevision,
+        a.host ?? "codex",
+        a.commandIds,
+        a.manualAcceptance
+      );
     case "dev_flow_feature_check":
       return featureCheck(root, a.featureId, a.expectedRevision);
     case "dev_flow_finalize":
@@ -1806,7 +1995,7 @@ async function call(name, a) {
     case "dev_flow_abandon":
       return abandonFeature(root, a.featureId, a.expectedRevision, a.reason, a.userEvidence);
     case "dev_flow_doctor":
-      return collectDoctorReport(root, pluginRoot, "1.3.0", tools);
+      return collectDoctorReport(root, pluginRoot, "1.4.0", tools);
     case "dev_flow_recover_corrupt_feature":
       return recoverCorruptFeature(root, {
         featureId: a.featureId,
@@ -1829,7 +2018,7 @@ for await (const line of readline.createInterface({ input: process.stdin, crlfDe
     if (message.method === "initialize") {
       protocolResult(message.id, {
         protocolVersion: message.params?.protocolVersion || "2024-11-05",
-        serverInfo: { name: "dev-flow", version: "1.3.0" },
+        serverInfo: { name: "dev-flow", version: "1.4.0" },
         capabilities: { tools: {} },
         instructions: "Classify before starting. Call dev_flow_next and execute exactly one returned action. Stop after presenting a HUMAN GATE. Use dev_flow_init_project before start. Prefer light routes for small clear tasks. On wait, use dev_flow_status progress."
       });

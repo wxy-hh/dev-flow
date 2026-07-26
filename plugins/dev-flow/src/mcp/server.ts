@@ -11,7 +11,8 @@ import {
 import { nextAction } from "../core/next.js";
 import { readStatusView } from "../core/status.js";
 import { runVerification } from "../core/verification.js";
-import { selectRoute } from "../policy/route.js";
+import { allowedRiskLabels } from "../policy/contract.js";
+import { deriveRiskRequirements, selectRoute } from "../policy/route.js";
 import { collectDoctorReport } from "./doctor.js";
 
 const root = process.cwd();
@@ -35,6 +36,8 @@ const featureMutation = (extra: Record<string, unknown> = {}) => object(
   { featureId: string, expectedRevision: integer, ...extra },
 );
 
+const riskLabelsSchema = { type: "array", items: { enum: allowedRiskLabels }, uniqueItems: true };
+
 const scopeSchema = {
   type: "object",
   required: ["inScope", "outOfScope"],
@@ -45,6 +48,16 @@ const scopeSchema = {
   },
 };
 
+const manualAcceptanceSchema = object(["mode", "source", "scenarios"], {
+  mode: { enum: ["browser", "user-signoff"] },
+  source: string,
+  scenarios: {
+    type: "array",
+    minItems: 1,
+    items: object(["name", "evidence"], { name: string, evidence: string }),
+  },
+});
+
 const toolSchemas: Record<string, { description: string; inputSchema: Record<string, unknown>; annotations?: Record<string, boolean> }> = {
   dev_flow_init_project: { description: "Create strict project configuration.", inputSchema: object(["config"], { config: { type: "object" } }) },
   dev_flow_classify: {
@@ -54,7 +67,7 @@ const toolSchemas: Record<string, { description: string; inputSchema: Record<str
       topology: { enum: ["local", "shared-contract", "multi-chain", "coordinated-rollback"] },
       execution: { enum: ["light", "standard"] },
       requirements: { enum: ["missing-or-unclear", "documented-unconfirmed", "provided-confirmed"] },
-      riskLabels: { type: "array" },
+      riskLabels: riskLabelsSchema,
     }),
     annotations: { readOnlyHint: true },
   },
@@ -64,8 +77,8 @@ const toolSchemas: Record<string, { description: string; inputSchema: Record<str
       level: { enum: ["XS", "S", "M", "L"] },
       topology: { enum: ["local", "shared-contract", "multi-chain", "coordinated-rollback"] },
       execution: { enum: ["light", "standard"] },
-      requirements: { type: "string" },
-      riskLabels: { type: "array" },
+      requirements: { enum: ["missing-or-unclear", "documented-unconfirmed", "provided-confirmed"] },
+      riskLabels: riskLabelsSchema,
       featureId: string,
       activation: { enum: ["active", "paused"] },
       scope: scopeSchema,
@@ -75,7 +88,7 @@ const toolSchemas: Record<string, { description: string; inputSchema: Record<str
   dev_flow_status: { description: "Read one feature StatusView (state + progress).", inputSchema: object(["featureId"], { featureId: string }), annotations: { readOnlyHint: true } },
   dev_flow_next: { description: "Return the unique allowed next action.", inputSchema: object(["featureId"], { featureId: string }), annotations: { readOnlyHint: true } },
   dev_flow_switch_active: { description: "Atomically hand off the single active feature.", inputSchema: object(["fromFeatureId", "toFeatureId", "reason"], { fromFeatureId: string, toFeatureId: string, reason: string }) },
-  dev_flow_scaffold_artifact: { description: "Create only the current route artifact.", inputSchema: featureMutation({ kind: string }) },
+  dev_flow_scaffold_artifact: { description: "Create only the current route artifact. For editable artifacts, read the registered path before editing, then record it. Generated status artifacts are read-only: scaffold them and continue with the requested step; do not edit or record them.", inputSchema: featureMutation({ kind: string }) },
   dev_flow_record_artifact: { description: "Register an edited route artifact.", inputSchema: featureMutation({ kind: string }) },
   dev_flow_record_step: { description: "Record the current non-gate route step.", inputSchema: featureMutation({ step: string, evidence: {} }) },
   dev_flow_present_gate: { description: "Present a strict human gate.", inputSchema: featureMutation({ gate: { enum: ["requirement_confirmation", "implementation_approval"] } }) },
@@ -93,7 +106,14 @@ const toolSchemas: Record<string, { description: string; inputSchema: Record<str
     description: "Reclassify route (stricter always; same-level standard→light with userEvidence before implementation).",
     inputSchema: featureMutation({ classification: { type: "object" }, reason: string, userEvidence: string }),
   },
-  dev_flow_verify: { description: "Run only configured verification commands.", inputSchema: featureMutation({ commandIds: { type: "array", items: string }, host: { enum: ["claude", "codex"] } }) },
+  dev_flow_verify: {
+    description: "Run only configured verification commands and optionally record manual acceptance.",
+    inputSchema: featureMutation({
+      commandIds: { type: "array", items: string },
+      host: { enum: ["claude", "codex"] },
+      manualAcceptance: manualAcceptanceSchema,
+    }),
+  },
   dev_flow_feature_check: { description: "Check route completeness and fresh evidence.", inputSchema: featureMutation() },
   dev_flow_finalize: { description: "Set logic-complete after all obligations pass.", inputSchema: featureMutation() },
   dev_flow_abandon: { description: "Terminally abandon a non-finalized feature.", inputSchema: featureMutation({ reason: string, userEvidence: string }) },
@@ -142,7 +162,13 @@ function failure(id: unknown, error: unknown) {
 async function call(name: string, a: any) {
   switch (name) {
     case "dev_flow_init_project": return initProject(root, a.config);
-    case "dev_flow_classify": return selectRoute(a);
+    case "dev_flow_classify": {
+      const selected = selectRoute(a);
+      return {
+        ...selected,
+        riskRequirements: deriveRiskRequirements(selected.classification.riskLabels),
+      };
+    }
     case "dev_flow_start": return startFeature(root, { ...a, host: a.host ?? "codex" });
     case "dev_flow_status": return readStatusView(root, a.featureId);
     case "dev_flow_next": return nextAction(root, a.featureId);
@@ -153,7 +179,9 @@ async function call(name: string, a: any) {
     case "dev_flow_present_gate": return presentGate(root, a.featureId, a.expectedRevision, a.gate);
     case "dev_flow_confirm_gate": return confirmGate(root, a.featureId, a.expectedRevision, a.gate, a.userReply, { promptEventId: a.promptEventId, turnBoundaryEventId: a.turnBoundaryEventId }, a.host ?? "codex");
     case "dev_flow_reclassify": return reclassifyFeature(root, a.featureId, a.expectedRevision, a.classification, a.reason, a.userEvidence);
-    case "dev_flow_verify": return runVerification(root, a.featureId, a.expectedRevision, a.host ?? "codex", a.commandIds);
+    case "dev_flow_verify": return runVerification(
+      root, a.featureId, a.expectedRevision, a.host ?? "codex", a.commandIds, a.manualAcceptance,
+    );
     case "dev_flow_feature_check": return featureCheck(root, a.featureId, a.expectedRevision);
     case "dev_flow_finalize": return finalize(root, a.featureId, a.expectedRevision);
     case "dev_flow_abandon": return abandonFeature(root, a.featureId, a.expectedRevision, a.reason, a.userEvidence);

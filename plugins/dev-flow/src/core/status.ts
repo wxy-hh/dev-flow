@@ -1,15 +1,17 @@
-import path from "node:path";
 import { readFile } from "node:fs/promises";
+import path from "node:path";
 import { routeDefinition } from "../policy/contract.js";
-import type { NextAction } from "../policy/types.js";
-import { parseGrillFrontMatter } from "./requirements-grill.js";
-import { nextAction } from "./next.js";
-import { readState, type FeatureState } from "./state-store.js";
+import type { NextAction, RequiredEvidence } from "../policy/types.js";
 import { DevFlowError } from "./errors.js";
+import { gateReplyHint, type GateId } from "./gate-approval.js";
+import { nextAction } from "./next.js";
+import { parseGrillFrontMatter } from "./requirements-grill.js";
+import { readState, type FeatureState } from "./state-store.js";
+import { readVerificationFreshness, type VerificationFreshness } from "./verification.js";
 
 export type ProgressWait =
   | { kind: "none" }
-  | { kind: "human-gate"; gate: "requirement_confirmation" | "implementation_approval"; replyHint: string }
+  | { kind: "human-gate"; gate: GateId; replyHint: string }
   | { kind: "grill"; questionId: string; responseHint: string; questionLimit: number };
 
 export interface Progress {
@@ -19,21 +21,20 @@ export interface Progress {
   nextAction: NextAction;
   wait: ProgressWait;
   remainingSteps: string[];
+  requiredEvidence?: RequiredEvidence;
+  verificationFreshness: VerificationFreshness;
 }
 
 export type StatusView = FeatureState & { progress: Progress };
-
-function gateReplyHint(gate: string): string {
-  return gate === "requirement_confirmation" ? "确认需求 / approved / LGTM" : "批准实现 / approved / LGTM";
-}
 
 async function grillWait(root: string, state: FeatureState, action: NextAction): Promise<ProgressWait> {
   if (action.kind !== "run-step" || action.step !== "requirements") return { kind: "none" };
   const artifact = state.artifacts.requirements;
   if (!artifact) return { kind: "none" };
   let contents: string;
-  try { contents = await readFile(path.join(root, ".dev-flow", "features", state.featureId, artifact.path), "utf8"); }
-  catch {
+  try {
+    contents = await readFile(path.join(root, ".dev-flow", "features", state.featureId, artifact.path), "utf8");
+  } catch {
     throw new DevFlowError("GRILL_STATUS_INVALID", "registered requirements artifact cannot be read", {
       recoveryHint: "Restore or re-scaffold the requirements artifact through MCP, then record it before continuing",
     });
@@ -48,14 +49,20 @@ async function grillWait(root: string, state: FeatureState, action: NextAction):
   };
 }
 
-export async function buildProgress(root: string, state: FeatureState, action: NextAction): Promise<Progress> {
+export async function buildProgress(
+  root: string,
+  state: FeatureState,
+  action: NextAction,
+): Promise<Progress> {
   const ordered = routeDefinition(state.route).orderedSteps;
   const stepTotal = ordered.length;
   let currentStep: string | undefined;
   let stepIndex = stepTotal;
   for (let index = 0; index < ordered.length; index += 1) {
     const step = ordered[index];
-    const staleVerification = step === "verification" && action.kind === "run-step" && action.step === "verification";
+    const staleVerification = step === "verification"
+      && action.kind === "run-step"
+      && action.step === "verification";
     if (state.steps[step]?.status === "satisfied" && !staleVerification) continue;
     currentStep = step;
     stepIndex = index + 1;
@@ -68,7 +75,7 @@ export async function buildProgress(root: string, state: FeatureState, action: N
 
   let wait: ProgressWait = { kind: "none" };
   if (action.kind === "present-human-gate" || action.kind === "wait-human-gate") {
-    const gate = action.step as "requirement_confirmation" | "implementation_approval";
+    const gate = action.step as GateId;
     wait = { kind: "human-gate", gate, replyHint: gateReplyHint(gate) };
   } else {
     wait = await grillWait(root, state, action);
@@ -76,7 +83,19 @@ export async function buildProgress(root: string, state: FeatureState, action: N
 
   const remainingSteps = ordered.filter((step) => state.steps[step]?.status !== "satisfied"
     || (step === "verification" && action.kind === "run-step" && action.step === "verification"));
-  return { stepIndex, stepTotal, currentStep, nextAction: action, wait, remainingSteps };
+  const requiredEvidence = action.kind === "run-step" || action.kind === "feature-check"
+    ? action.requiredEvidence
+    : undefined;
+  return {
+    stepIndex,
+    stepTotal,
+    currentStep,
+    nextAction: action,
+    wait,
+    remainingSteps,
+    ...(requiredEvidence ? { requiredEvidence } : {}),
+    verificationFreshness: await readVerificationFreshness(root, state),
+  };
 }
 
 export async function readStatusView(root: string, featureId: string): Promise<StatusView> {

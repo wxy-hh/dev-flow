@@ -29,21 +29,35 @@ const SKILL_ALIASES = {
 
 const ROUTE_HIT_TOKENS = {
   "plan-review": [/plan_review/, /reviewType: "plan"/, /implementation_approval/],
-  "code-review": [/code_review/, /reviewType: "code"/],
-  implement: [/implementation/, /implementation_approval/],
-  verify: [/verification/, /dev_flow_verify/],
-  "feature-check": [/feature-check/, /dev_flow_feature_check/],
-  finish: [/finalize/, /dev_flow_finalize/, /logic-complete/],
-  requirements: [/requirements/, /requirement_confirmation/, /dev_flow_record_artifact/, /scaffold_artifact/],
+  "code-review": [/code_review/, /reviewType: "code"/, /requiredEvidence/, /full-code-review/],
+  implement: [/implementation/, /implementation_approval/, /连续编辑多个文件/, /当前 diff/, /只调用一次/],
+  verify: [/verification/, /dev_flow_verify/, /requiredEvidence\.verificationKinds/, /manualAcceptance/, /user-signoff/, /protected-root stale/],
+  "feature-check": [/feature-check/, /dev_flow_feature_check/, /不得编造/, /人工\/UI 验收/, /Core/],
+  finish: [/finalize/, /dev_flow_finalize/, /logic-complete/, /manualAcceptance/, /不得假装浏览器验收/],
+  requirements: [/requirements/, /requirement_confirmation/, /dev_flow_record_artifact/, /scaffold_artifact/, /dev_flow_present_gate/, /禁止同回合/],
   grillme: [/grill me/, /requirements/, /每轮只问一个阻塞问题/, /禁止调用任何 MCP mutation/, /grill_question_id/, /dev_flow_record_artifact/, /Source: codebase/],
   "coverage-review": [/coverage/],
-  "rollback-safety": [/rollback/],
-  task: [/does not integrate OpenSpec/, /dev_flow_next/, /execution: light/, /documented-unconfirmed/, /scaffold_artifact/],
-  status: [/dev_flow_status/, /dev_flow_next/, /progress\.wait/, /继续/],
+  "rollback-safety": [/rollback/, /requiredEvidence\.checks/, /full-rollback/],
+  task: [/does not integrate OpenSpec/, /dev_flow_next/, /execution: light/, /documented-unconfirmed/, /scaffold_artifact/, /topology/, /具体失败后果/, /riskRequirements/, /light-L/],
+  status: [/dev_flow_status/, /dev_flow_next/, /progress\.wait/, /继续/, /verificationFreshness/, /replyHint/, /requiredEvidence/],
   doctor: [/dev_flow_doctor/],
-  plan: [/dev_flow_next/, /scaffold_artifact/],
-  "risk-review": [/dev_flow_record_step|risk-card/],
+  plan: [/dev_flow_next/, /scaffold_artifact/, /dev_flow_present_gate/, /禁止同回合/],
+  "risk-review": [/dev_flow_record_step|risk-card/, /requiredEvidence/, /禁止.*复制/],
 };
+
+const ARTIFACT_OWNERS = new Set([
+  "task",
+  "requirements",
+  "grillme",
+  "plan",
+  "coverage-review",
+  "plan-review",
+  "risk-review",
+  "rollback-safety",
+  "code-review",
+  "verify",
+  "implement",
+]);
 
 test("skills use short ids under plugin namespace with legacy alias hit surface", async () => {
   const names = (await readdir(skillsRoot)).filter((n) => !n.startsWith(".")).sort();
@@ -65,12 +79,23 @@ test("skills use short ids under plugin namespace with legacy alias hit surface"
     for (const token of ROUTE_HIT_TOKENS[name] ?? []) {
       assert.match(content, token, `${name} missing route-hit token ${token}`);
     }
+    if (ARTIFACT_OWNERS.has(name)) {
+      assert.match(
+        content,
+        /dev_flow_scaffold_artifact[\s\S]*Read[\s\S]*(编辑|Edit|Write)[\s\S]*dev_flow_record_artifact/,
+        `${name} must require Read-before-Write for registered artifacts`,
+      );
+    }
   }
 
   const requirements = await readFile(path.join(skillsRoot, "requirements", "SKILL.md"), "utf8");
   const grillme = await readFile(path.join(skillsRoot, "grillme", "SKILL.md"), "utf8");
+  const task = await readFile(path.join(skillsRoot, "task", "SKILL.md"), "utf8");
+  const plan = await readFile(path.join(skillsRoot, "plan", "SKILL.md"), "utf8");
   assert.match(requirements, /missing-or-unclear/);
   assert.match(requirements, /documented-unconfirmed/);
   assert.match(requirements, /`grillme`/);
   assert.match(grillme, /`requirements`/);
+  assert.match(task, /status.*(只能 scaffold|禁止手工编辑).*record_artifact/);
+  assert.match(plan, /status.*(只允许 scaffold|禁止编辑).*record_artifact/);
 });

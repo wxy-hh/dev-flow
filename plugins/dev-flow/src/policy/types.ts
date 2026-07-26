@@ -33,9 +33,20 @@ export interface RouteDefinition {
   featureCheckRequired: boolean;
 }
 
+export type VerificationKind = "targeted" | "behavior" | "integration" | "full";
+
+export interface RequiredEvidence {
+  fields: {
+    reviewType?: "plan" | "code";
+    reviewDepth?: "full";
+  };
+  checks: string[];
+  verificationKinds: VerificationKind[];
+}
+
 export interface RiskEnhancement {
   checks: string[];
-  verification: "behavior" | "integration" | "full";
+  verification: Exclude<VerificationKind, "targeted">;
 }
 
 export interface DerivedRiskRequirements {
@@ -66,6 +77,6 @@ export type NextAction =
   | { kind: "present-human-gate"; step: string }
   | { kind: "wait-human-gate"; step: string }
   | { kind: "scaffold-artifact"; step: string }
-  | { kind: "run-step"; step: string }
-  | { kind: "feature-check" }
+  | { kind: "run-step"; step: string; requiredEvidence?: RequiredEvidence }
+  | { kind: "feature-check"; requiredEvidence?: RequiredEvidence }
   | { kind: "finalize" };

@@ -17,8 +17,8 @@ async function finishLightL(startServer, finishServer, approvalHook, starter, fi
     state = await mcpCall(finishServer, fixture.root, "dev_flow_record_step", { featureId: "handoff", expectedRevision: state.revision, step: "rollback_safety", evidence: {} });
     state = await mcpCall(finishServer, fixture.root, "dev_flow_present_gate", { featureId: "handoff", expectedRevision: state.revision, gate: "implementation_approval" });
     const promptEventId = `${finisher}-approval`;
-    assert.deepEqual(await invokeHook(approvalHook, fixture.root, { hook_event_name: "UserPromptSubmit", event_id: promptEventId, prompt: "approve implementation" }), { continue: true });
-    state = await mcpCall(finishServer, fixture.root, "dev_flow_confirm_gate", { featureId: "handoff", expectedRevision: state.revision, gate: "implementation_approval", userReply: "approve implementation", promptEventId, host: finisher });
+    assert.deepEqual(await invokeHook(approvalHook, fixture.root, { hook_event_name: "UserPromptSubmit", event_id: promptEventId, prompt: "批准实现" }), { continue: true });
+    state = await mcpCall(finishServer, fixture.root, "dev_flow_confirm_gate", { featureId: "handoff", expectedRevision: state.revision, gate: "implementation_approval", userReply: "批准实现", promptEventId, host: finisher });
     const source = path.join(fixture.root, "src", "counter.js");
     await writeFile(source, (await readFile(source, "utf8")).replace("value + 1", "value + 2"));
     const sourceTest = path.join(fixture.root, "test", "counter.test.js");
