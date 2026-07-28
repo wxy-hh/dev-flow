@@ -11,6 +11,7 @@ const status = await loadSource("plugins/dev-flow/src/core/status.ts");
 const checks = await loadSource("plugins/dev-flow/src/core/feature-check.ts");
 const gates = await loadSource("plugins/dev-flow/src/core/human-gates.ts");
 const verification = await loadSource("plugins/dev-flow/src/core/verification.ts");
+const grill = await loadSource("plugins/dev-flow/src/core/requirements-grill.ts");
 const config = {
   schemaVersion: 1,
   verification: { commands: [{ id: "unit", command: "node", args: ["-e", "process.exit(0)"], cwd: "." }], behaviorCommands: [] },
@@ -19,7 +20,7 @@ const config = {
 };
 
 async function setRequirements(root, body) {
-  const file = path.join(root, ".dev-flow", "features", "f", "requirements.md");
+  const file = path.join(root, ".dev-flow", "features", "f", "需求文档.md");
   await writeFile(file, body);
 }
 
@@ -56,6 +57,15 @@ dev_flow:
     assert.equal(view.progress.wait.kind, "grill");
     assert.equal(view.progress.wait.questionId, "Q-002");
     assert.match(view.progress.wait.responseHint, /A \/ B \/ C/);
+    const decision = await grill.requestGrillDecision(root, "f", state.revision, {
+      questionId: "Q-002",
+      question: "选择同步方案",
+      options: [{ id: "hosted", label: "托管同步" }, { id: "other", label: "其他 / 补充", requiresComment: true }],
+      host: "claude",
+    });
+    const withInteraction = await status.readStatusView(root, "f");
+    assert.equal(withInteraction.progress.wait.interaction.id, decision.interaction.id);
+    assert.match(withInteraction.progress.wait.responseHint, /^托管同步: DF-/);
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 
@@ -72,8 +82,12 @@ test("status progress reports human gates", async () => {
     const view = await status.readStatusView(root, "f");
     assert.equal(view.progress.wait.kind, "human-gate");
     assert.equal(view.progress.wait.gate, "requirement_confirmation");
-    assert.match(view.progress.wait.replyHint, /LGTM/);
-    assert.equal(view.progress.wait.replyHint.includes("lgtm"), false);
+    assert.match(view.progress.wait.replyHint, /^确认需求: DF-/);
+    assert.equal(view.progress.wait.interaction.options[0].label, "确认需求");
+    state = await gates.resolveGateElicitation(root, "f", state.revision, state.gateInteraction.id, "request-changes", "补充边界条件", "claude");
+    const returned = await status.readStatusView(root, "f");
+    assert.match(returned.progress.wait.replyHint, /已记录修改意见/);
+    assert.equal(returned.progress.wait.feedback, "补充边界条件");
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 
@@ -119,7 +133,7 @@ test("status reports missing and fresh verification without mutation", async () 
     const missing = await status.readStatusView(root, "f");
     assert.equal(missing.progress.verificationFreshness.status, "missing");
     state = await checks.recordStep(root, "f", state.revision, "locate", {});
-    state = await checks.recordStep(root, "f", state.revision, "implementation", {});
+    state = await checks.recordStep(root, "f", state.revision, "implementation", { files: [] });
     state = await verification.runVerification(root, "f", state.revision, "codex");
     const eventsFile = path.join(root, ".dev-flow", "features", "f", "events.jsonl");
     const revision = state.revision;
@@ -128,6 +142,20 @@ test("status reports missing and fresh verification without mutation", async () 
     assert.equal(fresh.revision, revision);
     assert.equal((await stat(eventsFile)).size, eventsSize);
     assert.equal(fresh.progress.verificationFreshness.status, "fresh");
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test("status exposes optional acceptance assistance without making it a blocker", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "dev-flow-status-acceptance-assist-"));
+  try {
+    await store.initProject(root, config);
+    await mkdir(path.join(root, "src"));
+    await writeFile(path.join(root, "src", "app.js"), "export const value = 1;\n");
+    await store.startFeature(root, {
+      featureId: "f", host: "codex", level: "XS", topology: "local", manualAcceptanceRequired: true,
+    });
+    const view = await status.readStatusView(root, "f");
+    assert.deepEqual(view.progress.acceptanceAssist, { suggested: true, blocking: false });
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 

@@ -4,7 +4,7 @@ import path from "node:path";
 import { recordArtifact, scaffoldArtifact } from "../core/artifacts.js";
 import { DevFlowError } from "../core/errors.js";
 import { featureCheck, finalize, recordStep } from "../core/feature-check.js";
-import { confirmGate, presentGate } from "../core/human-gates.js";
+import { confirmGate, presentGate, resolveGateElicitation, resolveGateToken } from "../core/human-gates.js";
 import {
   initProject, startFeature, abandonFeature, reclassifyFeature, switchActive, recoverCorruptFeature,
 } from "../core/state-store.js";
@@ -14,6 +14,16 @@ import { runVerification } from "../core/verification.js";
 import { allowedRiskLabels } from "../policy/contract.js";
 import { deriveRiskRequirements, selectRoute } from "../policy/route.js";
 import { collectDoctorReport } from "./doctor.js";
+import { emitAttention } from "./attention.js";
+import { enableWindowsNotifications } from "./windows-notifications.js";
+import { requestGrillDecision, resolveGrillElicitation, resolveGrillToken } from "../core/requirements-grill.js";
+import {
+  getInteraction,
+  interactionResponse,
+  toPublicInteraction,
+  type InteractionResponse,
+  type PublicInteraction,
+} from "../core/user-interactions.js";
 
 const root = process.cwd();
 const moduleDirectory = path.dirname(fileURLToPath(import.meta.url));
@@ -22,7 +32,8 @@ const tools = [
   "dev_flow_init_project", "dev_flow_classify", "dev_flow_start", "dev_flow_status", "dev_flow_next",
   "dev_flow_switch_active", "dev_flow_scaffold_artifact", "dev_flow_record_artifact", "dev_flow_record_step",
   "dev_flow_present_gate", "dev_flow_confirm_gate", "dev_flow_reclassify", "dev_flow_verify",
-  "dev_flow_feature_check", "dev_flow_finalize", "dev_flow_abandon", "dev_flow_doctor",
+  "dev_flow_respond_interaction", "dev_flow_request_grill_decision", "dev_flow_resolve_grill_decision",
+  "dev_flow_feature_check", "dev_flow_finalize", "dev_flow_abandon", "dev_flow_enable_windows_notifications", "dev_flow_doctor",
   "dev_flow_recover_corrupt_feature",
 ];
 
@@ -49,13 +60,22 @@ const scopeSchema = {
 };
 
 const manualAcceptanceSchema = object(["mode", "source", "scenarios"], {
-  mode: { enum: ["browser", "user-signoff"] },
+  mode: { enum: ["browser", "user-signoff", "code-path-audit"] },
   source: string,
+  promptEventId: string,
+  userReply: string,
   scenarios: {
     type: "array",
     minItems: 1,
     items: object(["name", "evidence"], { name: string, evidence: string }),
   },
+});
+
+const interactionOptionSchema = object(["id", "label"], {
+  id: string,
+  label: string,
+  description: string,
+  requiresComment: { type: "boolean" },
 });
 
 const toolSchemas: Record<string, { description: string; inputSchema: Record<string, unknown>; annotations?: Record<string, boolean> }> = {
@@ -68,6 +88,8 @@ const toolSchemas: Record<string, { description: string; inputSchema: Record<str
       execution: { enum: ["light", "standard"] },
       requirements: { enum: ["missing-or-unclear", "documented-unconfirmed", "provided-confirmed"] },
       riskLabels: riskLabelsSchema,
+      acceptanceAssistSuggested: { type: "boolean", description: "Offer optional browser/user acceptance help; never blocks the route." },
+      manualAcceptanceRequired: { type: "boolean" },
     }),
     annotations: { readOnlyHint: true },
   },
@@ -79,6 +101,8 @@ const toolSchemas: Record<string, { description: string; inputSchema: Record<str
       execution: { enum: ["light", "standard"] },
       requirements: { enum: ["missing-or-unclear", "documented-unconfirmed", "provided-confirmed"] },
       riskLabels: riskLabelsSchema,
+      acceptanceAssistSuggested: { type: "boolean", description: "Offer optional browser/user acceptance help; never blocks the route." },
+      manualAcceptanceRequired: { type: "boolean" },
       featureId: string,
       activation: { enum: ["active", "paused"] },
       scope: scopeSchema,
@@ -102,6 +126,34 @@ const toolSchemas: Record<string, { description: string; inputSchema: Record<str
       host: { enum: ["claude", "codex"] },
     }),
   },
+  dev_flow_respond_interaction: {
+    description: "Resolve the current gate through its one-time text-token fallback.",
+    inputSchema: featureMutation({
+      interactionId: string,
+      userReply: string,
+      promptEventId: string,
+      turnBoundaryEventId: string,
+      host: { enum: ["claude", "codex"] },
+    }),
+  },
+  dev_flow_request_grill_decision: {
+    description: "Present the current grill question as structured choices when the host supports MCP elicitation, otherwise return one-time text replies.",
+    inputSchema: featureMutation({
+      questionId: string,
+      question: string,
+      options: { type: "array", minItems: 2, maxItems: 8, items: interactionOptionSchema },
+      host: { enum: ["claude", "codex"] },
+    }),
+  },
+  dev_flow_resolve_grill_decision: {
+    description: "Resolve a current grill question through its one-time text-token fallback.",
+    inputSchema: featureMutation({
+      interactionId: string,
+      userReply: string,
+      promptEventId: string,
+      host: { enum: ["claude", "codex"] },
+    }),
+  },
   dev_flow_reclassify: {
     description: "Reclassify route (stricter always; same-level standard→light with userEvidence before implementation).",
     inputSchema: featureMutation({ classification: { type: "object" }, reason: string, userEvidence: string }),
@@ -117,6 +169,10 @@ const toolSchemas: Record<string, { description: string; inputSchema: Record<str
   dev_flow_feature_check: { description: "Check route completeness and fresh evidence.", inputSchema: featureMutation() },
   dev_flow_finalize: { description: "Set logic-complete after all obligations pass.", inputSchema: featureMutation() },
   dev_flow_abandon: { description: "Terminally abandon a non-finalized feature.", inputSchema: featureMutation({ reason: string, userEvidence: string }) },
+  dev_flow_enable_windows_notifications: {
+    description: "Explicitly enable per-user Windows Toast notifications for Dev Flow. Does not change feature state.",
+    inputSchema: object([]),
+  },
   dev_flow_doctor: { description: "Diagnose plugin and project wiring.", inputSchema: object([]), annotations: { readOnlyHint: true } },
   dev_flow_recover_corrupt_feature: {
     description: "Backup and abandon a corrupt active feature, or resume its doctor-reported recovery journal.",
@@ -159,7 +215,106 @@ function failure(id: unknown, error: unknown) {
   process.stdout.write(`${JSON.stringify({ jsonrpc: "2.0", id, error: { code: -32000, message: value.message, data: value } })}\n`);
 }
 
-async function call(name: string, a: any) {
+function emitAttentionNotification(event: Parameters<typeof emitAttention>[0]): void {
+  void emitAttention(event, {
+    emit: (message) => process.stdout.write(`${JSON.stringify(message)}\n`),
+  });
+}
+
+type ElicitationResult = { action: "accept" | "decline" | "cancel"; content?: Record<string, unknown> };
+type ElicitationSelection = { action: string; comment?: string };
+
+/** A consistent result shape for every native or text interaction operation. */
+function interactionEnvelope(
+  state: object,
+  interaction: PublicInteraction,
+  interactionOutcome: string,
+  response?: InteractionResponse,
+) {
+  return {
+    ...state,
+    interaction,
+    interactionOutcome,
+    ...(response ? { response } : {}),
+  };
+}
+
+class McpConnection {
+  private supportsFormElicitation = false;
+  private nextClientRequestId = 0;
+  private readonly pending = new Map<string, { resolve(value: unknown): void; reject(error: Error): void }>();
+
+  configure(capabilities: unknown): void {
+    this.supportsFormElicitation = false;
+    if (!capabilities || typeof capabilities !== "object" || Array.isArray(capabilities)) return;
+    const elicitation = (capabilities as { elicitation?: unknown }).elicitation;
+    if (!elicitation || typeof elicitation !== "object" || Array.isArray(elicitation)) return;
+    const modes = elicitation as Record<string, unknown>;
+    this.supportsFormElicitation = Object.keys(modes).length === 0 || modes.form !== undefined;
+  }
+
+  consumeResponse(message: { id?: unknown; method?: unknown; result?: unknown; error?: unknown }): boolean {
+    if (typeof message.id !== "string" || message.method !== undefined) return false;
+    const pending = this.pending.get(message.id);
+    if (!pending) return false;
+    this.pending.delete(message.id);
+    if (message.error !== undefined) {
+      pending.reject(new Error(`client request failed: ${JSON.stringify(message.error)}`));
+    } else {
+      pending.resolve(message.result);
+    }
+    return true;
+  }
+
+  close(): void {
+    for (const { reject } of this.pending.values()) reject(new Error("MCP client stream closed while awaiting user interaction"));
+    this.pending.clear();
+  }
+
+  private request(method: string, params: unknown): Promise<unknown> {
+    const id = `dev-flow-${++this.nextClientRequestId}`;
+    process.stdout.write(`${JSON.stringify({ jsonrpc: "2.0", id, method, params })}\n`);
+    return new Promise((resolve, reject) => this.pending.set(id, { resolve, reject }));
+  }
+
+  async elicit(interaction: PublicInteraction, message: string): Promise<ElicitationSelection | undefined> {
+    if (!this.supportsFormElicitation) return undefined;
+    let raw: unknown;
+    try {
+      raw = await this.request("elicitation/create", {
+        mode: "form",
+        message,
+        requestedSchema: {
+          type: "object",
+          properties: {
+            action: {
+              type: "string",
+              title: "操作",
+              description: "选择确认、提出修改意见，或当前问题的一个选项",
+              enum: interaction.options.map((option) => option.id),
+              enumNames: interaction.options.map((option) => option.label),
+            },
+            comment: {
+              type: "string",
+              title: "修改意见 / 补充说明",
+              description: "选择“提出修改意见”或“其他”时必填",
+            },
+          },
+          required: ["action"],
+        },
+      });
+    } catch {
+      return undefined;
+    }
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) return undefined;
+    const result = raw as ElicitationResult;
+    if (result.action !== "accept" || !result.content || typeof result.content.action !== "string") return undefined;
+    const comment = typeof result.content.comment === "string" ? result.content.comment : undefined;
+    return { action: result.content.action, ...(comment ? { comment } : {}) };
+  }
+}
+
+async function call(name: string, a: any, connection: McpConnection) {
   switch (name) {
     case "dev_flow_init_project": return initProject(root, a.config);
     case "dev_flow_classify": {
@@ -176,15 +331,75 @@ async function call(name: string, a: any) {
     case "dev_flow_scaffold_artifact": return scaffoldArtifact(root, a.featureId, a.expectedRevision, a.kind);
     case "dev_flow_record_artifact": return recordArtifact(root, a.featureId, a.expectedRevision, a.kind);
     case "dev_flow_record_step": return recordStep(root, a.featureId, a.expectedRevision, a.step, a.evidence);
-    case "dev_flow_present_gate": return presentGate(root, a.featureId, a.expectedRevision, a.gate);
+    case "dev_flow_present_gate": {
+      const presentation = await presentGate(root, a.featureId, a.expectedRevision, a.gate);
+      emitAttentionNotification({ kind: "decision-required", featureId: a.featureId, decision: a.gate });
+      const selection = await connection.elicit(
+        presentation.gateInteraction,
+        a.gate === "requirement_confirmation"
+          ? "请确认当前需求，或提出需要修改的意见。"
+          : "请确认当前实现计划，或提出需要修改的意见。",
+      );
+      if (!selection) return interactionEnvelope(presentation, presentation.gateInteraction, "pending");
+      const state = await resolveGateElicitation(
+        root, a.featureId, presentation.revision, presentation.gateInteraction.id,
+        selection.action, selection.comment, a.host ?? "codex",
+      );
+      return interactionEnvelope(
+        state,
+        presentation.gateInteraction,
+        selection.action,
+        interactionResponse(state, presentation.gateInteraction.id),
+      );
+    }
     case "dev_flow_confirm_gate": return confirmGate(root, a.featureId, a.expectedRevision, a.gate, a.userReply, { promptEventId: a.promptEventId, turnBoundaryEventId: a.turnBoundaryEventId }, a.host ?? "codex");
+    case "dev_flow_respond_interaction": {
+      const state = await resolveGateToken(
+        root, a.featureId, a.expectedRevision, a.interactionId, a.userReply,
+        { promptEventId: a.promptEventId, turnBoundaryEventId: a.turnBoundaryEventId }, a.host ?? "codex",
+      );
+      const response = interactionResponse(state, a.interactionId);
+      return interactionEnvelope(
+        state,
+        toPublicInteraction(getInteraction(state, a.interactionId)),
+        response?.action ?? "resolved",
+        response,
+      );
+    }
+    case "dev_flow_request_grill_decision": {
+      const result = await requestGrillDecision(root, a.featureId, a.expectedRevision, {
+        questionId: a.questionId,
+        question: a.question,
+        options: a.options,
+        host: a.host ?? "codex",
+      });
+      emitAttentionNotification({ kind: "decision-required", featureId: a.featureId, decision: "grill" });
+      const selection = await connection.elicit(result.interaction, result.interaction.question ?? "请选择一个方案。");
+      if (!selection) return interactionEnvelope(result.state, result.interaction, "pending");
+      const resolved = await resolveGrillElicitation(
+        root, a.featureId, result.state.revision, result.interaction.id,
+        selection.action, selection.comment, a.host ?? "codex",
+      );
+      return interactionEnvelope(resolved.state, resolved.interaction, selection.action, resolved.response);
+    }
+    case "dev_flow_resolve_grill_decision": {
+      const resolved = await resolveGrillToken(
+        root, a.featureId, a.expectedRevision, a.interactionId, a.userReply, a.promptEventId, a.host ?? "codex",
+      );
+      return interactionEnvelope(resolved.state, resolved.interaction, resolved.response?.action ?? "resolved", resolved.response);
+    }
     case "dev_flow_reclassify": return reclassifyFeature(root, a.featureId, a.expectedRevision, a.classification, a.reason, a.userEvidence);
     case "dev_flow_verify": return runVerification(
       root, a.featureId, a.expectedRevision, a.host ?? "codex", a.commandIds, a.manualAcceptance,
     );
     case "dev_flow_feature_check": return featureCheck(root, a.featureId, a.expectedRevision);
-    case "dev_flow_finalize": return finalize(root, a.featureId, a.expectedRevision);
+    case "dev_flow_finalize": {
+      const state = await finalize(root, a.featureId, a.expectedRevision);
+      emitAttentionNotification({ kind: "workflow-finalized", featureId: a.featureId });
+      return state;
+    }
     case "dev_flow_abandon": return abandonFeature(root, a.featureId, a.expectedRevision, a.reason, a.userEvidence);
+    case "dev_flow_enable_windows_notifications": return enableWindowsNotifications({ nodeExecutable: process.execPath });
     case "dev_flow_doctor": return collectDoctorReport(root, pluginRoot, __DEV_FLOW_VERSION__, tools);
     case "dev_flow_recover_corrupt_feature": return recoverCorruptFeature(root, {
       featureId: a.featureId,
@@ -199,38 +414,56 @@ async function call(name: string, a: any) {
   }
 }
 
-for await (const line of readline.createInterface({ input: process.stdin, crlfDelay: Infinity })) {
-  let message: { id?: unknown; method?: string; params?: any } = {};
+const connection = new McpConnection();
+const inFlight = new Set<Promise<void>>();
+
+async function dispatchRequest(message: { id?: unknown; method?: string; params?: any; result?: unknown; error?: unknown }): Promise<void> {
   try {
-    message = JSON.parse(line);
     // Notifications have no id; ignore after initialize handshake.
-    if (!Object.hasOwn(message, "id") || message.id === undefined || message.id === null) continue;
+    if (!Object.hasOwn(message, "id") || message.id === undefined || message.id === null) return;
 
     if (message.method === "initialize") {
+      connection.configure(message.params?.capabilities);
       protocolResult(message.id, {
         protocolVersion: message.params?.protocolVersion || "2024-11-05",
         serverInfo: { name: "dev-flow", version: __DEV_FLOW_VERSION__ },
         capabilities: { tools: {} },
-        instructions: "Classify before starting. Call dev_flow_next and execute exactly one returned action. Stop after presenting a HUMAN GATE. Use dev_flow_init_project before start. Prefer light routes for small clear tasks. On wait, use dev_flow_status progress.",
+        instructions: "Classify before starting. Call dev_flow_next and execute exactly one returned action. A presented human gate may open a native structured confirmation control; otherwise use the returned one-time reply. Use dev_flow_init_project before start.",
       });
-      continue;
+      return;
     }
     if (message.method === "tools/list") {
       protocolResult(message.id, {
         tools: tools.map((name) => ({ name, ...toolSchemas[name] })),
       });
-      continue;
+      return;
     }
     if (message.method === "tools/call") {
-      toolResult(message.id, await call(message.params?.name, message.params?.arguments ?? {}));
-      continue;
+      toolResult(message.id, await call(message.params?.name, message.params?.arguments ?? {}, connection));
+      return;
     }
     if (message.method === "ping") {
       protocolResult(message.id, {});
-      continue;
+      return;
     }
     failure(message.id, new DevFlowError("UNKNOWN_METHOD", String(message.method ?? "missing method")));
   } catch (error) {
     if (message?.id !== undefined && message?.id !== null) failure(message.id, error);
   }
 }
+
+let requestTail = Promise.resolve();
+for await (const line of readline.createInterface({ input: process.stdin, crlfDelay: Infinity })) {
+  let message: { id?: unknown; method?: string; params?: any; result?: unknown; error?: unknown };
+  try {
+    message = JSON.parse(line);
+  } catch {
+    continue;
+  }
+  if (connection.consumeResponse(message)) continue;
+  const task = requestTail.then(() => dispatchRequest(message)).finally(() => inFlight.delete(task));
+  requestTail = task;
+  inFlight.add(task);
+}
+connection.close();
+await Promise.allSettled(inFlight);

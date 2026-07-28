@@ -1,4 +1,4 @@
-/* dev-flow 1.4.0; built from source, deterministic build */
+/* dev-flow 1.7.0; built from source, deterministic build */
 
 // plugins/dev-flow/src/hosts/claude-adapter.ts
 import { lstat } from "node:fs/promises";
@@ -90,10 +90,21 @@ var DevFlowError = class extends Error {
   }
 };
 
+// plugins/dev-flow/src/core/delivery-snapshot.ts
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
+var run = promisify(execFile);
+
 // plugins/dev-flow/src/core/project-config.ts
 import path from "node:path";
 function relativeDirectory(value) {
   return value.length > 0 && !path.isAbsolute(value) && !value.split(/[\\/]+/).includes("..");
+}
+function normalizedRelativeDirectory(value) {
+  if (!relativeDirectory(value)) return void 0;
+  const slashPath = value.replaceAll("\\\\", "/");
+  const normalized = path.posix.normalize(slashPath).replace(/\/+$/u, "");
+  return normalized || void 0;
 }
 function validateProjectConfig(value) {
   const config = value;
@@ -101,9 +112,14 @@ function validateProjectConfig(value) {
   if (config.enforcement.gitWriteRequiresLogicComplete !== true || config.enforcement.oneActiveFeature !== true || config.enforcement.requireExplicitHumanReply !== true) {
     throw new DevFlowError("INVALID_PROJECT_CONFIG", "all strict enforcement controls must be enabled");
   }
-  if (!Array.isArray(config.protectedRoots) || !config.protectedRoots.length || config.protectedRoots.some((root) => !relativeDirectory(root) || root.startsWith(".dev-flow"))) {
+  if (!Array.isArray(config.protectedRoots) || !config.protectedRoots.length) {
     throw new DevFlowError("INVALID_PROJECT_CONFIG", "protectedRoots must be project-relative non-.dev-flow directories");
   }
+  const protectedRoots = config.protectedRoots.map(normalizedRelativeDirectory);
+  if (protectedRoots.some((root) => !root || root.startsWith(".dev-flow"))) {
+    throw new DevFlowError("INVALID_PROJECT_CONFIG", "protectedRoots must be project-relative non-.dev-flow directories");
+  }
+  config.protectedRoots = protectedRoots;
   const commands = config.verification?.commands;
   if (!Array.isArray(commands) || !commands.length) throw new DevFlowError("INVALID_PROJECT_CONFIG", "at least one verification command is required");
   const ids = /* @__PURE__ */ new Set();
@@ -123,7 +139,7 @@ var lifecycles = /* @__PURE__ */ new Set(["active", "paused", "finalized", "aban
 function validateFeatureState(value) {
   const state = value;
   if (state?.schemaVersion !== 1) throw new DevFlowError("UNSUPPORTED_STATE_SCHEMA", "only state schema v1 is supported");
-  if (typeof state.featureId !== "string" || !state.featureId || !Number.isInteger(state.revision) || (state.revision ?? -1) < 0 || !lifecycles.has(state.lifecycle) || !routeDefinition(state.route) || !state.classification || !state.scope || !Array.isArray(state.scope.inScope) || !Array.isArray(state.scope.outOfScope) || !state.steps || !state.humanGates || !state.artifacts || !state.verification || !Array.isArray(state.verification.attempts) || !state.featureCheck || !Array.isArray(state.blockingFindings) || typeof state.logicComplete !== "boolean" || !state.lastUpdatedBy) {
+  if (typeof state.featureId !== "string" || !state.featureId || !Number.isInteger(state.revision) || (state.revision ?? -1) < 0 || !lifecycles.has(state.lifecycle) || !routeDefinition(state.route) || !state.classification || !state.scope || !Array.isArray(state.scope.inScope) || !Array.isArray(state.scope.outOfScope) || !state.steps || !state.humanGates || !state.artifacts || !state.verification || !Array.isArray(state.verification.attempts) || state.interactions !== void 0 && (typeof state.interactions !== "object" || state.interactions === null || Array.isArray(state.interactions)) || !state.featureCheck || !Array.isArray(state.blockingFindings) || typeof state.logicComplete !== "boolean" || !state.lastUpdatedBy) {
     throw new DevFlowError("INVALID_STATE_SCHEMA", "state is not a valid v1 feature state");
   }
 }
@@ -227,9 +243,22 @@ async function recordHostEvent(root, hostEvent) {
   const release = await lock(root, active.featureId, "host-event");
   try {
     const state = await readState(root, active.featureId);
-    await appendEvent(root, active.featureId, state.revision, "host-event", { ...hostEvent, at: hostEvent.at ?? (/* @__PURE__ */ new Date()).toISOString() });
+    const events = await readFeatureEvents(root, active.featureId);
+    const duplicate = events.some((item) => {
+      const recorded = item.data;
+      return item.type === "host-event" && recorded.host === hostEvent.host && recorded.eventId === hostEvent.eventId;
+    });
+    if (!duplicate) await appendEvent(root, active.featureId, state.revision, "host-event", { ...hostEvent, at: hostEvent.at ?? (/* @__PURE__ */ new Date()).toISOString() });
   } finally {
     await release();
+  }
+}
+async function readFeatureEvents(root, id) {
+  try {
+    return (await readFile(eventPath(root, id), "utf8")).split("\n").filter(Boolean).map((line) => JSON.parse(line));
+  } catch (error) {
+    if (error.code === "ENOENT") return [];
+    throw error;
   }
 }
 function isRecoveryPhase(value) {
@@ -307,7 +336,7 @@ function formatPreToolBlock(block) {
   return `${block.code}: ${block.recoveryHint}`;
 }
 var directWriteTools = /* @__PURE__ */ new Set(["write", "edit", "multiedit", "applypatch", "apply_patch", "patch"]);
-var controlFileNames = /* @__PURE__ */ new Set(["state.json", "active.json", "project.json", "events.jsonl", "status.md", "recovery-transaction.json", "recovery-events.jsonl"]);
+var controlFileNames = /* @__PURE__ */ new Set(["state.json", "active.json", "project.json", "events.jsonl", "status.md", "\u72B6\u6001\u6587\u6863.md", "recovery-transaction.json", "recovery-events.jsonl"]);
 function toolName(event2) {
   return String(event2.tool_name ?? "").toLowerCase();
 }
@@ -336,7 +365,7 @@ function isControlPath(relative) {
   if (relative.includes("/.lock/") || relative.endsWith("/.lock")) return true;
   if (relative === ".dev-flow/active.json" || relative === ".dev-flow/project.json") return true;
   if (relative.includes("/recovered/")) return true;
-  if (relative.endsWith("/state.json") || relative.endsWith("/events.jsonl") || relative.endsWith("/status.md")) return true;
+  if (relative.endsWith("/state.json") || relative.endsWith("/events.jsonl") || relative.endsWith("/status.md") || relative.endsWith("/\u72B6\u6001\u6587\u6863.md")) return true;
   return false;
 }
 function patchTargets(value) {

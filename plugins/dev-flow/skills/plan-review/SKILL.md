@@ -3,15 +3,15 @@ name: plan-review
 description: 审查实现计划。触发：计划审查、plan review、plan-review、df-plan-review、dev-flow-plan-review。当 dev_flow_next 指向 plan_review 时使用。
 ---
 
-仅使用 Dev Flow MCP。调用 `dev_flow_next`，只执行它返回的唯一动作。路线要求 `plan-review.md` 时，严格执行 `dev_flow_scaffold_artifact` → Read 已登记路径 → 编辑 → `dev_flow_record_artifact` → `dev_flow_record_step(plan_review)`；记录 `plan_review` 时 evidence 使用 `reviewType: "plan"`。
+仅使用 Dev Flow MCP。调用 `dev_flow_next`，只执行它返回的唯一动作。路线要求 plan-review artifact 时，严格执行 `dev_flow_scaffold_artifact` → Read 已登记路径 → 编辑 → `dev_flow_record_artifact` → `dev_flow_record_step(plan_review)`；记录 `plan_review` 时 evidence 使用 `reviewType: "plan"`。
 
-完成 `plan_review` 记步后再次 `dev_flow_next`：若返回 `present-human-gate` / `wait-human-gate`（常见为 `implementation_approval`），**由本技能或随后的 status 输出统一停步话术并停止**——gate 归属是当前 next action，不是固定 skill 名。
+完成 `plan_review` 记步后再次 `dev_flow_next`：若返回 `present-human-gate`，调用 `dev_flow_present_gate` 并按其统一 `interactionOutcome` 处理：confirm 继续、request-changes 按 `response.comment` 修订并重新展示、pending 才输出返回值 `interaction.fallback` 的停步话术。先说明“已打开选择卡片；如未看到，请直接说明‘没有看到选择卡片’，我会展示文字回复。”；用户提出后只读取 status 中同一 interaction 并展示既有 token。若返回 `wait-human-gate`，由本技能或随后的 status 输出当前 interaction 的控件/一次性回复——gate 归属是当前 next action，不是固定 skill 名。
 
 ```text
 当前：<featureId> · <route>
 阶段：HUMAN GATE: implementation_approval
 为何等待：需要明确批准后才能改 protected 业务代码
-继续：批准实现 / approved / LGTM
+继续：选择“确认执行”或“提出修改意见”；无控件时使用 status.progress.wait.replyHint 的一次性回复
 后续：implementation → …
 ```
 

@@ -13,15 +13,27 @@ function relativeDirectory(value: string): boolean {
   return value.length > 0 && !path.isAbsolute(value) && !value.split(/[\\/]+/).includes("..");
 }
 
+function normalizedRelativeDirectory(value: string): string | undefined {
+  if (!relativeDirectory(value)) return undefined;
+  const slashPath = value.replaceAll("\\\\", "/");
+  const normalized = path.posix.normalize(slashPath).replace(/\/+$/u, "");
+  return normalized || undefined;
+}
+
 export function validateProjectConfig(value: unknown): asserts value is ProjectConfig {
   const config = value as Partial<ProjectConfig>;
   if (config?.schemaVersion !== 1 || config.enforcement?.mode !== "strict") throw new DevFlowError("INVALID_PROJECT_CONFIG", "only schema v1 strict configuration is supported");
   if (config.enforcement.gitWriteRequiresLogicComplete !== true || config.enforcement.oneActiveFeature !== true || config.enforcement.requireExplicitHumanReply !== true) {
     throw new DevFlowError("INVALID_PROJECT_CONFIG", "all strict enforcement controls must be enabled");
   }
-  if (!Array.isArray(config.protectedRoots) || !config.protectedRoots.length || config.protectedRoots.some((root) => !relativeDirectory(root) || root.startsWith(".dev-flow"))) {
+  if (!Array.isArray(config.protectedRoots) || !config.protectedRoots.length) {
     throw new DevFlowError("INVALID_PROJECT_CONFIG", "protectedRoots must be project-relative non-.dev-flow directories");
   }
+  const protectedRoots = config.protectedRoots.map(normalizedRelativeDirectory);
+  if (protectedRoots.some((root) => !root || root.startsWith(".dev-flow"))) {
+    throw new DevFlowError("INVALID_PROJECT_CONFIG", "protectedRoots must be project-relative non-.dev-flow directories");
+  }
+  config.protectedRoots = protectedRoots as string[];
   const commands = config.verification?.commands;
   if (!Array.isArray(commands) || !commands.length) throw new DevFlowError("INVALID_PROJECT_CONFIG", "at least one verification command is required");
   const ids = new Set<string>();

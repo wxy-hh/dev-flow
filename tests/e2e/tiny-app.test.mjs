@@ -19,7 +19,7 @@ test("light M validates a real fixture through its allowlisted verification comm
     await writeFile(counter, (await readFile(counter, "utf8")).replace("value + 1", "value + 2"));
     const counterTest = path.join(fixture.root, "test", "counter.test.js");
     await writeFile(counterTest, (await readFile(counterTest, "utf8")).replace("increment(1), 2", "increment(1), 3"));
-    state = await checks.recordStep(fixture.root, "counter", state.revision, "implementation", { changed: ["src/counter.js"] });
+    state = await checks.recordStep(fixture.root, "counter", state.revision, "implementation", { files: ["src/counter.js", "test/counter.test.js"] });
     state = await checks.recordStep(fixture.root, "counter", state.revision, "code_review", { reviewType: "code" });
     state = await verification.runVerification(fixture.root, "counter", state.revision, "claude");
     state = await checks.finalize(fixture.root, "counter", state.revision);

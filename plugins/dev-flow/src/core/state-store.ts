@@ -6,6 +6,7 @@ import { routeDefinition } from "../policy/contract.js";
 import { selectRoute } from "../policy/route.js";
 import type { Classification, ClassificationInput, RouteId } from "../policy/types.js";
 import { DevFlowError } from "./errors.js";
+import { captureDeliveryBaseline, type DeliveryBaseline, type DeliverySnapshot } from "./delivery-snapshot.js";
 import { fingerprintProtectedRoots } from "./fingerprint.js";
 import { validateProjectConfig, type ProjectConfig } from "./project-config.js";
 
@@ -14,7 +15,10 @@ export interface FeatureState {
   schemaVersion: 1; featureId: string; revision: number; lifecycle: Lifecycle; route: RouteId; classification: Classification;
   scope: { inScope: string[]; outOfScope: string[] }; steps: Record<string, { status: "pending" | "satisfied"; evidence?: unknown }>;
   humanGates: Record<string, unknown>; artifacts: Record<string, { path: string; sha256: string }>; verification: { attempts: unknown[]; satisfiedByAttemptId?: number; verifiedFingerprint?: string };
+  /** Optional so v1 state written before interactive controls remains readable. */
+  interactions?: Record<string, unknown>;
   featureCheck: { passed?: boolean; fingerprint?: string }; businessFingerprint?: string; startBusinessFingerprint?: string;
+  deliveryBaseline?: DeliveryBaseline; deliverySnapshot?: DeliverySnapshot;
   blockingFindings: Array<{ blocking: boolean; message: string }>;
   logicComplete: boolean; lastUpdatedBy: { host: "claude" | "codex"; pluginVersion: string };
 }
@@ -22,7 +26,7 @@ const lifecycles = new Set<Lifecycle>(["active", "paused", "finalized", "abandon
 export function validateFeatureState(value: unknown): asserts value is FeatureState {
   const state = value as Partial<FeatureState>;
   if (state?.schemaVersion !== 1) throw new DevFlowError("UNSUPPORTED_STATE_SCHEMA", "only state schema v1 is supported");
-  if (typeof state.featureId !== "string" || !state.featureId || !Number.isInteger(state.revision) || (state.revision ?? -1) < 0 || !lifecycles.has(state.lifecycle as Lifecycle) || !routeDefinition(state.route as RouteId) || !state.classification || !state.scope || !Array.isArray(state.scope.inScope) || !Array.isArray(state.scope.outOfScope) || !state.steps || !state.humanGates || !state.artifacts || !state.verification || !Array.isArray(state.verification.attempts) || !state.featureCheck || !Array.isArray(state.blockingFindings) || typeof state.logicComplete !== "boolean" || !state.lastUpdatedBy) {
+  if (typeof state.featureId !== "string" || !state.featureId || !Number.isInteger(state.revision) || (state.revision ?? -1) < 0 || !lifecycles.has(state.lifecycle as Lifecycle) || !routeDefinition(state.route as RouteId) || !state.classification || !state.scope || !Array.isArray(state.scope.inScope) || !Array.isArray(state.scope.outOfScope) || !state.steps || !state.humanGates || !state.artifacts || !state.verification || !Array.isArray(state.verification.attempts) || (state.interactions !== undefined && (typeof state.interactions !== "object" || state.interactions === null || Array.isArray(state.interactions))) || !state.featureCheck || !Array.isArray(state.blockingFindings) || typeof state.logicComplete !== "boolean" || !state.lastUpdatedBy) {
     throw new DevFlowError("INVALID_STATE_SCHEMA", "state is not a valid v1 feature state");
   }
 }
@@ -145,7 +149,15 @@ export interface HostEvent { eventId: string; type: "user-prompt" | "turn-bounda
 export async function recordHostEvent(root: string, hostEvent: HostEvent): Promise<void> {
   const active = await readActive(root); if (!active) return;
   const release = await lock(root, active.featureId, "host-event");
-  try { const state = await readState(root, active.featureId); await appendEvent(root, active.featureId, state.revision, "host-event", { ...hostEvent, at: hostEvent.at ?? new Date().toISOString() }); }
+  try {
+    const state = await readState(root, active.featureId);
+    const events = await readFeatureEvents(root, active.featureId);
+    const duplicate = events.some((item) => {
+      const recorded = item.data as Partial<HostEvent>;
+      return item.type === "host-event" && recorded.host === hostEvent.host && recorded.eventId === hostEvent.eventId;
+    });
+    if (!duplicate) await appendEvent(root, active.featureId, state.revision, "host-event", { ...hostEvent, at: hostEvent.at ?? new Date().toISOString() });
+  }
   finally { await release(); }
 }
 export async function readFeatureEvents(root: string, id: string): Promise<Array<{ revision: number; type: string; at: string; data: unknown }>> {
@@ -166,10 +178,11 @@ export async function startFeature(root: string, input: ClassificationInput & { 
     const { classification, route } = selectRoute(input);
     const project = await readProjectConfig(root);
     const startBusinessFingerprint = await fingerprintProtectedRoots(root, project.protectedRoots);
+    const deliveryBaseline = await captureDeliveryBaseline(root, project.protectedRoots);
     await mkdir(path.join(features(root), id), { recursive: true });
     const state: FeatureState = {
       schemaVersion: 1, featureId: id, revision: 0, lifecycle, route, classification, scope, steps: {}, humanGates: {}, artifacts: {},
-      verification: { attempts: [] }, featureCheck: {}, startBusinessFingerprint, blockingFindings: [], logicComplete: false,
+      verification: { attempts: [] }, interactions: {}, featureCheck: {}, startBusinessFingerprint, deliveryBaseline, blockingFindings: [], logicComplete: false,
       lastUpdatedBy: { host: input.host, pluginVersion: __DEV_FLOW_VERSION__ },
     };
     await writeAtomic(statePath(root, id), state);
@@ -442,6 +455,7 @@ function applyRouteTransition(state: FeatureState, selected: { classification: C
   state.artifacts = retainedArtifacts;
   state.steps = retainedSteps;
   state.humanGates = {};
+  state.interactions = {};
   state.verification = { attempts: [] };
   state.featureCheck = {};
   state.logicComplete = false;
@@ -533,7 +547,7 @@ export async function reclassifyFeature(
       });
     }
     const approval = draft.humanGates.implementation_approval as { status?: string } | undefined;
-    if (historicalApproval || approval?.status === "pending" || approval?.status === "confirmed") {
+    if (historicalApproval || approval?.status === "pending" || approval?.status === "returned" || approval?.status === "confirmed") {
       throw new DevFlowError("RECLASSIFICATION_DOWNGRADE_FORBIDDEN", "implementation_approval already presented or confirmed", {
         recoveryHint: "Finish the current standard route or abandon and restart",
       });

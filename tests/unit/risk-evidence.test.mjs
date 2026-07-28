@@ -56,7 +56,7 @@ async function lightLToCodeReview(root, riskLabels) {
   let state = await lightLToRollback(root, riskLabels);
   state = await checks.recordStep(root, "f", state.revision, "rollback_safety", evidenceFor(state, "rollback_safety"));
   state = await confirm(root, state, "implementation_approval");
-  return checks.recordStep(root, "f", state.revision, "implementation", {});
+  return checks.recordStep(root, "f", state.revision, "implementation", { files: [] });
 }
 
 async function standardToRollback(root, level) {
@@ -151,7 +151,7 @@ test("light-l irreversible consequence requires full rollback and full code revi
       checks: ["full-rollback"],
     });
     state = await confirm(root, state, "implementation_approval");
-    state = await checks.recordStep(root, "f", state.revision, "implementation", {});
+    state = await checks.recordStep(root, "f", state.revision, "implementation", { files: [] });
     await assert.rejects(
       () => checks.recordStep(root, "f", state.revision, "code_review", { reviewType: "code" }),
       (error) => error.code === "RISK_EVIDENCE_INCOMPLETE"

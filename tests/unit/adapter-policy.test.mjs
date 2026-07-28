@@ -48,7 +48,7 @@ test("heredoc to registered requirements with apps paths is allowed; control fil
   try {
     let state = await startStandard(fixture.root);
     state = await artifacts.scaffoldArtifact(fixture.root, "feature", state.revision, "requirements");
-    const req = ".dev-flow/features/feature/requirements.md";
+    const req = ".dev-flow/features/feature/需求文档.md";
     const command = `cat > ${req} <<'EOF'\n# Requirements\napps/web/src/foo.tsx\nEOF`;
     assert.equal(await guard.preToolBlockReason(fixture.root, { tool_name: "Bash", tool_input: { command } }), undefined);
     assert.match(
@@ -69,7 +69,7 @@ test("unregistered artifact path is blocked", async () => {
     assert.match(
       await guard.preToolBlockReason(fixture.root, {
         tool_name: "Write",
-        tool_input: { file_path: ".dev-flow/features/feature/requirements.md" },
+        tool_input: { file_path: ".dev-flow/features/feature/需求文档.md" },
       }),
       /DEV_FLOW_ARTIFACT_NOT_REGISTERED/,
     );
@@ -88,15 +88,15 @@ test("protected write blocked; compound bash second target blocked; unresolved e
     assert.match(
       await guard.preToolBlockReason(fixture.root, {
         tool_name: "Bash",
-        tool_input: { command: "echo ok > .dev-flow/features/feature/requirements.md && echo hi > src/foo.js" },
+        tool_input: { command: "echo ok > .dev-flow/features/feature/需求文档.md && echo hi > src/foo.js" },
       }),
       /DEV_FLOW_IMPLEMENTATION_APPROVAL_REQUIRED/,
     );
     for (const command of [
-      "touch .dev-flow/features/feature/requirements.md src/bypass.js",
-      "echo hi | tee .dev-flow/features/feature/requirements.md src/bypass.js",
-      "rm .dev-flow/features/feature/requirements.md src/bypass.js",
-      "mv src/counter.js .dev-flow/features/feature/requirements.md",
+      "touch .dev-flow/features/feature/需求文档.md src/bypass.js",
+      "echo hi | tee .dev-flow/features/feature/需求文档.md src/bypass.js",
+      "rm .dev-flow/features/feature/需求文档.md src/bypass.js",
+      "mv src/counter.js .dev-flow/features/feature/需求文档.md",
     ]) {
       assert.match(
         await guard.preToolBlockReason(fixture.root, { tool_name: "Bash", tool_input: { command } }),

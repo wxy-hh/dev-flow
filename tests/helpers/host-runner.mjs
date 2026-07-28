@@ -28,7 +28,9 @@ export async function mcpCall(serverPath, cwd, name, arguments_ = {}) {
     cwd,
     input: `${JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name, arguments: arguments_ } })}\n`,
   });
-  const message = JSON.parse(response.stdout.trim());
+  const messages = response.stdout.split("\n").filter(Boolean).map((line) => JSON.parse(line));
+  const message = messages.find((candidate) => candidate.id === 1);
+  if (!message) throw new Error(`MCP did not return a response for request 1: ${response.stdout}`);
   if (message.error) throw Object.assign(new Error(message.error.data?.message ?? message.error.message), { code: message.error.data?.code });
   return message.result.structuredContent;
 }

@@ -18,12 +18,19 @@ export interface ClassificationInput {
   execution?: Execution;
   requirements?: RequirementsState;
   riskLabels?: RiskLabel[];
+  /** Suggest browser/user acceptance assistance without making it a route condition. */
+  acceptanceAssistSuggested?: boolean;
+  /** @deprecated Compatibility input; new state never persists this field. */
+  manualAcceptanceRequired?: boolean;
 }
 
-export interface Classification extends Required<Omit<ClassificationInput, "execution" | "requirements" | "riskLabels">> {
+export interface Classification {
+  level: Level;
+  topology: Topology;
   execution?: Execution;
   requirements?: RequirementsState;
   riskLabels: RiskLabel[];
+  acceptanceAssistSuggested: boolean;
 }
 
 export interface RouteDefinition {

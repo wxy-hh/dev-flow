@@ -11,9 +11,10 @@ const artifacts = await loadSource("plugins/dev-flow/src/core/artifacts.ts");
 const checks = await loadSource("plugins/dev-flow/src/core/feature-check.ts");
 const gates = await loadSource("plugins/dev-flow/src/core/human-gates.ts");
 const verification = await loadSource("plugins/dev-flow/src/core/verification.ts");
+const grill = await loadSource("plugins/dev-flow/src/core/requirements-grill.ts");
 const config = { schemaVersion: 1, verification: { commands: [{ id: "unit", command: "node", args: ["-e", "process.exit(0)"], cwd: "." }], behaviorCommands: [] }, enforcement: { mode: "strict", gitWriteRequiresLogicComplete: true, oneActiveFeature: true, requireExplicitHumanReply: true }, protectedRoots: ["src"] };
 
-const fileFor = (root) => path.join(root, ".dev-flow", "features", "f", "requirements.md");
+const fileFor = (root) => path.join(root, ".dev-flow", "features", "f", "需求文档.md");
 async function setStatus(root, status) {
   const file = fileFor(root);
   await writeFile(file, (await readFile(file, "utf8")).replace(/^  grill_status: [^\r\n]+$/m, `  grill_status: ${status}`));
@@ -149,5 +150,50 @@ test("legacy standard features without grill_status fail closed after requiremen
       legacy.steps = Object.fromEntries(["requirements", "requirement_confirmation", "implementation_plan", "coverage_review", "rollback_unit", "plan_review", "implementation_approval", "implementation", "code_review"].map((step) => [step, { status: "satisfied" }]));
     });
     await assert.rejects(() => verification.runVerification(root, "f", state.revision, "claude"), (error) => error.code === "GRILL_STATUS_INVALID");
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test("grill decisions use native structured choices or one-time replies and preserve other feedback", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "dev-flow-grill-interaction-"));
+  try {
+    let state = await start(root, "missing-or-unclear");
+    const file = fileFor(root);
+    await writeFile(file, (await readFile(file, "utf8")).replace(
+      /^  grill_status: pending$/m,
+      "  grill_status: in_progress\n  grill_question_id: Q-001\n  grill_response_hint: \"请选择一个方案\"\n  grill_question_limit: 3",
+    ));
+    state = await artifacts.recordArtifact(root, "f", state.revision, "requirements");
+    const input = {
+      questionId: "Q-001",
+      question: "选择同步方案",
+      options: [
+        { id: "hosted", label: "托管同步" },
+        { id: "other", label: "其他 / 补充", requiresComment: true },
+      ],
+      host: "claude",
+    };
+    let decision = await grill.requestGrillDecision(root, "f", state.revision, input);
+    await assert.rejects(
+      () => grill.resolveGrillElicitation(root, "f", decision.state.revision, decision.interaction.id, "other", undefined, "claude"),
+      (error) => error.code === "INTERACTION_COMMENT_REQUIRED",
+    );
+    let resolved = await grill.resolveGrillElicitation(root, "f", decision.state.revision, decision.interaction.id, "hosted", undefined, "claude");
+    assert.equal(resolved.response.action, "hosted");
+    assert.equal(resolved.response.source, "elicitation");
+
+    state = await artifacts.recordArtifact(root, "f", resolved.state.revision, "requirements");
+    decision = await grill.requestGrillDecision(root, "f", state.revision, input);
+    const reply = decision.interaction.fallback.replies.find((candidate) => candidate.action === "other").reply.replace(" <修改意见>", " 支持离线同步");
+    await store.recordHostEvent(root, { eventId: "grill-token", type: "user-prompt", host: "claude", text: reply });
+    resolved = await grill.resolveGrillToken(root, "f", decision.state.revision, decision.interaction.id, reply, undefined, "claude");
+    assert.deepEqual(resolved.response, {
+      action: "other",
+      comment: "支持离线同步",
+      source: "text-token",
+      promptEventId: "grill-token",
+      userReply: reply,
+      host: "claude",
+      respondedAt: resolved.response.respondedAt,
+    });
   } finally { await rm(root, { recursive: true, force: true }); }
 });

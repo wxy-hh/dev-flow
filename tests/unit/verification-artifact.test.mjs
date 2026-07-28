@@ -40,7 +40,7 @@ async function verifiedLightL(root) {
   state = await gates.confirmGate(
     root, "f", state.revision, "implementation_approval", "批准实现", { promptEventId: "approval" }, "codex",
   );
-  state = await checks.recordStep(root, "f", state.revision, "implementation", {});
+  state = await checks.recordStep(root, "f", state.revision, "implementation", { files: [] });
   state = await checks.recordStep(root, "f", state.revision, "code_review", { reviewType: "code" });
   state = await artifacts.scaffoldArtifact(root, "f", state.revision, "verification");
   return verification.runVerification(root, "f", state.revision, "codex");
@@ -52,7 +52,7 @@ test("recorded verification narrative keeps commands fresh and reopens feature-c
     let state = await verifiedLightL(root);
     state = await checks.featureCheck(root, "f", state.revision);
     const fingerprint = state.verification.verifiedFingerprint;
-    const file = path.join(root, ".dev-flow", "features", "f", "verification.md");
+    const file = path.join(root, ".dev-flow", "features", "f", "验证文档.md");
     await writeFile(file, `${await readFile(file, "utf8")}\nBrowser scenario: accepted.\n`);
     state = await artifacts.recordArtifact(root, "f", state.revision, "verification");
 
@@ -74,7 +74,7 @@ test("unregistered verification narrative edit fails artifact integrity", async 
   const root = await mkdtemp(path.join(os.tmpdir(), "dev-flow-verification-dirty-"));
   try {
     const state = await verifiedLightL(root);
-    const file = path.join(root, ".dev-flow", "features", "f", "verification.md");
+    const file = path.join(root, ".dev-flow", "features", "f", "验证文档.md");
     await writeFile(file, `${await readFile(file, "utf8")}\nunregistered edit\n`);
     await assert.rejects(
       () => checks.featureCheck(root, "f", state.revision),

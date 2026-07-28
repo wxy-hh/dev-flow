@@ -1,6 +1,17 @@
 import { assertArtifactCurrent } from "./artifacts.js";
 import { DevFlowError } from "./errors.js";
-import type { FeatureState } from "./state-store.js";
+import { mutate, readFeatureEvents, readState, type FeatureState } from "./state-store.js";
+import {
+  createInteraction,
+  findInteractionForTarget,
+  getInteraction,
+  resolveNativeInteraction,
+  resolveTokenInteraction,
+  toPublicInteraction,
+  type InteractionOption,
+  type InteractionResponse,
+  type PublicInteraction,
+} from "./user-interactions.js";
 
 const statuses = ["not_required", "pending", "in_progress", "complete"] as const;
 export type GrillStatus = typeof statuses[number];
@@ -10,6 +21,19 @@ export interface GrillFrontMatter {
   questionId?: string;
   responseHint?: string;
   questionLimit?: number;
+}
+
+export interface GrillDecisionInput {
+  questionId: string;
+  question: string;
+  options: InteractionOption[];
+  host: "claude" | "codex";
+}
+
+export interface GrillDecisionResult {
+  state: FeatureState;
+  interaction: PublicInteraction;
+  response?: InteractionResponse;
 }
 
 function allowedStatuses(state: FeatureState): GrillStatus[] {
@@ -81,6 +105,135 @@ export function parseGrillFrontMatter(contents: string): GrillFrontMatter {
     }
   }
   return result;
+}
+
+async function currentGrillQuestion(root: string, id: string, state: FeatureState): Promise<GrillFrontMatter> {
+  if (!state.artifacts.requirements) throw new DevFlowError("MISSING_REQUIRED_ARTIFACT", "requirements");
+  const grill = parseGrillFrontMatter(await assertArtifactCurrent(root, id, state, "requirements"));
+  if (grill.status !== "in_progress" || !grill.questionId) {
+    throw new DevFlowError("GRILL_DECISION_NOT_PENDING", "there is no current grill question");
+  }
+  return grill;
+}
+
+export async function requestGrillDecision(
+  root: string,
+  id: string,
+  expectedRevision: number,
+  input: GrillDecisionInput,
+): Promise<GrillDecisionResult> {
+  if (!input.question.trim()) throw new DevFlowError("GRILL_QUESTION_REQUIRED", "question is required");
+  const initial = await readState(root, id);
+  if (initial.revision !== expectedRevision) {
+    throw new DevFlowError("STATE_REVISION_CONFLICT", "state revision changed", { currentRevision: initial.revision });
+  }
+  const grill = await currentGrillQuestion(root, id, initial);
+  if (grill.questionId !== input.questionId) {
+    throw new DevFlowError("GRILL_QUESTION_MISMATCH", input.questionId, { expectedQuestionId: grill.questionId });
+  }
+  const target = `grill:${input.questionId}`;
+  const existing = findInteractionForTarget(initial, target);
+  if (existing) return { state: initial, interaction: toPublicInteraction(existing) };
+  let interaction: ReturnType<typeof createInteraction> | undefined;
+  const state = await mutate(root, id, expectedRevision, "grill-decision-presented", (draft) => {
+    interaction = createInteraction(draft, {
+      kind: "grill",
+      target,
+      basisHash: draft.artifacts.requirements.sha256,
+      question: input.question,
+      options: input.options,
+    });
+    draft.lastUpdatedBy = { host: input.host, pluginVersion: __DEV_FLOW_VERSION__ };
+  }, () => ({ questionId: input.questionId, interactionId: interaction?.id, options: input.options }));
+  if (!interaction) throw new DevFlowError("INTERACTION_NOT_CREATED", target);
+  return { state, interaction: toPublicInteraction(interaction) };
+}
+
+function resolveGrillTextPrompt(
+  events: Array<{ revision: number; type: string; at: string; data: unknown }>,
+  interactionId: string,
+  userReply: string,
+  promptEventId?: string,
+): string {
+  const matches = (item: { type: string; at: string; data: unknown }) => {
+    const event = item.data as { eventId?: unknown; type?: unknown; text?: unknown; at?: unknown };
+    return item.type === "host-event" && event.type === "user-prompt" && event.text === userReply && typeof event.eventId === "string";
+  };
+  const selected = promptEventId
+    ? events.find((item) => matches(item) && (item.data as { eventId?: string }).eventId === promptEventId)
+    : [...events].reverse().find(matches);
+  if (!selected) {
+    throw new DevFlowError("INTERACTION_PROVENANCE_UNAVAILABLE", interactionId, {
+      recoveryHint: "Ensure the UserPromptSubmit hook captured the exact one-time reply, then retry",
+    });
+  }
+  const event = selected.data as { eventId: string; at?: string };
+  const interaction = interactionId;
+  if (typeof event.at !== "string") throw new DevFlowError("INTERACTION_PROVENANCE_UNAVAILABLE", interaction);
+  return event.eventId;
+}
+
+async function resolveGrillDecision(
+  root: string,
+  id: string,
+  expectedRevision: number,
+  interactionId: string,
+  host: "claude" | "codex",
+  input: { source: "elicitation"; action: string; comment?: string }
+    | { source: "text-token"; userReply: string; promptEventId?: string },
+): Promise<GrillDecisionResult> {
+  const initial = await readState(root, id);
+  if (initial.revision !== expectedRevision) {
+    throw new DevFlowError("STATE_REVISION_CONFLICT", "state revision changed", { currentRevision: initial.revision });
+  }
+  const interaction = getInteraction(initial, interactionId);
+  if (interaction.kind !== "grill" || interaction.status !== "pending") throw new DevFlowError("INTERACTION_NOT_PENDING", interactionId);
+  const grill = await currentGrillQuestion(root, id, initial);
+  if (interaction.target !== `grill:${grill.questionId}` || interaction.basisHash !== initial.artifacts.requirements.sha256) {
+    throw new DevFlowError("GRILL_BASIS_CHANGED", interactionId, { recoveryHint: "Record the current requirements and request a new decision" });
+  }
+  let promptEventId: string | undefined;
+  if (input.source === "text-token") {
+    const events = await readFeatureEvents(root, id);
+    promptEventId = resolveGrillTextPrompt(events, interactionId, input.userReply, input.promptEventId);
+    const event = events.find((item) => (item.data as { eventId?: string }).eventId === promptEventId)?.data as { at?: string } | undefined;
+    if (!event?.at || Date.parse(event.at) < Date.parse(interaction.presentedAt)) {
+      throw new DevFlowError("INTERACTION_PROVENANCE_UNAVAILABLE", interactionId, { recoveryHint: "Use a reply submitted after the decision was shown" });
+    }
+  }
+  let response: InteractionResponse | undefined;
+  const state = await mutate(root, id, expectedRevision, "grill-decision-resolved", (draft) => {
+    response = input.source === "elicitation"
+      ? resolveNativeInteraction(draft, interactionId, input.action, input.comment, host)
+      : resolveTokenInteraction(draft, interactionId, input.userReply, host, promptEventId!);
+    draft.lastUpdatedBy = { host, pluginVersion: __DEV_FLOW_VERSION__ };
+  }, () => ({ interactionId, response }));
+  if (!response) throw new DevFlowError("INTERACTION_NOT_RESOLVED", interactionId);
+  return { state, interaction: toPublicInteraction(getInteraction(state, interactionId)), response };
+}
+
+export async function resolveGrillElicitation(
+  root: string,
+  id: string,
+  expectedRevision: number,
+  interactionId: string,
+  action: string,
+  comment: string | undefined,
+  host: "claude" | "codex",
+): Promise<GrillDecisionResult> {
+  return resolveGrillDecision(root, id, expectedRevision, interactionId, host, { source: "elicitation", action, comment });
+}
+
+export async function resolveGrillToken(
+  root: string,
+  id: string,
+  expectedRevision: number,
+  interactionId: string,
+  userReply: string,
+  promptEventId: string | undefined,
+  host: "claude" | "codex",
+): Promise<GrillDecisionResult> {
+  return resolveGrillDecision(root, id, expectedRevision, interactionId, host, { source: "text-token", userReply, promptEventId });
 }
 
 /** Enforces the requirements-step grill contract after the artifact is registered. */

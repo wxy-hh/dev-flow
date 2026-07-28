@@ -20,7 +20,7 @@ description: 一问一答压测需求/方案/计划。触发：grillme、grill m
 grillme 更新 requirements front matter 与 Open Questions / Decision Log
   → 交回 requirements
   → requirements 立即 dev_flow_record_artifact(requirements)
-  → 输出统一停步话术并等待用户
+  → requirements 调用 dev_flow_request_grill_decision 展示选择控件或一次性回复
 ```
 
 禁止只改文件、不登记就等待。
@@ -31,7 +31,7 @@ grillme 更新 requirements front matter 与 Open Questions / Decision Log
 2. 答案会改变实现路径、范围、不可逆风险或成本；否则写入验收条件。
 3. 不与既有用户决定语义重复；同一主题只能有一题（例：背景/低光与 ambient tone 合为一题）。
 
-同一主题子决策合为 2–3 个互斥组合包。每轮只问一个阻塞问题；须给出推荐答案、选项与影响。
+同一主题子决策合为 2–3 个互斥组合包。每轮只问一个阻塞问题；须给出推荐答案、选项与影响。交接 requirements 时同时给出稳定小写 action ID（如 `hosted`、`self-hosted`），并总是加入 `other`（标签“其他 / 补充”，`requiresComment: true`）；供 `dev_flow_request_grill_decision` 直接渲染。
 
 ### 题数
 
@@ -46,7 +46,7 @@ grillme 更新 requirements front matter 与 Open Questions / Decision Log
 ```yaml
 grill_status: in_progress   # pending | in_progress | complete | not_required
 grill_question_id: Q-002
-grill_response_hint: "回复 A / B / C，或补充偏好"
+grill_response_hint: "等待结构化选项；无控件时由 requirements 提供一次性回复"
 grill_question_limit: 3
 ```
 
@@ -60,7 +60,7 @@ grill_question_limit: 3
 当前：<featureId> · <route>
 阶段：grill <Q-id>/≤<limit>
 为何等待：<不可由仓库推出的决策>
-继续：<grill_response_hint>
+继续：选择结构化选项；无控件时使用 requirements 返回的一次性回复
 后续：<压缩剩余 route steps>
 ```
 

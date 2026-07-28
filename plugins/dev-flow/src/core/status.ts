@@ -7,12 +7,13 @@ import { gateReplyHint, type GateId } from "./gate-approval.js";
 import { nextAction } from "./next.js";
 import { parseGrillFrontMatter } from "./requirements-grill.js";
 import { readState, type FeatureState } from "./state-store.js";
+import { fallbackHint, findInteractionForTarget, toPublicInteraction, type PublicInteraction } from "./user-interactions.js";
 import { readVerificationFreshness, type VerificationFreshness } from "./verification.js";
 
 export type ProgressWait =
   | { kind: "none" }
-  | { kind: "human-gate"; gate: GateId; replyHint: string }
-  | { kind: "grill"; questionId: string; responseHint: string; questionLimit: number };
+  | { kind: "human-gate"; gate: GateId; replyHint: string; interaction?: PublicInteraction; feedback?: string }
+  | { kind: "grill"; questionId: string; responseHint: string; questionLimit: number; interaction?: PublicInteraction };
 
 export interface Progress {
   stepIndex: number;
@@ -23,6 +24,7 @@ export interface Progress {
   remainingSteps: string[];
   requiredEvidence?: RequiredEvidence;
   verificationFreshness: VerificationFreshness;
+  acceptanceAssist: { suggested: boolean; blocking: false };
 }
 
 export type StatusView = FeatureState & { progress: Progress };
@@ -41,11 +43,13 @@ async function grillWait(root: string, state: FeatureState, action: NextAction):
   }
   const grill = parseGrillFrontMatter(contents);
   if (grill.status !== "in_progress") return { kind: "none" };
+  const interaction = findInteractionForTarget(state, `grill:${grill.questionId!}`);
   return {
     kind: "grill",
     questionId: grill.questionId!,
-    responseHint: grill.responseHint!,
+    responseHint: interaction ? fallbackHint(interaction) : grill.responseHint!,
     questionLimit: grill.questionLimit ?? 5,
+    ...(interaction ? { interaction: toPublicInteraction(interaction) } : {}),
   };
 }
 
@@ -76,7 +80,18 @@ export async function buildProgress(
   let wait: ProgressWait = { kind: "none" };
   if (action.kind === "present-human-gate" || action.kind === "wait-human-gate") {
     const gate = action.step as GateId;
-    wait = { kind: "human-gate", gate, replyHint: gateReplyHint(gate) };
+    const interaction = findInteractionForTarget(state, `gate:${gate}`);
+    const snapshot = state.humanGates[gate] as { status?: string; lastResponse?: { comment?: string } } | undefined;
+    const returned = snapshot?.status === "returned";
+    wait = {
+      kind: "human-gate",
+      gate,
+      replyHint: returned
+        ? "已记录修改意见；请先更新并登记门禁依据，再展示新的确认控件"
+        : interaction ? fallbackHint(interaction) : gateReplyHint(gate),
+      ...(interaction ? { interaction: toPublicInteraction(interaction) } : {}),
+      ...(returned && snapshot?.lastResponse?.comment ? { feedback: snapshot.lastResponse.comment } : {}),
+    };
   } else {
     wait = await grillWait(root, state, action);
   }
@@ -95,6 +110,11 @@ export async function buildProgress(
     remainingSteps,
     ...(requiredEvidence ? { requiredEvidence } : {}),
     verificationFreshness: await readVerificationFreshness(root, state),
+    acceptanceAssist: {
+      suggested: state.classification.acceptanceAssistSuggested
+        ?? (state.classification as { manualAcceptanceRequired?: boolean }).manualAcceptanceRequired === true,
+      blocking: false,
+    },
   };
 }
 

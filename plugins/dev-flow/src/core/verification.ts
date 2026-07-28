@@ -6,7 +6,7 @@ import type { VerificationKind } from "../policy/types.js";
 import { DevFlowError } from "./errors.js";
 import { fingerprintProtectedRoots } from "./fingerprint.js";
 import { assertRequirementsGrillSatisfied } from "./requirements-grill.js";
-import { mutate, readProjectConfig, readState, type FeatureState } from "./state-store.js";
+import { mutate, readFeatureEvents, readProjectConfig, readState, type FeatureState } from "./state-store.js";
 import type { VerificationCommand } from "./project-config.js";
 import { assertCurrentStep, currentOpenStep } from "./step-order.js";
 
@@ -37,9 +37,17 @@ export function verificationInvocation(
 }
 
 export interface ManualAcceptance {
-  mode: "browser" | "user-signoff";
+  mode: "browser" | "user-signoff" | "code-path-audit";
   source: string;
   scenarios: Array<{ name: string; evidence: string }>;
+  promptEventId?: string;
+  userReply?: string;
+}
+
+const userSignoffPhrases = ["验收通过", "确认验收", "同意验收", "approved", "LGTM"] as const;
+
+function normalizeReply(value: string): string {
+  return value.trim().toLocaleLowerCase("en-US");
 }
 
 export interface VerificationFreshness {
@@ -67,7 +75,7 @@ function validateManualAcceptance(value: unknown): ManualAcceptance | undefined 
     throw new DevFlowError("INVALID_MANUAL_ACCEPTANCE", "manualAcceptance must be an object");
   }
   const input = value as Record<string, unknown>;
-  if ((input.mode !== "browser" && input.mode !== "user-signoff")
+  if ((input.mode !== "browser" && input.mode !== "user-signoff" && input.mode !== "code-path-audit")
     || typeof input.source !== "string" || !input.source.trim()
     || !Array.isArray(input.scenarios) || input.scenarios.length === 0
     || "outcome" in input) {
@@ -84,7 +92,82 @@ function validateManualAcceptance(value: unknown): ManualAcceptance | undefined 
     }
     return { name: item.name.trim(), evidence: item.evidence.trim() };
   });
+  if (input.mode === "user-signoff") {
+    const promptEventId = input.promptEventId;
+    const userReply = input.userReply;
+    if (typeof promptEventId !== "string" || !promptEventId.trim()
+      || typeof userReply !== "string" || !userReply.trim()) {
+      throw new DevFlowError("INVALID_MANUAL_ACCEPTANCE", "user-signoff requires promptEventId and userReply");
+    }
+    if (!userSignoffPhrases.some((phrase) => normalizeReply(phrase) === normalizeReply(userReply))) {
+      throw new DevFlowError("INVALID_MANUAL_ACCEPTANCE", "user-signoff reply is not an explicit acceptance phrase", {
+        allowed: userSignoffPhrases,
+      });
+    }
+    return {
+      mode: input.mode,
+      source: input.source.trim(),
+      scenarios,
+      promptEventId: promptEventId.trim(),
+      userReply,
+    };
+  }
+  if (input.promptEventId !== undefined || input.userReply !== undefined) {
+    throw new DevFlowError("INVALID_MANUAL_ACCEPTANCE", "only user-signoff may include prompt evidence");
+  }
   return { mode: input.mode, source: input.source.trim(), scenarios };
+}
+
+function consumedSignoffEventIds(state: FeatureState): Set<string> {
+  const consumed = new Set<string>();
+  for (const attempt of state.verification.attempts) {
+    const manualAcceptance = (attempt as { manualAcceptance?: { promptEventId?: unknown } }).manualAcceptance;
+    if (typeof manualAcceptance?.promptEventId === "string") consumed.add(manualAcceptance.promptEventId);
+  }
+  for (const gate of Object.values(state.humanGates)) {
+    const confirmation = (gate as { confirmation?: { promptEventId?: unknown; turnBoundaryEventId?: unknown } }).confirmation;
+    if (typeof confirmation?.promptEventId === "string") consumed.add(confirmation.promptEventId);
+    if (typeof confirmation?.turnBoundaryEventId === "string") consumed.add(confirmation.turnBoundaryEventId);
+  }
+  return consumed;
+}
+
+async function assertOptionalManualAcceptance(
+  root: string,
+  id: string,
+  state: FeatureState,
+  manualAcceptance: ManualAcceptance | undefined,
+): Promise<void> {
+  if (manualAcceptance?.mode !== "user-signoff") return;
+
+  const consumed = consumedSignoffEventIds(state);
+  if (consumed.has(manualAcceptance.promptEventId!)) {
+    throw new DevFlowError("MANUAL_ACCEPTANCE_EVENT_CONSUMED", "user signoff event was already consumed");
+  }
+  const events = await readFeatureEvents(root, id);
+  const event = events.find((item) => item.type === "host-event"
+    && (item.data as { eventId?: unknown }).eventId === manualAcceptance.promptEventId);
+  const payload = event?.data as { type?: unknown; text?: unknown } | undefined;
+  if (!payload || payload.type !== "user-prompt" || payload.text !== manualAcceptance.userReply) {
+    throw new DevFlowError(
+      "MANUAL_ACCEPTANCE_PROVENANCE_UNAVAILABLE",
+      "user signoff must match a captured user prompt",
+      { recoveryHint: "Capture a later UserPromptSubmit event with one exact acceptance phrase, then retry verification" },
+    );
+  }
+}
+
+function assertMoneyBehaviorCommands(state: FeatureState, commandIds: string[], behaviorCommands: string[]): void {
+  if (!state.classification.riskLabels.includes("money")) return;
+  if (!behaviorCommands.length) {
+    throw new DevFlowError("MONEY_BEHAVIOR_COMMAND_REQUIRED", "money-risk features require configured behaviorCommands");
+  }
+  const missing = behaviorCommands.filter((id) => !commandIds.includes(id));
+  if (missing.length) {
+    throw new DevFlowError("MONEY_BEHAVIOR_COMMAND_REQUIRED", "money-risk features must run every configured behavior command", {
+      missing,
+    });
+  }
 }
 
 export async function runVerification(
@@ -110,6 +193,8 @@ export async function runVerification(
   if (!selected.length || commandIds?.some((command) => !selected.some((item) => item.id === command))) {
     throw new DevFlowError("UNKNOWN_VERIFICATION_COMMAND", "verification command is not configured");
   }
+  await assertOptionalManualAcceptance(root, id, initial, manualAcceptance);
+  assertMoneyBehaviorCommands(initial, selected.map((command) => command.id), config.verification.behaviorCommands);
 
   const fingerprint = await fingerprintProtectedRoots(root, config.protectedRoots);
   const replacingStaleVerification = Boolean(

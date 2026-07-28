@@ -9,6 +9,7 @@ export const gateApprovalPhrases: Record<GateId, readonly string[]> = {
     "LGTM",
   ],
   implementation_approval: [
+    "确认执行",
     "批准实现",
     "同意实现",
     "开始实现",

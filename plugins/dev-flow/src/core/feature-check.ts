@@ -7,8 +7,14 @@ import {
 import type { RequiredEvidence } from "../policy/types.js";
 import { assertArtifactIntegrity } from "./artifacts.js";
 import { DevFlowError } from "./errors.js";
+import {
+  assertImplementationFilesInProtectedRoots,
+  createDeliverySnapshot,
+  implementationFiles,
+  type DeliverySnapshot,
+} from "./delivery-snapshot.js";
 import { assertRequirementsGrillSatisfied } from "./requirements-grill.js";
-import { mutate, readState, type FeatureState } from "./state-store.js";
+import { mutate, readProjectConfig, readState, type FeatureState } from "./state-store.js";
 import { assertCurrentStep } from "./step-order.js";
 import { invalidateStaleVerification } from "./verification.js";
 
@@ -29,6 +35,16 @@ export async function recordStep(
   step: string,
   evidence: unknown,
 ): Promise<FeatureState> {
+  let normalizedEvidence = evidence;
+  if (step === "implementation") {
+    const files = implementationFiles(evidence);
+    const config = await readProjectConfig(root);
+    assertImplementationFilesInProtectedRoots(files, config.protectedRoots);
+    normalizedEvidence = {
+      ...(typeof evidence === "object" && evidence !== null && !Array.isArray(evidence) ? evidence : {}),
+      files,
+    };
+  }
   return mutate(root, id, expectedRevision, "step-recorded", async (state) => {
     if (state.lifecycle !== "active") {
       throw new DevFlowError("INVALID_LIFECYCLE", "only active features can record steps");
@@ -41,8 +57,8 @@ export async function recordStep(
     assertCurrentStep(state, step);
     await assertRequirementsGrillSatisfied(root, id, state);
     const required = requiredEvidenceForStep(state.route, state.classification.riskLabels, step);
-    assertRequiredEvidence(step, required, evidence);
-    state.steps[step] = { status: "satisfied", evidence };
+    assertRequiredEvidence(step, required, normalizedEvidence);
+    state.steps[step] = { status: "satisfied", evidence: normalizedEvidence };
   });
 }
 
@@ -109,6 +125,8 @@ export async function finalize(
   await assertRequirementsGrillSatisfied(root, id, initial);
   await invalidateBeforeFinalClaim(root, id, expectedRevision);
   await assertArtifactIntegrity(root, id);
+  const config = await readProjectConfig(root);
+  let snapshot: DeliverySnapshot | undefined;
   return mutate(root, id, expectedRevision, "finalized", async (state) => {
     await assertRequirementsGrillSatisfied(root, id, state);
     assertVerificationWasNotInvalidated(state);
@@ -118,8 +136,10 @@ export async function finalize(
       && (!state.featureCheck.passed || state.featureCheck.fingerprint !== state.businessFingerprint)) {
       throw new DevFlowError("FEATURE_CHECK_REQUIRED", "feature check is required");
     }
+    snapshot = await createDeliverySnapshot(root, id, state, config);
+    if (snapshot) state.deliverySnapshot = snapshot;
     state.logicComplete = true;
     state.lifecycle = "finalized";
     state.steps.finalize = { status: "satisfied" };
-  });
+  }, () => snapshot ? { deliverySnapshot: snapshot } : {});
 }

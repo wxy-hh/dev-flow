@@ -17,6 +17,7 @@ description: 开任务并分级 start。触发：开任务、开始功能、task
 2. **具体失败后果 → riskLabels**：每个标签都必须能说出 security/data/money/external/availability/critical correctness/irreversible consequence 的具体后果。禁止因“相关”堆标签，禁止发明 `product-ux` 等领域标签。
 3. **未决策程度 → execution**：M/L 分类输入使用 `execution: light | standard`。范围、接口、回滚、验收已锁定且无关键分叉时优先 `execution: light`；multi-chain 仍是 L，但可走 light-L。只有真实需求分叉、优先级或跨模块行为尚未决策时才用 `execution: standard`。
 4. **仅 standard M/L → requirements/grill**：再从输入质量选择 `missing-or-unclear`、`documented-unconfirmed`、`provided-confirmed`。
+5. **验收协助建议 → acceptanceAssistSuggested**：需求明确包含 UI、浏览器、交互或视觉验收时传 `true`，否则传 `false`。它只决定 verify 阶段是否友好地建议可协助浏览器验收，绝不阻塞自动化验证、feature-check 或 finalize；money 风险仍由机器验证规则处理。
 
 | 输入质量 | requirements | grill |
 | --- | --- | --- |
@@ -28,7 +29,7 @@ description: 开任务并分级 start。触发：开任务、开始功能、task
 
 ## 启动步骤
 
-1. 必须先调用 `dev_flow_classify`，再以完全相同的分类输入调用 `dev_flow_start`。`scope` 必须是 `{ inScope: string[], outOfScope: string[] }` 或省略。
+1. 必须先调用 `dev_flow_classify`，再以完全相同的分类输入调用 `dev_flow_start`；两个调用都必须带 `acceptanceAssistSuggested`。`scope` 必须是 `{ inScope: string[], outOfScope: string[] }` 或省略。
 2. start 返回 FeatureState，不期待它额外返回 riskRequirements。start 成功后使用此前 classify 结果输出摘要：
    - route 与原因（1 句）；
    - 压缩 steps；

@@ -3,10 +3,24 @@ import { readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { routeDefinition } from "../policy/contract.js";
 import { DevFlowError } from "./errors.js";
+import { gatesInvalidatedByArtifact } from "./gate-basis.js";
 import { mutate, readState, type FeatureState } from "./state-store.js";
 import { currentOpenStep } from "./step-order.js";
+import { clearInteractionsByKind, clearInteractionsForTarget } from "./user-interactions.js";
 
-const names: Record<string, string> = { status: "status.md", "risk-card": "risk-card.md", requirements: "requirements.md", "implementation-plan": "implementation-plan.md", "coverage-matrix": "coverage-matrix.md", "boundary-card": "boundary-card.md", "rollback-safety": "rollback-safety.md", verification: "verification.md", "rollback-units": "rollback-units.md", "plan-review": "plan-review.md", "code-review": "code-review.md" };
+const names: Record<string, string> = {
+  status: "状态文档.md",
+  "risk-card": "风险文档.md",
+  requirements: "需求文档.md",
+  "implementation-plan": "计划文档.md",
+  "coverage-matrix": "覆盖矩阵文档.md",
+  "boundary-card": "边界文档.md",
+  "rollback-safety": "回滚安全文档.md",
+  verification: "验证文档.md",
+  "rollback-units": "回滚单元文档.md",
+  "plan-review": "计划审核文档.md",
+  "code-review": "代码审核文档.md",
+};
 const hash = (value: string) => createHash("sha256").update(value).digest("hex");
 const featureDirectory = (root: string, id: string) => path.join(root, ".dev-flow", "features", id);
 function template(state: FeatureState, id: string, kind: string): string {
@@ -41,10 +55,12 @@ export async function recordArtifact(root: string, id: string, expectedRevision:
   const contents = await readFile(path.join(featureDirectory(root, id), artifact.path), "utf8"); const checksum = hash(contents);
   return mutate(root, id, expectedRevision, "artifact-recorded", (current) => {
     current.artifacts[kind] = { ...artifact, sha256: checksum };
-    if (kind === "requirements") { delete current.humanGates.requirement_confirmation; delete current.steps.requirement_confirmation; }
-    if (["requirements", "implementation-plan", "coverage-matrix", "rollback-units", "status", "boundary-card", "rollback-safety"].includes(kind)) {
-      delete current.humanGates.implementation_approval; delete current.steps.implementation_approval;
+    for (const gate of gatesInvalidatedByArtifact(kind)) {
+      delete current.humanGates[gate];
+      delete current.steps[gate];
+      clearInteractionsForTarget(current, `gate:${gate}`);
     }
+    if (kind === "requirements") clearInteractionsByKind(current, "grill");
     current.featureCheck = {}; delete current.steps.feature_check; current.logicComplete = false; delete current.steps.finalize;
   });
 }

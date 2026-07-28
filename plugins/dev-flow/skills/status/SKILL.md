@@ -11,7 +11,8 @@ description: 查看并接力 Dev Flow 状态。触发：查状态、继续任务
 2. `progress` 是展示权威；不要仅凭 raw `steps.*.status === satisfied` 声称证据仍 fresh。
 3. 若 `progress.verificationFreshness.status === stale`，明确说明 `VERIFICATION_STALE` 并要求重新 verification。
 4. 若 `progress.wait.kind !== "none"`，用中英并列 gate 名、MCP 返回的 `replyHint` 和剩余 steps 复述；不要复制本地批准词、重新 start/classify 或直接推进。
-5. wait 为 none 时再调用 `dev_flow_next`，只执行唯一动作。若 action 带 `requiredEvidence`，原样展示 fields/checks/verificationKinds。
+5. `progress.acceptanceAssist.suggested=true` 时标注“可选建议，不影响流程”；它不会产生等待、门禁或 finalize 条件。仅在有实际浏览器工具且用户明确要求后才协助验收。
+6. wait 为 none 时再调用 `dev_flow_next`，只执行唯一动作。若 action 带 `requiredEvidence`，原样展示 fields/checks/verificationKinds。
 
 ```text
 当前：<featureId> · <route>

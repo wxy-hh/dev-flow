@@ -23,13 +23,14 @@ async function finishLightL(startServer, finishServer, approvalHook, starter, fi
     await writeFile(source, (await readFile(source, "utf8")).replace("value + 1", "value + 2"));
     const sourceTest = path.join(fixture.root, "test", "counter.test.js");
     await writeFile(sourceTest, (await readFile(sourceTest, "utf8")).replace("increment(1), 2", "increment(1), 3"));
-    state = await mcpCall(finishServer, fixture.root, "dev_flow_record_step", { featureId: "handoff", expectedRevision: state.revision, step: "implementation", evidence: { changed: ["src/counter.js"] } });
+    state = await mcpCall(finishServer, fixture.root, "dev_flow_record_step", { featureId: "handoff", expectedRevision: state.revision, step: "implementation", evidence: { files: ["src/counter.js", "test/counter.test.js"] } });
     state = await mcpCall(finishServer, fixture.root, "dev_flow_record_step", { featureId: "handoff", expectedRevision: state.revision, step: "code_review", evidence: { reviewType: "code" } });
     state = await mcpCall(finishServer, fixture.root, "dev_flow_scaffold_artifact", { featureId: "handoff", expectedRevision: state.revision, kind: "verification" });
     state = await mcpCall(finishServer, fixture.root, "dev_flow_verify", { featureId: "handoff", expectedRevision: state.revision, host: finisher });
     state = await mcpCall(finishServer, fixture.root, "dev_flow_feature_check", { featureId: "handoff", expectedRevision: state.revision });
     state = await mcpCall(finishServer, fixture.root, "dev_flow_finalize", { featureId: "handoff", expectedRevision: state.revision });
     assert.equal(state.logicComplete, true);
+    assert.ok(state.deliverySnapshot);
     assert.equal(state.lastUpdatedBy.host, finisher);
   } finally { await fixture.dispose(); }
 }

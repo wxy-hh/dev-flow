@@ -59,7 +59,7 @@ test("standard-M can downgrade to light-M with userEvidence before implementatio
     assert.equal(last.data.userEvidence, "太重了，改 light");
     assert.equal(last.data.nextRoute, "light-m");
     // physical file may still exist from scaffold
-    await readFile(path.join(root, ".dev-flow", "features", "m", "requirements.md"));
+    await readFile(path.join(root, ".dev-flow", "features", "m", "需求文档.md"));
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 

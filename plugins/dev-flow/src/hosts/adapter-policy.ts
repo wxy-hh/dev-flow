@@ -27,7 +27,7 @@ export function formatPreToolBlock(block: PreToolBlock): string {
 }
 
 const directWriteTools = new Set(["write", "edit", "multiedit", "applypatch", "apply_patch", "patch"]);
-const controlFileNames = new Set(["state.json", "active.json", "project.json", "events.jsonl", "status.md", "recovery-transaction.json", "recovery-events.jsonl"]);
+const controlFileNames = new Set(["state.json", "active.json", "project.json", "events.jsonl", "status.md", "状态文档.md", "recovery-transaction.json", "recovery-events.jsonl"]);
 
 function toolName(event: HookEvent): string {
   return String(event.tool_name ?? "").toLowerCase();
@@ -63,7 +63,7 @@ function isControlPath(relative: string): boolean {
   if (relative.includes("/.lock/") || relative.endsWith("/.lock")) return true;
   if (relative === ".dev-flow/active.json" || relative === ".dev-flow/project.json") return true;
   if (relative.includes("/recovered/")) return true;
-  if (relative.endsWith("/state.json") || relative.endsWith("/events.jsonl") || relative.endsWith("/status.md")) return true;
+  if (relative.endsWith("/state.json") || relative.endsWith("/events.jsonl") || relative.endsWith("/status.md") || relative.endsWith("/状态文档.md")) return true;
   return false;
 }
 

@@ -10,7 +10,7 @@ function toDerivedState(state: FeatureState, verificationStale: boolean) {
   if (verificationStale) steps.verification = { status: "pending" };
   for (const gate of ["requirement_confirmation", "implementation_approval"]) {
     const snapshot = state.humanGates[gate] as { status?: string } | undefined;
-    if (snapshot?.status === "pending") steps[gate] = { status: "pending", artifactReady: true };
+    if (snapshot?.status === "pending" || snapshot?.status === "returned") steps[gate] = { status: "pending", artifactReady: true };
   }
   return {
     schemaVersion: state.schemaVersion,
