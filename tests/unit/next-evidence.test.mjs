@@ -4,8 +4,12 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { loadSource } from "../helpers/load-source.mjs";
+import { registerTraceFixture } from "../helpers/trace-fixtures.mjs";
 
 const store = await loadSource("plugins/dev-flow/src/core/state-store.ts");
+const artifacts = await loadSource("plugins/dev-flow/src/core/artifacts.ts");
+const checks = await loadSource("plugins/dev-flow/src/core/feature-check.ts");
+const gates = await loadSource("plugins/dev-flow/src/core/human-gates.ts");
 const next = await loadSource("plugins/dev-flow/src/core/next.ts");
 const status = await loadSource("plugins/dev-flow/src/core/status.ts");
 const config = {
@@ -20,7 +24,22 @@ async function atAction(prefix, input, satisfiedSteps) {
   await mkdir(path.join(root, "src"));
   await writeFile(path.join(root, "src", "app.js"), "export const value = 1;\n");
   await store.initProject(root, config);
-  await store.startFeature(root, { featureId: "f", host: "codex", ...input });
+  let current = await store.startFeature(root, { featureId: "f", host: "codex", ...input });
+  if (input.execution === "standard") {
+    current = await artifacts.scaffoldArtifact(root, "f", current.revision, "requirements");
+    current = await registerTraceFixture({ root, featureId: "f", state: current, kind: "requirements" });
+    current = await checks.recordStep(root, "f", current.revision, "requirements", {});
+    current = await gates.presentGate(root, "f", current.revision, "requirement_confirmation");
+    await store.recordHostEvent(root, { eventId: "requirements-approved", type: "user-prompt", host: "codex", text: "确认需求" });
+    current = await gates.confirmGate(root, "f", current.revision, "requirement_confirmation", "确认需求", { promptEventId: "requirements-approved" }, "codex");
+    current = await artifacts.scaffoldArtifact(root, "f", current.revision, "implementation-plan");
+    current = await registerTraceFixture({ root, featureId: "f", state: current, kind: "implementation-plan" });
+    current = await checks.recordStep(root, "f", current.revision, "implementation_plan", {});
+    current = await artifacts.scaffoldArtifact(root, "f", current.revision, "coverage-matrix");
+    current = await registerTraceFixture({ root, featureId: "f", state: current, kind: "coverage-matrix" });
+    await checks.recordStep(root, "f", current.revision, "coverage_review", {});
+    return { root, dispose: () => rm(root, { recursive: true, force: true }) };
+  }
   const file = path.join(root, ".dev-flow", "features", "f", "state.json");
   const state = JSON.parse(await readFile(file, "utf8"));
   state.steps = Object.fromEntries(satisfiedSteps.map((step) => [step, { status: "satisfied" }]));

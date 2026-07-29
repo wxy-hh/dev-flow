@@ -11,6 +11,7 @@ import { gateBasis } from "./gate-basis.js";
 import { assertRequirementsGrillSatisfied } from "./requirements-grill.js";
 import { mutate, readFeatureEvents, readState, type FeatureState } from "./state-store.js";
 import { artifactsRequiredBeforeGate, assertCurrentStep } from "./step-order.js";
+import { assertTraceGateCurrent } from "./traceability-gates.js";
 import {
   clearInteractionsForTarget,
   createInteraction,
@@ -62,6 +63,7 @@ export async function presentGate(
     const missing = artifactsRequiredBeforeGate(state, selectedGate).find((kind) => !state.artifacts[kind]);
     if (missing) throw new DevFlowError("MISSING_REQUIRED_ARTIFACT", missing);
     await assertRequirementsGrillSatisfied(root, id, state);
+    await assertTraceGateCurrent(root, state, selectedGate);
     const basisHash = digest(gateBasis(state, selectedGate));
     state.humanGates[selectedGate] = {
       status: "pending",
@@ -199,6 +201,7 @@ async function resolveGateResponse(
   let response: InteractionResponse | undefined;
   return mutate(root, id, expectedRevision, "gate-interaction-resolved", async (state) => {
     await assertRequirementsGrillSatisfied(root, id, state);
+    await assertTraceGateCurrent(root, state, gate);
     const current = state.humanGates[gate] as {
       status?: string;
       basisHash?: string;
@@ -292,6 +295,7 @@ export async function confirmGate(
   if (!marker) throw new DevFlowError("HUMAN_GATE_PROVENANCE_UNAVAILABLE", "confirmation provenance is required");
   return mutate(root, id, expectedRevision, "gate-confirmed", async (state) => {
     await assertRequirementsGrillSatisfied(root, id, state);
+    await assertTraceGateCurrent(root, state, selectedGate);
     const current = state.humanGates[selectedGate] as {
       status?: string;
       basisHash?: string;

@@ -16,6 +16,7 @@ import {
 import { assertRequirementsGrillSatisfied } from "./requirements-grill.js";
 import { mutate, readProjectConfig, readState, type FeatureState } from "./state-store.js";
 import { assertCurrentStep } from "./step-order.js";
+import { assertTraceGateCurrent } from "./traceability-gates.js";
 import { invalidateStaleVerification } from "./verification.js";
 
 function assertRequiredEvidence(step: string, required: RequiredEvidence, evidence: unknown): void {
@@ -56,6 +57,7 @@ export async function recordStep(
     }
     assertCurrentStep(state, step);
     await assertRequirementsGrillSatisfied(root, id, state);
+    await assertTraceGateCurrent(root, state, step);
     const required = requiredEvidenceForStep(state.route, state.classification.riskLabels, step);
     assertRequiredEvidence(step, required, normalizedEvidence);
     state.steps[step] = { status: "satisfied", evidence: normalizedEvidence };
@@ -96,6 +98,7 @@ export async function featureCheck(
     await assertRequirementsGrillSatisfied(root, id, state);
     assertVerificationWasNotInvalidated(state);
     assertCurrentStep(state, "feature_check");
+    await assertTraceGateCurrent(root, state, "feature_check");
     if (state.verification.verifiedFingerprint !== state.businessFingerprint) {
       throw new DevFlowError("VERIFICATION_STALE", "protected files changed or verification did not pass");
     }
@@ -132,6 +135,7 @@ export async function finalize(
     assertVerificationWasNotInvalidated(state);
     const route = routeDefinitionForFeature(state.route, state.workflowCapabilities);
     assertCurrentStep(state, "finalize");
+    await assertTraceGateCurrent(root, state, "finalize");
     if (route.featureCheckRequired
       && (!state.featureCheck.passed || state.featureCheck.fingerprint !== state.businessFingerprint)) {
       throw new DevFlowError("FEATURE_CHECK_REQUIRED", "feature check is required");

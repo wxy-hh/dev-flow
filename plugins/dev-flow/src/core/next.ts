@@ -3,6 +3,7 @@ import { deriveNext } from "../policy/derive-next.js";
 import { requiredEvidenceForStep, requiredEvidenceIsEmpty } from "../policy/evidence.js";
 import type { NextAction } from "../policy/types.js";
 import { readState, type FeatureState } from "./state-store.js";
+import { inspectTraceGate } from "./traceability-gates.js";
 import { verificationIsStale } from "./verification.js";
 
 function toDerivedState(state: FeatureState, verificationStale: boolean) {
@@ -44,6 +45,13 @@ function enrichFeatureCheck(state: FeatureState): NextAction {
     : { kind: "feature-check", requiredEvidence };
 }
 
+function traceStepForAction(action: NextAction): string | undefined {
+  if (action.kind === "run-step" || action.kind === "present-human-gate") return action.step;
+  if (action.kind === "feature-check") return "feature_check";
+  if (action.kind === "finalize") return "finalize";
+  return undefined;
+}
+
 export async function nextAction(root: string, id: string): Promise<NextAction> {
   const state = await readState(root, id);
   const action = deriveNext(toDerivedState(state, await verificationIsStale(root, state)));
@@ -56,6 +64,12 @@ export async function nextAction(root: string, id: string): Promise<NextAction> 
     ];
     const missing = requiredNow.find((artifact) => !state.artifacts[artifact]);
     if (missing) return { kind: "scaffold-artifact", step: missing };
+  }
+
+  const traceStep = traceStepForAction(action);
+  if (traceStep) {
+    const trace = await inspectTraceGate(root, state, traceStep);
+    if (trace.blocker) return { kind: "repair-trace", ...trace.blocker };
   }
 
   if (action.kind === "run-step" && action.step === "feature_check") return enrichFeatureCheck(state);

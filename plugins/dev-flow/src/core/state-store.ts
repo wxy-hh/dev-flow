@@ -11,6 +11,7 @@ import { captureDeliveryBaseline, type DeliveryBaseline, type DeliverySnapshot }
 import { fingerprintProtectedRoots } from "./fingerprint.js";
 import { validateProjectConfig, type ProjectConfig } from "./project-config.js";
 import { emptyTraceabilityLedger } from "./traceability.js";
+import { inspectCurrentTrace } from "./traceability-gates.js";
 import { readProjectConfigSnapshot, writeTraceSnapshot } from "./traceability-store.js";
 
 export type Lifecycle = "active" | "paused" | "finalized" | "abandoned";
@@ -107,12 +108,23 @@ async function writeAtomic(file: string, value: unknown): Promise<void> {
   await rename(temp, file);
   const directory = await open(path.dirname(file), "r"); try { await directory.sync(); } finally { await directory.close(); }
 }
-function prepareStatusProjection(root: string, state: FeatureState, revision: number): (() => Promise<void>) | undefined {
+async function prepareStatusProjection(root: string, state: FeatureState, revision: number): Promise<(() => Promise<void>) | undefined> {
   const status = state.artifacts.status; if (!status) return;
+  const trace = await inspectCurrentTrace(root, state);
+  const summary = trace.effectiveSummary;
+  const traceLines = [
+    "## Trace", "",
+    `- Enforced: ${trace.enforced}`,
+    ...(state.traceability ? [`- Pointer: ${state.traceability.path}`] : []),
+    ...(summary ? [`- Summary: total=${summary.total} current=${summary.current} stale=${summary.stale} tombstoned=${summary.tombstoned}`] : []),
+    ...(trace.blocker ? [`- Blocker: ${trace.blocker.code} (${trace.blocker.step})`] : []),
+    "",
+  ];
   const projection = [
     "---", "dev_flow:", "  schema_version: 1", `  feature_id: ${state.featureId}`, `  route: ${state.route}`, "  kind: status", "  generated: true", "---", "",
     "# Dev Flow Status", "", `- Revision: ${revision}`, `- Lifecycle: ${state.lifecycle}`, `- Route: ${state.route}`, `- Logic complete: ${state.logicComplete}`, "", "## Steps", "",
     ...routeDefinitionForFeature(state.route, state.workflowCapabilities).orderedSteps.map((step) => `- ${step}: ${state.steps[step]?.status ?? "pending"}`), "",
+    ...traceLines,
   ].join("\n");
   const contents = `${projection}\n`;
   const file = path.join(features(root), state.featureId, status.path);
@@ -326,7 +338,7 @@ async function mutatePreparedLocked(
   await prepared.mutate(state);
   state.revision += 1;
   validateFeatureState(state);
-  const writeStatus = prepareStatusProjection(root, state, state.revision);
+  const writeStatus = await prepareStatusProjection(root, state, state.revision);
   await options.fault?.("before-state-commit");
   await writeAtomic(statePath(root, id), state);
   const failures: string[] = [];

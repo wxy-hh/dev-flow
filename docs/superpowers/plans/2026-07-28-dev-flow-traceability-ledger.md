@@ -1282,9 +1282,9 @@ trace?: {
 
 **步骤：**
 
-- [ ] **步骤 1：写 Core 旁路红灯测试。** 直接调用 `recordStep`、`presentGate`、`featureCheck`、`finalize`，分别断言缺失、stale、损坏 Trace 无法绕过；同时断言 legacy feature 和 Trace-only implementation 不要求 checkpoint。
+- [x] **步骤 1：写 Core 旁路红灯测试。** 直接调用 `recordStep`、`presentGate`、`featureCheck`、`finalize`，分别断言缺失、stale、损坏 Trace 无法绕过；同时断言 legacy feature 和 Trace-only implementation 不要求 checkpoint。
 
-- [ ] **步骤 2：写 next/status 红灯测试。**
+- [x] **步骤 2：写 next/status 红灯测试。**
 
 ```js
 const action = await next.nextAction(root, "f");
@@ -1297,11 +1297,11 @@ assert.deepEqual(view.progress.nextAction, action);
 assert.equal(view.trace.blockers[0].code, action.code);
 ```
 
-- [ ] **步骤 3：写 doctor 红灯测试。** 删除当前 snapshot、篡改 snapshot、复制一个未引用 snapshot；前两种是 error/fail closed，后一种是 warning 且不改变 state。
+- [x] **步骤 3：写 doctor 红灯测试。** 删除当前 snapshot、篡改 snapshot、复制一个未引用 snapshot；前两种是 error/fail closed，后一种是 warning 且不改变 state。
 
-- [ ] **步骤 4：迁移既有 standard 流程测试。** `status-progress`、`risk-evidence`、`next-evidence` 和 Claude→Codex source-based 跨宿主流程必须使用 Task 5 helper、真实 artifact 内容和 `recordArtifactWithTrace` 建立当前 Trace，再测试阶段门禁、风险 evidence、next/status 一致性和跨宿主确认。route-flow 已在 Task 5 接入 helper，本任务用全路线回归证明门禁开启后仍可闭环。只有明确标注“legacy compatibility”的用例可以删除 `workflowCapabilities` 模拟旧 feature；不得给普通新 feature 直接写 steps 或 ledger 来绕过 Trace。
+- [x] **步骤 4：迁移既有 standard 流程测试。** `status-progress`、`risk-evidence`、`next-evidence` 和 Claude→Codex source-based 跨宿主流程必须使用 Task 5 helper、真实 artifact 内容和 `recordArtifactWithTrace` 建立当前 Trace，再测试阶段门禁、风险 evidence、next/status 一致性和跨宿主确认。route-flow 已在 Task 5 接入 helper，本任务用全路线回归证明门禁开启后仍可闭环。只有明确标注“legacy compatibility”的用例可以删除 `workflowCapabilities` 模拟旧 feature；不得给普通新 feature 直接写 steps 或 ledger 来绕过 Trace。
 
-- [ ] **步骤 5：运行红灯。**
+- [x] **步骤 5：运行红灯。**
 
 ```bash
 node --test tests/unit/traceability-gates.test.mjs \
@@ -1313,13 +1313,13 @@ node --test tests/unit/traceability-gates.test.mjs \
 
 预期：FAIL，原因是阶段入口和 StatusView 尚未接入 Trace。
 
-- [ ] **步骤 6：实现统一读取入口。** 所有 Core 门禁调用同一个 `readTraceability`/slice API；禁止在 human-gates、feature-check、next、status 中分别实现图判断。
+- [x] **步骤 6：实现统一读取入口。** 所有 Core 门禁调用同一个 `readTraceability`/slice API；禁止在 human-gates、feature-check、next、status 中分别实现图判断。
 
-- [ ] **步骤 7：实现 repair-trace 和投影。** `nextAction` 只有在 artifact 已 scaffold、但本步骤 Trace slice 不满足时返回 repair-trace；缺 artifact 时继续返回 scaffold-artifact。status JSON 和 status Markdown 使用同一计算结果。
+- [x] **步骤 7：实现 repair-trace 和投影。** `nextAction` 只有在 artifact 已 scaffold、但本步骤 Trace slice 不满足时返回 repair-trace；缺 artifact 时继续返回 scaffold-artifact。status JSON 和 status Markdown 使用同一计算结果。
 
-- [ ] **步骤 8：实现 doctor。** orphan snapshot 只产生 warning；当前 pointer 错误产生 error 和明确恢复提示，不自动选择或修改 snapshot。
+- [x] **步骤 8：实现 doctor。** orphan snapshot 只产生 warning；当前 pointer 错误产生 error 和明确恢复提示，不自动选择或修改 snapshot。
 
-- [ ] **步骤 9：运行回归。**
+- [x] **步骤 9：运行回归。**
 
 ```bash
 node --test tests/unit/traceability-gates.test.mjs \
@@ -1337,7 +1337,7 @@ npm run test:interop
 
 预期：PASS。
 
-- [ ] **步骤 10：提交任务 6。**
+- [x] **步骤 10：提交任务 6。**
 
 ```bash
 git add plugins/dev-flow/src/core/human-gates.ts \

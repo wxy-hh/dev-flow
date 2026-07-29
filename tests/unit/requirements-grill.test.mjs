@@ -97,6 +97,7 @@ test("invalid grill status is rejected and registered edits revoke a confirmed r
   const root = await mkdtemp(path.join(os.tmpdir(), "dev-flow-grill-invalidation-"));
   try {
     let state = await start(root, "provided-confirmed");
+    state = await registerTraceFixture({ root, featureId: "f", state, kind: "requirements" });
     state = await checks.recordStep(root, "f", state.revision, "requirements", {});
     state = await gates.presentGate(root, "f", state.revision, "requirement_confirmation");
     await store.recordHostEvent(root, { eventId: "later", type: "user-prompt", host: "claude", text: "approved" });

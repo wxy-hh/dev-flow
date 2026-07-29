@@ -203,6 +203,7 @@ test("MCP emits one advisory attention event for a pending gate", async () => {
       featureId: "f", host: "codex", level: "M", topology: "local", execution: "standard", requirements: "provided-confirmed",
     });
     state = await artifacts.scaffoldArtifact(root, "f", state.revision, "requirements");
+    state = await registerTraceFixture({ root, featureId: "f", state, kind: "requirements" });
     state = await checks.recordStep(root, "f", state.revision, "requirements", {});
     const messages = await request([
       { jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "dev_flow_present_gate", arguments: { featureId: "f", expectedRevision: state.revision, gate: "requirement_confirmation", host: "codex" } } },

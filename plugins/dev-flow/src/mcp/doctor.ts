@@ -1,7 +1,9 @@
 import { lstat, readdir, readFile } from "node:fs/promises";
 import path from "node:path";
 import { createHash } from "node:crypto";
-import { readProjectConfig, readState, readActive, readRecoveryTransaction, stateFileSha256 } from "../core/state-store.js";
+import { traceEnforcementRequired } from "../policy/contract.js";
+import { listOrphanTraceSnapshots, readTraceability } from "../core/traceability-store.js";
+import { readProjectConfig, readState, readActive, readRecoveryTransaction, stateFileSha256, type FeatureState } from "../core/state-store.js";
 
 type Status = "ok" | "error" | "warning";
 type Diagnostic = { code: string; status: Status; message: string; recoveryHint?: string };
@@ -60,6 +62,7 @@ export async function collectDoctorReport(root: string, pluginRoot: string, vers
     candidates: Array<{ featureId: string; stateSha256?: string }>;
     recoveryHint: string;
   } | undefined;
+  let traceState: FeatureState | undefined;
 
   if (activeFeature.present) {
     try {
@@ -67,6 +70,7 @@ export async function collectDoctorReport(root: string, pluginRoot: string, vers
       if (!active?.featureId) throw new Error("active feature id is missing");
       try {
         const state = await readState(root, active.featureId);
+        traceState = state;
         activeFeature = { present: true, featureId: state.featureId, valid: state.lifecycle === "active" };
         add(
           activeFeature.valid ? "ACTIVE_FEATURE_VALID" : "ACTIVE_FEATURE_INVALID",
@@ -129,6 +133,44 @@ export async function collectDoctorReport(root: string, pluginRoot: string, vers
     "Re-run dev_flow_recover_corrupt_feature with the same doctor-reported input to resume the next safe journal phase",
   );
 
+  let trace: {
+    enforced: boolean;
+    pointerPresent: boolean;
+    orphanSnapshots: string[];
+  } | undefined;
+  if (traceState) {
+    const enforced = traceEnforcementRequired(traceState.route, traceState.workflowCapabilities);
+    const orphanSnapshots = await listOrphanTraceSnapshots(root, traceState);
+    trace = { enforced, pointerPresent: Boolean(traceState.traceability), orphanSnapshots };
+    if (!enforced) {
+      add(
+        traceState.workflowCapabilities ? "TRACE_NOT_REQUIRED" : "TRACE_LEGACY_FEATURE",
+        "ok",
+        traceState.workflowCapabilities ? "Trace pointer is not required for this route" : "legacy feature has no Trace capability stamp",
+      );
+    } else {
+      try {
+        await readTraceability(root, traceState);
+        add("TRACE_POINTER_VALID", "ok", "current Trace pointer and snapshot are valid");
+      } catch (error) {
+        add(
+          "TRACE_POINTER_INVALID",
+          "error",
+          error instanceof Error ? error.message : String(error),
+          "Restore the referenced Trace snapshot or re-register the current Trace artifact; doctor will not select a replacement snapshot automatically",
+        );
+      }
+    }
+    if (orphanSnapshots.length) {
+      add(
+        "TRACE_ORPHAN_SNAPSHOTS",
+        "warning",
+        `unreferenced Trace snapshots: ${orphanSnapshots.join(", ")}`,
+        "Orphan snapshots are retained for diagnosis; do not hand-edit state or select an orphan as the current pointer",
+      );
+    }
+  }
+
   const paths = {
     claudeManifest: path.join(pluginRoot, ".claude-plugin", "plugin.json"),
     codexManifest: path.join(pluginRoot, ".codex-plugin", "plugin.json"),
@@ -149,6 +191,7 @@ export async function collectDoctorReport(root: string, pluginRoot: string, vers
   return {
     version, root, pluginRoot, tools, project, activeFeature, corruptFeature, corruptActivePointer,
     recoveryTransaction: recoveryTxn ?? null,
+    trace: trace ?? null,
     mcp: { server: "running", configuration: !invalidJson },
     diagnostics,
   };

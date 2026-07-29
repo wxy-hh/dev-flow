@@ -2,11 +2,13 @@ import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { routeDefinitionForFeature } from "../policy/contract.js";
 import type { NextAction, RequiredEvidence } from "../policy/types.js";
+import type { TraceSummary, TraceabilityPointer } from "../policy/traceability.js";
 import { DevFlowError } from "./errors.js";
 import { gateReplyHint, type GateId } from "./gate-approval.js";
 import { nextAction } from "./next.js";
 import { parseGrillFrontMatter } from "./requirements-grill.js";
 import { readState, type FeatureState } from "./state-store.js";
+import { inspectCurrentTrace, type TraceBlocker } from "./traceability-gates.js";
 import { fallbackHint, findInteractionForTarget, toPublicInteraction, type PublicInteraction } from "./user-interactions.js";
 import { readVerificationFreshness, type VerificationFreshness } from "./verification.js";
 
@@ -27,7 +29,24 @@ export interface Progress {
   acceptanceAssist: { suggested: boolean; blocking: false };
 }
 
-export type StatusView = FeatureState & { progress: Progress };
+export interface TraceStatus {
+  enforced: boolean;
+  pointer?: TraceabilityPointer;
+  effectiveSummary?: TraceSummary;
+  blockers: TraceBlocker[];
+}
+
+export type StatusView = FeatureState & { progress: Progress; trace: TraceStatus };
+
+async function traceStatus(root: string, state: FeatureState): Promise<TraceStatus> {
+  const inspection = await inspectCurrentTrace(root, state);
+  return {
+    enforced: inspection.enforced,
+    ...(inspection.enforced && state.traceability ? { pointer: state.traceability } : {}),
+    ...(inspection.effectiveSummary ? { effectiveSummary: inspection.effectiveSummary } : {}),
+    blockers: inspection.blocker ? [inspection.blocker] : [],
+  };
+}
 
 async function grillWait(root: string, state: FeatureState, action: NextAction): Promise<ProgressWait> {
   if (action.kind !== "run-step" || action.step !== "requirements") return { kind: "none" };
@@ -122,5 +141,5 @@ export async function readStatusView(root: string, featureId: string): Promise<S
   const state = await readState(root, featureId);
   const action = await nextAction(root, featureId);
   const progress = await buildProgress(root, state, action);
-  return { ...state, progress };
+  return { ...state, progress, trace: await traceStatus(root, state) };
 }

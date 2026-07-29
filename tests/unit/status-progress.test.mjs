@@ -61,6 +61,7 @@ test("status progress reports human gates", async () => {
       featureId: "f", host: "claude", level: "M", topology: "local", execution: "standard", requirements: "provided-confirmed",
     });
     state = await artifacts.scaffoldArtifact(root, "f", state.revision, "requirements");
+    state = await registerTraceFixture({ root, featureId: "f", state, kind: "requirements" });
     state = await checks.recordStep(root, "f", state.revision, "requirements", {});
     state = await gates.presentGate(root, "f", state.revision, "requirement_confirmation");
     const view = await status.readStatusView(root, "f");

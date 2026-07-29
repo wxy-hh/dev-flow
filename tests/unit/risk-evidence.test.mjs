@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { loadSource } from "../helpers/load-source.mjs";
+import { registerTraceFixture } from "../helpers/trace-fixtures.mjs";
 
 const store = await loadSource("plugins/dev-flow/src/core/state-store.ts");
 const artifacts = await loadSource("plugins/dev-flow/src/core/artifacts.ts");
@@ -65,13 +66,19 @@ async function standardToRollback(root, level) {
     execution: "standard", requirements: "provided-confirmed", riskLabels: ["data"],
   });
   state = await artifacts.scaffoldArtifact(root, "f", state.revision, "requirements");
+  state = await registerTraceFixture({ root, featureId: "f", state, kind: "requirements" });
   state = await checks.recordStep(root, "f", state.revision, "requirements", {});
   state = await confirm(root, state, "requirement_confirmation");
   state = await artifacts.scaffoldArtifact(root, "f", state.revision, "implementation-plan");
+  state = await registerTraceFixture({ root, featureId: "f", state, kind: "implementation-plan" });
   state = await checks.recordStep(root, "f", state.revision, "implementation_plan", {});
   state = await artifacts.scaffoldArtifact(root, "f", state.revision, "coverage-matrix");
+  state = await registerTraceFixture({ root, featureId: "f", state, kind: "coverage-matrix" });
   state = await checks.recordStep(root, "f", state.revision, "coverage_review", {});
-  if (level === "L") state = await artifacts.scaffoldArtifact(root, "f", state.revision, "rollback-units");
+  if (level === "L") {
+    state = await artifacts.scaffoldArtifact(root, "f", state.revision, "rollback-units");
+    state = await registerTraceFixture({ root, featureId: "f", state, kind: "rollback-units" });
+  }
   return state;
 }
 

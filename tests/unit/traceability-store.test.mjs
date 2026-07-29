@@ -6,6 +6,7 @@ import path from "node:path";
 import test from "node:test";
 import { strictProjectConfig } from "../helpers/fixture-repo.mjs";
 import { loadSource } from "../helpers/load-source.mjs";
+import { registerTraceFixture } from "../helpers/trace-fixtures.mjs";
 
 const trace = await loadSource("plugins/dev-flow/src/core/traceability.ts");
 const traceStore = await loadSource("plugins/dev-flow/src/core/traceability-store.ts");
@@ -160,19 +161,33 @@ test("next scaffolds generated status before implementation approval", async () 
       requirements: "provided-confirmed",
       host: "codex",
     });
+    state = await artifacts.scaffoldArtifact(root, "standard", state.revision, "requirements");
+    state = await registerTraceFixture({ root, featureId: "standard", state, kind: "requirements" });
     state = await stateStore.mutate(root, "standard", state.revision, "test-ready-for-approval", (draft) => {
       draft.steps = Object.fromEntries([
         "requirements",
         "requirement_confirmation",
-        "implementation_plan",
-        "coverage_review",
-        "rollback_unit",
-        "plan_review",
       ].map((step) => [step, { status: "satisfied" }]));
+    });
+    state = await artifacts.scaffoldArtifact(root, "standard", state.revision, "implementation-plan");
+    state = await registerTraceFixture({ root, featureId: "standard", state, kind: "implementation-plan" });
+    state = await stateStore.mutate(root, "standard", state.revision, "test-ready-for-coverage", (draft) => {
+      draft.steps.implementation_plan = { status: "satisfied" };
+    });
+    state = await artifacts.scaffoldArtifact(root, "standard", state.revision, "coverage-matrix");
+    state = await registerTraceFixture({ root, featureId: "standard", state, kind: "coverage-matrix" });
+    state = await stateStore.mutate(root, "standard", state.revision, "test-ready-for-approval", (draft) => {
+      for (const step of ["coverage_review", "rollback_unit", "plan_review"]) draft.steps[step] = { status: "satisfied" };
     });
     const action = await next.nextAction(root, "standard");
     assert.deepEqual(action, { kind: "scaffold-artifact", step: "status" });
     state = await artifacts.scaffoldArtifact(root, "standard", state.revision, "status");
+    const status = await readFile(path.join(root, ".dev-flow/features/standard", state.artifacts.status.path), "utf8");
+    assert.match(status, /## Trace/);
+    assert.match(status, /- Enforced: true/);
+    assert.match(status, /- Pointer: traceability\/snapshots\/[a-f0-9]{64}\.json/);
+    assert.match(status, /- Summary: total=5 current=5 stale=0 tombstoned=0/);
+    assert.doesNotMatch(status, /- Blocker:/);
     const after = await next.nextAction(root, "standard");
     assert.equal(after.kind, "present-human-gate");
     assert.equal(after.step, "implementation_approval");
