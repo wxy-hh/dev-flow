@@ -1,1 +1,1 @@
-export { scaffoldArtifact, recordArtifact } from "../../core/artifacts.js";
+export { scaffoldArtifact, recordArtifact, recordArtifactWithTrace } from "../../core/artifacts.js";

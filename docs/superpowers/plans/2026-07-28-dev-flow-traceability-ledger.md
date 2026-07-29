@@ -1453,13 +1453,13 @@ dev_flow_next
 
 **步骤：**
 
-- [ ] **步骤 1：写临时 bundle helper 和 MCP interface 红灯测试。** 测试从源码构建临时 mcp-server，断言两个工具被发现、输入严格、get 为只读、非法 source/edge 字段在协议层拒绝、业务错误保留稳定 code；同时断言受版本控制的 dist 没有发生变化。
+- [x] **步骤 1：写临时 bundle helper 和 MCP interface 红灯测试。** 测试从源码构建临时 mcp-server，断言两个工具被发现、输入严格、get 为只读、非法 source/edge 字段在协议层拒绝、业务错误保留稳定 code；同时断言受版本控制的 dist 没有发生变化。
 
-- [ ] **步骤 2：写 MCP CAS 红灯测试。** 用同一 expectedRevision 连续提交两个 delta，断言第二个返回 `STATE_REVISION_CONFLICT`，胜出的 pointer 可由 get 读取。
+- [x] **步骤 2：写 MCP CAS 红灯测试。** 用同一 expectedRevision 连续提交两个 delta，断言第二个返回 `STATE_REVISION_CONFLICT`，胜出的 pointer 可由 get 读取。
 
-- [ ] **步骤 3：写 Skills 红灯测试。** 断言五个 Skill 包含 with-trace 流程、不再要求 Trace artifact 裸 `record_artifact`，并明确 standard M/L RU 来源差异。
+- [x] **步骤 3：写 Skills 红灯测试。** 断言五个 Skill 包含 with-trace 流程、不再要求 Trace artifact 裸 `record_artifact`，并明确 standard M/L RU 来源差异。
 
-- [ ] **步骤 4：运行红灯。**
+- [x] **步骤 4：运行红灯。**
 
 ```bash
 node --test tests/unit/mcp-server.test.mjs tests/unit/skills.test.mjs
@@ -1467,11 +1467,11 @@ node --test tests/unit/mcp-server.test.mjs tests/unit/skills.test.mjs
 
 预期：FAIL，原因是工具未注册且 Skill 仍使用裸登记。
 
-- [ ] **步骤 5：实现 MCP Schema 和 dispatch。** server 只做协议解析和错误映射，业务逻辑调用任务 5/6 的 Core API；同步更新 tools barrel export。
+- [x] **步骤 5：实现 MCP Schema 和 dispatch。** server 只做协议解析和错误映射，业务逻辑调用任务 5/6 的 Core API；同步更新 tools barrel export。
 
-- [ ] **步骤 6：更新 Skills。** 所有路线/风险决定来自 `dev_flow_next`、StatusView 和 Core 错误，不在 Markdown 中复制 `traceEnforcementRequired` 或 risk label 映射。
+- [x] **步骤 6：更新 Skills。** 所有路线/风险决定来自 `dev_flow_next`、StatusView 和 Core 错误，不在 Markdown 中复制 `traceEnforcementRequired` 或 risk label 映射。
 
-- [ ] **步骤 7：运行回归。**
+- [x] **步骤 7：运行回归。**
 
 ```bash
 node --test tests/unit/mcp-server.test.mjs tests/unit/skills.test.mjs
@@ -1482,7 +1482,7 @@ git diff --exit-code -- plugins/dev-flow/dist
 
 预期：PASS；协议测试运行源码临时 bundle，正式 dist 无 diff。
 
-- [ ] **步骤 8：提交任务 7。**
+- [x] **步骤 8：提交任务 7。**
 
 ```bash
 git add plugins/dev-flow/src/mcp/server.ts \

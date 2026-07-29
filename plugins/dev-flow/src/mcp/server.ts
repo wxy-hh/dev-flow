@@ -1,12 +1,12 @@
 import readline from "node:readline";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
-import { recordArtifact, scaffoldArtifact } from "../core/artifacts.js";
+import { recordArtifact, recordArtifactWithTrace, scaffoldArtifact } from "../core/artifacts.js";
 import { DevFlowError } from "../core/errors.js";
 import { featureCheck, finalize, recordStep } from "../core/feature-check.js";
 import { confirmGate, presentGate, resolveGateElicitation, resolveGateToken } from "../core/human-gates.js";
 import {
-  initProject, startFeature, abandonFeature, reclassifyFeature, switchActive, recoverCorruptFeature,
+  initProject, startFeature, abandonFeature, reclassifyFeature, switchActive, recoverCorruptFeature, readState,
 } from "../core/state-store.js";
 import { nextAction } from "../core/next.js";
 import { readStatusView } from "../core/status.js";
@@ -17,6 +17,8 @@ import { collectDoctorReport } from "./doctor.js";
 import { emitAttention } from "./attention.js";
 import { enableWindowsNotifications } from "./windows-notifications.js";
 import { requestGrillDecision, resolveGrillElicitation, resolveGrillToken } from "../core/requirements-grill.js";
+import { validateTraceDelta } from "../core/traceability.js";
+import { inspectCurrentTrace } from "../core/traceability-gates.js";
 import {
   getInteraction,
   interactionResponse,
@@ -31,6 +33,7 @@ const pluginRoot = path.basename(moduleDirectory) === "dist" ? path.resolve(modu
 const tools = [
   "dev_flow_init_project", "dev_flow_classify", "dev_flow_start", "dev_flow_status", "dev_flow_next",
   "dev_flow_switch_active", "dev_flow_scaffold_artifact", "dev_flow_record_artifact", "dev_flow_record_step",
+  "dev_flow_record_artifact_with_trace", "dev_flow_get_traceability",
   "dev_flow_present_gate", "dev_flow_confirm_gate", "dev_flow_reclassify", "dev_flow_verify",
   "dev_flow_respond_interaction", "dev_flow_request_grill_decision", "dev_flow_resolve_grill_decision",
   "dev_flow_feature_check", "dev_flow_finalize", "dev_flow_abandon", "dev_flow_enable_windows_notifications", "dev_flow_doctor",
@@ -48,6 +51,23 @@ const featureMutation = (extra: Record<string, unknown> = {}) => object(
 );
 
 const riskLabelsSchema = { type: "array", items: { enum: allowedRiskLabels }, uniqueItems: true };
+const traceArtifactKinds = ["requirements", "implementation-plan", "coverage-matrix", "rollback-units"] as const;
+const traceId = (prefix: string) => ({ type: "string", pattern: `^${prefix}-[0-9]{3,}$` });
+const stringArray = { type: "array", minItems: 1, items: string };
+const traceNodeSchemas = [
+  object(["kind", "id"], { kind: { const: "requirement" }, id: traceId("REQ") }),
+  object(["kind", "id", "parentRequirement"], { kind: { const: "acceptance-criterion" }, id: traceId("AC"), parentRequirement: traceId("REQ") }),
+  object(["kind", "id", "covers", "rollbackUnit"], { kind: { const: "task" }, id: traceId("TASK"), covers: stringArray, rollbackUnit: traceId("RU") }),
+  object(["kind", "id", "verifies"], { kind: { const: "test" }, id: traceId("TEST"), verifies: { type: "array", minItems: 1, items: traceId("AC") } }),
+  object(["kind", "id", "tasks", "dependsOn", "fileScope", "covers", "forwardVerification", "rollbackVerification"], {
+    kind: { const: "rollback" }, id: traceId("RU"), tasks: { type: "array", minItems: 1, items: traceId("TASK") },
+    dependsOn: { type: "array", items: traceId("RU") }, fileScope: stringArray, covers: stringArray,
+    forwardVerification: stringArray, rollbackVerification: stringArray,
+  }),
+];
+const traceDeltaSchema = object(["nodes"], {
+  nodes: { type: "array", items: { oneOf: traceNodeSchemas } },
+});
 
 const scopeSchema = {
   type: "object",
@@ -114,6 +134,15 @@ const toolSchemas: Record<string, { description: string; inputSchema: Record<str
   dev_flow_switch_active: { description: "Atomically hand off the single active feature.", inputSchema: object(["fromFeatureId", "toFeatureId", "reason"], { fromFeatureId: string, toFeatureId: string, reason: string }) },
   dev_flow_scaffold_artifact: { description: "Create only the current route artifact. For editable artifacts, read the registered path before editing, then record it. Generated status artifacts are read-only: scaffold them and continue with the requested step; do not edit or record them.", inputSchema: featureMutation({ kind: string }) },
   dev_flow_record_artifact: { description: "Register an edited route artifact.", inputSchema: featureMutation({ kind: string }) },
+  dev_flow_record_artifact_with_trace: {
+    description: "Atomically register one Trace source artifact and its complete Trace delta.",
+    inputSchema: featureMutation({ kind: { enum: traceArtifactKinds }, traceDelta: traceDeltaSchema }),
+  },
+  dev_flow_get_traceability: {
+    description: "Read the current Trace pointer, ledger, effective summary, and current-step blockers.",
+    inputSchema: object(["featureId"], { featureId: string }),
+    annotations: { readOnlyHint: true },
+  },
   dev_flow_record_step: { description: "Record the current non-gate route step.", inputSchema: featureMutation({ step: string, evidence: {} }) },
   dev_flow_present_gate: { description: "Present a strict human gate.", inputSchema: featureMutation({ gate: { enum: ["requirement_confirmation", "implementation_approval"] } }) },
   dev_flow_confirm_gate: {
@@ -219,6 +248,34 @@ function emitAttentionNotification(event: Parameters<typeof emitAttention>[0]): 
   void emitAttention(event, {
     emit: (message) => process.stdout.write(`${JSON.stringify(message)}\n`),
   });
+}
+
+function assertExactToolInput(value: unknown, keys: string[], tool: string): asserts value is Record<string, unknown> {
+  if (!value || typeof value !== "object" || Array.isArray(value)
+    || Object.keys(value as Record<string, unknown>).some((key) => !keys.includes(key))
+    || keys.some((key) => !(key in (value as Record<string, unknown>)))) {
+    throw new DevFlowError("INVALID_TOOL_INPUT", `${tool} input does not match its schema`);
+  }
+}
+
+function assertTraceRegistrationInput(value: unknown): asserts value is {
+  featureId: string; expectedRevision: number; kind: typeof traceArtifactKinds[number]; traceDelta: unknown;
+} {
+  assertExactToolInput(value, ["featureId", "expectedRevision", "kind", "traceDelta"], "dev_flow_record_artifact_with_trace");
+  const input = value as { featureId: unknown; expectedRevision: unknown; kind: unknown; traceDelta: unknown };
+  if (typeof input.featureId !== "string" || !input.featureId
+    || typeof input.expectedRevision !== "number" || !Number.isInteger(input.expectedRevision) || input.expectedRevision < 0
+    || !traceArtifactKinds.includes(input.kind as typeof traceArtifactKinds[number])) {
+    throw new DevFlowError("INVALID_TOOL_INPUT", "dev_flow_record_artifact_with_trace input does not match its schema");
+  }
+  validateTraceDelta(input.traceDelta);
+}
+
+function assertTraceReadInput(value: unknown): asserts value is { featureId: string } {
+  assertExactToolInput(value, ["featureId"], "dev_flow_get_traceability");
+  if (typeof value.featureId !== "string" || !value.featureId) {
+    throw new DevFlowError("INVALID_TOOL_INPUT", "dev_flow_get_traceability input does not match its schema");
+  }
 }
 
 type ElicitationResult = { action: "accept" | "decline" | "cancel"; content?: Record<string, unknown> };
@@ -330,6 +387,22 @@ async function call(name: string, a: any, connection: McpConnection) {
     case "dev_flow_switch_active": return switchActive(root, a.fromFeatureId, a.toFeatureId, a.reason);
     case "dev_flow_scaffold_artifact": return scaffoldArtifact(root, a.featureId, a.expectedRevision, a.kind);
     case "dev_flow_record_artifact": return recordArtifact(root, a.featureId, a.expectedRevision, a.kind);
+    case "dev_flow_record_artifact_with_trace": {
+      assertTraceRegistrationInput(a);
+      const input = a as { featureId: string; expectedRevision: number; kind: typeof traceArtifactKinds[number]; traceDelta: import("../policy/traceability.js").TraceDelta };
+      return recordArtifactWithTrace(root, input.featureId, input.expectedRevision, input.kind, input.traceDelta);
+    }
+    case "dev_flow_get_traceability": {
+      assertTraceReadInput(a);
+      const state = await readState(root, a.featureId);
+      const inspection = await inspectCurrentTrace(root, state);
+      return {
+        pointer: state.traceability,
+        ...(inspection.ledger ? { ledger: inspection.ledger } : {}),
+        ...(inspection.effectiveSummary ? { effectiveSummary: inspection.effectiveSummary } : {}),
+        blockers: inspection.blocker ? [inspection.blocker] : [],
+      };
+    }
     case "dev_flow_record_step": return recordStep(root, a.featureId, a.expectedRevision, a.step, a.evidence);
     case "dev_flow_present_gate": {
       const presentation = await presentGate(root, a.featureId, a.expectedRevision, a.gate);

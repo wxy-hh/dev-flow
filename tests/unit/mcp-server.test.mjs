@@ -3,14 +3,18 @@ import { spawn } from "node:child_process";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import test from "node:test";
+import { after, test } from "node:test";
 import { createTinyApp, strictProjectConfig } from "../helpers/fixture-repo.mjs";
 import { loadSource } from "../helpers/load-source.mjs";
 import { registerTraceFixture } from "../helpers/trace-fixtures.mjs";
+import { buildTestBundles } from "../helpers/test-bundle.mjs";
 
 const store = await loadSource("plugins/dev-flow/src/core/state-store.ts");
 const artifacts = await loadSource("plugins/dev-flow/src/core/artifacts.ts");
 const checks = await loadSource("plugins/dev-flow/src/core/feature-check.ts");
+const distBefore = await Promise.all(["mcp-server.mjs", "claude-hook.mjs", "codex-hook.mjs"].map((name) => readFile(path.resolve("plugins/dev-flow/dist", name))));
+const bundles = await buildTestBundles();
+after(() => bundles.dispose());
 const config = {
   schemaVersion: 1,
   verification: { commands: [{ id: "unit", command: "node", args: ["-e", "process.exit(0)"], cwd: "." }], behaviorCommands: [] },
@@ -20,7 +24,7 @@ const config = {
 
 function request(messages, cwd) {
   return new Promise((resolve, reject) => {
-    const child = spawn(process.execPath, [path.resolve("plugins/dev-flow/dist/mcp-server.mjs")], { cwd, stdio: ["pipe", "pipe", "pipe"], env: { ...process.env, DEV_FLOW_DISABLE_ATTENTION: "1" } });
+    const child = spawn(process.execPath, [bundles.pathFor("mcp-server")], { cwd, stdio: ["pipe", "pipe", "pipe"], env: { ...process.env, DEV_FLOW_DISABLE_ATTENTION: "1" } });
     let stdout = "", stderr = ""; child.stdout.on("data", (chunk) => { stdout += chunk; }); child.stderr.on("data", (chunk) => { stderr += chunk; });
     child.on("error", reject); child.on("close", (code) => code === 0 ? resolve(stdout.trim().split("\n").filter(Boolean).map(JSON.parse)) : reject(new Error(stderr)));
     child.stdin.end(messages.map((message) => JSON.stringify(message)).join("\n") + "\n");
@@ -29,7 +33,7 @@ function request(messages, cwd) {
 
 function requestWithElicitation(message, cwd, elicitationResult) {
   return new Promise((resolve, reject) => {
-    const child = spawn(process.execPath, [path.resolve("plugins/dev-flow/dist/mcp-server.mjs")], { cwd, stdio: ["pipe", "pipe", "pipe"], env: { ...process.env, DEV_FLOW_DISABLE_ATTENTION: "1" } });
+    const child = spawn(process.execPath, [bundles.pathFor("mcp-server")], { cwd, stdio: ["pipe", "pipe", "pipe"], env: { ...process.env, DEV_FLOW_DISABLE_ATTENTION: "1" } });
     let stdout = "", stderr = "", settled = false;
     const finish = (value) => {
       if (settled) return;
@@ -76,7 +80,7 @@ test("MCP server initializes, advertises the complete public interface, and maps
   assert.ok(Array.isArray(responses[1].result.tools));
   assert.equal(responses[1].result.content, undefined);
   const names = responses[1].result.tools.map((tool) => tool.name);
-  for (const name of ["dev_flow_init_project", "dev_flow_classify", "dev_flow_start", "dev_flow_next", "dev_flow_verify", "dev_flow_confirm_gate", "dev_flow_respond_interaction", "dev_flow_request_grill_decision", "dev_flow_resolve_grill_decision", "dev_flow_enable_windows_notifications", "dev_flow_finalize", "dev_flow_recover_corrupt_feature", "dev_flow_status"]) {
+  for (const name of ["dev_flow_init_project", "dev_flow_classify", "dev_flow_start", "dev_flow_next", "dev_flow_verify", "dev_flow_confirm_gate", "dev_flow_respond_interaction", "dev_flow_request_grill_decision", "dev_flow_resolve_grill_decision", "dev_flow_enable_windows_notifications", "dev_flow_finalize", "dev_flow_recover_corrupt_feature", "dev_flow_status", "dev_flow_record_artifact_with_trace", "dev_flow_get_traceability"]) {
     assert.ok(names.includes(name), `missing tool ${name}`);
   }
   const contract = JSON.parse(await readFile(path.resolve("plugins/dev-flow/policy/contract.json"), "utf8"));
@@ -95,6 +99,20 @@ test("MCP server initializes, advertises the complete public interface, and maps
   assert.equal(verifySchema.properties.manualAcceptance.additionalProperties, false);
   const scaffoldTool = responses[1].result.tools.find((tool) => tool.name === "dev_flow_scaffold_artifact");
   assert.match(scaffoldTool.description, /Generated status artifacts are read-only/);
+  const traceRecord = responses[1].result.tools.find((tool) => tool.name === "dev_flow_record_artifact_with_trace");
+  assert.deepEqual(traceRecord.inputSchema.properties.kind.enum, ["requirements", "implementation-plan", "coverage-matrix", "rollback-units"]);
+  assert.equal(traceRecord.inputSchema.additionalProperties, false);
+  const traceNodes = traceRecord.inputSchema.properties.traceDelta.properties.nodes.items.oneOf;
+  assert.equal(traceNodes.length, 5);
+  for (const node of traceNodes) {
+    assert.equal(node.additionalProperties, false);
+    for (const forbidden of ["edges", "status", "sourceSha256", "sourceAnchor", "sourceBlockSha256", "verificationConfigSha256"]) {
+      assert.equal(forbidden in node.properties, false);
+    }
+  }
+  const traceGet = responses[1].result.tools.find((tool) => tool.name === "dev_flow_get_traceability");
+  assert.deepEqual(traceGet.inputSchema.required, ["featureId"]);
+  assert.equal(traceGet.annotations.readOnlyHint, true);
 
   // tools/call keeps CallToolResult content shape
   assert.equal(responses[2].error.data.code, "UNKNOWN_TOOL");
@@ -104,6 +122,53 @@ test("MCP server initializes, advertises the complete public interface, and maps
     verification: ["behavior", "full"],
   });
   assert.deepEqual(responses[4].result.structuredContent, { status: "unsupported", platform: process.platform });
+});
+
+test("MCP Trace tools reject Core-owned fields, preserve CAS errors, and keep get read-only", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "dev-flow-mcp-trace-"));
+  try {
+    await mkdir(path.join(root, "src"));
+    await writeFile(path.join(root, "src", "app.js"), "export const value = 1;\n");
+    await store.initProject(root, config);
+    let state = await store.startFeature(root, {
+      featureId: "f", host: "codex", level: "M", topology: "local", execution: "standard", requirements: "provided-confirmed",
+    });
+    state = await artifacts.scaffoldArtifact(root, "f", state.revision, "requirements");
+    const registration = {
+      featureId: "f",
+      expectedRevision: state.revision,
+      kind: "requirements",
+      traceDelta: {
+        nodes: [
+          { kind: "requirement", id: "REQ-001" },
+          { kind: "acceptance-criterion", id: "AC-001", parentRequirement: "REQ-001" },
+        ],
+      },
+    };
+    const responses = await request([
+      { jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "dev_flow_record_artifact_with_trace", arguments: { ...registration, traceDelta: { nodes: [{ kind: "requirement", id: "REQ-001", status: "current" }] } } } },
+      { jsonrpc: "2.0", id: 2, method: "tools/call", params: { name: "dev_flow_record_artifact_with_trace", arguments: { ...registration, traceDelta: { nodes: [], edges: [] } } } },
+      { jsonrpc: "2.0", id: 3, method: "tools/call", params: { name: "dev_flow_record_artifact_with_trace", arguments: registration } },
+      { jsonrpc: "2.0", id: 4, method: "tools/call", params: { name: "dev_flow_record_artifact_with_trace", arguments: registration } },
+      { jsonrpc: "2.0", id: 5, method: "tools/call", params: { name: "dev_flow_get_traceability", arguments: { featureId: "f" } } },
+    ], root);
+    assert.equal(responses[0].error.data.code, "TRACE_GRAPH_INVALID");
+    assert.equal(responses[1].error.data.code, "TRACE_GRAPH_INVALID");
+    const winner = responses[2].result.structuredContent;
+    assert.ok(winner.traceability);
+    assert.equal(responses[3].error.data.code, "STATE_REVISION_CONFLICT");
+    const trace = responses[4].result.structuredContent;
+    assert.deepEqual(trace.pointer, winner.traceability);
+    assert.equal(trace.ledger.featureId, "f");
+    assert.deepEqual(trace.effectiveSummary, winner.traceability.summary);
+    assert.deepEqual(trace.blockers, []);
+    assert.equal((await store.readState(root, "f")).revision, winner.revision);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test("MCP source-bundle tests never change the checked-in dist", async () => {
+  const distAfter = await Promise.all(["mcp-server.mjs", "claude-hook.mjs", "codex-hook.mjs"].map((name) => readFile(path.resolve("plugins/dev-flow/dist", name))));
+  assert.deepEqual(distAfter, distBefore);
 });
 
 test("MCP dev_flow_next returns the same enriched evidence as the core action", async () => {

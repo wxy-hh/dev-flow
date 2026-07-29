@@ -7,13 +7,13 @@ description: 采集、压测并确认需求。触发：写需求、需求不清�
 
 ## 合法写盘顺序
 
-**`dev_flow_scaffold_artifact` → Read 已登记 artifact → 编辑 → `dev_flow_record_artifact`**。禁止抢先 Write 未登记路径。
+标准 M/L 的 Trace source 固定顺序：**`dev_flow_scaffold_artifact` → Read 已登记 artifact → 编辑 → `dev_flow_record_artifact_with_trace`**。禁止抢先 Write 未登记路径，也禁止直接编辑 snapshot 或 state pointer。
 
 标准 M/L 的 `requirements` 步骤：
 
 1. 仅在 MCP 请求时脚手架 requirements artifact，并从 MCP 返回的已登记路径读取文件名。
 2. `missing-or-unclear` 或 `documented-unconfirmed` 委托 `grillme`（兼容 `df-grillme` / `dev-flow-grillme`）；后续回合续写已有 Decision Log 与首个未决 `Q-...`，不要重开访谈。
-3. 每轮 grill 文件更新后立即 `dev_flow_record_artifact(requirements)`。若仍有 `in_progress` 的当前题，使用 grillme 交接的题干与稳定选项 ID 调用 `dev_flow_request_grill_decision`；该工具会优先展示原生选择控件。
+3. 每轮 grill 文件更新后立即以 `kind: "requirements"` 调用 `dev_flow_record_artifact_with_trace`，提交当前文件中的每个 `REQ-...` 和 `AC-...`（AC 必须声明 `parentRequirement`）。若仍有 `in_progress` 的当前题，使用 grillme 交接的题干与稳定选项 ID 调用 `dev_flow_request_grill_decision`；该工具会优先展示原生选择控件。
    - 返回 `interactionOutcome: pending`：输出返回值 `interaction.fallback` 的一次性回复并停止。先说明“已打开选择卡片；如未看到，请直接说明‘没有看到选择卡片’，我会展示文字回复。”；不要新建 interaction。
    - 返回已选 `response`：把选项和补充说明交还 grillme，当回合写入 Decision Log 后继续本流程；不要把结果当成用户的自由文本重新猜测。
    - 用户在无控件回退中提交一次性回复后，先读 status，再用 `dev_flow_resolve_grill_decision`；只把其返回的结构化 `response` 交还 grillme。

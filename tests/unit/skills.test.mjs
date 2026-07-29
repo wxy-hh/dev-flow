@@ -58,6 +58,7 @@ const ARTIFACT_OWNERS = new Set([
   "verify",
   "implement",
 ]);
+const TRACE_ARTIFACT_SKILLS = new Set(["requirements", "plan", "coverage-review", "rollback-safety"]);
 
 test("skills use short ids under plugin namespace with legacy alias hit surface", async () => {
   const names = (await readdir(skillsRoot)).filter((n) => !n.startsWith(".")).sort();
@@ -79,12 +80,15 @@ test("skills use short ids under plugin namespace with legacy alias hit surface"
     for (const token of ROUTE_HIT_TOKENS[name] ?? []) {
       assert.match(content, token, `${name} missing route-hit token ${token}`);
     }
-    if (ARTIFACT_OWNERS.has(name)) {
+    if (TRACE_ARTIFACT_SKILLS.has(name)) {
       assert.match(
         content,
-        /dev_flow_scaffold_artifact[\s\S]*Read[\s\S]*(编辑|Edit|Write)[\s\S]*dev_flow_record_artifact/,
-        `${name} must require Read-before-Write for registered artifacts`,
+        /dev_flow_scaffold_artifact[\s\S]*Read[\s\S]*(编辑|Edit|Write)[\s\S]*dev_flow_record_artifact_with_trace/,
+        `${name} must require Read-before-Write with Trace registration`,
       );
+    } else if (ARTIFACT_OWNERS.has(name)) {
+      assert.match(content, /dev_flow_scaffold_artifact[\s\S]*Read[\s\S]*(编辑|Edit|Write)[\s\S]*dev_flow_record_artifact/,
+        `${name} must require Read-before-Write for registered artifacts`);
     }
   }
 
@@ -98,4 +102,17 @@ test("skills use short ids under plugin namespace with legacy alias hit surface"
   assert.match(grillme, /`requirements`/);
   assert.match(task, /status.*(只能 scaffold|禁止手工编辑).*record_artifact/);
   assert.match(plan, /status.*(只允许 scaffold|禁止编辑).*record_artifact/);
+
+  const coverage = await readFile(path.join(skillsRoot, "coverage-review", "SKILL.md"), "utf8");
+  const rollback = await readFile(path.join(skillsRoot, "rollback-safety", "SKILL.md"), "utf8");
+  const status = await readFile(path.join(skillsRoot, "status", "SKILL.md"), "utf8");
+  assert.match(requirements, /dev_flow_record_artifact_with_trace/);
+  assert.match(requirements, /REQ-\.\.\.[\s\S]*AC-\.\.\./);
+  assert.doesNotMatch(requirements, /dev_flow_record_artifact\(requirements\)/);
+  assert.match(plan, /standard M[\s\S]*TASK-\.\.\.[\s\S]*RU-\.\.\./);
+  assert.match(plan, /standard L[\s\S]*只提交 `TASK-/);
+  assert.match(coverage, /dev_flow_record_artifact_with_trace[\s\S]*TEST-\.\.\.[\s\S]*AC-\.\.\./);
+  assert.match(rollback, /standard L[\s\S]*rollback-units[\s\S]*RU-\.\.\./);
+  assert.match(rollback, /standard M[\s\S]*不新建 artifact 或 RU/);
+  assert.match(status, /dev_flow_get_traceability/);
 });
