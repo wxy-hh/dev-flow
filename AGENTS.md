@@ -25,8 +25,8 @@ Dev Flow 插件位于 `plugins/dev-flow/`。TypeScript 代码按职责划分：`
 
 ## 提交与 Pull Request 规范
 
-近期历史采用带 scope 的 Conventional Commit 风格，例如 `feat(dev-flow): validate traceability graph`、`docs(dev-flow): update routes`。提交应保持聚焦并说明行为变化。PR 应说明工作流影响、列出验证命令、关联相关 issue 或计划；仅在用户可见 UI 变更时附截图。
+采用带 scope 的 Conventional Commit 风格；**commit subject 与正文使用中文**，type/scope 保持英文。例如 `feat(dev-flow): 校验追溯图完整性`、`docs(dev-flow): 更新路线说明`。提交应保持聚焦并说明行为变化。PR 应说明工作流影响、列出验证命令、关联相关 issue 或计划；仅在用户可见 UI 变更时附截图。
 
 ## 智能体专属规则
 
-智能体不得运行 `git commit`、`git push`、创建 PR 或以其他方式发布变更。完成验证后，只报告变更文件和测试结果供用户审核。所有 Git 提交和发布均由用户本人审核后手动执行。
+智能体不得运行 `git commit`、`git push`、创建 PR 或以其他方式发布变更。完成验证后，只报告变更文件和测试结果供用户审核。所有 Git 提交和发布均由用户本人审核后手动执行。用户明确要求提交时，commit message 必须用中文。

@@ -177,11 +177,12 @@ standard-m / standard-l 且 `workflowCapabilities.trace === 1` 时强制 `REQ/AC
 2. 先跑目标单测，再 `npm run typecheck`、`npm run test:unit`，以及受影响的 routes / interop  
 3. 仅在需要交付 bundle 时 `build` + `build:check`  
 
-近期提交风格：带 scope 的 Conventional Commits，例如 `feat(dev-flow): validate traceability graph`、`docs(dev-flow): update routes`。
+近期提交风格：带 scope 的 Conventional Commits；**subject 与正文使用中文**，type/scope 保持英文。例如 `feat(dev-flow): 校验追溯图完整性`、`docs(dev-flow): 更新路线说明`。
 
 ## 智能体约束（必须遵守）
 
 - **不得** `git commit`、`git push`、创建 PR 或发布；完成后只报告变更文件与测试结果，由用户审核后手动提交  
+- 用户要求提交时，commit message 必须用中文（Conventional Commits 的 type/scope 可用英文，说明用中文）  
 - 中间任务不跑 `npm run build`，除非计划/用户明确要求统一更新 dist  
 - 修改路线步骤或资产要求时，同步 `policy/contract.json`、`docs/routes.md` 与相关测试  
 - 深入契约以 `docs/architecture.md`、`docs/routes.md`、`plugins/dev-flow/policy/contract.json` 为准，勿臆造路线或风险标签  
