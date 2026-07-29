@@ -234,14 +234,14 @@ interface ReviewFinding {
 
 **步骤：**
 
-- [ ] 写去重不降级 severity、scope manifest 外 target/路径遍历/缺 evidence、伪造 disposition 和旧 gate response 测试。
-- [ ] 写 successor batch resolution evidence、风险接受绑定精确 finding 集合且不可重放/扩展的测试。
-- [ ] 写 findings 为空但结构化完成记录完整时 job 可提交；缺完成记录时不可提交的测试。
-- [ ] 写 `recordStep(plan_review)` 在缺角色、batch stale 或存在 blocking finding 时拒绝的测试。
-- [ ] 运行 `node --test tests/unit/review-findings.test.mjs`，确认红灯。
-- [ ] 实现聚合、disposition、风险接受交互与 `assertReviewComplete`。
-- [ ] 将 `{ batchId, basisHash, assuranceLevel }` 作为 plan review evidence。
-- [ ] 提交：`feat(dev-flow): gate plan review on structured findings`
+- [x] 写去重不降级 severity、scope manifest 外 target/路径遍历/缺 evidence、伪造 disposition 和旧 gate response 测试。
+- [x] 写 successor batch resolution evidence、风险接受绑定精确 finding 集合且不可重放/扩展的测试。
+- [x] 写 findings 为空但结构化完成记录完整时 job 可提交；缺完成记录时不可提交的测试。
+- [x] 写 `recordStep(plan_review)` 在缺角色、batch stale 或存在 blocking finding 时拒绝的测试。
+- [x] 运行 `node --test tests/unit/review-findings.test.mjs`，确认红灯。
+- [x] 实现聚合、disposition、风险接受交互与 `assertReviewComplete`。
+- [x] 将 `{ batchId, basisHash, assuranceLevel }` 作为 plan review evidence。
+- [x] 提交：`feat(dev-flow): gate plan review on structured findings`
 
 ### 任务 5：生成只读计划审查投影并同步状态
 

@@ -19,7 +19,15 @@ import { enableWindowsNotifications } from "./windows-notifications.js";
 import { requestGrillDecision, resolveGrillElicitation, resolveGrillToken } from "../core/requirements-grill.js";
 import { validateTraceDelta } from "../core/traceability.js";
 import { inspectCurrentTrace } from "../core/traceability-gates.js";
-import { claimReviewJob, createReviewBatch, getReviewJob, submitReviewJob } from "../core/review-jobs.js";
+import {
+  claimReviewJob,
+  createReviewBatch,
+  getReviewJob,
+  presentReviewRiskAcceptance,
+  resolveReviewRiskAcceptanceToken,
+  submitReviewJob,
+} from "../core/review-jobs.js";
+import { parseReviewJobCompletion } from "../policy/review.js";
 import {
   getInteraction,
   interactionResponse,
@@ -36,6 +44,7 @@ const tools = [
   "dev_flow_switch_active", "dev_flow_scaffold_artifact", "dev_flow_record_artifact", "dev_flow_record_step",
   "dev_flow_record_artifact_with_trace", "dev_flow_get_traceability",
   "dev_flow_create_review_batch", "dev_flow_get_review_job", "dev_flow_claim_review_job", "dev_flow_submit_review_job",
+  "dev_flow_present_review_risk_acceptance", "dev_flow_resolve_review_risk_acceptance",
   "dev_flow_present_gate", "dev_flow_confirm_gate", "dev_flow_reclassify", "dev_flow_verify",
   "dev_flow_respond_interaction", "dev_flow_request_grill_decision", "dev_flow_resolve_grill_decision",
   "dev_flow_feature_check", "dev_flow_finalize", "dev_flow_abandon", "dev_flow_enable_windows_notifications", "dev_flow_doctor",
@@ -70,9 +79,24 @@ const traceNodeSchemas = [
 const traceDeltaSchema = object(["nodes"], {
   nodes: { type: "array", items: { oneOf: traceNodeSchemas } },
 });
+const reviewEvidenceSchema = object(["path"], { path: string, line: { type: "integer", minimum: 1 } });
+const reviewFindingSchema = object(["severity", "category", "targets", "evidence", "claim", "recommendation"], {
+  severity: { enum: ["blocking", "warning", "note"] },
+  category: { enum: ["requirements-coverage", "architecture-testability", "rollback-operability", "security", "data-irreversibility"] },
+  targets: { type: "array", minItems: 1, items: string },
+  evidence: { type: "array", minItems: 1, items: reviewEvidenceSchema },
+  claim: string,
+  recommendation: string,
+});
+const reviewResolutionSchema = object(["findingId", "evidence", "note"], {
+  findingId: string,
+  evidence: { type: "array", minItems: 1, items: reviewEvidenceSchema },
+  note: string,
+});
 const reviewCompletionSchema = object(["coverageSummary", "findings"], {
   coverageSummary: string,
-  findings: { type: "array", items: {} },
+  findings: { type: "array", items: reviewFindingSchema },
+  resolutions: { type: "array", items: reviewResolutionSchema },
 });
 
 const scopeSchema = {
@@ -165,6 +189,19 @@ const toolSchemas: Record<string, { description: string; inputSchema: Record<str
   dev_flow_submit_review_job: {
     description: "Submit one claimed job's structured completion. Assurance, role, depth, and basis are Core-derived.",
     inputSchema: featureMutation({ batchId: string, jobId: string, capability: string, completion: reviewCompletionSchema }),
+  },
+  dev_flow_present_review_risk_acceptance: {
+    description: "Present a one-time user decision for an exact set of current blocking review findings.",
+    inputSchema: featureMutation({ findingIds: { type: "array", minItems: 1, uniqueItems: true, items: string } }),
+  },
+  dev_flow_resolve_review_risk_acceptance: {
+    description: "Resolve the one-time risk-acceptance token. Replays are accepted only for the identical prior reply.",
+    inputSchema: featureMutation({
+      interactionId: string,
+      userReply: string,
+      promptEventId: string,
+      host: { enum: ["claude", "codex"] },
+    }),
   },
   dev_flow_record_step: { description: "Record the current non-gate route step.", inputSchema: featureMutation({ step: string, evidence: {} }) },
   dev_flow_present_gate: { description: "Present a strict human gate.", inputSchema: featureMutation({ gate: { enum: ["requirement_confirmation", "implementation_approval"] } }) },
@@ -327,14 +364,8 @@ function assertReviewSubmitInput(value: unknown): asserts value is Record<string
   featureId: string; expectedRevision: number; batchId: string; jobId: string; capability: string; completion: unknown;
 } {
   assertReviewMutationInput(value, "dev_flow_submit_review_job", ["batchId", "jobId", "capability"], ["completion"]);
-  const completion = value.completion;
-  const coverageSummary = completion && typeof completion === "object" && !Array.isArray(completion)
-    ? (completion as Record<string, unknown>).coverageSummary
-    : undefined;
-  if (!completion || typeof completion !== "object" || Array.isArray(completion)
-    || Object.keys(completion as Record<string, unknown>).some((key) => key !== "coverageSummary" && key !== "findings")
-    || typeof coverageSummary !== "string" || !coverageSummary.trim()
-    || !Array.isArray((completion as Record<string, unknown>).findings)) {
+  try { parseReviewJobCompletion(value.completion); }
+  catch {
     throw new DevFlowError("INVALID_TOOL_INPUT", "dev_flow_submit_review_job input does not match its schema");
   }
 }
@@ -504,6 +535,26 @@ async function call(name: string, a: any, connection: McpConnection) {
       assertReviewSubmitInput(a);
       const result = await submitReviewJob(root, a.featureId, a.expectedRevision, a.batchId, a.jobId, a.capability, a.completion);
       return reviewSubmissionEnvelope(result, a.jobId);
+    }
+    case "dev_flow_present_review_risk_acceptance": {
+      assertReviewMutationInput(a, "dev_flow_present_review_risk_acceptance", [], ["findingIds"]);
+      if (!Array.isArray(a.findingIds) || !a.findingIds.length || a.findingIds.some((findingId) => typeof findingId !== "string" || !findingId)) {
+        throw new DevFlowError("INVALID_TOOL_INPUT", "dev_flow_present_review_risk_acceptance input does not match its schema");
+      }
+      const result = await presentReviewRiskAcceptance(root, a.featureId, a.expectedRevision, a.findingIds);
+      return interactionEnvelope(result.state, result.interaction, result.idempotent ? "pending" : "presented");
+    }
+    case "dev_flow_resolve_review_risk_acceptance": {
+      assertReviewMutationInput(a, "dev_flow_resolve_review_risk_acceptance", ["interactionId", "userReply", "promptEventId"], ["host"]);
+      if (a.host !== undefined && a.host !== "claude" && a.host !== "codex") {
+        throw new DevFlowError("INVALID_TOOL_INPUT", "dev_flow_resolve_review_risk_acceptance input does not match its schema");
+      }
+      const result = await resolveReviewRiskAcceptanceToken(
+        root, a.featureId, a.expectedRevision, a.interactionId as string, a.userReply as string,
+        a.promptEventId as string, (a.host as "claude" | "codex" | undefined) ?? "codex",
+      );
+      const interaction = toPublicInteraction(getInteraction(result.state, a.interactionId as string));
+      return interactionEnvelope(result.state, interaction, result.idempotent ? "accepted" : "resolved", interactionResponse(result.state, a.interactionId as string));
     }
     case "dev_flow_record_step": return recordStep(root, a.featureId, a.expectedRevision, a.step, a.evidence);
     case "dev_flow_present_gate": {

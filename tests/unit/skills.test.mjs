@@ -28,7 +28,7 @@ const SKILL_ALIASES = {
 };
 
 const ROUTE_HIT_TOKENS = {
-  "plan-review": [/plan_review/, /reviewType: "plan"/, /implementation_approval/],
+  "plan-review": [/plan_review/, /create-review-batch/, /dev_flow_submit_review_job/, /implementation_approval/],
   "code-review": [/code_review/, /reviewType: "code"/, /requiredEvidence/, /full-code-review/],
   implement: [/implementation/, /implementation_approval/, /连续编辑多个文件/, /当前 diff/, /只调用一次/],
   verify: [/verification/, /dev_flow_verify/, /requiredEvidence\.verificationKinds/, /manualAcceptance/, /user-signoff/, /acceptanceAssist/, /明确要求协助/, /交付后检查/],
@@ -51,7 +51,6 @@ const ARTIFACT_OWNERS = new Set([
   "grillme",
   "plan",
   "coverage-review",
-  "plan-review",
   "risk-review",
   "rollback-safety",
   "code-review",

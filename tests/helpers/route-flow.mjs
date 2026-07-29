@@ -12,6 +12,7 @@ const artifacts = await loadSource("plugins/dev-flow/src/core/artifacts.ts");
 const checks = await loadSource("plugins/dev-flow/src/core/feature-check.ts");
 const verification = await loadSource("plugins/dev-flow/src/core/verification.ts");
 const gates = await loadSource("plugins/dev-flow/src/core/human-gates.ts");
+const reviewJobs = await loadSource("plugins/dev-flow/src/core/review-jobs.ts");
 const definitions = await loadSource("plugins/dev-flow/src/policy/contract.ts");
 const evidencePolicy = await loadSource("plugins/dev-flow/src/policy/evidence.ts");
 const run = promisify(execFile);
@@ -38,6 +39,7 @@ export async function runRoute(input, expectedRoute, options = {}) {
         ...(definition.generatedArtifactSteps?.[step] ?? []),
       ];
       for (const kind of stepArtifacts) {
+        if (step === "plan_review" && kind === "plan-review" && state.workflowCapabilities.review === 1) continue;
         state = await artifacts.scaffoldArtifact(root, "feature", state.revision, kind);
       }
       for (const kind of definition.artifactSteps?.[step] ?? []) {
@@ -75,6 +77,20 @@ export async function runRoute(input, expectedRoute, options = {}) {
           { promptEventId: eventId },
           "claude",
         );
+      } else if (step === "plan_review" && state.workflowCapabilities.review === 1) {
+        const created = await reviewJobs.createReviewBatch(root, "feature", state.revision);
+        state = created.state;
+        for (const job of created.batch.jobs) {
+          const claimRequestId = `claim-${job.jobId}-route-flow-1234567890`;
+          const claimed = await reviewJobs.claimReviewJob(
+            root, "feature", state.revision, created.batch.batchId, job.jobId, claimRequestId,
+          );
+          state = (await reviewJobs.submitReviewJob(
+            root, "feature", claimed.state.revision, created.batch.batchId, job.jobId, claimRequestId,
+            { coverageSummary: `${job.role} route review complete`, findings: [] },
+          )).state;
+        }
+        state = await checks.recordStep(root, "feature", state.revision, step, {});
       } else if (step === "verification") {
         state = await verification.runVerification(root, "feature", state.revision, "claude");
       } else {

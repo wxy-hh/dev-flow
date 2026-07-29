@@ -28,7 +28,7 @@ export const ZERO_WORKFLOW_CAPABILITIES: WorkflowCapabilities = Object.freeze({
 
 export const SUPPORTED_WORKFLOW_CAPABILITIES: WorkflowCapabilities = Object.freeze({
   trace: 1,
-  review: 0,
+  review: 1,
   checkpoints: 0,
   rollbackExecution: 0,
 });
@@ -100,8 +100,28 @@ export interface ReviewJobRequirement {
 
 export interface ReviewJobCompletion {
   coverageSummary: string;
-  /** Finding structure is validated when Task 4 introduces finding persistence. */
-  findings: unknown[];
+  findings: ReviewFindingInput[];
+  resolutions?: ReviewFindingResolutionInput[];
+}
+
+export interface ReviewFindingInput {
+  severity: ReviewFindingSeverity;
+  category: ReviewFindingCategory;
+  targets: string[];
+  evidence: Array<{ path: string; line?: number }>;
+  claim: string;
+  recommendation: string;
+}
+
+export interface ReviewFinding extends ReviewFindingInput {
+  findingId: string;
+  jobId: string;
+}
+
+export interface ReviewFindingResolutionInput {
+  findingId: string;
+  evidence: Array<{ path: string; line?: number }>;
+  note: string;
 }
 
 export type VerificationKind = "targeted" | "behavior" | "integration" | "full";
@@ -150,6 +170,14 @@ export type NextAction =
   | { kind: "present-human-gate"; step: string }
   | { kind: "wait-human-gate"; step: string }
   | { kind: "scaffold-artifact"; step: string }
+  /** Core owns the batch lifecycle before a review-enforced plan review can run. */
+  | { kind: "create-review-batch"; step: "plan_review" }
+  | {
+      kind: "review-jobs-pending";
+      step: "plan_review";
+      batchId: string;
+      jobs: Array<{ jobId: string; role: ReviewRole; reviewDepth: ReviewDepth; status: "pending" | "claimed" | "submitted" }>;
+    }
   | {
       kind: "repair-trace";
       step: string;

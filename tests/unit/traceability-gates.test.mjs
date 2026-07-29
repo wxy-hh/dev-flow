@@ -14,6 +14,7 @@ const next = await loadSource("plugins/dev-flow/src/core/next.ts");
 const status = await loadSource("plugins/dev-flow/src/core/status.ts");
 const traceStore = await loadSource("plugins/dev-flow/src/core/traceability-store.ts");
 const verification = await loadSource("plugins/dev-flow/src/core/verification.ts");
+const reviewJobs = await loadSource("plugins/dev-flow/src/core/review-jobs.ts");
 const config = {
   schemaVersion: 1,
   verification: { commands: [{ id: "unit", command: "node", args: ["-e", "process.exit(0)"], cwd: "." }], behaviorCommands: [] },
@@ -59,13 +60,27 @@ async function standardThroughVerification(root) {
   let state = await standardThroughCoverage(root);
   state = await checks.recordStep(root, "f", state.revision, "coverage_review", {});
   state = await checks.recordStep(root, "f", state.revision, "rollback_unit", {});
-  state = await checks.recordStep(root, "f", state.revision, "plan_review", { reviewType: "plan" });
+  state = await completePlanReview(root, state);
   state = await artifacts.scaffoldArtifact(root, "f", state.revision, "status");
   state = await confirmImplementation(root, state);
   state = await checks.recordStep(root, "f", state.revision, "implementation", { files: [] });
   assert.deepEqual(state.steps.implementation.evidence, { files: [] });
   state = await checks.recordStep(root, "f", state.revision, "code_review", { reviewType: "code" });
   return verification.runVerification(root, "f", state.revision, "codex", ["unit"]);
+}
+
+async function completePlanReview(root, state) {
+  const created = await reviewJobs.createReviewBatch(root, "f", state.revision);
+  state = created.state;
+  for (const job of created.batch.jobs) {
+    const capability = `claim-${job.jobId}-trace-gates-1234567890`;
+    const claimed = await reviewJobs.claimReviewJob(root, "f", state.revision, created.batch.batchId, job.jobId, capability);
+    state = (await reviewJobs.submitReviewJob(
+      root, "f", claimed.state.revision, created.batch.batchId, job.jobId, capability,
+      { coverageSummary: `${job.role} review complete`, findings: [] },
+    )).state;
+  }
+  return checks.recordStep(root, "f", state.revision, "plan_review", {});
 }
 
 test("Core rejects missing and corrupt Trace instead of allowing step or gate bypasses", async () => {
@@ -193,7 +208,7 @@ test("StatusView and generated status Markdown share the current Trace blocker",
     let state = await standardThroughCoverage(root);
     state = await checks.recordStep(root, "f", state.revision, "coverage_review", {});
     state = await checks.recordStep(root, "f", state.revision, "rollback_unit", {});
-    state = await checks.recordStep(root, "f", state.revision, "plan_review", { reviewType: "plan" });
+    state = await completePlanReview(root, state);
     state = await artifacts.scaffoldArtifact(root, "f", state.revision, "status");
     await writeFile(path.join(root, ".dev-flow", "features", "f", state.traceability.path), "corrupt snapshot\n");
     state = await store.mutate(root, "f", state.revision, "refresh-status-projection", () => {});

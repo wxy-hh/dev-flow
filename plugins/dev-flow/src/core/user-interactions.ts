@@ -2,7 +2,7 @@ import { randomBytes, randomUUID } from "node:crypto";
 import { DevFlowError } from "./errors.js";
 import type { FeatureState } from "./state-store.js";
 
-export type InteractionKind = "gate" | "grill";
+export type InteractionKind = "gate" | "grill" | "risk-acceptance";
 export type InteractionSource = "elicitation" | "text-token";
 
 export interface InteractionOption {
@@ -27,6 +27,12 @@ export interface UserInteraction {
   kind: InteractionKind;
   target: string;
   basisHash: string;
+  /** Immutable, Core-owned context for a one-time risk-acceptance decision. */
+  binding?: {
+    batchId: string;
+    findingIds: string[];
+    findingSetHash: string;
+  };
   question?: string;
   options: InteractionOption[];
   fallbackToken: string;
@@ -50,6 +56,7 @@ export interface InteractionInput {
   kind: InteractionKind;
   target: string;
   basisHash: string;
+  binding?: UserInteraction["binding"];
   question?: string;
   options: InteractionOption[];
 }
@@ -83,6 +90,13 @@ export function createInteraction(state: FeatureState, input: InteractionInput):
     kind: input.kind,
     target: input.target,
     basisHash: input.basisHash,
+    ...(input.binding ? {
+      binding: {
+        batchId: input.binding.batchId,
+        findingIds: [...input.binding.findingIds],
+        findingSetHash: input.binding.findingSetHash,
+      },
+    } : {}),
     question: input.question,
     options: input.options.map((option) => ({ ...option })),
     fallbackToken: `DF-${randomBytes(9).toString("base64url").toUpperCase()}`,

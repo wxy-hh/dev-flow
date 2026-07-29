@@ -34,7 +34,7 @@ test("review ledger snapshots are immutable and content addressed", async () => 
   });
 });
 
-test("Task 2 keeps the release capability at review:0 while review snapshots remain integrity checked", async () => {
+test("Task 4 starts new standard features with a review:1 pointer while snapshots remain integrity checked", async () => {
   await withRoot(async (root) => {
     await stateStore.initProject(root, strictProjectConfig);
     const state = await stateStore.startFeature(root, {
@@ -45,18 +45,16 @@ test("Task 2 keeps the release capability at review:0 while review snapshots rem
       execution: "standard",
       requirements: "provided-confirmed",
     });
-    assert.equal(state.workflowCapabilities.review, 0);
-    assert.equal(state.review, undefined);
-    const ledger = reviewStore.emptyReviewLedger("standard", state.revision);
-    const pointer = await reviewStore.writeReviewSnapshot(root, ledger);
-    const reviewEnabled = { ...state, workflowCapabilities: { ...state.workflowCapabilities, review: 1 }, review: pointer };
-    assert.deepEqual(await reviewStore.readReviewLedger(root, reviewEnabled), ledger);
+    assert.equal(state.workflowCapabilities.review, 1);
+    assert.ok(state.review);
+    const ledger = await reviewStore.readReviewLedger(root, state);
+    assert.deepEqual(ledger, reviewStore.emptyReviewLedger("standard", state.revision));
     await assert.rejects(
-      () => reviewStore.readReviewLedger(root, { ...reviewEnabled, review: { ...pointer, sha256: "b".repeat(64) } }),
+      () => reviewStore.readReviewLedger(root, { ...state, review: { ...state.review, sha256: "b".repeat(64) } }),
       /REVIEW_INTEGRITY_FAILED/,
     );
     assert.throws(
-      () => stateStore.validateFeatureState({ ...reviewEnabled, review: undefined }),
+      () => stateStore.validateFeatureState({ ...state, review: undefined }),
       /review-enabled standard feature requires a review pointer/,
     );
   });

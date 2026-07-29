@@ -1,10 +1,12 @@
-import { routeDefinitionForFeature } from "../policy/contract.js";
+import { reviewEnforcementRequired, routeDefinitionForFeature } from "../policy/contract.js";
 import { deriveNext } from "../policy/derive-next.js";
 import { requiredEvidenceForStep, requiredEvidenceIsEmpty } from "../policy/evidence.js";
 import type { NextAction } from "../policy/types.js";
 import { readState, type FeatureState } from "./state-store.js";
 import { inspectTraceGate } from "./traceability-gates.js";
 import { verificationIsStale } from "./verification.js";
+import { assertReviewComplete } from "./review-jobs.js";
+import { readReviewLedger } from "./review-store.js";
 
 function toDerivedState(state: FeatureState, verificationStale: boolean) {
   const steps: Record<string, { status: "pending" | "satisfied"; artifactReady?: boolean }> = { ...state.steps };
@@ -62,9 +64,51 @@ function traceStepForAction(action: NextAction): string | undefined {
   return undefined;
 }
 
+/**
+ * Review jobs are state-machine actions, not a suggestion embedded in a Skill.
+ * No job output is exposed here: callers only receive the work queue metadata.
+ */
+async function reviewPlanAction(root: string, state: FeatureState): Promise<NextAction | undefined> {
+  if (!reviewEnforcementRequired(state.route, state.workflowCapabilities)) return undefined;
+  const ledger = await readReviewLedger(root, state);
+  const batch = ledger.batches.find((candidate) => candidate.validity === "current");
+  if (!batch) return { kind: "create-review-batch", step: "plan_review" };
+  if (batch.progress !== "complete") {
+    return {
+      kind: "review-jobs-pending",
+      step: "plan_review",
+      batchId: batch.batchId,
+      jobs: batch.jobs.map(({ jobId, role, reviewDepth, status }) => ({ jobId, role, reviewDepth, status })),
+    };
+  }
+  try {
+    await assertReviewComplete(root, state);
+    return undefined;
+  } catch (error) {
+    const code = (error as { code?: unknown }).code;
+    if (code === "REVIEW_BASIS_STALE" || code === "REVIEW_BATCH_REQUIRED") {
+      return { kind: "create-review-batch", step: "plan_review" };
+    }
+    if (code === "REVIEW_BLOCKING_FINDINGS" || code === "REVIEW_BATCH_INCOMPLETE") {
+      return {
+        kind: "review-jobs-pending",
+        step: "plan_review",
+        batchId: batch.batchId,
+        jobs: batch.jobs.map(({ jobId, role, reviewDepth, status }) => ({ jobId, role, reviewDepth, status })),
+      };
+    }
+    throw error;
+  }
+}
+
 export async function nextAction(root: string, id: string): Promise<NextAction> {
   const state = await readState(root, id);
   const action = deriveNext(toDerivedState(state, await verificationIsStale(root, state)));
+
+  if (action.kind === "run-step" && action.step === "plan_review") {
+    const reviewAction = await reviewPlanAction(root, state);
+    if (reviewAction) return reviewAction;
+  }
 
   if (action.kind === "run-step" || action.kind === "present-human-gate") {
     const definition = routeDefinitionForFeature(state.route, state.workflowCapabilities);
@@ -72,7 +116,11 @@ export async function nextAction(root: string, id: string): Promise<NextAction> 
       ...(definition.artifactSteps?.[action.step] ?? []),
       ...(definition.generatedArtifactSteps?.[action.step] ?? []),
     ];
-    const missing = requiredNow.find((artifact) => !state.artifacts[artifact]);
+    // plan-review is Core-generated for review:1. Task 5 supplies its read-only
+    // projection; the lifecycle gate above is already authoritative here.
+    const missing = requiredNow.find((artifact) => !(action.kind === "run-step" && action.step === "plan_review"
+      && reviewEnforcementRequired(state.route, state.workflowCapabilities) && artifact === "plan-review")
+      && !state.artifacts[artifact]);
     if (missing) return { kind: "scaffold-artifact", step: missing };
   }
 

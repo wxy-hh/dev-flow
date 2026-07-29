@@ -81,7 +81,7 @@ test("MCP server initializes, advertises the complete public interface, and maps
   assert.ok(Array.isArray(responses[1].result.tools));
   assert.equal(responses[1].result.content, undefined);
   const names = responses[1].result.tools.map((tool) => tool.name);
-  for (const name of ["dev_flow_init_project", "dev_flow_classify", "dev_flow_start", "dev_flow_next", "dev_flow_verify", "dev_flow_confirm_gate", "dev_flow_respond_interaction", "dev_flow_request_grill_decision", "dev_flow_resolve_grill_decision", "dev_flow_enable_windows_notifications", "dev_flow_finalize", "dev_flow_recover_corrupt_feature", "dev_flow_status", "dev_flow_record_artifact_with_trace", "dev_flow_get_traceability", "dev_flow_create_review_batch", "dev_flow_get_review_job", "dev_flow_claim_review_job", "dev_flow_submit_review_job"]) {
+  for (const name of ["dev_flow_init_project", "dev_flow_classify", "dev_flow_start", "dev_flow_next", "dev_flow_verify", "dev_flow_confirm_gate", "dev_flow_respond_interaction", "dev_flow_request_grill_decision", "dev_flow_resolve_grill_decision", "dev_flow_enable_windows_notifications", "dev_flow_finalize", "dev_flow_recover_corrupt_feature", "dev_flow_status", "dev_flow_record_artifact_with_trace", "dev_flow_get_traceability", "dev_flow_create_review_batch", "dev_flow_get_review_job", "dev_flow_claim_review_job", "dev_flow_submit_review_job", "dev_flow_present_review_risk_acceptance", "dev_flow_resolve_review_risk_acceptance"]) {
     assert.ok(names.includes(name), `missing tool ${name}`);
   }
   const contract = JSON.parse(await readFile(path.resolve("plugins/dev-flow/policy/contract.json"), "utf8"));
@@ -121,6 +121,11 @@ test("MCP server initializes, advertises the complete public interface, and maps
   assert.equal("basisHash" in reviewSubmit.inputSchema.properties, false);
   assert.equal("assuranceLevel" in reviewSubmit.inputSchema.properties, false);
   assert.equal("roles" in reviewSubmit.inputSchema.properties, false);
+  const reviewFinding = reviewSubmit.inputSchema.properties.completion.properties.findings.items;
+  assert.deepEqual(reviewFinding.required, ["severity", "category", "targets", "evidence", "claim", "recommendation"]);
+  assert.equal(reviewFinding.additionalProperties, false);
+  assert.equal("basisHash" in reviewFinding.properties, false);
+  assert.equal(reviewSubmit.inputSchema.properties.completion.properties.resolutions.items.additionalProperties, false);
 
   // tools/call keeps CallToolResult content shape
   assert.equal(responses[2].error.data.code, "UNKNOWN_TOOL");

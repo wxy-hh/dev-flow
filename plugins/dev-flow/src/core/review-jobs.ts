@@ -2,6 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import type { ReviewBasis, ReviewBatch, ReviewJob, ReviewLedger } from "../policy/review.js";
+import type { ReviewFinding, ReviewFindingInput, ReviewFindingResolutionInput } from "../policy/types.js";
 import { assuranceForReview2a, deriveReviewJobRequirements, parseReviewJobCompletion } from "../policy/review.js";
 import { DevFlowError } from "./errors.js";
 import { fingerprintProtectedRoots } from "./fingerprint.js";
@@ -15,6 +16,15 @@ import {
   writeReviewSnapshot,
 } from "./review-store.js";
 import { readProjectConfigSnapshot, readTraceability } from "./traceability-store.js";
+import {
+  createInteraction,
+  findInteractionForTarget,
+  getInteraction,
+  resolveTokenInteraction,
+  toPublicInteraction,
+  type PublicInteraction,
+  type UserInteraction,
+} from "./user-interactions.js";
 
 const digest = (value: string) => createHash("sha256").update(value).digest("hex");
 const leaseMilliseconds = 60 * 60 * 1000;
@@ -31,6 +41,7 @@ interface DerivedReviewInput {
   basis: ReviewBasis;
   frozenArtifacts: FrozenReviewArtifact[];
   projectConfig: { sha256: string; contents: string };
+  scopeManifest: { protectedRoots: string[]; rollbackFileScopes: string[] };
 }
 
 export interface CreateReviewBatchResult {
@@ -44,6 +55,18 @@ export interface ClaimedReviewJob {
   batchId: string;
   job: Omit<ReviewJob, "claim">;
   capability: string;
+  idempotent: boolean;
+}
+
+export interface ReviewRiskAcceptancePresentation {
+  state: FeatureState;
+  interaction: PublicInteraction;
+  idempotent: boolean;
+}
+
+export interface ResolvedReviewRiskAcceptance {
+  state: FeatureState;
+  acceptedFindingIds: string[];
   idempotent: boolean;
 }
 
@@ -121,7 +144,15 @@ async function deriveReviewInput(root: string, state: FeatureState): Promise<Der
     scopeManifestSha256: digest(canonicalReviewValueJson(scopeManifest)),
     protectedRootsFingerprint: await fingerprintProtectedRoots(root, config.protectedRoots),
   };
-  return { basis, frozenArtifacts, projectConfig: { sha256: projectConfigSha256, contents: projectContents } };
+  return {
+    basis,
+    frozenArtifacts,
+    projectConfig: { sha256: projectConfigSha256, contents: projectContents },
+    scopeManifest: {
+      protectedRoots: scopeManifest.protectedRoots,
+      rollbackFileScopes: scopeManifest.rollbackFileScopes.flatMap((item) => item.fileScope),
+    },
+  };
 }
 
 function basisHash(basis: ReviewBasis): string {
@@ -150,6 +181,62 @@ function recoverExpiredLease(job: ReviewJob, now: Date): ReviewJob {
     return { ...job, status: "pending", claim: undefined };
   }
   return job;
+}
+
+function safePackagePath(value: string): boolean {
+  return value.length > 0 && value === value.trim() && !path.posix.isAbsolute(value) && !value.includes("\\")
+    && path.posix.normalize(value) === value && !value.split("/").includes("..");
+}
+
+function validScopeManifest(value: unknown): value is { protectedRoots: string[]; rollbackFileScopes: string[] } {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const manifest = value as { protectedRoots?: unknown; rollbackFileScopes?: unknown };
+  return Array.isArray(manifest.protectedRoots) && Array.isArray(manifest.rollbackFileScopes)
+    && manifest.protectedRoots.every((entry) => typeof entry === "string" && safePackagePath(entry))
+    && manifest.rollbackFileScopes.every((entry) => typeof entry === "string" && safePackagePath(entry));
+}
+
+function assertFindingScope(
+  manifest: { protectedRoots: string[]; rollbackFileScopes: string[] },
+  findings: ReviewFindingInput[],
+  resolutions: ReviewFindingResolutionInput[],
+): void {
+  const allowed = [...new Set([...manifest.protectedRoots, ...manifest.rollbackFileScopes])];
+  const inManifest = (value: string) => safePackagePath(value) && allowed.some((scope) => scope === "." || value === scope || value.startsWith(`${scope}/`));
+  for (const finding of findings) {
+    if (finding.severity === "blocking" && !finding.evidence.length) invalid("REVIEW_FINDING_EVIDENCE_REQUIRED", "blocking finding requires evidence");
+    if (finding.targets.some((target) => !inManifest(target)) || finding.evidence.some((evidence) => !inManifest(evidence.path))) {
+      invalid("REVIEW_FINDING_SCOPE_INVALID", "finding targets and evidence must be package-relative paths inside the scope manifest");
+    }
+  }
+  if (resolutions.some((resolution) => resolution.evidence.some((evidence) => !inManifest(evidence.path)))) {
+    invalid("REVIEW_FINDING_SCOPE_INVALID", "resolution evidence must be package-relative paths inside the scope manifest");
+  }
+}
+
+const severityRank = { note: 0, warning: 1, blocking: 2 } as const;
+
+/**
+ * A reviewer may repeat the same claim while refining its severity. Persist one
+ * immutable finding and retain the strongest severity; duplicates can never
+ * turn a blocking claim into a warning or note.
+ */
+function dedupeFindings(findings: ReviewFindingInput[]): ReviewFindingInput[] {
+  const byIdentity = new Map<string, ReviewFindingInput>();
+  for (const finding of findings) {
+    const identity = canonicalReviewValueJson({
+      category: finding.category,
+      targets: [...finding.targets].sort(),
+      evidence: [...finding.evidence].sort((left, right) => `${left.path}:${left.line ?? 0}`.localeCompare(`${right.path}:${right.line ?? 0}`)),
+      claim: finding.claim,
+      recommendation: finding.recommendation,
+    });
+    const existing = byIdentity.get(identity);
+    if (!existing || severityRank[finding.severity] > severityRank[existing.severity]) {
+      byIdentity.set(identity, { ...finding, targets: [...finding.targets], evidence: finding.evidence.map((evidence) => ({ ...evidence })) });
+    }
+  }
+  return [...byIdentity.values()];
 }
 
 /** Create is idempotent for an unchanged Core-computed basis. */
@@ -185,6 +272,7 @@ export async function createReviewBatch(
         basisHash: currentBasisHash,
         frozenArtifacts: reviewInput.frozenArtifacts,
         projectConfig: reviewInput.projectConfig,
+        scopeManifest: reviewInput.scopeManifest,
         role: requirement.role,
         reviewDepth: requirement.reviewDepth,
       });
@@ -300,14 +388,48 @@ export async function submitReviewJob(
     }
     if (!job.claim || digest(capability) !== job.claim.requestSha256) invalid("REVIEW_JOB_CAPABILITY_INVALID", "review job capability is invalid");
     if (Date.parse(job.claim.leaseExpiresAt) <= now.getTime()) invalid("REVIEW_JOB_LEASE_EXPIRED", "review job lease has expired", { jobId });
+    if (parsed.findings.some((finding) => finding.category !== job.role)) {
+      invalid("REVIEW_FINDING_ROLE_MISMATCH", "a job may only submit findings for its assigned review role", { jobId, role: job.role });
+    }
+    const reviewPackage = await readReviewPackage(root, id, job.packageSha256) as { scopeManifest?: unknown };
+    const manifest = reviewPackage.scopeManifest;
+    if (!validScopeManifest(manifest)) {
+      invalid("REVIEW_INTEGRITY_FAILED", "review package scope manifest is invalid", { jobId });
+    }
+    assertFindingScope(manifest, parsed.findings, parsed.resolutions ?? []);
+    const dispositions = { ...batch.dispositions };
+    const resolvedIds = new Set<string>();
+    for (const resolution of parsed.resolutions ?? []) {
+      if (resolvedIds.has(resolution.findingId)) invalid("REVIEW_RESOLUTION_DUPLICATE", "a finding may be resolved only once per successor batch", { findingId: resolution.findingId });
+      const source = ledger.batches
+        .filter((candidate) => candidate.batchId !== batchId)
+        .flatMap((candidate) => candidate.jobs.map((candidateJob) => ({ batch: candidate, job: candidateJob })))
+        .find(({ job: candidateJob }) => candidateJob.submission?.findings.some((finding) => finding.findingId === resolution.findingId));
+      const finding = source?.job.submission?.findings.find((candidate) => candidate.findingId === resolution.findingId);
+      if (!source || !finding) invalid("REVIEW_RESOLUTION_UNKNOWN_FINDING", "resolution references an unknown prior finding", { findingId: resolution.findingId });
+      if (finding!.severity !== "blocking" || source!.job.role !== job.role) {
+        invalid("REVIEW_RESOLUTION_ROLE_MISMATCH", "only the same role may resolve a prior blocking finding", { findingId: resolution.findingId });
+      }
+      if (dispositions[resolution.findingId]) {
+        invalid("REVIEW_RESOLUTION_ALREADY_DISPOSED", "a prior finding already has a disposition", { findingId: resolution.findingId });
+      }
+      dispositions[resolution.findingId] = { kind: "resolved-in-successor", successorBatchId: batchId, resolutionJobId: jobId, resolvedAt: now.toISOString() };
+      resolvedIds.add(resolution.findingId);
+    }
+    const findings: ReviewFinding[] = dedupeFindings(parsed.findings).map((finding) => ({
+      ...finding,
+      findingId: `F-${randomUUID()}`,
+      jobId,
+    }));
     const submitted: ReviewJob = {
       ...job,
       status: "submitted",
-      submission: { payloadSha256, coverageSummary: parsed.coverageSummary, findings: parsed.findings, submittedAt: now.toISOString() },
+      submission: { payloadSha256, coverageSummary: parsed.coverageSummary, findings, resolutions: parsed.resolutions ?? [], submittedAt: now.toISOString() },
     };
     const updatedBatch: ReviewBatch = {
       ...batch,
       jobs: batch.jobs.map((candidate) => candidate.jobId === jobId ? submitted : candidate),
+      ...(Object.keys(dispositions).length ? { dispositions } : {}),
     };
     updatedBatch.progress = updatedBatch.jobs.every((candidate) => candidate.status === "submitted") ? "complete" : "open";
     const batches = ledger.batches.map((candidate) => candidate.batchId === batchId ? updatedBatch : candidate);
@@ -316,4 +438,264 @@ export async function submitReviewJob(
     return { mutate: (draft) => { draft.review = pointer; }, eventData: { batchId, jobId, payloadSha256 } };
   });
   return { ...result!, state };
+}
+
+interface LocatedFinding {
+  batch: ReviewBatch;
+  job: ReviewJob;
+  finding: ReviewFinding;
+}
+
+function submittedFindings(ledger: ReviewLedger): LocatedFinding[] {
+  return ledger.batches.flatMap((batch) => batch.jobs.flatMap((job) =>
+    (job.submission?.findings ?? []).map((finding) => ({ batch, job, finding }))));
+}
+
+function sortedFindingIds(findingIds: string[]): string[] {
+  if (!Array.isArray(findingIds) || !findingIds.length || findingIds.some((id) => typeof id !== "string" || !id)) {
+    invalid("REVIEW_RISK_ACCEPTANCE_INVALID", "risk acceptance requires one or more finding ids");
+  }
+  const sorted = [...findingIds].sort();
+  if (new Set(sorted).size !== sorted.length) {
+    invalid("REVIEW_RISK_ACCEPTANCE_INVALID", "risk acceptance finding ids must be unique");
+  }
+  return sorted;
+}
+
+function findingSetHash(batch: ReviewBatch, findings: ReviewFinding[]): string {
+  const items = findings
+    .map((finding) => ({ findingId: finding.findingId, sha256: digest(canonicalReviewValueJson(finding)) }))
+    .sort((left, right) => left.findingId.localeCompare(right.findingId));
+  return digest(canonicalReviewValueJson({ batchId: batch.batchId, basisHash: batch.basisHash, findings: items }));
+}
+
+function riskBinding(interaction: UserInteraction): { batchId: string; findingIds: string[]; findingSetHash: string } {
+  const binding = interaction.binding;
+  if (interaction.kind !== "risk-acceptance" || !binding || typeof binding.batchId !== "string"
+    || typeof binding.findingSetHash !== "string" || !Array.isArray(binding.findingIds)) {
+    invalid("REVIEW_RISK_ACCEPTANCE_INVALID", "interaction is not a valid review risk-acceptance decision", { interactionId: interaction.id });
+  }
+  return { batchId: binding!.batchId, findingIds: sortedFindingIds(binding!.findingIds), findingSetHash: binding!.findingSetHash };
+}
+
+async function currentBatchWithBasis(root: string, state: FeatureState): Promise<{ ledger: ReviewLedger; batch: ReviewBatch }> {
+  const ledger = await readReviewLedger(root, state);
+  const batch = ledger.batches.find((candidate) => candidate.validity === "current");
+  if (!batch) invalid("REVIEW_BATCH_REQUIRED", "a current review batch is required");
+  const reviewInput = await deriveReviewInput(root, state);
+  if (basisHash(reviewInput.basis) !== batch!.basisHash) {
+    invalid("REVIEW_BASIS_STALE", "review batch basis no longer matches current feature state", { batchId: batch!.batchId });
+  }
+  return { ledger, batch: batch! };
+}
+
+function currentBlockingFindings(ledger: ReviewLedger, batch: ReviewBatch): LocatedFinding[] {
+  const dispositions = batch.dispositions ?? {};
+  return submittedFindings(ledger).filter(({ batch: source, finding }) => source.batchId === batch.batchId
+    && finding.severity === "blocking" && !dispositions[finding.findingId]);
+}
+
+function acceptanceFindings(ledger: ReviewLedger, batch: ReviewBatch, findingIds: string[]): ReviewFinding[] {
+  return selectCurrentBlockingFindings(ledger, batch, findingIds, true);
+}
+
+function selectCurrentBlockingFindings(
+  ledger: ReviewLedger,
+  batch: ReviewBatch,
+  findingIds: string[],
+  unresolvedOnly: boolean,
+): ReviewFinding[] {
+  const byId = new Map(submittedFindings(ledger)
+    .filter(({ batch: source, finding }) => source.batchId === batch.batchId
+      && finding.severity === "blocking" && (!unresolvedOnly || !batch.dispositions?.[finding.findingId]))
+    .map(({ finding }) => [finding.findingId, finding]));
+  const selected = sortedFindingIds(findingIds).map((findingId) => byId.get(findingId));
+  if (selected.some((finding) => !finding)) {
+    invalid("REVIEW_RISK_ACCEPTANCE_INVALID", "risk acceptance can cover only current unresolved blocking findings", {
+      batchId: batch.batchId,
+      findingIds,
+    });
+  }
+  return selected as ReviewFinding[];
+}
+
+/** Present a one-time, exact-set acceptance decision for current blocking findings. */
+export async function presentReviewRiskAcceptance(
+  root: string,
+  id: string,
+  expectedRevision: number,
+  findingIds: string[],
+): Promise<ReviewRiskAcceptancePresentation> {
+  let result: Omit<ReviewRiskAcceptancePresentation, "state"> | undefined;
+  const state = await mutatePrepared(root, id, expectedRevision, "review-risk-acceptance-presented", async (current) => {
+    const { ledger, batch } = await currentBatchWithBasis(root, current as FeatureState);
+    if (batch.progress !== "complete") invalid("REVIEW_BATCH_INCOMPLETE", "all required review jobs must be submitted", { batchId: batch.batchId });
+    const findings = acceptanceFindings(ledger, batch, findingIds);
+    const ids = findings.map((finding) => finding.findingId).sort();
+    const setHash = findingSetHash(batch, findings);
+    const target = `review-risk:${batch.batchId}:${setHash}`;
+    const existing = findInteractionForTarget(current as FeatureState, target);
+    if (existing) {
+      result = { interaction: toPublicInteraction(existing), idempotent: true };
+      return { mutate: () => undefined, unchanged: true, eventData: { batchId: batch.batchId, findingSetHash: setHash, idempotent: true } };
+    }
+    return {
+      mutate: (draft) => {
+        const interaction = createInteraction(draft, {
+          kind: "risk-acceptance",
+          target,
+          basisHash: batch.basisHash,
+          binding: { batchId: batch.batchId, findingIds: ids, findingSetHash: setHash },
+          question: "接受这些阻断性审查发现的风险？此操作只适用于当前审查批次与精确发现集合。",
+          options: [
+            { id: "accept", label: "接受风险", requiresComment: true },
+            { id: "decline", label: "不接受" },
+          ],
+        });
+        result = { interaction: toPublicInteraction(interaction), idempotent: false };
+      },
+      eventData: { batchId: batch.batchId, findingIds: ids, findingSetHash: setHash },
+    };
+  });
+  return { ...result!, state };
+}
+
+function assertResolvedAcceptance(
+  state: FeatureState,
+  interaction: UserInteraction,
+  batch: ReviewBatch,
+  findings: ReviewFinding[],
+): void {
+  const binding = riskBinding(interaction);
+  const expectedIds = findings.map((finding) => finding.findingId).sort();
+  const expectedSetHash = findingSetHash(batch, findings);
+  if (interaction.basisHash !== batch.basisHash || binding.batchId !== batch.batchId
+    || binding.findingSetHash !== expectedSetHash || binding.findingIds.join("\n") !== expectedIds.join("\n")) {
+    invalid("REVIEW_RISK_ACCEPTANCE_STALE", "risk acceptance no longer matches the current batch and finding set", { interactionId: interaction.id });
+  }
+  if (state.interactions?.[interaction.id] !== interaction) {
+    invalid("REVIEW_RISK_ACCEPTANCE_INVALID", "risk acceptance interaction is not part of feature state", { interactionId: interaction.id });
+  }
+}
+
+/** Resolve the one-time text token and atomically persist accepted dispositions. */
+export async function resolveReviewRiskAcceptanceToken(
+  root: string,
+  id: string,
+  expectedRevision: number,
+  interactionId: string,
+  userReply: string,
+  promptEventId: string,
+  host: "claude" | "codex",
+): Promise<ResolvedReviewRiskAcceptance> {
+  let result: Omit<ResolvedReviewRiskAcceptance, "state"> | undefined;
+  const state = await mutatePrepared(root, id, expectedRevision, "review-risk-acceptance-resolved", async (current, nextStateRevision) => {
+    const interaction = getInteraction(current as FeatureState, interactionId);
+    const { ledger, batch } = await currentBatchWithBasis(root, current as FeatureState);
+    const binding = riskBinding(interaction);
+    if (interaction.status === "resolved") {
+      const findings = selectCurrentBlockingFindings(ledger, batch, binding.findingIds, false);
+      assertResolvedAcceptance(current as FeatureState, interaction, batch, findings);
+      const accepted = interaction.response?.action === "accept"
+        && interaction.response.source === "text-token"
+        && interaction.response.userReply === userReply
+        && interaction.response.promptEventId === promptEventId
+        && interaction.response.host === host;
+      const dispositions = batch.dispositions ?? {};
+      if (accepted && findings.every((finding) => {
+        const disposition = dispositions[finding.findingId];
+        return disposition?.kind === "risk-accepted" && disposition.interactionId === interaction.id
+          && disposition.findingSetHash === binding.findingSetHash;
+      })) {
+        result = { acceptedFindingIds: binding.findingIds, idempotent: true };
+        return { mutate: () => undefined, unchanged: true, eventData: { interactionId, idempotent: true } };
+      }
+      invalid("INTERACTION_ALREADY_RESOLVED", interactionId);
+    }
+    const findings = acceptanceFindings(ledger, batch, binding.findingIds);
+    assertResolvedAcceptance(current as FeatureState, interaction, batch, findings);
+    const preview = structuredClone(current as FeatureState);
+    const response = resolveTokenInteraction(preview, interactionId, userReply, host, promptEventId);
+    if (response.action !== "accept") {
+      result = { acceptedFindingIds: [], idempotent: false };
+      return {
+        mutate: (draft) => { resolveTokenInteraction(draft, interactionId, userReply, host, promptEventId); },
+        eventData: { interactionId, batchId: batch.batchId, action: response.action },
+      };
+    }
+    const dispositions = { ...batch.dispositions };
+    for (const finding of findings) {
+      dispositions[finding.findingId] = {
+        kind: "risk-accepted",
+        interactionId,
+        acceptedAt: response.respondedAt,
+        batchId: batch.batchId,
+        basisHash: batch.basisHash,
+        findingIds: binding.findingIds,
+        findingSetHash: binding.findingSetHash,
+      };
+    }
+    const updatedBatch = { ...batch, dispositions };
+    const pointer = await writeReviewSnapshot(root, cloneLedger(
+      ledger,
+      nextStateRevision,
+      ledger.batches.map((candidate) => candidate.batchId === batch.batchId ? updatedBatch : candidate),
+    ));
+    result = { acceptedFindingIds: binding.findingIds, idempotent: false };
+    return {
+      mutate: (draft) => {
+        resolveTokenInteraction(draft, interactionId, userReply, host, promptEventId);
+        draft.review = pointer;
+      },
+      eventData: { interactionId, batchId: batch.batchId, findingIds: binding.findingIds, findingSetHash: binding.findingSetHash },
+    };
+  });
+  return { ...result!, state };
+}
+
+/** Only Core derives plan-review evidence from a complete, current batch. */
+export async function assertReviewComplete(
+  root: string,
+  state: FeatureState,
+): Promise<{ batchId: string; basisHash: string; assuranceLevel: "multi-perspective" }> {
+  const { ledger, batch } = await currentBatchWithBasis(root, state);
+  if (batch.progress !== "complete") invalid("REVIEW_BATCH_INCOMPLETE", "all required review jobs must be submitted", { batchId: batch.batchId });
+  const jobs = ledger.batches.flatMap((candidate) => candidate.jobs);
+  const dispositions = Object.assign({}, ...ledger.batches.map((candidate) => candidate.dispositions ?? {}));
+  const blocking = jobs.flatMap((job) => job.submission?.findings ?? [])
+    .filter((finding) => {
+      if (finding.severity !== "blocking") return false;
+      const disposition = dispositions[finding.findingId];
+      if (!disposition) return true;
+      if (disposition.kind === "risk-accepted") {
+        // A user decision is valid only for this exact current basis and frozen finding set.
+        if (disposition.batchId !== batch.batchId || disposition.basisHash !== batch.basisHash) return true;
+        const interaction = state.interactions?.[disposition.interactionId] as UserInteraction | undefined;
+        if (!interaction || interaction.kind !== "risk-acceptance" || interaction.status !== "resolved"
+          || interaction.response?.action !== "accept" || interaction.basisHash !== batch.basisHash) return true;
+        let binding: { batchId: string; findingIds: string[]; findingSetHash: string };
+        try { binding = riskBinding(interaction); } catch { return true; }
+        if (binding.batchId !== batch.batchId || binding.findingSetHash !== disposition.findingSetHash
+          || binding.findingIds.join("\n") !== [...disposition.findingIds].sort().join("\n")
+          || !binding.findingIds.includes(finding.findingId)) return true;
+        const acceptedFindings = submittedFindings(ledger)
+          .filter(({ batch: source, finding: candidate }) => source.batchId === batch.batchId
+            && binding.findingIds.includes(candidate.findingId))
+          .map(({ finding: candidate }) => candidate);
+        if (acceptedFindings.length !== binding.findingIds.length
+          || acceptedFindings.some((candidate) => candidate.severity !== "blocking")
+          || findingSetHash(batch, acceptedFindings) !== binding.findingSetHash) return true;
+        return false;
+      }
+      const successor = ledger.batches.find((candidate) => candidate.batchId === disposition.successorBatchId);
+      const resolutionJob = successor?.jobs.find((candidate) => candidate.jobId === disposition.resolutionJobId);
+      const sourceJob = jobs.find((candidate) => candidate.jobId === finding.jobId);
+      return !successor || !resolutionJob || !sourceJob || resolutionJob.role !== sourceJob.role
+        || !resolutionJob.submission?.resolutions.some((resolution) => resolution.findingId === finding.findingId);
+    });
+  if (blocking.length) invalid("REVIEW_BLOCKING_FINDINGS", "review batch has unresolved blocking findings", {
+    batchId: batch.batchId,
+    findingIds: blocking.map((finding) => finding.findingId),
+  });
+  return { batchId: batch.batchId, basisHash: batch.basisHash, assuranceLevel: "multi-perspective" };
 }

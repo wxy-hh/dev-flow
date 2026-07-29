@@ -1,4 +1,4 @@
-import { routeDefinitionForFeature } from "../policy/contract.js";
+import { reviewEnforcementRequired, routeDefinitionForFeature } from "../policy/contract.js";
 import { DevFlowError } from "./errors.js";
 import type { FeatureState } from "./state-store.js";
 
@@ -13,8 +13,13 @@ export function assertCurrentStep(state: FeatureState, step: string): void {
 export function artifactsRequiredBeforeGate(state: FeatureState, gate: string): string[] {
   const definition = routeDefinitionForFeature(state.route, state.workflowCapabilities);
   const index = definition.orderedSteps.indexOf(gate);
-  return [...new Set(definition.orderedSteps.slice(0, index).flatMap((step) => [
+  const required = [...new Set(definition.orderedSteps.slice(0, index).flatMap((step) => [
     ...(definition.artifactSteps?.[step] ?? []),
     ...(definition.generatedArtifactSteps?.[step] ?? []),
   ]))];
+  // For review:1, the immutable review ledger is the approval authority. The
+  // read-only plan-review projection is generated in Task 5 and must not turn
+  // a successfully completed Core review batch into a missing user artifact.
+  return required.filter((artifact) => artifact !== "plan-review"
+    || !reviewEnforcementRequired(state.route, state.workflowCapabilities));
 }

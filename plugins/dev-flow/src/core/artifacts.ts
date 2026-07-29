@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { routeDefinitionForFeature, traceEnforcementRequired } from "../policy/contract.js";
+import { reviewEnforcementRequired, routeDefinitionForFeature, traceEnforcementRequired } from "../policy/contract.js";
 import type { TraceArtifactKind, TraceDelta } from "../policy/traceability.js";
 import { renderArtifactTemplate } from "./artifact-templates.js";
 import { DevFlowError } from "./errors.js";
@@ -203,5 +203,11 @@ export async function recordArtifactWithTrace(
 }
 export async function assertArtifactIntegrity(root: string, id: string): Promise<void> {
   const state = await readState(root, id);
-  for (const kind of artifactKinds(effectiveRoute(state))) await assertArtifactCurrent(root, id, state, kind);
+  for (const kind of artifactKinds(effectiveRoute(state))) {
+    // In the review-enforced contract, the immutable ledger—not an editable
+    // file—is the plan-review evidence. Its read-only projection is added by
+    // the later projection layer and must not weaken this Core gate meanwhile.
+    if (kind === "plan-review" && reviewEnforcementRequired(state.route, state.workflowCapabilities)) continue;
+    await assertArtifactCurrent(root, id, state, kind);
+  }
 }

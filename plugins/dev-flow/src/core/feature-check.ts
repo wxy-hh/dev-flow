@@ -18,6 +18,7 @@ import { mutate, readProjectConfig, readState, type FeatureState } from "./state
 import { assertCurrentStep } from "./step-order.js";
 import { assertTraceGateCurrent } from "./traceability-gates.js";
 import { invalidateStaleVerification } from "./verification.js";
+import { assertReviewComplete } from "./review-jobs.js";
 
 function assertRequiredEvidence(step: string, required: RequiredEvidence, evidence: unknown): void {
   const missing = missingRequiredEvidence(required, evidence);
@@ -64,7 +65,12 @@ export async function recordStep(
       step,
       state.workflowCapabilities,
     );
-    assertRequiredEvidence(step, required, normalizedEvidence);
+    if (required.fields.reviewBatch) {
+      // batch/basis/assurance are Core-owned; callers cannot provide substitutes.
+      normalizedEvidence = await assertReviewComplete(root, state);
+    } else {
+      assertRequiredEvidence(step, required, normalizedEvidence);
+    }
     state.steps[step] = { status: "satisfied", evidence: normalizedEvidence };
   });
 }
@@ -116,6 +122,10 @@ export async function featureCheck(
         step,
         state.workflowCapabilities,
       );
+      if (required.fields.reviewBatch) {
+        await assertReviewComplete(root, state);
+        continue;
+      }
       if (requiredEvidenceIsEmpty(required)) continue;
       assertRequiredEvidence(step, required, state.steps[step]?.evidence);
     }

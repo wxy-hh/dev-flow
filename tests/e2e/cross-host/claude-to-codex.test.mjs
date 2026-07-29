@@ -10,6 +10,7 @@ const store = await loadSource("plugins/dev-flow/src/core/state-store.ts");
 const gates = await loadSource("plugins/dev-flow/src/core/human-gates.ts");
 const artifacts = await loadSource("plugins/dev-flow/src/core/artifacts.ts");
 const checks = await loadSource("plugins/dev-flow/src/core/feature-check.ts");
+const reviewJobs = await loadSource("plugins/dev-flow/src/core/review-jobs.ts");
 const config = {
   schemaVersion: 1,
   verification: { commands: [{ id: "unit", command: "node", args: ["--test"], cwd: "." }], behaviorCommands: [] },
@@ -37,7 +38,17 @@ test("Claude creates a standard M feature and Codex confirms the next user turn"
     state = await registerTraceFixture({ root, featureId: "f", state, kind: "coverage-matrix" });
     state = await checks.recordStep(root, "f", state.revision, "coverage_review", {});
     state = await checks.recordStep(root, "f", state.revision, "rollback_unit", {});
-    state = await checks.recordStep(root, "f", state.revision, "plan_review", { reviewType: "plan" });
+    const batch = await reviewJobs.createReviewBatch(root, "f", state.revision);
+    state = batch.state;
+    for (const job of batch.batch.jobs) {
+      const capability = `claim-${job.jobId}-cross-host-1234567890`;
+      const claimed = await reviewJobs.claimReviewJob(root, "f", state.revision, batch.batch.batchId, job.jobId, capability);
+      state = (await reviewJobs.submitReviewJob(
+        root, "f", claimed.state.revision, batch.batch.batchId, job.jobId, capability,
+        { coverageSummary: `${job.role} review complete`, findings: [] },
+      )).state;
+    }
+    state = await checks.recordStep(root, "f", state.revision, "plan_review", {});
     state = await artifacts.scaffoldArtifact(root, "f", state.revision, "status");
     state = await gates.presentGate(root, "f", state.revision, "implementation_approval");
     await store.recordHostEvent(root, { eventId: "codex-later-turn", type: "user-prompt", host: "codex", text: "批准实现" });

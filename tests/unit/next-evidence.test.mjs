@@ -12,7 +12,7 @@ const checks = await loadSource("plugins/dev-flow/src/core/feature-check.ts");
 const gates = await loadSource("plugins/dev-flow/src/core/human-gates.ts");
 const next = await loadSource("plugins/dev-flow/src/core/next.ts");
 const status = await loadSource("plugins/dev-flow/src/core/status.ts");
-const reviewStore = await loadSource("plugins/dev-flow/src/core/review-store.ts");
+const reviewJobs = await loadSource("plugins/dev-flow/src/core/review-jobs.ts");
 const config = {
   schemaVersion: 1,
   verification: { commands: [{ id: "unit", command: "node", args: ["-e", "process.exit(0)"], cwd: "." }], behaviorCommands: [] },
@@ -113,7 +113,7 @@ test("nextAction and StatusView expose identical required evidence before every 
   }
 });
 
-test("a synthetic review:1 feature exposes Core-only plan-review evidence through next and StatusView", async () => {
+test("a review:1 feature derives batch creation, pending jobs, then Core-only plan-review evidence", async () => {
   const fixture = await atAction(
     "dev-flow-next-review-",
     { level: "M", topology: "shared-contract", execution: "standard", requirements: "provided-confirmed" },
@@ -122,17 +122,22 @@ test("a synthetic review:1 feature exposes Core-only plan-review evidence throug
   try {
     let state = await store.readState(fixture.root, "f");
     state = await checks.recordStep(fixture.root, "f", state.revision, "rollback_unit", {});
-    const review = await reviewStore.writeReviewSnapshot(
-      fixture.root,
-      reviewStore.emptyReviewLedger("f", state.revision + 1),
-    );
-    state = await store.mutate(fixture.root, "f", state.revision, "test-enable-review", (draft) => {
-      draft.workflowCapabilities = { trace: 1, review: 1, checkpoints: 0, rollbackExecution: 0 };
-      draft.review = review;
-    });
-    assert.deepEqual(await next.nextAction(fixture.root, "f"), { kind: "scaffold-artifact", step: "plan-review" });
+    assert.equal(state.workflowCapabilities.review, 1);
+    assert.deepEqual(await next.nextAction(fixture.root, "f"), { kind: "create-review-batch", step: "plan_review" });
 
-    state = await artifacts.scaffoldArtifact(fixture.root, "f", state.revision, "plan-review");
+    const created = await reviewJobs.createReviewBatch(fixture.root, "f", state.revision);
+    state = created.state;
+    const pending = await next.nextAction(fixture.root, "f");
+    assert.equal(pending.kind, "review-jobs-pending");
+    assert.equal(pending.batchId, created.batch.batchId);
+    for (const job of created.batch.jobs) {
+      const capability = `claim-${job.jobId}-next-evidence-1234567890`;
+      const claimed = await reviewJobs.claimReviewJob(fixture.root, "f", state.revision, created.batch.batchId, job.jobId, capability);
+      state = (await reviewJobs.submitReviewJob(
+        fixture.root, "f", claimed.state.revision, created.batch.batchId, job.jobId, capability,
+        { coverageSummary: `${job.role} complete`, findings: [] },
+      )).state;
+    }
     const expected = {
       kind: "run-step",
       step: "plan_review",

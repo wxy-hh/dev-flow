@@ -2,6 +2,9 @@ import type {
   ReviewAssurance,
   ReviewDepth,
   ReviewExecutionMode,
+  ReviewFinding,
+  ReviewFindingInput,
+  ReviewFindingResolutionInput,
   ReviewFindingSeverity,
   ReviewJobCompletion,
   ReviewJobRequirement,
@@ -51,8 +54,21 @@ export interface ReviewJob {
   packageSha256: string;
   status: "pending" | "claimed" | "submitted";
   claim?: { requestSha256: string; claimedAt: string; leaseExpiresAt: string };
-  submission?: { payloadSha256: string; coverageSummary: string; findings: unknown[]; submittedAt: string };
+  submission?: { payloadSha256: string; coverageSummary: string; findings: ReviewFinding[]; resolutions: ReviewFindingResolutionInput[]; submittedAt: string };
 }
+
+export type ReviewFindingDisposition =
+  | { kind: "resolved-in-successor"; successorBatchId: string; resolutionJobId: string; resolvedAt: string }
+  | {
+      kind: "risk-accepted";
+      interactionId: string;
+      acceptedAt: string;
+      /** The exact current batch and canonical set the user accepted. */
+      batchId: string;
+      basisHash: string;
+      findingIds: string[];
+      findingSetHash: string;
+    };
 
 export interface ReviewBatch {
   batchId: string;
@@ -63,6 +79,7 @@ export interface ReviewBatch {
   executionMode: ReviewExecutionMode;
   assuranceLevel: ReviewAssurance;
   jobs: ReviewJob[];
+  dispositions?: Record<string, ReviewFindingDisposition>;
 }
 
 export interface ReviewLedger {
@@ -123,13 +140,52 @@ export function parseReviewJobRequirements(value: unknown): ReviewJobRequirement
 /** Validate the completion envelope without inventing a finding where none exists. */
 export function parseReviewJobCompletion(value: unknown): ReviewJobCompletion {
   if (!isRecord(value)
-    || Object.keys(value).some((key) => key !== "coverageSummary" && key !== "findings")
+    || Object.keys(value).some((key) => key !== "coverageSummary" && key !== "findings" && key !== "resolutions")
     || typeof value.coverageSummary !== "string"
     || !value.coverageSummary.trim()
     || !Array.isArray(value.findings)) {
     protocolInvalid("review job completion has an invalid shape");
   }
-  return { coverageSummary: value.coverageSummary, findings: [...value.findings] };
+  const findings = value.findings.map((finding, index) => parseFinding(finding, index));
+  const resolutions = value.resolutions === undefined ? [] : Array.isArray(value.resolutions)
+    ? value.resolutions.map((resolution, index) => parseResolution(resolution, index))
+    : protocolInvalid("review job resolutions must be an array");
+  return { coverageSummary: value.coverageSummary, findings, ...(resolutions.length ? { resolutions } : {}) };
+}
+
+function nonEmptyStrings(value: unknown): value is string[] {
+  return Array.isArray(value) && value.length > 0 && value.every((item) => typeof item === "string" && item.trim());
+}
+
+function parseEvidence(value: unknown, label: string): Array<{ path: string; line?: number }> {
+  if (!Array.isArray(value) || !value.length) protocolInvalid(`${label} evidence must be a non-empty array`);
+  return value.map((item, index) => {
+    const line = isRecord(item) ? item.line : undefined;
+    if (!isRecord(item) || Object.keys(item).some((key) => key !== "path" && key !== "line")
+      || typeof item.path !== "string" || !item.path.trim()
+      || (line !== undefined && (typeof line !== "number" || !Number.isInteger(line) || line < 1))) {
+      protocolInvalid(`${label} evidence ${index} has an invalid shape`);
+    }
+    return { path: item.path, ...(line === undefined ? {} : { line: line as number }) };
+  });
+}
+
+function parseFinding(value: unknown, index: number): ReviewFindingInput {
+  if (!isRecord(value) || Object.keys(value).some((key) => !["severity", "category", "targets", "evidence", "claim", "recommendation"].includes(key))
+    || (value.severity !== "blocking" && value.severity !== "warning" && value.severity !== "note")
+    || !isReviewRole(value.category) || !nonEmptyStrings(value.targets)
+    || typeof value.claim !== "string" || !value.claim.trim() || typeof value.recommendation !== "string" || !value.recommendation.trim()) {
+    protocolInvalid(`review finding ${index} has an invalid shape`);
+  }
+  return { severity: value.severity, category: value.category, targets: [...value.targets], evidence: parseEvidence(value.evidence, `review finding ${index}`), claim: value.claim, recommendation: value.recommendation };
+}
+
+function parseResolution(value: unknown, index: number): ReviewFindingResolutionInput {
+  if (!isRecord(value) || Object.keys(value).some((key) => key !== "findingId" && key !== "evidence" && key !== "note")
+    || typeof value.findingId !== "string" || !value.findingId || typeof value.note !== "string" || !value.note.trim()) {
+    protocolInvalid(`review resolution ${index} has an invalid shape`);
+  }
+  return { findingId: value.findingId, evidence: parseEvidence(value.evidence, `review resolution ${index}`), note: value.note };
 }
 
 /** Derive the complete 2a review assignment from immutable feature facts. */

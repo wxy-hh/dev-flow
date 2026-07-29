@@ -9,7 +9,7 @@ description: 按路线产出实现计划。触发：写计划、实现计划、p
 
 - `implementation-plan`：standard M 提交 `TASK-...` 与其 `RU-...`；standard L 只提交 `TASK-...`，其 `rollbackUnit` 指向稍后由 rollback-safety 登记的 RU。
 - `coverage-matrix`：交给 coverage-review，以 `TEST-...` → `AC-...` 的 Trace delta 登记。
-- `plan_review` 保持既有 `dev_flow_record_step` 与 `{ reviewType: "plan" }`，本阶段不调用 review batch。
+- `plan_review` 必须服从 next：对 `review: 1` 的 standard M/L，依次处理 `create-review-batch`、`review-jobs-pending`，仅当返回 `run-step(plan_review)` 才以空 evidence 调用 `dev_flow_record_step`；Core 自动派生 batch evidence。只有旧 `review: 0` active feature 使用 `{ reviewType: "plan" }`，不得手写或编辑生成的 plan-review 投影。
 
 完成当前 plan/coverage/rollback/plan_review 步骤后立即再次调用 next。若返回 `present-human-gate: implementation_approval`：
 

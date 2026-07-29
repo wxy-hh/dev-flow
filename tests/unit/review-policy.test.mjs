@@ -88,8 +88,8 @@ test("review capability changes plan-review evidence from editable reviewType to
   );
 });
 
-test("Task 1 keeps the release capability at review:0 until Task 2 can create review pointers", () => {
-  assert.equal(types.SUPPORTED_WORKFLOW_CAPABILITIES.review, 0);
+test("Task 4 releases review:1 only after Core batch/finding gates exist", () => {
+  assert.equal(types.SUPPORTED_WORKFLOW_CAPABILITIES.review, 1);
 });
 
 test("review schema closes roles, categories, severity, and job shape", async () => {

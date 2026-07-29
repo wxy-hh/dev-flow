@@ -58,6 +58,7 @@ test("Trace-capable standard features create and retain pointers while legacy st
     const legacy = JSON.parse(await readFile(legacyFile, "utf8"));
     delete legacy.workflowCapabilities;
     delete legacy.traceability;
+    delete legacy.review;
     legacy.route = "light-m";
     legacy.classification = {
       level: "M",
