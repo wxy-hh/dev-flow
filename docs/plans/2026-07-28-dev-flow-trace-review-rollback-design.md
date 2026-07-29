@@ -39,9 +39,13 @@ Dev Flow v1.7.0 已经具备持久状态、路线顺序、Markdown 产物哈希�
 | standard L 的 RU 来源 | 从 `rollback-units` 文档解析，使用与 standard M 相同的 `RollbackNode` |
 | standard M 的 `rollback_unit` | 保留为无新 artifact 的校验步：断言 plan 来源的 RU slice current、DAG 合法，并继续执行现有风险 evidence 校验 |
 | plan review 文档 | 终态为 Core 生成投影；迁移只在 Review 2a 对 `review: 1` 的新 feature 生效，Trace 阶段与旧 feature 仍使用现有可编辑 artifact/evidence |
-| 路线契约 | 明确区分可编辑 `requiredArtifacts` 与 Core 生成的 `generatedArtifacts`，并分别绑定步骤 |
+| 路线契约 | `requiredArtifacts` 只表示人工编辑产物；`generatedArtifacts` 只表示 Core 生成产物；现有 `status` 在 Trace 阶段迁入生成产物 |
 | Trace 模型 | 使用带 `kind` 判别字段的联合类型；RU 在 Trace 阶段就包含依赖、scope、验证和来源字段 |
-| Trace 阶段强制力 | `trace: 1` 的追溯 artifact 禁止裸 `recordArtifact`；每次 `recordStep` 校验该阶段 trace slice；implementation 只要求全图完整且 basis current |
+| Trace delta | 调用方提交单个 artifact 的完整节点集合；Core 绑定来源、状态、区块哈希并派生 tombstone 与 edges |
+| Trace 存储 | 使用不可变内容寻址快照 `traceability/snapshots/<sha256>.json`；`state.json` 中的 pointer 是提交点，不覆盖旧快照 |
+| Trace 模板 | `core/artifact-templates.ts` 是 requirements/plan/coverage/rollback Trace 模板的唯一事实源；不保留未被运行时读取的同名空 Markdown 模板 |
+| Trace 阶段强制力 | 只有 `traceEnforcementRequired(state)` 为真时才禁用裸登记并校验 trace slice；implementation 只要求全图完整且 basis current |
+| Trace reclassify | light→standard 在同一 CAS 中懒创建或恢复 pointer；standard→light 保留只读账本但停止 Trace 强制 |
 | Checkpoint 强制时机 | 仅 `checkpoints: 1` 的新 feature 要求全部 RU checkpoint、无 open transaction；无 active RU 禁写也从阶段 3 开始 |
 | 唯一声明锚点 | 使用 `<!-- dev-flow:id=TASK-001 kind=task -->`；声明恰好一次、交叉引用可重复、`kind` 必须匹配节点 |
 | 图的写入权威 | node 字段（如 `covers`、`parent`、`verifies`、`tasks`）是唯一写入权威；`edges[]` 由 Core 派生，只读且写盘前重算 |
@@ -57,15 +61,17 @@ Dev Flow v1.7.0 已经具备持久状态、路线顺序、Markdown 产物哈希�
 
 ```text
 requirements.md ─┐
-plan.md           ├─→ traceability.json
+plan.md           ├─→ traceability/snapshots/<sha256>.json
 coverage.md       │      REQ → TASK → TEST → RU
-review reports  ──┘      TASK → review jobs/findings
+review reports  ──┘                 ↑
+                         state.json pointer（提交点）
+                         TASK → review jobs/findings
                          RU → checkpoint/patch/verification
 ```
 
-`traceability.json` 只能由 MCP 更新。每个机器节点都绑定来源 artifact 及其 SHA-256。Markdown 更新后，Core 依据来源哈希传播 stale，而不是删除历史结果。
+Trace snapshot 只能由 MCP 写入。每个机器节点都绑定来源 artifact、整个 artifact 的 SHA-256 和由声明锚点切分出的区块 SHA-256。Markdown 更新后，Core 依据区块哈希精确传播 stale；删除节点保留 tombstone，不复用旧 ID。
 
-为避免双主状态，人工维护的 artifact 与其 trace index 必须在同一个 MCP 事务中登记。
+为避免双主状态，人工维护的 artifact registration 与 trace pointer 必须在同一个 MCP CAS 中登记。新 snapshot 先完整落盘，`state.json` pointer 最后提交；提交前失败最多留下不被引用的孤儿 snapshot。
 
 路线合同必须显式描述可编辑与生成 artifact：
 
@@ -87,7 +93,7 @@ interface RouteDefinition {
 }
 ```
 
-`routeDefinitionForFeature(route, workflowCapabilities)` 根据 capability 计算有效合同。Review 2a 为 standard-M 声明 plan-review 从 `absent` 转为 `generated`，为 standard-L 声明从 `editable` 转为 `generated`；`review: 0` 仍得到旧合同。有效 `generatedArtifacts` 只能由 Core 生成、刷新和登记，Skill 可以请求刷新，但不能提交其内容。
+`routeDefinitionForFeature(route, workflowCapabilities)` 根据 capability 计算有效合同。Trace 阶段先把现有 `status` 从 `requiredArtifacts` 迁入 `generatedArtifacts`；Review 2a 再为 standard-M 声明 plan-review 从 `absent` 转为 `generated`，为 standard-L 声明从 `editable` 转为 `generated`；`review: 0` 仍得到旧合同。有效 `generatedArtifacts` 只能由 Core 生成、刷新和登记，Skill 可以请求刷新，但不能提交其内容。
 
 每个 feature 在启动时固定能力版本：
 
@@ -104,6 +110,17 @@ interface WorkflowCapabilities {
 
 每个发布阶段更新 Core 的单一常量 `SUPPORTED_WORKFLOW_CAPABILITIES`；`startFeature` 复制该值进入 feature state，后续读取不得用当前插件常量覆盖已保存值。
 
+Trace 门禁只使用一个谓词：
+
+```ts
+function traceEnforcementRequired(state: FeatureState): boolean {
+  return state.workflowCapabilities.trace === 1
+    && (state.route === "standard-m" || state.route === "standard-l");
+}
+```
+
+不能只检查 `workflowCapabilities.trace`，否则 standard→light 后会错误保留 Trace 门禁。
+
 ## 一、需求固化链
 
 ### 标识符
@@ -118,11 +135,67 @@ interface WorkflowCapabilities {
 
 ID 在一个 feature 内稳定且不可复用。删除节点保留 tombstone，防止旧 evidence 在新含义下重新生效。
 
+### 运行时模板与声明锚点
+
+`core/artifact-templates.ts` 是 Trace 相关 artifact scaffold 的唯一事实源，负责动态 front matter、feature ID、route、grill status 和以下节点区块：
+
+- requirements：`REQ-*` 与 `AC-*`
+- implementation-plan：`TASK-*`，standard M 同时包含 `RU-*`
+- coverage-matrix：`TEST-* → AC-*`
+- rollback-units：standard L 的完整 `RU-*`
+
+声明统一使用 `<!-- dev-flow:id=TASK-001 kind=task -->`。Core 以相邻声明锚点切分区块并计算 `sourceBlockSha256`；交叉引用可以重复，声明必须恰好一次。现有未被运行时读取的 `templates/implementation-plan.md`、`templates/coverage-matrix.md` 与 `templates/rollback-units.md` 删除，测试只断言 MCP 实际 scaffold 的文件。
+
 ### 账本模型
 
 账本节点使用带 `kind` 的判别联合类型，避免 Trace 与 Rollback 阶段各自定义一份不兼容的 RU：
 
 ```ts
+type TraceStatus = "current" | "stale" | "tombstoned";
+type RequirementId = `REQ-${string}`;
+type AcceptanceCriterionId = `AC-${string}`;
+type TaskId = `TASK-${string}`;
+type TestId = `TEST-${string}`;
+type RollbackId = `RU-${string}`;
+type TraceId = RequirementId | AcceptanceCriterionId | TaskId | TestId | RollbackId;
+type TraceArtifactKind =
+  | "requirements"
+  | "implementation-plan"
+  | "coverage-matrix"
+  | "rollback-units";
+
+interface TraceSource {
+  sourceArtifact: TraceArtifactKind;
+  sourceSha256: string;
+  sourceAnchor: string;
+  sourceBlockSha256: string;
+  status: TraceStatus;
+}
+
+interface RequirementNode extends TraceSource {
+  kind: "requirement";
+  id: RequirementId;
+}
+
+interface AcceptanceCriterionNode extends TraceSource {
+  kind: "acceptance-criterion";
+  id: AcceptanceCriterionId;
+  parentRequirement: RequirementId;
+}
+
+interface TaskNode extends TraceSource {
+  kind: "task";
+  id: TaskId;
+  covers: Array<RequirementId | AcceptanceCriterionId>;
+  rollbackUnit: RollbackId;
+}
+
+interface TestNode extends TraceSource {
+  kind: "test";
+  id: TestId;
+  verifies: AcceptanceCriterionId[];
+}
+
 type TraceNode =
   | RequirementNode
   | AcceptanceCriterionNode
@@ -132,48 +205,78 @@ type TraceNode =
 
 interface RollbackNode {
   kind: "rollback";
-  id: `RU-${string}`;
-  tasks: string[];
-  dependsOn: string[];
+  id: RollbackId;
+  tasks: TaskId[];
+  dependsOn: RollbackId[];
   fileScope: string[];
-  covers: string[];
+  covers: Array<RequirementId | AcceptanceCriterionId>;
   forwardVerification: string[];
   rollbackVerification: string[];
   sourceArtifact: "implementation-plan" | "rollback-units";
   sourceSha256: string;
   sourceAnchor: string;
-  status: "current" | "stale" | "tombstoned";
+  sourceBlockSha256: string;
+  status: TraceStatus;
+}
+
+type TraceNodeInput =
+  | { kind: "requirement"; id: RequirementId }
+  | { kind: "acceptance-criterion"; id: AcceptanceCriterionId; parentRequirement: RequirementId }
+  | { kind: "task"; id: TaskId; covers: Array<RequirementId | AcceptanceCriterionId>; rollbackUnit: RollbackId }
+  | { kind: "test"; id: TestId; verifies: AcceptanceCriterionId[] }
+  | {
+      kind: "rollback";
+      id: RollbackId;
+      tasks: TaskId[];
+      dependsOn: RollbackId[];
+      fileScope: string[];
+      covers: Array<RequirementId | AcceptanceCriterionId>;
+      forwardVerification: string[];
+      rollbackVerification: string[];
+    };
+
+interface TraceDelta {
+  nodes: TraceNodeInput[];
+}
+
+interface TraceSummary {
+  total: number;
+  current: number;
+  stale: number;
+  tombstoned: number;
+  orphanNodes: number;
+}
+
+interface TraceabilityPointer {
+  path: `traceability/snapshots/${string}.json`;
+  sha256: string;
+  revision: number;
+  summary: TraceSummary;
+}
+
+interface TraceEdge {
+  from: TraceId;
+  type: "parent" | "covers" | "verifies" | "rollback-unit" | "contains-task" | "depends-on";
+  to: TraceId;
+}
+
+interface TraceabilityLedger {
+  schemaVersion: 1;
+  featureId: string;
+  revision: number;
+  stateRevision: number;
+  projectConfigSha256: string;
+  nodes: Record<TraceId, TraceNode>;
+  edges: TraceEdge[];
+  summary: TraceSummary;
 }
 ```
 
 `RollbackNode.status` 表示定义是否 current/stale/tombstoned；实现期的 pending/active/checkpointed/rolled_back 属于独立的 `ImplementationUnitState`。两者引用同一个 RU ID，避免把计划定义的新鲜度与运行时生命周期混成一个状态机。
 
-账本示意：
+调用方每次提交一个 artifact 的完整节点集合，不接受 `source*`、`status`、tombstone 或 `edges[]`。Core 按 artifact/route 限制合法 kind，绑定来源和区块哈希；同一来源中消失的旧 ID 由 Core 生成 tombstone。Core 校验引用后确定性派生 edges，并在读取时验证派生结果与落盘内容一致；不一致视为账本损坏。
 
-```json
-{
-  "schemaVersion": 1,
-  "featureId": "feature-id",
-  "revision": 3,
-  "nodes": {
-    "TASK-001": {
-      "kind": "task",
-      "sourceArtifact": "implementation-plan",
-      "sourceSha256": "sha256",
-      "covers": ["REQ-001", "AC-001"],
-      "rollbackUnit": "RU-001",
-      "status": "current"
-    }
-  },
-  "edges": [
-    { "from": "TASK-001", "type": "covers", "to": "REQ-001" }
-  ]
-}
-```
-
-调用方的 trace delta 只提交 node 字段，不接受手工 `edges[]`。Core 校验节点引用后确定性派生 edges，并在读取时验证派生结果与落盘内容一致；不一致视为账本损坏。
-
-Feature state 只保存 traceability 文件路径、SHA-256、revision 与摘要，不复制完整图。
+Feature state 只保存 `TraceabilityPointer`，不复制完整图。snapshot 文件名是其规范 JSON 内容的 SHA-256；旧 snapshot 不覆盖、不修改。
 
 ### 原子登记
 
@@ -185,12 +288,15 @@ dev_flow_record_artifact_with_trace
 
 输入包含 artifact kind、expected revision 和结构化 trace delta。事务必须：
 
-1. 读取当前已 scaffold 的 artifact。
-2. 计算当前 SHA-256。
-3. 校验 ID 格式、唯一性、tombstone 与引用。
-4. 校验每个声明的 ID 在当前 Markdown 中恰好出现一次。
-5. 将 artifact registration 与 traceability 更新原子提交。
-6. 传播 gate、review、checkpoint 与下游 step 的 stale 状态。
+1. 加 feature 锁并校验 expected revision。
+2. 读取当前已 scaffold 的 artifact、旧 snapshot 与 project config。
+3. 计算 artifact SHA-256，校验 ID、完整替换集合、tombstone、引用、锚点和 command ID。
+4. 依据 `sourceBlockSha256` 精确传播 stale，并确定性派生 edges。
+5. 将规范 JSON 写入临时 snapshot，fsync 后 rename 为 `traceability/snapshots/<sha256>.json`。
+6. 最后原子 rename `state.json`，在同一个 state revision 中提交 artifact registration、Trace pointer、gate/step 失效和摘要。
+7. 更新 status、event 与 active pointer 等派生投影。
+
+`state.json` rename 是逻辑提交点。提交前失败时 state、artifact registration 和 pointer 均不变化；已写 snapshot 可能成为无害孤儿。提交后操作视为成功，派生投影失败不得谎报为“已回滚”，而应由 doctor 报告并在安全入口修复。当前 pointer 缺失、hash 不匹配或 snapshot 非法必须 fail closed；孤儿 snapshot 只报警，不阻塞路线。
 
 普通非追溯 artifact 可以继续使用原 `record_artifact`；参与追溯的 artifact 在新 feature 上必须使用原子接口。新 feature 对 requirements、plan、coverage、rollback 直接调用裸 `record_artifact` 时，Core 必须返回 `TRACE_AWARE_REGISTRATION_REQUIRED`，不能只靠 Skill 提醒。
 
@@ -224,17 +330,17 @@ standard M 的 `rollback_unit` 不创建新文档或新 RU。该步骤调用 `as
 
 ### 失效传播
 
-失效采用“保留历史、标记 stale”：
+失效采用“保留历史、标记 stale”。整个 artifact hash 只证明登记基线，节点是否发生语义变化由声明区块的 `sourceBlockSha256` 判断：
 
 ```text
-requirements hash 变化
+某个 REQ/AC 区块哈希变化
 → requirement gate stale
 → 引用相关 REQ/AC 的 TASK、TEST、RU stale
 → coverage review / plan review stale
 → implementation approval stale
 ```
 
-计划或回撤产物变化不反向使需求门禁失效，但会使相应覆盖审查、计划审查、批准和尚未执行的检查点失效。
+同一 artifact 中区块哈希未变化的节点更新 `sourceSha256` 后保持 current，其无关下游不失效。计划或回撤产物变化不反向使需求门禁失效，但会使相应覆盖审查、计划审查、批准和尚未执行的检查点失效。
 
 ## 二、可证明保证等级的对抗审查
 
@@ -446,11 +552,14 @@ Checkpoint 资产位于 feature 目录内，由 MCP 生成和管理，Agent 不�
 
 | 错误 | 含义 |
 | --- | --- |
-| `TRACE_ID_INVALID` | ID 格式非法 |
-| `TRACE_ID_DUPLICATE` | ID 重复或 tombstone 被复用 |
-| `TRACE_REFERENCE_DANGLING` | 引用不存在 |
-| `TRACE_COVERAGE_INCOMPLETE` | REQ/AC/TASK/TEST/RU 不变量不满足 |
-| `TRACE_BASIS_STALE` | 来源 artifact 已变化 |
+| `TRACEABILITY_REQUIRED` | 当前 standard feature 缺少 Trace pointer |
+| `TRACEABILITY_INTEGRITY_FAILED` | pointer、snapshot hash、feature ID、revision 或派生 edges 不一致 |
+| `TRACE_DELTA_INVALID` | 节点类型、字段、来源 artifact 或完整替换集合非法 |
+| `TRACE_SOURCE_ANCHOR_INVALID` | 声明缺失、重复、kind 不匹配或无法切分区块 |
+| `TRACE_GRAPH_INVALID` | ID、悬空引用、孤儿节点、RU DAG 或 tombstone 复用非法 |
+| `TRACE_SLICE_INCOMPLETE` | 当前阶段要求的 REQ/AC/TASK/TEST/RU 覆盖不完整 |
+| `TRACE_SLICE_STALE` | 当前阶段消费了 stale 节点或旧 basis |
+| `TRACE_VERIFICATION_COMMAND_UNKNOWN` | RU 引用了 project config 中不存在的 command ID |
 | `TRACE_AWARE_REGISTRATION_REQUIRED` | 追溯 artifact 试图通过裸接口登记 |
 | `GENERATED_ARTIFACT_READ_ONLY` | 当前 feature 合同中的生成产物被人工登记 |
 | `REVIEW_JOB_BASIS_MISMATCH` | reviewer 提交基于旧 package |
@@ -463,7 +572,7 @@ Checkpoint 资产位于 feature 目录内，由 MCP 生成和管理，Agent 不�
 | `ROLLBACK_CONFLICT` | 当前文件存在未登记修改 |
 | `ROLLBACK_TRANSACTION_OPEN` | 上次回撤事务需要恢复或续办 |
 
-所有失败必须保持 revision、artifact registration 和文件系统的一致性；涉及文件恢复的错误必须可由 doctor 报告并续办。
+所有提交点之前的失败必须保持 revision、artifact registration 和 Trace pointer 不变；已写入但未被 pointer 引用的 snapshot 是可诊断孤儿。提交点之后的派生投影错误必须报告“已提交、待修复”，不能把已提交状态描述成已回滚。
 
 错误码采用两层约定：
 
@@ -475,11 +584,13 @@ Checkpoint 资产位于 feature 目录内，由 MCP 生成和管理，Agent 不�
 ## 状态与模式演进
 
 - 现有 active feature 保持 legacy 模式并按旧合同完成。
-- `startFeature` 为新 standard M/L 原子创建空 `traceability.json`、state pointer，并写入当时可用的 `workflowCapabilities`；缺少能力字段的旧 feature 等价于全部为 `0`。
-- standard→light reclassify 保留账本和 pointer 作为只读审计记录，但新 light 路线不再 enforce trace，也不再调用 with-trace 登记接口。
+- `startFeature` 为所有新 feature 写入当时可用的 `workflowCapabilities`；只有新 standard M/L 同时创建空内容寻址 snapshot 与 state pointer。
+- light→standard 时，`trace: 1` feature 在 reclassify 的同一个 CAS 中懒创建空 pointer，或恢复已有只读 pointer；旧来源不会因此自动变为 current。
+- standard→light 保留账本和 pointer 作为只读审计记录，但 `traceEnforcementRequired(state)` 返回 false，不再调用 with-trace 登记接口。
+- 缺少能力字段的旧 feature 等价于全部为 `0`；legacy feature 即使 reclassify 也不得被插件升级中途施加 Trace 门禁。
 - 不在原 FeatureState 中内嵌完整 trace/review/checkpoint 数据，只保存路径、SHA-256、revision 和摘要。
 - traceability、review batch、checkpoint 和 rollback transaction 各自有独立 JSON schema。
-- 状态读取必须区分 legacy feature、完整新 feature 和损坏的新 feature；缺失必要 sidecar 时 fail closed。
+- 状态读取必须区分 legacy feature、不需 Trace 的 light feature、完整 standard feature 和损坏的 standard feature；当前 pointer 缺失或损坏时 fail closed。
 
 ## 宿主钩子
 
@@ -496,7 +607,7 @@ Hooks 继续只做强制策略，不推进工作流：
 
 `dev_flow_status` 增加：
 
-- trace coverage：total/current/stale/orphan counts
+- trace coverage：total/current/stale/tombstoned/orphan-node counts；doctor 另列 orphan snapshot
 - review：batch、assurance level、pending jobs、blocking findings
 - implementation：active RU、最近 checkpoint、剩余 units
 - rollback：合法目标、是否存在 open transaction
@@ -508,9 +619,12 @@ Hooks 继续只做强制策略，不推进工作流：
 ### 单元测试
 
 - ID、引用、DAG、tombstone 和 coverage 不变量。
-- artifact + trace 原子登记与 CAS 冲突。
+- 完整 delta 替换、Core 来源绑定、声明区块哈希与精确 stale 传播。
+- 内容寻址 snapshot、artifact + pointer 原子登记、CAS 冲突和提交点前后故障注入。
 - `workflowCapabilities` 启动时固定，插件升级不改变旧 feature 合同。
-- 精确 stale 传播和 gate basis 更新。
+- standard→light、light→standard 与 legacy reclassify。
+- TypeScript renderer 的真实 scaffold 输出，以及 editable/generated artifact 互斥。
+- pointer 损坏 fail closed、孤儿 snapshot 仅报警和 gate basis 更新。
 - review assurance 证据计算、调用方伪造身份不升级保证等级。
 - 审查者基线不匹配、审查发现去重、阻塞项处置。
 - RU fileScope、checkpoint blob/patch、rollback suffix 计算。
@@ -520,18 +634,21 @@ Hooks 继续只做强制策略，不推进工作流：
 
 - standard M/L 在缺失任意 REQ/AC 覆盖时不能进入 approval。
 - Trace-only、Review 2a 和 Checkpoint 三个能力组合分别可以独立闭环。
+- Trace-only standard M/L 在没有 review batch 和 ImplementationUnitState 时仍可 finalize。
 - 默认多视角审查可完成；服务端 sampling 与宿主 attestation 分别产生不同 assurance。
 - 风险标签派生正确 reviewer roles。
 - 多 RU 实现、checkpoint、回到中间 checkpoint、重新实现并 finalize。
 
 ### 双宿主测试
 
+- Claude 与 Codex 对同一 Trace revision 的并发 mutation 触发 CAS，胜出的 snapshot/pointer 可由另一宿主继续读取。
 - Claude 创建需求和计划，Codex 完成 review jobs 或反向。
 - 一端创建 checkpoint，另一端读取 status 并执行合法回撤。
 - 两端对同一 revision 的并发 mutation 触发 CAS。
 
 ### 文件系统故障测试
 
+- 在 Trace snapshot 写入、fsync、rename、state 提交前后注入失败；提交前不改变 pointer，提交后不伪报回滚。
 - 在 rollback transaction 的每个 fsync/rename 阶段注入失败。
 - 二进制、新增、删除、重命名和权限变化。
 - 用户在 checkpoint 后追加未登记修改时绝不覆盖。
@@ -539,7 +656,7 @@ Hooks 继续只做强制策略，不推进工作流：
 ## 分阶段交付
 
 0. **开放决策**：先把路线产物模式、RU 来源、生成投影、核心层强制边界和保证等级词汇固化进总设计与合同测试。
-1. **追溯**：为新 feature 固定 `trace: 1, review: 0, checkpoints: 0`；交付结构化 ID、模板、同构 RU、禁用裸登记、原子 sidecar、覆盖与失效传播；plan-review 仍走旧合同。
+1. **追溯**：为新 feature 固定 `trace: 1, review: 0, checkpoints: 0`；交付 TypeScript 模板、结构化 ID、同构 RU、内容寻址 snapshot、原子 pointer、禁用裸登记、覆盖与精确失效传播；plan-review 仍走旧合同。
 2. **审查 2a**：新 feature 固定 `review: 1`；本阶段迁移 plan-review 合同，交付批次、任务、审查发现、处置、生成投影和阻塞门禁；默认保证等级为 `multi-perspective`。
 3. **检查点与回撤就绪最小版本**：新 feature 固定 `checkpoints: 1`；此时才启用实现单元完成门禁、无 active RU/范围钩子、内容快照、预览与冲突；不注册回撤执行工具。
 4. **4A — 回撤加固**：事务日志、恢复、诊断、独立门禁、执行与故障注入。
