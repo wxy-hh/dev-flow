@@ -424,7 +424,7 @@ standard L 的 `rollback-units` 使用同一个 RU 区块；`forwardVerification
 
 **步骤：**
 
-- [ ] **步骤 1：写真实 scaffold 红灯测试。**
+- [x] **步骤 1：写真实 scaffold 红灯测试。**
 
 ```js
 import assert from "node:assert/strict";
@@ -466,7 +466,7 @@ test("standard M scaffold comes from the runtime renderer", async (t) => {
 });
 ```
 
-- [ ] **步骤 2：写锚点解析红灯测试。**
+- [x] **步骤 2：写锚点解析红灯测试。**
 
 ```js
 test("anchor parser hashes exact adjacent blocks and rejects duplicate ids", () => {
@@ -490,9 +490,9 @@ test("anchor parser hashes exact adjacent blocks and rejects duplicate ids", () 
 });
 ```
 
-- [ ] **步骤 3：写 generated 生命周期红灯测试。** standard M/risk-minimal 在正确步骤可以 scaffold status、随后 state mutation 刷新其 hash，手工 record 被拒绝；standard L scaffold status 返回 `ARTIFACT_NOT_REQUIRED`。同时断言 stateful artifact API 只读取 `routeDefinitionForFeature(state.route, state.workflowCapabilities)` 的 editable/generated 并集。
+- [x] **步骤 3：写 generated 生命周期红灯测试。** standard M/risk-minimal 在正确步骤可以 scaffold status、随后 state mutation 刷新其 hash，手工 record 被拒绝；standard L scaffold status 返回 `ARTIFACT_NOT_REQUIRED`。同时断言 stateful artifact API 只读取 `routeDefinitionForFeature(state.route, state.workflowCapabilities)` 的 editable/generated 并集。
 
-- [ ] **步骤 4：运行红灯。**
+- [x] **步骤 4：运行红灯。**
 
 ```bash
 node --test tests/unit/traceability-templates.test.mjs
@@ -500,9 +500,9 @@ node --test tests/unit/traceability-templates.test.mjs
 
 预期：FAIL，原因是 renderer/parser 模块不存在或 scaffold 仍输出旧通用标题。
 
-- [ ] **步骤 5：实现 renderer 和 artifact 模式。** `artifacts.ts` 对 requirements、implementation-plan、coverage-matrix、rollback-units 调用 `renderArtifactTemplate`；其他既有 artifact 保持现有通用模板，不在本任务重构。scaffold、record 和 integrity 都读取 effective contract：scaffold/integrity 使用 editable/generated 并集，record 只接受 editable。同步把 `tests/unit/artifacts.test.mjs` 的 risk-minimal 断言更新为 effective editable `risk-card`、generated `status`，并覆盖 standard L 无 status。
+- [x] **步骤 5：实现 renderer 和 artifact 模式。** `artifacts.ts` 对 requirements、implementation-plan、coverage-matrix、rollback-units 调用 `renderArtifactTemplate`；其他既有 artifact 保持现有通用模板，不在本任务重构。scaffold、record 和 integrity 都读取 effective contract：scaffold/integrity 使用 editable/generated 并集，record 只接受 editable。同步把 `tests/unit/artifacts.test.mjs` 的 risk-minimal 断言更新为 effective editable `risk-card`、generated `status`，并覆盖 standard L 无 status。
 
-- [ ] **步骤 6：实现严格锚点解析。** 只接受精确注释格式：
+- [x] **步骤 6：实现严格锚点解析。** 只接受精确注释格式：
 
 ```ts
 const TRACE_ANCHOR =
@@ -511,7 +511,7 @@ const TRACE_ANCHOR =
 
 前缀与 kind 必须匹配；区块范围从当前声明开始到下一个声明开始，区块正文按原始 UTF-8 计算 SHA-256。front matter 位于第一个声明之外，因此 grill 字段变化不会改变 REQ/AC 区块 hash。零声明、重复 ID、同一前缀错误 kind 均抛 `TRACE_SOURCE_ANCHOR_INVALID`。
 
-- [ ] **步骤 7：删除三个静态空模板并运行测试。**
+- [x] **步骤 7：删除三个静态空模板并运行测试。**
 
 ```bash
 node --test tests/unit/traceability-templates.test.mjs tests/unit/requirements-grill.test.mjs tests/unit/artifacts.test.mjs
@@ -522,7 +522,7 @@ npm run test:routes
 
 预期：PASS；artifact 模式迁移没有留下已知 source-based 回归。
 
-- [ ] **步骤 8：提交任务 2。**
+- [x] **步骤 8：提交任务 2。**
 
 ```bash
 git add plugins/dev-flow/src/core/artifact-templates.ts \

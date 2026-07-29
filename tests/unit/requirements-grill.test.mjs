@@ -39,7 +39,7 @@ test("requirements scaffolds the fixed grill status for every requirements state
       await start(root, requirements);
       const contents = await readFile(fileFor(root), "utf8");
       assert.match(contents, new RegExp(`^  grill_status: ${status}$`, "m"));
-      for (const heading of ["Scope", "Goals", "Non-goals", "Acceptance Criteria", "Decision Log", "Open Questions"]) assert.match(contents, new RegExp(`^## ${heading}$`, "m"));
+      for (const heading of ["范围", "目标", "非目标", "验收条件", "决策记录", "开放问题"]) assert.match(contents, new RegExp(`^## ${heading}$`, "m"));
     } finally { await rm(root, { recursive: true, force: true }); }
   }
 });

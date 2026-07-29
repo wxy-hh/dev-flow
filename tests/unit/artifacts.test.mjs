@@ -15,7 +15,9 @@ const config = { schemaVersion: 1, verification: { commands: [{ id: "unit", comm
 test("route asset requirements are exact and edited assets require re-registration", async () => {
   assert.deepEqual(contract.routeDefinition("xs").requiredArtifacts, []);
   assert.deepEqual(contract.routeDefinition("s").requiredArtifacts, []);
-  assert.deepEqual(contract.routeDefinition("risk-minimal").requiredArtifacts, ["status", "risk-card"]);
+  const riskMinimal = contract.routeDefinitionForFeature("risk-minimal", undefined);
+  assert.deepEqual(riskMinimal.requiredArtifacts, ["risk-card"]);
+  assert.deepEqual(riskMinimal.generatedArtifacts, ["status"]);
   assert.deepEqual(contract.routeDefinition("light-m").requiredArtifacts, []);
   const root = await mkdtemp(path.join(os.tmpdir(), "dev-flow-artifact-"));
   try {
