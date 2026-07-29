@@ -44,7 +44,7 @@ Dev Flow v1.7.0 已经具备持久状态、路线顺序、Markdown 产物哈希�
 | Trace delta | 调用方提交单个 artifact 的完整节点集合；Core 绑定来源、状态、区块哈希并派生 tombstone 与 edges |
 | Trace 存储 | 使用不可变内容寻址快照 `traceability/snapshots/<sha256>.json`；`state.json` 中的 pointer 是提交点，不覆盖旧快照 |
 | Trace 模板 | `core/artifact-templates.ts` 是 requirements/plan/coverage/rollback Trace 模板的唯一事实源；不保留未被运行时读取的同名空 Markdown 模板 |
-| Trace 阶段强制力 | 只有 `traceEnforcementRequired(state)` 为真时才禁用裸登记并校验 trace slice；implementation 只要求全图完整且 basis current |
+| Trace 阶段强制力 | 只有 `traceEnforcementRequired(route, workflowCapabilities)` 为真时才禁用裸登记并校验 trace slice；Core 的 state wrapper 只能委托该纯谓词；implementation 只要求全图完整且 basis current |
 | Trace reclassify | light→standard 在同一 CAS 中懒创建或恢复 pointer；standard→light 保留只读账本但停止 Trace 强制 |
 | Checkpoint 强制时机 | 仅 `checkpoints: 1` 的新 feature 要求全部 RU checkpoint、无 open transaction；无 active RU 禁写也从阶段 3 开始 |
 | 唯一声明锚点 | 使用 `<!-- dev-flow:id=TASK-001 kind=task -->`；声明恰好一次、交叉引用可重复、`kind` 必须匹配节点 |
@@ -93,7 +93,17 @@ interface RouteDefinition {
 }
 ```
 
-`routeDefinitionForFeature(route, workflowCapabilities)` 根据 capability 计算有效合同。Trace 阶段先把现有 `status` 从 `requiredArtifacts` 迁入 `generatedArtifacts`；Review 2a 再为 standard-M 声明 plan-review 从 `absent` 转为 `generated`，为 standard-L 声明从 `editable` 转为 `generated`；`review: 0` 仍得到旧合同。有效 `generatedArtifacts` 只能由 Core 生成、刷新和登记，Skill 可以请求刷新，但不能提交其内容。
+`routeDefinitionForFeature(route, workflowCapabilities)` 根据 capability 计算有效合同。原始 route 定义保留兼容基线，artifact 模式转换由该函数派生；任何已经持有 `FeatureState` 的 Core 消费方都必须读取有效合同，不能绕回原始 route 定义。Trace 阶段先把现有 `status` 从 `requiredArtifacts` 迁入 `generatedArtifacts`；Review 2a 再为 standard-M 声明 plan-review 从 `absent` 转为 `generated`，为 standard-L 声明从 `editable` 转为 `generated`；`review: 0` 仍得到旧 plan-review 合同。
+
+status 在现有实现中已经禁止人工登记，因此该迁移只把事实写进有效合同，不要求 legacy feature 重写既有文件或能力字段；原 path 继续有效。
+
+generated artifact 的生命周期固定为：
+
+- Core scaffold 可以首次创建文件并在 state 中登记 path；
+- Core 在 state 变化后刷新内容和 SHA-256；
+- `recordArtifact` 与 `recordArtifactWithTrace` 一律返回 `GENERATED_ARTIFACT_READ_ONLY`；
+- Skill 只能请求 scaffold/refresh，不能提交内容；
+- standard L 没有 status artifact，继续只通过 `StatusView` 暴露状态，不得假设每条路线都有 status 文件。
 
 每个 feature 在启动时固定能力版本：
 
@@ -110,12 +120,15 @@ interface WorkflowCapabilities {
 
 每个发布阶段更新 Core 的单一常量 `SUPPORTED_WORKFLOW_CAPABILITIES`；`startFeature` 复制该值进入 feature state，后续读取不得用当前插件常量覆盖已保存值。
 
-Trace 门禁只使用一个谓词：
+Trace 门禁只使用一个纯谓词；Core 可以提供接收 `FeatureState` 的薄封装，但不得复制判断：
 
 ```ts
-function traceEnforcementRequired(state: FeatureState): boolean {
-  return state.workflowCapabilities.trace === 1
-    && (state.route === "standard-m" || state.route === "standard-l");
+function traceEnforcementRequired(
+  route: RouteId,
+  workflowCapabilities: WorkflowCapabilities | undefined,
+): boolean {
+  return workflowCapabilities?.trace === 1
+    && (route === "standard-m" || route === "standard-l");
 }
 ```
 
@@ -245,7 +258,6 @@ interface TraceSummary {
   current: number;
   stale: number;
   tombstoned: number;
-  orphanNodes: number;
 }
 
 interface TraceabilityPointer {
@@ -291,7 +303,7 @@ dev_flow_record_artifact_with_trace
 
 输入包含 artifact kind、expected revision 和结构化 trace delta。事务必须：
 
-1. 加 feature 锁并校验 expected revision。
+1. 复用现有项目级 `.dev-flow/.lock` 并校验 expected revision。
 2. 读取当前已 scaffold 的 artifact、旧 snapshot 与 project config。
 3. 计算 artifact SHA-256，校验 ID、完整替换集合、tombstone、引用、锚点和 command ID。
 4. 依据 `sourceBlockSha256` 精确传播 stale，并确定性派生 edges。
@@ -299,7 +311,9 @@ dev_flow_record_artifact_with_trace
 6. 最后原子 rename `state.json`，在同一个 state revision 中提交 artifact registration、Trace pointer、gate/step 失效和摘要。
 7. 更新 status、event 与 active pointer 等派生投影。
 
-`state.json` rename 是逻辑提交点。提交前失败时 state、artifact registration 和 pointer 均不变化；已写 snapshot 可能成为无害孤儿。提交后操作视为成功，派生投影失败不得谎报为“已回滚”，而应由 doctor 报告并在安全入口修复。当前 pointer 缺失、hash 不匹配或 snapshot 非法必须 fail closed；孤儿 snapshot 只报警，不阻塞路线。
+`state.json` rename 是逻辑提交点。提交前失败时 state、artifact registration 和 pointer 均不变化；已写 snapshot 可能成为无害孤儿。提交后操作视为成功，派生投影失败不得谎报为“已回滚”，而应返回带 `committed: true` 的 `STATE_COMMITTED_PROJECTION_FAILED`，由 doctor 报告并在安全入口修复。当前 pointer 缺失、hash 不匹配或 snapshot 非法必须 fail closed；孤儿 snapshot 只报警，不阻塞路线。
+
+现有 `mutate()` 与新 `mutatePrepared()` 必须共用同一个项目级 `.dev-flow/.lock` 和同一提交引擎：普通 mutation 是没有额外 prepared asset 的薄封装。snapshot 等权威资产在提交前准备；status 投影字节与 hash 也在提交前确定并写入 draft，但 status 文件在 `state.json` 提交后才落盘，随后追加 event 和更新 active pointer。非 Trace 写路径必须由金丝雀测试证明 revision、event、active pointer 和 status hash 行为没有意外变化。
 
 普通非追溯 artifact 可以继续使用原 `record_artifact`；参与追溯的 artifact 在新 feature 上必须使用原子接口。新 feature 对 requirements、plan、coverage、rollback 直接调用裸 `record_artifact` 时，Core 必须返回 `TRACE_AWARE_REGISTRATION_REQUIRED`，不能只靠 Skill 提醒。
 
@@ -590,10 +604,10 @@ Checkpoint 资产位于 feature 目录内，由 MCP 生成和管理，Agent 不�
 - 现有 active feature 保持 legacy 模式并按旧合同完成。
 - `startFeature` 为所有新 feature 写入当时可用的 `workflowCapabilities`；只有新 standard M/L 同时创建空内容寻址 snapshot 与 state pointer。
 - light→standard 时，`trace: 1` feature 在 reclassify 的同一个 CAS 中懒创建空 pointer，或恢复已有只读 pointer；旧来源不会因此自动变为 current。
-- standard→light 保留账本和 pointer 作为只读审计记录，但 `traceEnforcementRequired(state)` 返回 false，不再调用 with-trace 登记接口。
-- 缺少能力字段的旧 feature 等价于全部为 `0`；legacy feature 即使 reclassify 也不得被插件升级中途施加 Trace 门禁。
+- standard→light 保留账本和 pointer 作为只读审计记录，但 `traceEnforcementRequired(state.route, state.workflowCapabilities)` 返回 false，不再调用 with-trace 登记接口。
+- 缺少能力字段的旧 feature 等价于全部为 `0`；只有 `startFeature` 可以写入能力快照，`reclassifyFeature` 不得为 legacy state 补 stamp。legacy feature 即使 reclassify 也不得被插件升级中途施加 Trace 门禁。
 - 不在原 FeatureState 中内嵌完整 trace/review/checkpoint 数据，只保存路径、SHA-256、revision 和摘要。
-- traceability、review batch、checkpoint 和 rollback transaction 各自有独立 JSON schema。
+- traceability、review batch、checkpoint 和 rollback transaction 各自有独立 JSON schema。TypeScript 手写校验器是运行时唯一权威；JSON Schema 用作协议文档、fixture 契约和跨语言集成依据，契约测试必须防止二者关键字段漂移，本阶段不新增运行时 Schema 依赖。
 - 状态读取必须区分 legacy feature、不需 Trace 的 light feature、完整 standard feature 和损坏的 standard feature；当前 pointer 缺失或损坏时 fail closed。
 
 ## 宿主钩子
@@ -611,12 +625,12 @@ Hooks 继续只做强制策略，不推进工作流：
 
 `dev_flow_status` 增加：
 
-- trace coverage：total/current/stale/tombstoned/orphan-node counts；doctor 另列 orphan snapshot
+- trace coverage：total/current/stale/tombstoned counts；未覆盖、孤立或悬空关系作为 slice blocker details 返回，doctor 另列 orphan snapshot
 - review：batch、assurance level、pending jobs、blocking findings
 - implementation：active RU、最近 checkpoint、剩余 units
 - rollback：合法目标、是否存在 open transaction
 
-`status.md` 和交付 manifest 始终是只读投影；`plan-review.md` 仅在 `review: 1` 时是只读生成投影，`review: 0` 的旧 feature 仍按可编辑 artifact 合同完成。
+路线包含 status artifact 时，它和交付 manifest 始终是只读投影；standard L 只提供 `StatusView`。`plan-review.md` 仅在 `review: 1` 时是只读生成投影，`review: 0` 的旧 feature 仍按可编辑 artifact 合同完成。
 
 ## 测试策略
 
@@ -628,6 +642,10 @@ Hooks 继续只做强制策略，不推进工作流：
 - `workflowCapabilities` 启动时固定，插件升级不改变旧 feature 合同。
 - standard→light、light→standard 与 legacy reclassify。
 - TypeScript renderer 的真实 scaffold 输出，以及 editable/generated artifact 互斥。
+- generated status 的 scaffold/refresh/read-only 生命周期，以及 standard L 不生成 status 文件。
+- 非 Trace mutation 在统一提交引擎下保持 revision、event、active pointer 与 status hash 兼容。
+- requirements grill 只改 front matter 时不改变 REQ/AC 区块哈希，也不误传播 Trace stale。
+- MCP 源码通过临时 bundle 做协议测试，正式 dist 只在阶段最终验收时统一更新。
 - pointer 损坏 fail closed、孤儿 snapshot 仅报警和 gate basis 更新。
 - review assurance 证据计算、调用方伪造身份不升级保证等级。
 - 审查者基线不匹配、审查发现去重、阻塞项处置。
