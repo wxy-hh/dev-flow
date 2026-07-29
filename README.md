@@ -14,7 +14,9 @@ Dev Flow 是面向 **Claude Code** 与 **Codex CLI** 的预构建双宿主插件
 
 标准 M/L 的 requirements、implementation plan、coverage matrix 与 standard L rollback units 通过 `dev_flow_record_artifact_with_trace` 原子登记；`dev_flow_get_traceability` 只读查看 pointer、ledger、summary 与 blocker。Markdown 只用于叙述，内容寻址 snapshot 才是事实层，state pointer 是提交点。不要直接写 `.dev-flow/features/*/traceability/**`。
 
-generated status 只由 Core scaffold/refresh；standard L 没有 status 文件，应读取 `dev_flow_status`。阶段 1 没有 review batch 或可执行 rollback，现有 `plan_review` evidence 保持不变。
+generated status 只由 Core scaffold/refresh；standard L 没有 status 文件，应读取 `dev_flow_status`。
+
+**Review 2a**：新 standard M/L feature 使用不可变 review batch 与 Core 生成的只读 `plan-review` 投影；默认保证等级为 `multi-perspective`（多角色完成 ≠ 已证明多代理）。`review: 0` 的既有 feature 继续旧 plan-review artifact/evidence。可执行 rollback / checkpoint 仍未发布。
 
 ---
 

@@ -128,6 +128,10 @@ async function deriveReviewInput(root: string, state: FeatureState): Promise<Der
       }, [])
       .sort((left, right) => left.id.localeCompare(right.id)),
   };
+  // Content fingerprint of protected roots at basis capture time. Batch create and
+  // pre-record plan_review gates must see live drift; post-record revalidation is
+  // handled separately so implementation may mutate those same paths.
+  const protectedRootsFingerprint = await fingerprintProtectedRoots(root, config.protectedRoots);
   const basis: ReviewBasis = {
     featureId: state.featureId,
     route: state.route,
@@ -143,7 +147,7 @@ async function deriveReviewInput(root: string, state: FeatureState): Promise<Der
     traceability: { path: state.traceability.path, sha256: state.traceability.sha256, revision: trace.revision },
     projectConfigSha256,
     scopeManifestSha256: digest(canonicalReviewValueJson(scopeManifest)),
-    protectedRootsFingerprint: await fingerprintProtectedRoots(root, config.protectedRoots),
+    protectedRootsFingerprint,
   };
   return {
     basis,
@@ -479,13 +483,29 @@ function riskBinding(interaction: UserInteraction): { batchId: string; findingId
   return { batchId: binding!.batchId, findingIds: sortedFindingIds(binding!.findingIds), findingSetHash: binding!.findingSetHash };
 }
 
-async function currentBatchWithBasis(root: string, state: FeatureState): Promise<{ ledger: ReviewLedger; batch: ReviewBatch }> {
+function planReviewBoundToBatch(state: FeatureState, batch: ReviewBatch): boolean {
+  const evidence = state.steps.plan_review?.evidence as { batchId?: unknown; basisHash?: unknown } | undefined;
+  return state.steps.plan_review?.status === "satisfied"
+    && evidence?.batchId === batch.batchId
+    && evidence?.basisHash === batch.basisHash;
+}
+
+async function currentBatchWithBasis(
+  root: string,
+  state: FeatureState,
+  options: { requireLiveBasis?: boolean } = {},
+): Promise<{ ledger: ReviewLedger; batch: ReviewBatch }> {
   const ledger = await readReviewLedger(root, state);
   const batch = ledger.batches.find((candidate) => candidate.validity === "current");
   if (!batch) invalid("REVIEW_BATCH_REQUIRED", "a current review batch is required");
-  const reviewInput = await deriveReviewInput(root, state);
-  if (basisHash(reviewInput.basis) !== batch!.basisHash) {
-    invalid("REVIEW_BASIS_STALE", "review batch basis no longer matches current feature state", { batchId: batch!.batchId });
+  // Once plan_review has bound this exact batch, later protected-root implementation
+  // edits must not invent a new live basis; verification freshness owns that drift.
+  const requireLiveBasis = options.requireLiveBasis ?? !planReviewBoundToBatch(state, batch!);
+  if (requireLiveBasis) {
+    const reviewInput = await deriveReviewInput(root, state);
+    if (basisHash(reviewInput.basis) !== batch!.basisHash) {
+      invalid("REVIEW_BASIS_STALE", "review batch basis no longer matches current feature state", { batchId: batch!.batchId });
+    }
   }
   return { ledger, batch: batch! };
 }

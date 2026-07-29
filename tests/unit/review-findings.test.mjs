@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -286,6 +286,39 @@ test("plan_review evidence remains Core-owned and rejects missing jobs or blocki
         basisHash: emptyBatch.batch.basisHash,
         assuranceLevel: "multi-perspective",
       });
+    });
+  });
+});
+
+test("protected-root content drift before plan_review stales the batch, after record it does not", async () => {
+  await withRoot(async (root) => {
+    await mkdir(path.join(root, "src"), { recursive: true });
+    await writeFile(path.join(root, "src", "counter.js"), "export const before = 1;\n");
+    let state = await reviewReadyFeature(root);
+    const created = await reviewJobs.createReviewBatch(root, "f", state.revision);
+    state = await completeBatch(root, created.state, created.batch, {});
+
+    // Pre-record drift of protected business files must fail closed on live basis.
+    await writeFile(path.join(root, "src", "counter.js"), "export const midReview = 2;\n");
+    await assert.rejects(
+      () => reviewJobs.assertReviewComplete(root, state),
+      /REVIEW_BASIS_STALE/,
+    );
+    await assert.rejects(
+      () => checks.recordStep(root, "f", state.revision, "plan_review", {}),
+      /REVIEW_BASIS_STALE/,
+    );
+
+    // Restore capture-time content, bind plan_review evidence, then implement.
+    await writeFile(path.join(root, "src", "counter.js"), "export const before = 1;\n");
+    state = await checks.recordStep(root, "f", state.revision, "plan_review", {});
+    assert.equal(state.steps.plan_review.evidence.batchId, created.batch.batchId);
+    await writeFile(path.join(root, "src", "counter.js"), "export const afterApproval = 3;\n");
+    // Post-record revalidation is evidence-bound; verification freshness owns later drift.
+    assert.deepEqual(await reviewJobs.assertReviewComplete(root, state), {
+      batchId: created.batch.batchId,
+      basisHash: created.batch.basisHash,
+      assuranceLevel: "multi-perspective",
     });
   });
 });

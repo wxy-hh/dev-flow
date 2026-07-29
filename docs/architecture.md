@@ -38,7 +38,16 @@ Dev Flow 以**一个预构建插件包**同时服务 Claude Code 与 Codex CLI�
 - `dev_flow_get_traceability` 只读返回 pointer、ledger、有效摘要及当前步骤 blocker。任何人不得直接编辑 snapshot、pointer 或 state。
 - generated `status` 由 Core scaffold/refresh，禁止人工 record；standard L 不生成 status 文件，应以 `StatusView` 为准。
 - Host Hook 将 `features/<id>/traceability/**` 视为 MCP 控制路径；当前 pointer 损坏时，`.dev-flow` 与 protected roots 均 fail closed。
-- 阶段 1 不提供 review batch 或可执行 rollback；`plan_review` 继续使用既有 evidence，rollback unit 只验证已登记的 Trace 关系。
+- rollback unit 只验证已登记的 Trace 关系；可执行 rollback / checkpoint 仍未发布。
+
+## Review 2a 多视角审查（`review: 1`）
+
+- 新 feature 在 `startFeature` 时固定 `workflowCapabilities.review === 1`；已启动的 `review: 0` feature 继续旧 `plan_review` 合同，不会中途迁移。
+- MCP/Core 是批次、任务、findings、dispositions 与 assurance 的事实源。`plan-review` Markdown 是内容寻址只读投影，永不进入 `ReviewBasis`。
+- `dev_flow_next` 对 `plan_review` 依次导出 `create-review-batch` → `review-jobs-pending` → 仅在 current + complete + 无未处置 blocking finding 时导出 `run-step(plan_review)`。
+- 默认保证等级为 `multi-perspective`：同一不可变 package 上完成多个必需角色。跨宿主分别领取不同 role job 验证的是协作与隔离，**不是**已证明的多代理身份；不得把 2a 叙述成 `multi-agent-attested` 或 `multi-agent-verified`。
+- incomplete batch 的 status / next / 无 capability 读取面只暴露粗粒度 job 进度，不泄露 sibling findings；claim 使用高熵 capability 与 60 分钟租约。
+- Host Hook 将 `features/<id>/review/**` 视为控制路径；当前 review pointer 损坏时 fail closed。
 
 ## 需求拷问（grillme，1.1.0+）
 

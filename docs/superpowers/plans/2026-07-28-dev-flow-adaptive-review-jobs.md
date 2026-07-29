@@ -306,11 +306,11 @@ interface ReviewFinding {
 
 **步骤：**
 
-- [ ] 更新路线 helper，禁止直接注入完成状态。
-- [ ] 运行两条路线与双向跨宿主 E2E。
-- [ ] 更新中文文档，明确“多视角不等于已证明多代理”。
-- [ ] 运行全量测试、类型检查、构建和 `git diff --check`。
-- [ ] 提交：`feat(dev-flow): complete review phase 2a`
+- [x] 更新路线 helper，禁止直接注入完成状态。
+- [x] 运行两条路线与双向跨宿主 E2E。
+- [x] 更新中文文档，明确“多视角不等于已证明多代理”。
+- [x] 运行全量测试、类型检查、构建和 `git diff --check`。
+- [x] 提交：`feat(dev-flow): complete review phase 2a`
 
 ## 第 4B 阶段：采样、身份与来源证明增强
 

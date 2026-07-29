@@ -2,12 +2,12 @@
 
 // plugins/dev-flow/src/hosts/codex-adapter.ts
 import { lstat } from "node:fs/promises";
-import path5 from "node:path";
+import path6 from "node:path";
 
 // plugins/dev-flow/src/core/state-store.ts
-import { access, mkdir as mkdir2, open as open2, readFile as readFile2, rename as rename2, rm, writeFile } from "node:fs/promises";
+import { access, mkdir as mkdir3, open as open3, readFile as readFile3, rename as rename3, rm, writeFile } from "node:fs/promises";
 import { hostname } from "node:os";
-import path3 from "node:path";
+import path4 from "node:path";
 
 // plugins/dev-flow/policy/contract.json
 var contract_default = {
@@ -82,7 +82,7 @@ var ZERO_WORKFLOW_CAPABILITIES = Object.freeze({
 });
 var SUPPORTED_WORKFLOW_CAPABILITIES = Object.freeze({
   trace: 1,
-  review: 0,
+  review: 1,
   checkpoints: 0,
   rollbackExecution: 0
 });
@@ -105,6 +105,9 @@ function normalizeWorkflowCapabilities(value) {
 }
 function traceEnforcementRequired(route, capabilities) {
   return normalizeWorkflowCapabilities(capabilities).trace === 1 && (route === "standard-m" || route === "standard-l");
+}
+function reviewEnforcementRequired(route, capabilities) {
+  return normalizeWorkflowCapabilities(capabilities).review === 1 && (route === "standard-m" || route === "standard-l");
 }
 
 // plugins/dev-flow/src/core/errors.ts
@@ -390,6 +393,103 @@ async function readTraceability(root, state) {
   return ledger;
 }
 
+// plugins/dev-flow/src/core/review-store.ts
+import { createHash as createHash2, randomUUID as randomUUID2 } from "node:crypto";
+import { mkdir as mkdir2, open as open2, readFile as readFile2, readdir as readdir2, rename as rename2 } from "node:fs/promises";
+import path3 from "node:path";
+function sortValue(value) {
+  if (Array.isArray(value)) return value.map(sortValue);
+  if (value && typeof value === "object") {
+    return Object.fromEntries(Object.entries(value).sort(([left], [right]) => left.localeCompare(right)).map(([key, child]) => [key, sortValue(child)]));
+  }
+  return value;
+}
+var digest2 = (contents) => createHash2("sha256").update(contents).digest("hex");
+function canonicalReviewValueJson(value) {
+  return `${JSON.stringify(sortValue(value), null, 2)}
+`;
+}
+function integrity2(message, details = {}) {
+  throw new DevFlowError("REVIEW_INTEGRITY_FAILED", message, details);
+}
+function validateSummary(value) {
+  return typeof value === "object" && value !== null && ["batches", "current", "stale", "open", "complete"].every((key) => {
+    const candidate = value[key];
+    return Number.isInteger(candidate) && candidate >= 0;
+  });
+}
+function sameSummary2(left, right) {
+  return left.batches === right.batches && left.current === right.current && left.stale === right.stale && left.open === right.open && left.complete === right.complete;
+}
+function validHash(value) {
+  return typeof value === "string" && /^[a-f0-9]{64}$/.test(value);
+}
+function validateBatch(value) {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
+  const batch = value;
+  if (typeof batch.batchId !== "string" || !batch.batchId || !validHash(batch.basisHash) || !batch.basis || batch.validity !== "current" && batch.validity !== "stale" || batch.progress !== "open" && batch.progress !== "complete" || batch.executionMode !== "isolated-sequential" && batch.executionMode !== "mcp-sampling" && batch.executionMode !== "native-subagent" || batch.assuranceLevel !== "multi-perspective" && batch.assuranceLevel !== "independent-sampling" && batch.assuranceLevel !== "multi-agent-attested" && batch.assuranceLevel !== "multi-agent-verified" || !Array.isArray(batch.jobs)) return false;
+  const ids = /* @__PURE__ */ new Set();
+  return batch.jobs.every((job) => {
+    if (!job || typeof job !== "object" || typeof job.jobId !== "string" || !job.jobId || ids.has(job.jobId) || typeof job.role !== "string" || job.reviewDepth !== "standard" && job.reviewDepth !== "full" || !validHash(job.packageSha256) || job.status !== "pending" && job.status !== "claimed" && job.status !== "submitted") return false;
+    ids.add(job.jobId);
+    if (job.status === "pending") return !job.claim && !job.submission;
+    if (!job.claim || !validHash(job.claim.requestSha256) || typeof job.claim.claimedAt !== "string" || typeof job.claim.leaseExpiresAt !== "string") return false;
+    if (job.status === "claimed") return !job.submission;
+    return !!job.submission && validHash(job.submission.payloadSha256) && typeof job.submission.coverageSummary === "string" && Array.isArray(job.submission.findings) && typeof job.submission.submittedAt === "string";
+  });
+}
+function validateLedger(value) {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) integrity2("review snapshot has an invalid shape");
+  const ledger = value;
+  if (ledger.schemaVersion !== 1 || typeof ledger.featureId !== "string" || !ledger.featureId || !Number.isInteger(ledger.revision) || (ledger.revision ?? -1) < 0 || !Number.isInteger(ledger.stateRevision) || (ledger.stateRevision ?? -1) < 0 || !Array.isArray(ledger.batches) || !ledger.batches.every(validateBatch) || !validateSummary(ledger.summary)) {
+    integrity2("review snapshot has an invalid shape");
+  }
+  const batchIds = /* @__PURE__ */ new Set();
+  for (const batch of ledger.batches) {
+    if (batchIds.has(batch.batchId) || batch.basis.featureId !== ledger.featureId || digest2(canonicalReviewValueJson(batch.basis)) !== batch.basisHash || batch.progress === "complete" !== batch.jobs.every((job) => job.status === "submitted")) {
+      integrity2("review snapshot batch is inconsistent");
+    }
+    batchIds.add(batch.batchId);
+  }
+  if (!sameSummary2(ledger.summary, reviewSummary(ledger.batches))) integrity2("review snapshot summary is inconsistent");
+}
+function reviewSummary(batches) {
+  return {
+    batches: batches.length,
+    current: batches.filter((batch) => batch.validity === "current").length,
+    stale: batches.filter((batch) => batch.validity === "stale").length,
+    open: batches.filter((batch) => batch.progress === "open").length,
+    complete: batches.filter((batch) => batch.progress === "complete").length
+  };
+}
+function safeSnapshotPath2(pointer) {
+  if (!/^review\/snapshots\/[a-f0-9]{64}\.json$/.test(pointer.path) || pointer.path !== `review/snapshots/${pointer.sha256}.json`) integrity2("review pointer path is invalid");
+  return pointer.path;
+}
+async function readReviewLedger(root, state) {
+  if (!state.review) integrity2("review pointer is missing", { featureId: state.featureId });
+  const pointer = state.review;
+  const relative = safeSnapshotPath2(pointer);
+  let contents;
+  try {
+    contents = await readFile2(path3.join(root, ".dev-flow", "features", state.featureId, relative), "utf8");
+  } catch {
+    integrity2("review snapshot cannot be read", { featureId: state.featureId, path: relative });
+  }
+  if (digest2(contents) !== pointer.sha256) integrity2("review snapshot digest does not match pointer", { featureId: state.featureId });
+  let ledger;
+  try {
+    ledger = JSON.parse(contents);
+  } catch {
+    integrity2("review snapshot is not valid JSON", { featureId: state.featureId });
+  }
+  validateLedger(ledger);
+  if (ledger.featureId !== state.featureId || ledger.revision !== pointer.revision || ledger.stateRevision > state.revision || !sameSummary2(ledger.summary, pointer.summary)) {
+    integrity2("review pointer and ledger revisions do not match", { featureId: state.featureId });
+  }
+  return ledger;
+}
+
 // plugins/dev-flow/src/core/state-store.ts
 var lifecycles = /* @__PURE__ */ new Set(["active", "paused", "finalized", "abandoned"]);
 function validateFeatureState(value) {
@@ -414,17 +514,26 @@ function validateFeatureState(value) {
   if (traceEnforcementRequired(state.route, state.workflowCapabilities) && !state.traceability) {
     throw new DevFlowError("INVALID_STATE_SCHEMA", "trace-enforced standard feature requires a traceability pointer");
   }
+  if (state.review !== void 0) {
+    const pointer = state.review;
+    if (typeof pointer !== "object" || pointer === null || !/^review\/snapshots\/[a-f0-9]{64}\.json$/.test(pointer.path) || !/^[a-f0-9]{64}$/.test(pointer.sha256) || pointer.path !== `review/snapshots/${pointer.sha256}.json` || !Number.isInteger(pointer.revision) || pointer.revision < 0 || !pointer.summary || !["batches", "current", "stale", "open", "complete"].every((key) => Number.isInteger(pointer.summary[key]) && pointer.summary[key] >= 0)) {
+      throw new DevFlowError("INVALID_STATE_SCHEMA", "review pointer is invalid");
+    }
+  }
+  if (reviewEnforcementRequired(state.route, state.workflowCapabilities) && !state.review) {
+    throw new DevFlowError("INVALID_STATE_SCHEMA", "review-enabled standard feature requires a review pointer");
+  }
 }
 var delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-var devFlow = (root) => path3.join(root, ".dev-flow");
-var features = (root) => path3.join(devFlow(root), "features");
-var statePath = (root, id) => path3.join(features(root), id, "state.json");
-var eventPath = (root, id) => path3.join(features(root), id, "events.jsonl");
-var activePath = (root) => path3.join(devFlow(root), "active.json");
-var recoveryTxnPath = (root) => path3.join(devFlow(root), "recovery-transaction.json");
+var devFlow = (root) => path4.join(root, ".dev-flow");
+var features = (root) => path4.join(devFlow(root), "features");
+var statePath = (root, id) => path4.join(features(root), id, "state.json");
+var eventPath = (root, id) => path4.join(features(root), id, "events.jsonl");
+var activePath = (root) => path4.join(devFlow(root), "active.json");
+var recoveryTxnPath = (root) => path4.join(devFlow(root), "recovery-transaction.json");
 async function readProjectConfig(root) {
   try {
-    const value = JSON.parse(await readFile2(path3.join(devFlow(root), "project.json"), "utf8"));
+    const value = JSON.parse(await readFile3(path4.join(devFlow(root), "project.json"), "utf8"));
     validateProjectConfig(value);
     return value;
   } catch (error) {
@@ -433,20 +542,20 @@ async function readProjectConfig(root) {
   }
 }
 async function lock(root, featureId, operation) {
-  const directory = path3.join(devFlow(root), ".lock");
+  const directory = path4.join(devFlow(root), ".lock");
   const started = Date.now();
-  await mkdir2(devFlow(root), { recursive: true });
+  await mkdir3(devFlow(root), { recursive: true });
   while (true) {
     try {
-      await mkdir2(directory);
-      await writeFile(path3.join(directory, "owner.json"), JSON.stringify({ pid: process.pid, hostname: hostname(), acquiredAt: (/* @__PURE__ */ new Date()).toISOString(), featureId, operation }));
+      await mkdir3(directory);
+      await writeFile(path4.join(directory, "owner.json"), JSON.stringify({ pid: process.pid, hostname: hostname(), acquiredAt: (/* @__PURE__ */ new Date()).toISOString(), featureId, operation }));
       return async () => {
         await rm(directory, { recursive: true, force: true });
       };
     } catch (error) {
       if (error.code !== "EEXIST") throw error;
       try {
-        const owner = JSON.parse(await readFile2(path3.join(directory, "owner.json"), "utf8"));
+        const owner = JSON.parse(await readFile3(path4.join(directory, "owner.json"), "utf8"));
         const age = Date.now() - Date.parse(owner.acquiredAt);
         let live = owner.hostname === hostname();
         if (live) {
@@ -469,7 +578,7 @@ async function lock(root, featureId, operation) {
 }
 async function readState(root, featureId) {
   try {
-    const state = JSON.parse(await readFile2(statePath(root, featureId), "utf8"));
+    const state = JSON.parse(await readFile3(statePath(root, featureId), "utf8"));
     validateFeatureState(state);
     if (state.featureId !== featureId) throw new DevFlowError("INVALID_STATE_SCHEMA", "state feature id does not match its path");
     return state;
@@ -484,7 +593,7 @@ async function readState(root, featureId) {
 async function readActive(root) {
   let raw;
   try {
-    raw = await readFile2(activePath(root), "utf8");
+    raw = await readFile3(activePath(root), "utf8");
   } catch (error) {
     if (error.code === "ENOENT") return void 0;
     throw new DevFlowError("ACTIVE_POINTER_UNREADABLE", "active.json cannot be read", { recoveryHint: "Run dev_flow_doctor and use recovery; do not start a new feature" });
@@ -500,7 +609,7 @@ async function readActive(root) {
   }
 }
 async function appendEvent(root, id, revision, type, data) {
-  const handle = await open2(eventPath(root, id), "a");
+  const handle = await open3(eventPath(root, id), "a");
   try {
     await handle.writeFile(`${JSON.stringify({ revision, type, at: (/* @__PURE__ */ new Date()).toISOString(), data })}
 `);
@@ -527,7 +636,7 @@ async function recordHostEvent(root, hostEvent) {
 }
 async function readFeatureEvents(root, id) {
   try {
-    return (await readFile2(eventPath(root, id), "utf8")).split("\n").filter(Boolean).map((line) => JSON.parse(line));
+    return (await readFile3(eventPath(root, id), "utf8")).split("\n").filter(Boolean).map((line) => JSON.parse(line));
   } catch (error) {
     if (error.code === "ENOENT") return [];
     throw error;
@@ -538,19 +647,19 @@ function isRecoveryPhase(value) {
 }
 function validateRecoveryTransaction(value) {
   const transaction = value;
-  if (transaction?.schemaVersion !== 1 || typeof transaction.transactionId !== "string" || !transaction.transactionId || !isRecoveryPhase(transaction.phase) || typeof transaction.featureId !== "string" || !transaction.featureId || typeof transaction.stateSha256 !== "string" || !transaction.stateSha256 || typeof transaction.recoveredTo !== "string" || !path3.isAbsolute(transaction.recoveredTo) || typeof transaction.reason !== "string" || typeof transaction.userEvidence !== "string" || transaction.host !== "claude" && transaction.host !== "codex" || typeof transaction.at !== "string" || transaction.activeSha256 !== void 0 && typeof transaction.activeSha256 !== "string") {
+  if (transaction?.schemaVersion !== 1 || typeof transaction.transactionId !== "string" || !transaction.transactionId || !isRecoveryPhase(transaction.phase) || typeof transaction.featureId !== "string" || !transaction.featureId || typeof transaction.stateSha256 !== "string" || !transaction.stateSha256 || typeof transaction.recoveredTo !== "string" || !path4.isAbsolute(transaction.recoveredTo) || typeof transaction.reason !== "string" || typeof transaction.userEvidence !== "string" || transaction.host !== "claude" && transaction.host !== "codex" || typeof transaction.at !== "string" || transaction.activeSha256 !== void 0 && typeof transaction.activeSha256 !== "string") {
     throw new DevFlowError("RECOVERY_TRANSACTION_UNREADABLE", "recovery journal is invalid", {
       recoveryHint: "Run dev_flow_doctor; do not start a new feature or hand-edit .dev-flow"
     });
   }
-  if (path3.basename(transaction.featureId) !== transaction.featureId || transaction.featureId === "." || transaction.featureId === "..") {
+  if (path4.basename(transaction.featureId) !== transaction.featureId || transaction.featureId === "." || transaction.featureId === "..") {
     throw new DevFlowError("RECOVERY_TRANSACTION_UNREADABLE", "recovery journal has an unsafe feature id", { recoveryHint: "Run dev_flow_doctor; recovery remains fail-closed" });
   }
 }
 function validateRecoveryLocation(root, transaction) {
-  const recoveredRoot = path3.join(devFlow(root), "recovered");
-  const relative = path3.relative(recoveredRoot, transaction.recoveredTo);
-  if (!relative || relative.startsWith("..") || path3.isAbsolute(relative) || path3.basename(relative) !== relative) {
+  const recoveredRoot = path4.join(devFlow(root), "recovered");
+  const relative = path4.relative(recoveredRoot, transaction.recoveredTo);
+  if (!relative || relative.startsWith("..") || path4.isAbsolute(relative) || path4.basename(relative) !== relative) {
     throw new DevFlowError("RECOVERY_TRANSACTION_UNREADABLE", "recovery journal points outside the recovered directory", {
       recoveryHint: "Run dev_flow_doctor; do not start a new feature or hand-edit .dev-flow"
     });
@@ -559,7 +668,7 @@ function validateRecoveryLocation(root, transaction) {
 async function readRecoveryTransaction(root) {
   let raw;
   try {
-    raw = await readFile2(recoveryTxnPath(root), "utf8");
+    raw = await readFile3(recoveryTxnPath(root), "utf8");
   } catch (error) {
     if (error.code === "ENOENT") return void 0;
     throw new DevFlowError("RECOVERY_TRANSACTION_UNREADABLE", "recovery journal cannot be read", { recoveryHint: "Run dev_flow_doctor; do not start a new feature" });
@@ -576,7 +685,7 @@ async function readRecoveryTransaction(root) {
 }
 
 // plugins/dev-flow/src/hosts/adapter-policy.ts
-import path4 from "node:path";
+import path5 from "node:path";
 
 // plugins/dev-flow/src/core/git-policy.ts
 var readOnly = /* @__PURE__ */ new Set(["status", "diff", "log", "show", "rev-parse", "ls-files", "ls-tree", "cat-file", "name-rev"]);
@@ -617,10 +726,10 @@ function isRelevantPreToolUse(event2) {
   return name === "bash" || directWriteTools.has(name);
 }
 function projectRelative(root, target) {
-  const absolute = path4.resolve(root, target);
-  const relative = path4.relative(root, absolute);
-  if (relative === "" || relative.startsWith("..") || path4.isAbsolute(relative)) return void 0;
-  return relative.split(path4.sep).join("/");
+  const absolute = path5.resolve(root, target);
+  const relative = path5.relative(root, absolute);
+  if (relative === "" || relative.startsWith("..") || path5.isAbsolute(relative)) return void 0;
+  return relative.split(path5.sep).join("/");
 }
 function isProtected(root, target, protectedRoots) {
   const relative = projectRelative(root, target);
@@ -633,13 +742,17 @@ function isDevFlowPath(relative) {
 function isControlPath(relative) {
   if (!isDevFlowPath(relative)) return false;
   if (/^\.dev-flow\/features\/[^/]+\/traceability(?:\/|$)/.test(relative)) return true;
-  const base = path4.posix.basename(relative);
+  if (/^\.dev-flow\/features\/[^/]+\/review\/(?:snapshots|packages|projections)(?:\/|$)/.test(relative)) return true;
+  const base = path5.posix.basename(relative);
   if (controlFileNames.has(base)) return true;
   if (relative.includes("/.lock/") || relative.endsWith("/.lock")) return true;
   if (relative === ".dev-flow/active.json" || relative === ".dev-flow/project.json") return true;
   if (relative.includes("/recovered/")) return true;
   if (relative.endsWith("/state.json") || relative.endsWith("/events.jsonl") || relative.endsWith("/status.md") || relative.endsWith("/\u72B6\u6001\u6587\u6863.md")) return true;
   return false;
+}
+function isGeneratedReviewProjectionPath(kind, artifactPath) {
+  return kind === "plan-review" && typeof artifactPath === "string" && /^review\/projections\/[a-f0-9]{64}\.md$/.test(artifactPath);
 }
 function patchTargets(value) {
   const text = typeof value === "string" ? value : "";
@@ -815,16 +928,18 @@ async function loadActiveWorkflow(root) {
     state = await readState(root, active.featureId);
     if (state.lifecycle !== "active" || active.revision !== state.revision) return { kind: "unreadable", reason: "active pointer does not match active state", protectedRoots: project.protectedRoots, blockAllWrites: false };
     if (state.traceability) await readTraceability(root, state);
+    if (state.review) await readReviewLedger(root, state);
   } catch {
     return { kind: "unreadable", reason: "state invalid", protectedRoots: project.protectedRoots, blockAllWrites: false };
   }
   const allowedArtifacts = /* @__PURE__ */ new Set();
   for (const [kind, artifact] of Object.entries(state.artifacts ?? {})) {
     if (kind === "status" || !artifact?.path) continue;
-    if (path4.posix.dirname(artifact.path) !== "." || !artifact.path.endsWith(".md")) {
+    if (isGeneratedReviewProjectionPath(kind, artifact.path)) continue;
+    if (typeof artifact.path !== "string" || path5.posix.dirname(artifact.path) !== "." || !artifact.path.endsWith(".md")) {
       return { kind: "unreadable", reason: "artifact path invalid", protectedRoots: project.protectedRoots, blockAllWrites: false };
     }
-    const relative = `.dev-flow/features/${active.featureId}/${artifact.path}`.split(path4.sep).join("/");
+    const relative = `.dev-flow/features/${active.featureId}/${artifact.path}`.split(path5.sep).join("/");
     allowedArtifacts.add(relative);
   }
   return {
@@ -963,7 +1078,7 @@ if (event.hook_event_name === "PreToolUse") {
     allow = !reason;
   } catch {
     try {
-      await lstat(path5.join(cwd, ".dev-flow", "active.json"));
+      await lstat(path6.join(cwd, ".dev-flow", "active.json"));
       allow = false;
       reason = "DEV_FLOW_WORKFLOW_STATE_UNREADABLE: Active workflow cannot be read safely; run dev_flow_doctor and recover if corrupt";
     } catch (error) {
