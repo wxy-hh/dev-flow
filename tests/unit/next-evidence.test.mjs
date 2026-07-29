@@ -111,3 +111,30 @@ test("nextAction and StatusView expose identical required evidence before every 
     }
   }
 });
+
+test("a synthetic review:1 feature exposes Core-only plan-review evidence through next and StatusView", async () => {
+  const fixture = await atAction(
+    "dev-flow-next-review-",
+    { level: "M", topology: "shared-contract", execution: "standard", requirements: "provided-confirmed" },
+    [],
+  );
+  try {
+    let state = await store.readState(fixture.root, "f");
+    state = await checks.recordStep(fixture.root, "f", state.revision, "rollback_unit", {});
+    state = await store.mutate(fixture.root, "f", state.revision, "test-enable-review", (draft) => {
+      draft.workflowCapabilities = { trace: 1, review: 1, checkpoints: 0, rollbackExecution: 0 };
+    });
+    assert.deepEqual(await next.nextAction(fixture.root, "f"), { kind: "scaffold-artifact", step: "plan-review" });
+
+    state = await artifacts.scaffoldArtifact(fixture.root, "f", state.revision, "plan-review");
+    const expected = {
+      kind: "run-step",
+      step: "plan_review",
+      requiredEvidence: { fields: { reviewBatch: true }, checks: [], verificationKinds: [] },
+    };
+    assert.deepEqual(await next.nextAction(fixture.root, "f"), expected);
+    assert.deepEqual((await status.readStatusView(fixture.root, "f")).progress.nextAction, expected);
+  } finally {
+    await fixture.dispose();
+  }
+});

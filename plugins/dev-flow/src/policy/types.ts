@@ -70,12 +70,48 @@ export interface RouteDefinition {
   featureCheckRequired: boolean;
 }
 
+export type ReviewAssurance =
+  | "multi-perspective"
+  | "independent-sampling"
+  | "multi-agent-attested"
+  | "multi-agent-verified";
+
+export type ReviewExecutionMode =
+  | "isolated-sequential"
+  | "mcp-sampling"
+  | "native-subagent";
+
+export type ReviewRole =
+  | "requirements-coverage"
+  | "architecture-testability"
+  | "rollback-operability"
+  | "security"
+  | "data-irreversibility";
+
+/** Review 2a keeps finding categories aligned with the role that produced them. */
+export type ReviewFindingCategory = ReviewRole;
+export type ReviewDepth = "standard" | "full";
+export type ReviewFindingSeverity = "blocking" | "warning" | "note";
+
+export interface ReviewJobRequirement {
+  role: ReviewRole;
+  reviewDepth: ReviewDepth;
+}
+
+export interface ReviewJobCompletion {
+  coverageSummary: string;
+  /** Finding structure is validated when Task 4 introduces finding persistence. */
+  findings: unknown[];
+}
+
 export type VerificationKind = "targeted" | "behavior" | "integration" | "full";
 
 export interface RequiredEvidence {
   fields: {
     reviewType?: "plan" | "code";
     reviewDepth?: "full";
+    /** Satisfied only by Core after it validates the current review batch. */
+    reviewBatch?: true;
   };
   checks: string[];
   verificationKinds: VerificationKind[];

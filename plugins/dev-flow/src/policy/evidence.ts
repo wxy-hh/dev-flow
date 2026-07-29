@@ -1,6 +1,6 @@
-import { routeDefinition } from "./contract.js";
+import { routeDefinition, routeDefinitionForFeature } from "./contract.js";
 import { deriveRiskRequirements } from "./route.js";
-import type { RequiredEvidence, RiskLabel, RouteId, VerificationKind } from "./types.js";
+import type { RequiredEvidence, RiskLabel, RouteId, VerificationKind, WorkflowCapabilities } from "./types.js";
 
 const emptyEvidence = (): RequiredEvidence => ({
   fields: {},
@@ -16,12 +16,17 @@ export function requiredEvidenceForStep(
   route: RouteId,
   riskLabels: RiskLabel[],
   step: string,
+  workflowCapabilities?: WorkflowCapabilities,
 ): RequiredEvidence {
   const required = emptyEvidence();
   const orderedSteps = routeDefinition(route).orderedSteps;
   const risk = deriveRiskRequirements(riskLabels);
 
-  if (step === "plan_review") required.fields.reviewType = "plan";
+  if (step === "plan_review") {
+    const effectiveRoute = routeDefinitionForFeature(route, workflowCapabilities);
+    if (effectiveRoute.generatedArtifacts?.includes("plan-review")) required.fields.reviewBatch = true;
+    else required.fields.reviewType = "plan";
+  }
   if (step === "code_review") required.fields.reviewType = "code";
 
   if (step === "code_review" && risk.checks.includes("full-code-review")) {
@@ -74,6 +79,9 @@ export function missingRequiredEvidence(
   if (required.fields.reviewDepth !== undefined && supplied.reviewDepth !== required.fields.reviewDepth) {
     missing.fields.reviewDepth = required.fields.reviewDepth;
   }
+  // A caller cannot supply batch/basis/assurance strings to satisfy this.
+  // Task 4 replaces this placeholder with Core-owned batch validation.
+  if (required.fields.reviewBatch !== undefined) missing.fields.reviewBatch = true;
 
   const suppliedChecks = Array.isArray(supplied.checks)
     ? supplied.checks.filter((value): value is string => typeof value === "string")

@@ -38,14 +38,10 @@
 - 修改：`plugins/dev-flow/policy/contract.json`
 - 修改：`plugins/dev-flow/src/policy/contract.ts`
 - 修改：`plugins/dev-flow/src/policy/evidence.ts`
-- 修改：`plugins/dev-flow/src/core/state-store.ts`
-- 修改：`plugins/dev-flow/policy/state.schema.json`
 - 新建：`plugins/dev-flow/policy/review.schema.json`
 - 新建：`tests/unit/review-policy.test.mjs`
 - 修改：`tests/unit/risk-evidence.test.mjs`
 - 修改：`tests/unit/next-evidence.test.mjs`
-- 修改：`tests/unit/state-store.test.mjs`
-- 修改：`tests/unit/state-schema-contract.test.mjs`
 
 **类型：**
 
@@ -94,7 +90,7 @@ export type ReviewFindingSeverity = "blocking" | "warning" | "note";
 
 **plan-review 合同迁移：**
 
-- 本阶段把唯一发布常量更新为 `{ trace: 1, review: 1, checkpoints: 0, rollbackExecution: 0 }`；`startFeature` 复制该值，绝不回写旧 feature。
+- Task 1 只定义 capability-aware 合同，唯一发布常量暂保持 `{ trace: 1, review: 0, checkpoints: 0, rollbackExecution: 0 }`；Task 2 在能原子创建不可变 review pointer 时才把 `review` 升为 `1`。`startFeature` 始终复制当时常量，绝不回写旧 feature。
 - standard M：`plan-review` 从 `absent` 转为 `generated`。
 - standard L：`plan-review` 从 `editable` 转为 `generated`。
 - `routeDefinitionForFeature` 只对 `review: 1` 应用 transition；旧 feature 继续原合同。
@@ -120,18 +116,17 @@ requiredEvidenceForStep(route, riskLabels, step, workflowCapabilities): Required
 
 **步骤：**
 
-- [ ] 写角色派生、未知角色、重复角色和 Schema 附加字段拒绝测试。
-- [ ] 写 severity 只能为 `blocking | warning | note`，中文仅是投影映射的测试。
-- [ ] 写 `critical_correctness` 不新增角色、所有 job depth 为 full、空 findings 仍可完成的测试。
-- [ ] 写 standard M/L 的 plan-review transition 和 active `review: 0` feature 保持旧合同的测试。
-- [ ] 写 `requiredEvidenceForStep` / `missingRequiredEvidence` 按 review capability 切换字段的测试。
-- [ ] 写 Review 2a 发布后新 feature 固定 `review: 1`，此前 feature 的 capability 不变且不可隐式升级的测试。
-- [ ] 写 2a 无论提交多少 executor/context 字符串都只能得到 `multi-perspective` 的测试。
-- [ ] 写调用方不能传入/伪造 roles、depth、basisHash 或 assuranceLevel，且 Core 派生 roles/depth 的测试。
-- [ ] 写 review pointer 的 state schema、legacy `review: 0` 可省略 pointer、`review: 1` 缺失或形状错误 pointer fail-closed 的测试。
-- [ ] 运行 `node --test tests/unit/review-policy.test.mjs`，确认红灯。
-- [ ] 最小实现合同、类型与解析器。
-- [ ] 提交：`feat(dev-flow): define review jobs and assurance vocabulary`
+- [x] 写角色派生、未知角色、重复角色和 Schema 附加字段拒绝测试。
+- [x] 写 severity 只能为 `blocking | warning | note` 的闭集测试；中文映射留给 Task 5 生成投影。
+- [x] 写 `critical_correctness` 不新增角色、所有 job depth 为 full、空 findings 仍可完成的测试。
+- [x] 写 standard M/L 的 plan-review transition 和 active `review: 0` feature 保持旧合同的测试。
+- [x] 写 `requiredEvidenceForStep` / `missingRequiredEvidence` 按 review capability 切换字段的测试。
+- [x] 写合成 `review: 1` 合同与 `review: 0` active feature 保持旧合同、不可隐式升级的测试；Task 2 再覆盖发布后新 feature 固定 `review: 1`。
+- [x] 写 2a 无论提交多少 executor/context 字符串都只能得到 `multi-perspective` 的测试。
+- [x] 写调用方不能传入/伪造 roles、depth、basisHash 或 assuranceLevel，且 Core 派生 roles/depth 的测试。
+- [x] 运行 `node --test tests/unit/review-policy.test.mjs`，确认红灯。
+- [x] 最小实现合同、类型与解析器。
+- [x] 提交：`feat(dev-flow): define review jobs and assurance vocabulary`
 
 ### 任务 2：实现不可变批次与审查任务生命周期
 
@@ -141,11 +136,14 @@ requiredEvidenceForStep(route, riskLabels, step, workflowCapabilities): Required
 - 新建：`plugins/dev-flow/src/core/review-store.ts`
 - 修改：`plugins/dev-flow/src/core/state-store.ts`
 - 修改：`plugins/dev-flow/src/core/artifacts.ts`
+- 修改：`plugins/dev-flow/policy/state.schema.json`
 - 修改：`plugins/dev-flow/src/hosts/adapter-policy.ts`
 - 修改：`plugins/dev-flow/src/mcp/doctor.ts`
 - 新建：`tests/unit/review-jobs.test.mjs`
 - 修改：`tests/unit/adapter-policy.test.mjs`
 - 修改：`tests/unit/doctor.test.mjs`
+- 修改：`tests/unit/state-store.test.mjs`
+- 修改：`tests/unit/state-schema-contract.test.mjs`
 
 **状态：**
 
@@ -161,6 +159,7 @@ finding: open → resolved-in-successor | risk-accepted
 **步骤：**
 
 - [ ] 写 immutable package、hash/feature/batch/revision 校验、job 不读取 sibling findings、basis mismatch 与 CAS 测试。
+- [ ] 写发布后新 feature 固定 `review: 1`、legacy `review: 0` 可省略 pointer、`review: 1` 缺失或形状错误 pointer fail-closed 的测试。
 - [ ] 写重复 create/claim/submit 的幂等语义、claim 60 分钟租约回收、跨 batch job ID 和 stale batch 测试。
 - [ ] 运行 `node --test tests/unit/review-jobs.test.mjs`，确认红灯。
 - [ ] 实现 batch 创建、job claim/submit 与原子持久化。

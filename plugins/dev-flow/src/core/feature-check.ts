@@ -58,7 +58,12 @@ export async function recordStep(
     assertCurrentStep(state, step);
     await assertRequirementsGrillSatisfied(root, id, state);
     await assertTraceGateCurrent(root, state, step);
-    const required = requiredEvidenceForStep(state.route, state.classification.riskLabels, step);
+    const required = requiredEvidenceForStep(
+      state.route,
+      state.classification.riskLabels,
+      step,
+      state.workflowCapabilities,
+    );
     assertRequiredEvidence(step, required, normalizedEvidence);
     state.steps[step] = { status: "satisfied", evidence: normalizedEvidence };
   });
@@ -105,7 +110,12 @@ export async function featureCheck(
     const orderedSteps = routeDefinitionForFeature(state.route, state.workflowCapabilities).orderedSteps;
     const featureCheckIndex = orderedSteps.indexOf("feature_check");
     for (const step of orderedSteps.slice(0, featureCheckIndex)) {
-      const required = requiredEvidenceForStep(state.route, state.classification.riskLabels, step);
+      const required = requiredEvidenceForStep(
+        state.route,
+        state.classification.riskLabels,
+        step,
+        state.workflowCapabilities,
+      );
       if (requiredEvidenceIsEmpty(required)) continue;
       assertRequiredEvidence(step, required, state.steps[step]?.evidence);
     }

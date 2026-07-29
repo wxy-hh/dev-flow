@@ -32,14 +32,24 @@ function toDerivedState(state: FeatureState, verificationStale: boolean) {
 }
 
 function enrichRunStep(state: FeatureState, step: string): NextAction {
-  const requiredEvidence = requiredEvidenceForStep(state.route, state.classification.riskLabels, step);
+  const requiredEvidence = requiredEvidenceForStep(
+    state.route,
+    state.classification.riskLabels,
+    step,
+    state.workflowCapabilities,
+  );
   return requiredEvidenceIsEmpty(requiredEvidence)
     ? { kind: "run-step", step }
     : { kind: "run-step", step, requiredEvidence };
 }
 
 function enrichFeatureCheck(state: FeatureState): NextAction {
-  const requiredEvidence = requiredEvidenceForStep(state.route, state.classification.riskLabels, "feature_check");
+  const requiredEvidence = requiredEvidenceForStep(
+    state.route,
+    state.classification.riskLabels,
+    "feature_check",
+    state.workflowCapabilities,
+  );
   return requiredEvidenceIsEmpty(requiredEvidence)
     ? { kind: "feature-check" }
     : { kind: "feature-check", requiredEvidence };

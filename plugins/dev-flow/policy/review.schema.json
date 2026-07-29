@@ -1,0 +1,54 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "dev-flow/review.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "jobRequirements": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/reviewJobRequirement" },
+      "uniqueItems": true
+    },
+    "jobCompletion": {
+      "$ref": "#/$defs/reviewJobCompletion"
+    }
+  },
+  "$defs": {
+    "reviewAssurance": {
+      "enum": ["multi-perspective", "independent-sampling", "multi-agent-attested", "multi-agent-verified"]
+    },
+    "reviewExecutionMode": {
+      "enum": ["isolated-sequential", "mcp-sampling", "native-subagent"]
+    },
+    "reviewRole": {
+      "enum": ["requirements-coverage", "architecture-testability", "rollback-operability", "security", "data-irreversibility"]
+    },
+    "reviewFindingCategory": {
+      "enum": ["requirements-coverage", "architecture-testability", "rollback-operability", "security", "data-irreversibility"]
+    },
+    "reviewDepth": {
+      "enum": ["standard", "full"]
+    },
+    "reviewFindingSeverity": {
+      "enum": ["blocking", "warning", "note"]
+    },
+    "reviewJobRequirement": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["role", "reviewDepth"],
+      "properties": {
+        "role": { "$ref": "#/$defs/reviewRole" },
+        "reviewDepth": { "$ref": "#/$defs/reviewDepth" }
+      }
+    },
+    "reviewJobCompletion": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["coverageSummary", "findings"],
+      "properties": {
+        "coverageSummary": { "type": "string", "minLength": 1 },
+        "findings": { "type": "array" }
+      }
+    }
+  }
+}
