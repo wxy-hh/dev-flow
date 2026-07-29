@@ -272,15 +272,15 @@ interface ReviewFinding {
 
 **步骤：**
 
-- [ ] 写 `review: 1` 的 standard M/L 都自动生成投影的测试。
-- [ ] 写 `review: 1` 手工 `recordArtifact(plan-review)` 返回 `GENERATED_ARTIFACT_READ_ONLY`，而 `review: 0` active feature 仍可按旧合同登记的测试。
-- [ ] 写 basis 变化后投影和 approval 同时 stale 的测试。
-- [ ] 写投影不进入 ReviewBasis、review state 为门禁权威且投影故障 fail-closed 的测试。
-- [ ] 写 next 依次导出 `create-review-batch`、待 claim/submit 状态，并只在 current+complete+无未处置 blocking 时导出 `run-step(plan_review)` 的测试。
-- [ ] 写 `StatusView`/Markdown 的预完成粗粒度可见性、完成后的完整投影，以及 gate basis 绑定 current review pointer 的测试。
-- [ ] 更新 Skills：只编排 job，不手写投影、不自行判断保证等级。
-- [ ] 运行 status、Skills 与 artifact 测试。
-- [ ] 提交：`feat(dev-flow): generate review projection and status`
+- [x] 写 `review: 1` 的 standard M/L 都自动生成投影的测试。
+- [x] 写 `review: 1` 手工 `recordArtifact(plan-review)` 返回 `GENERATED_ARTIFACT_READ_ONLY`，而 `review: 0` active feature 仍可按旧合同登记的测试。
+- [x] 写 basis 变化后投影和 approval 同时 stale 的测试。
+- [x] 写投影不进入 ReviewBasis、review state 为门禁权威且投影故障 fail-closed 的测试。
+- [x] 写 next 依次导出 `create-review-batch`、待 claim/submit 状态，并只在 current+complete+无未处置 blocking 时导出 `run-step(plan_review)` 的测试。
+- [x] 写 `StatusView`/Markdown 的预完成粗粒度可见性、完成后的完整投影，以及 gate basis 绑定 current review pointer 的测试。
+- [x] 更新 Skills：只编排 job，不手写投影、不自行判断保证等级。
+- [x] 运行 status、Skills 与 artifact 测试。
+- [x] 提交：`feat(dev-flow): generate review projection and status`
 
 ### 任务 6：完成 2a 路线与跨宿主验收
 

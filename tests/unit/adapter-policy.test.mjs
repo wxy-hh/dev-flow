@@ -72,6 +72,22 @@ test("heredoc to registered requirements with apps paths is allowed; control fil
   } finally { await fixture.dispose(); }
 });
 
+test("content-addressed review projections are valid state but never host-editable", async () => {
+  const fixture = await createTinyApp();
+  try {
+    const state = await startStandard(fixture.root);
+    const projection = `.dev-flow/features/feature/${state.artifacts["plan-review"].path}`;
+    assert.match(
+      await guard.preToolBlockReason(fixture.root, { tool_name: "Write", tool_input: { file_path: projection } }),
+      /DEV_FLOW_STATE_MUTATION_FORBIDDEN/,
+    );
+    assert.match(
+      await guard.preToolBlockReason(fixture.root, { tool_name: "Write", tool_input: { file_path: "src/counter.js" } }),
+      /DEV_FLOW_IMPLEMENTATION_APPROVAL_REQUIRED/,
+    );
+  } finally { await fixture.dispose(); }
+});
+
 test("corrupt current Trace keeps .dev-flow and protected roots fail-closed", async () => {
   const fixture = await createTinyApp();
   try {

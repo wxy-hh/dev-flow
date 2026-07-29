@@ -38,3 +38,12 @@ test("deriveNext honors blockers, fresh feature check, and final lifecycle", () 
   assert.deepEqual(deriveNext(state({ steps: completeSteps, featureCheckFresh: true })), { kind: "finalize" });
   assert.deepEqual(deriveNext(state({ steps: completeSteps, featureCheckFresh: true, logicComplete: true })), { kind: "done" });
 });
+
+test("deriveNext leaves review batch lifecycle to the Core wrapper", () => {
+  const throughRollbackUnit = Object.fromEntries([
+    "requirements", "requirement_confirmation", "implementation_plan", "coverage_review", "rollback_unit",
+  ].map((step) => [step, { status: "satisfied" }]));
+  // The pure policy remains route-ordered. core/next replaces this one action
+  // with create-review-batch or review-jobs-pending from the immutable ledger.
+  assert.deepEqual(deriveNext(state({ steps: throughRollbackUnit })), { kind: "run-step", step: "plan_review" });
+});

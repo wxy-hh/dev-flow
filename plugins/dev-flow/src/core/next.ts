@@ -7,6 +7,7 @@ import { inspectTraceGate } from "./traceability-gates.js";
 import { verificationIsStale } from "./verification.js";
 import { assertReviewComplete } from "./review-jobs.js";
 import { readReviewLedger } from "./review-store.js";
+import { assertCurrentReviewProjection } from "./review-projection.js";
 
 function toDerivedState(state: FeatureState, verificationStale: boolean) {
   const steps: Record<string, { status: "pending" | "satisfied"; artifactReady?: boolean }> = { ...state.steps };
@@ -108,6 +109,9 @@ export async function nextAction(root: string, id: string): Promise<NextAction> 
   if (action.kind === "run-step" && action.step === "plan_review") {
     const reviewAction = await reviewPlanAction(root, state);
     if (reviewAction) return reviewAction;
+    // A complete ledger is necessary but not sufficient: the generated
+    // projection is a registered artifact and must still be readable/current.
+    await assertCurrentReviewProjection(root, state);
   }
 
   if (action.kind === "run-step" || action.kind === "present-human-gate") {
@@ -116,11 +120,7 @@ export async function nextAction(root: string, id: string): Promise<NextAction> 
       ...(definition.artifactSteps?.[action.step] ?? []),
       ...(definition.generatedArtifactSteps?.[action.step] ?? []),
     ];
-    // plan-review is Core-generated for review:1. Task 5 supplies its read-only
-    // projection; the lifecycle gate above is already authoritative here.
-    const missing = requiredNow.find((artifact) => !(action.kind === "run-step" && action.step === "plan_review"
-      && reviewEnforcementRequired(state.route, state.workflowCapabilities) && artifact === "plan-review")
-      && !state.artifacts[artifact]);
+    const missing = requiredNow.find((artifact) => !state.artifacts[artifact]);
     if (missing) return { kind: "scaffold-artifact", step: missing };
   }
 

@@ -61,6 +61,7 @@ function isDevFlowPath(relative: string): boolean {
 function isControlPath(relative: string): boolean {
   if (!isDevFlowPath(relative)) return false;
   if (/^\.dev-flow\/features\/[^/]+\/traceability(?:\/|$)/.test(relative)) return true;
+  if (/^\.dev-flow\/features\/[^/]+\/review\/(?:snapshots|packages|projections)(?:\/|$)/.test(relative)) return true;
   const base = path.posix.basename(relative);
   if (controlFileNames.has(base)) return true;
   if (relative.includes("/.lock/") || relative.endsWith("/.lock")) return true;
@@ -68,6 +69,11 @@ function isControlPath(relative: string): boolean {
   if (relative.includes("/recovered/")) return true;
   if (relative.endsWith("/state.json") || relative.endsWith("/events.jsonl") || relative.endsWith("/status.md") || relative.endsWith("/状态文档.md")) return true;
   return false;
+}
+
+function isGeneratedReviewProjectionPath(kind: string, artifactPath: unknown): boolean {
+  return kind === "plan-review" && typeof artifactPath === "string"
+    && /^review\/projections\/[a-f0-9]{64}\.md$/.test(artifactPath);
 }
 
 function patchTargets(value: unknown): string[] {
@@ -263,7 +269,10 @@ async function loadActiveWorkflow(root: string): Promise<
   const allowedArtifacts = new Set<string>();
   for (const [kind, artifact] of Object.entries(state.artifacts ?? {})) {
     if (kind === "status" || !artifact?.path) continue;
-    if (path.posix.dirname(artifact.path) !== "." || !artifact.path.endsWith(".md")) {
+    // Review projections are Core-generated, content-addressed files. They
+    // are valid state artifacts but deliberately never become host-editable.
+    if (isGeneratedReviewProjectionPath(kind, artifact.path)) continue;
+    if (typeof artifact.path !== "string" || path.posix.dirname(artifact.path) !== "." || !artifact.path.endsWith(".md")) {
       return { kind: "unreadable", reason: "artifact path invalid", protectedRoots: project.protectedRoots, blockAllWrites: false };
     }
     const relative = `.dev-flow/features/${active.featureId}/${artifact.path}`.split(path.sep).join("/");

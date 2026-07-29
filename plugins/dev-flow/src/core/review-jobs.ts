@@ -16,6 +16,7 @@ import {
   writeReviewSnapshot,
 } from "./review-store.js";
 import { readProjectConfigSnapshot, readTraceability } from "./traceability-store.js";
+import { assertCurrentReviewProjection } from "./review-projection.js";
 import {
   createInteraction,
   findInteractionForTarget,
@@ -697,5 +698,8 @@ export async function assertReviewComplete(
     batchId: batch.batchId,
     findingIds: blocking.map((finding) => finding.findingId),
   });
+  // The ledger is the authority, but plan-review remains a required generated
+  // artifact. Do not allow a complete batch to bypass a missing/corrupt view.
+  await assertCurrentReviewProjection(root, state);
   return { batchId: batch.batchId, basisHash: batch.basisHash, assuranceLevel: "multi-perspective" };
 }

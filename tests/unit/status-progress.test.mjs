@@ -38,6 +38,8 @@ test("status progress reports grill wait without changing revision", async () =>
     const before = state.revision;
     const view = await status.readStatusView(root, "f");
     assert.equal(view.revision, before);
+    assert.equal(view.reviewStatus.enforced, true);
+    assert.equal(view.reviewStatus.projection.batch.visibility, "coarse");
     assert.equal(view.progress.wait.kind, "grill");
     assert.equal(view.progress.wait.questionId, "Q-002");
     assert.match(view.progress.wait.responseHint, /A \/ B \/ C/);

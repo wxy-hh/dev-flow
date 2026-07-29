@@ -127,6 +127,7 @@ test("a review:1 feature derives batch creation, pending jobs, then Core-only pl
 
     const created = await reviewJobs.createReviewBatch(fixture.root, "f", state.revision);
     state = created.state;
+    assert.match(state.artifacts["plan-review"].path, /^review\/projections\/[a-f0-9]{64}\.md$/);
     const pending = await next.nextAction(fixture.root, "f");
     assert.equal(pending.kind, "review-jobs-pending");
     assert.equal(pending.batchId, created.batch.batchId);

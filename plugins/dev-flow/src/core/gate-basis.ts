@@ -1,6 +1,6 @@
 import type { GateId } from "./gate-approval.js";
 import type { FeatureState } from "./state-store.js";
-import { traceEnforcementRequired } from "../policy/contract.js";
+import { reviewEnforcementRequired, traceEnforcementRequired } from "../policy/contract.js";
 
 /** Artifact evidence whose revision invalidates each human approval. */
 export const gateBasisArtifacts: Record<GateId, readonly string[]> = {
@@ -34,6 +34,11 @@ export function gateBasis(state: FeatureState, gate: GateId): Record<string, unk
   };
   if (gate === "implementation_approval" && traceEnforcementRequired(state.route, state.workflowCapabilities)) {
     basis.traceability = state.traceability;
+  }
+  if (gate === "implementation_approval" && reviewEnforcementRequired(state.route, state.workflowCapabilities)) {
+    // The ledger pointer, rather than any caller-supplied batch string or
+    // generated Markdown, is the authoritative plan-review approval basis.
+    basis.review = state.review;
   }
   return basis;
 }

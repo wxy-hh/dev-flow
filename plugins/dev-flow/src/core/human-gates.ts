@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { routeDefinitionForFeature } from "../policy/contract.js";
+import { reviewEnforcementRequired, routeDefinitionForFeature } from "../policy/contract.js";
 import { DevFlowError } from "./errors.js";
 import {
   gateApprovalPhrases,
@@ -12,6 +12,7 @@ import { assertRequirementsGrillSatisfied } from "./requirements-grill.js";
 import { mutate, readFeatureEvents, readState, type FeatureState } from "./state-store.js";
 import { artifactsRequiredBeforeGate, assertCurrentStep } from "./step-order.js";
 import { assertTraceGateCurrent } from "./traceability-gates.js";
+import { assertCurrentReviewProjection } from "./review-projection.js";
 import {
   clearInteractionsForTarget,
   createInteraction,
@@ -41,6 +42,12 @@ function gateInteractionOptions(gate: GateId) {
   ];
 }
 
+async function assertReviewProjectionForGate(root: string, state: FeatureState, gate: GateId): Promise<void> {
+  if (gate === "implementation_approval" && reviewEnforcementRequired(state.route, state.workflowCapabilities)) {
+    await assertCurrentReviewProjection(root, state);
+  }
+}
+
 export async function presentGate(
   root: string,
   id: string,
@@ -64,6 +71,7 @@ export async function presentGate(
     if (missing) throw new DevFlowError("MISSING_REQUIRED_ARTIFACT", missing);
     await assertRequirementsGrillSatisfied(root, id, state);
     await assertTraceGateCurrent(root, state, selectedGate);
+    await assertReviewProjectionForGate(root, state, selectedGate);
     const basisHash = digest(gateBasis(state, selectedGate));
     state.humanGates[selectedGate] = {
       status: "pending",
@@ -202,6 +210,7 @@ async function resolveGateResponse(
   return mutate(root, id, expectedRevision, "gate-interaction-resolved", async (state) => {
     await assertRequirementsGrillSatisfied(root, id, state);
     await assertTraceGateCurrent(root, state, gate);
+    await assertReviewProjectionForGate(root, state, gate);
     const current = state.humanGates[gate] as {
       status?: string;
       basisHash?: string;
@@ -296,6 +305,7 @@ export async function confirmGate(
   return mutate(root, id, expectedRevision, "gate-confirmed", async (state) => {
     await assertRequirementsGrillSatisfied(root, id, state);
     await assertTraceGateCurrent(root, state, selectedGate);
+    await assertReviewProjectionForGate(root, state, selectedGate);
     const current = state.humanGates[selectedGate] as {
       status?: string;
       basisHash?: string;

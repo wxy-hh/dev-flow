@@ -11,6 +11,7 @@ import { readState, type FeatureState } from "./state-store.js";
 import { inspectCurrentTrace, type TraceBlocker } from "./traceability-gates.js";
 import { fallbackHint, findInteractionForTarget, toPublicInteraction, type PublicInteraction } from "./user-interactions.js";
 import { readVerificationFreshness, type VerificationFreshness } from "./verification.js";
+import { readReviewProjection, type ReviewProjection } from "./review-projection.js";
 
 export type ProgressWait =
   | { kind: "none" }
@@ -36,7 +37,13 @@ export interface TraceStatus {
   blockers: TraceBlocker[];
 }
 
-export type StatusView = FeatureState & { progress: Progress; trace: TraceStatus };
+/** Status JSON exposes the same derived model used to render plan-review.md. */
+export interface ReviewStatus {
+  enforced: boolean;
+  projection?: ReviewProjection;
+}
+
+export type StatusView = FeatureState & { progress: Progress; trace: TraceStatus; reviewStatus: ReviewStatus };
 
 async function traceStatus(root: string, state: FeatureState): Promise<TraceStatus> {
   const inspection = await inspectCurrentTrace(root, state);
@@ -45,6 +52,14 @@ async function traceStatus(root: string, state: FeatureState): Promise<TraceStat
     ...(inspection.enforced && state.traceability ? { pointer: state.traceability } : {}),
     ...(inspection.effectiveSummary ? { effectiveSummary: inspection.effectiveSummary } : {}),
     blockers: inspection.blocker ? [inspection.blocker] : [],
+  };
+}
+
+async function reviewStatus(root: string, state: FeatureState): Promise<ReviewStatus> {
+  const projection = await readReviewProjection(root, state);
+  return {
+    enforced: Boolean(projection),
+    ...(projection ? { projection: projection.model } : {}),
   };
 }
 
@@ -141,5 +156,10 @@ export async function readStatusView(root: string, featureId: string): Promise<S
   const state = await readState(root, featureId);
   const action = await nextAction(root, featureId);
   const progress = await buildProgress(root, state, action);
-  return { ...state, progress, trace: await traceStatus(root, state) };
+  return {
+    ...state,
+    progress,
+    trace: await traceStatus(root, state),
+    reviewStatus: await reviewStatus(root, state),
+  };
 }

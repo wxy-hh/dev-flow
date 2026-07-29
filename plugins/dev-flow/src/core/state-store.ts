@@ -15,6 +15,7 @@ import { emptyTraceabilityLedger } from "./traceability.js";
 import { inspectCurrentTrace } from "./traceability-gates.js";
 import { readProjectConfigSnapshot, writeTraceSnapshot } from "./traceability-store.js";
 import { emptyReviewLedger, prepareReviewInvalidation, writeReviewSnapshot } from "./review-store.js";
+import { prepareReviewProjection } from "./review-projection.js";
 
 export type Lifecycle = "active" | "paused" | "finalized" | "abandoned";
 export interface FeatureState {
@@ -267,6 +268,9 @@ export async function startFeature(
       }
       if (reviewEnforcementRequired(route, workflowCapabilities)) {
         state.review = await writeReviewSnapshot(root, emptyReviewLedger(id, 0));
+        // Store the immutable, content-addressed projection before state.json
+        // points at it. A failed write leaves this new feature uncommitted.
+        await prepareReviewProjection(root, state);
       }
       validateFeatureState(state);
       await options.fault?.("before-state-commit");
@@ -361,6 +365,10 @@ async function mutatePreparedLocked(
   if (prepared.unchanged) return state;
   await prepared.mutate(state);
   state.revision += 1;
+  // Review mutations and basis invalidations update the immutable pointer in
+  // prepare(). Derive its read-only Markdown before the state CAS so a failed
+  // projection cannot leave state pointing at a missing or stale artifact.
+  await prepareReviewProjection(root, state);
   validateFeatureState(state);
   const writeStatus = await prepareStatusProjection(root, state, state.revision);
   await options.fault?.("before-state-commit");

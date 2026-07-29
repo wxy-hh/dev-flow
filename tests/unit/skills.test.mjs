@@ -39,7 +39,7 @@ const ROUTE_HIT_TOKENS = {
   "coverage-review": [/coverage/],
   "rollback-safety": [/rollback/, /requiredEvidence\.checks/, /full-rollback/],
   task: [/does not integrate OpenSpec/, /dev_flow_next/, /execution: light/, /documented-unconfirmed/, /scaffold_artifact/, /topology/, /具体失败后果/, /riskRequirements/, /light-L/],
-  status: [/dev_flow_status/, /dev_flow_next/, /progress\.wait/, /继续/, /verificationFreshness/, /replyHint/, /requiredEvidence/, /可选建议，不影响流程/],
+  status: [/dev_flow_status/, /dev_flow_next/, /progress\.wait/, /继续/, /verificationFreshness/, /replyHint/, /requiredEvidence/, /可选建议，不影响流程/, /reviewStatus/],
   doctor: [/dev_flow_doctor/],
   plan: [/dev_flow_next/, /scaffold_artifact/, /dev_flow_present_gate/, /禁止同回合/],
   "risk-review": [/dev_flow_record_step|risk-card/, /requiredEvidence/, /禁止.*复制/],
