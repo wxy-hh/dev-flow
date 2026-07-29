@@ -1,6 +1,7 @@
 import path from "node:path";
 import { classifyGitCommand } from "../core/git-policy.js";
 import { readActive, readProjectConfig, readRecoveryTransaction, readState, type FeatureState } from "../core/state-store.js";
+import { readTraceability } from "../core/traceability-store.js";
 
 export interface HookEvent {
   hook_event_name?: string;
@@ -58,6 +59,7 @@ function isDevFlowPath(relative: string): boolean {
 
 function isControlPath(relative: string): boolean {
   if (!isDevFlowPath(relative)) return false;
+  if (/^\.dev-flow\/features\/[^/]+\/traceability(?:\/|$)/.test(relative)) return true;
   const base = path.posix.basename(relative);
   if (controlFileNames.has(base)) return true;
   if (relative.includes("/.lock/") || relative.endsWith("/.lock")) return true;
@@ -253,6 +255,7 @@ async function loadActiveWorkflow(root: string): Promise<
   try {
     state = await readState(root, active.featureId);
     if (state.lifecycle !== "active" || active.revision !== state.revision) return { kind: "unreadable", reason: "active pointer does not match active state", protectedRoots: project.protectedRoots, blockAllWrites: false };
+    if (state.traceability) await readTraceability(root, state);
   } catch { return { kind: "unreadable", reason: "state invalid", protectedRoots: project.protectedRoots, blockAllWrites: false }; }
 
   const allowedArtifacts = new Set<string>();

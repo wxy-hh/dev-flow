@@ -1566,7 +1566,7 @@ requirements(REQ/AC)
 
 **步骤：**
 
-- [ ] **步骤 1：写 Hook 红灯测试。**
+- [x] **步骤 1：写 Hook 红灯测试。**
 
 ```js
 const target = ".dev-flow/features/feature/traceability/snapshots/"
@@ -1580,9 +1580,9 @@ assert.match(
 );
 ```
 
-- [ ] **步骤 2：写路线、reclassify 与双宿主红灯测试。** standard M/L 各自声明完整成功路径，以及缺 AC coverage、缺 RU、stale source、裸登记四类失败；另声明 standard→light pointer 保留、light→standard pointer 懒创建、legacy trace:0、双向跨宿主和同 revision CAS。
+- [x] **步骤 2：写路线、reclassify 与双宿主红灯测试。** standard M/L 各自声明完整成功路径，以及缺 AC coverage、缺 RU、stale source、裸登记四类失败；另声明 standard→light pointer 保留、light→standard pointer 懒创建、legacy trace:0、双向跨宿主和同 revision CAS。
 
-- [ ] **步骤 3：运行红灯。**
+- [x] **步骤 3：运行红灯。**
 
 ```bash
 node --test tests/unit/adapter-policy.test.mjs \
@@ -1595,11 +1595,11 @@ node --test tests/unit/adapter-policy.test.mjs \
 
 预期：FAIL，至少包含 Trace snapshot 未被 Hook 识别、正式 dist 尚未包含新 MCP 工具，或新增失败矩阵尚未满足；基础 route helper 已在任务 5 接入 with-trace，不应在本任务第一次发明登记方式。
 
-- [ ] **步骤 4：实现 Hook 并扩展最终路线矩阵。** `adapter-policy.ts` 把整个 traceability 子树作为控制路径；route helper 继续复用任务 5 的 scaffold+with-trace helper，只补缺 AC coverage、缺 RU、stale source、裸登记与并发 CAS 场景，禁止直接修改 state 或注入 ledger。用任务 1–7 已交付的 API 让 standard/reclassify/双宿主测试通过。
+- [x] **步骤 4：实现 Hook 并扩展最终路线矩阵。** `adapter-policy.ts` 把整个 traceability 子树作为控制路径；route helper 继续复用任务 5 的 scaffold+with-trace helper，只补缺 AC coverage、缺 RU、stale source、裸登记与并发 CAS 场景，禁止直接修改 state 或注入 ledger。用任务 1–7 已交付的 API 让 standard/reclassify/双宿主测试通过。
 
   `strict-human-gate` 的 standard M 路径也必须在 `record_step(requirements)` 前通过 MCP 登记真实 REQ/AC Trace；测试仍只验证跨 turn 人工确认语义，不能因为 Trace 门禁而改成 legacy/light 路线。
 
-- [ ] **步骤 5：更新中文文档。** 明确：
+- [x] **步骤 5：更新中文文档。** 明确：
 
 ```text
 Markdown 是叙述层
@@ -1610,7 +1610,7 @@ generated status 由 Core scaffold/refresh，禁止人工 record
 standard L 没有 status 文件，以 StatusView 为准
 ```
 
-- [ ] **步骤 6：构建受版本控制的 bundles。**
+- [x] **步骤 6：构建受版本控制的 bundles。**
 
 ```bash
 npm run build
@@ -1619,7 +1619,7 @@ npm run build:check
 
 预期：PASS，且三个 `plugins/dev-flow/dist/*.mjs` 与源码一致。
 
-- [ ] **步骤 7：运行针对性验收。**
+- [x] **步骤 7：运行针对性验收。**
 
 ```bash
 node --test tests/unit/adapter-policy.test.mjs \
@@ -1634,7 +1634,7 @@ node --test tests/unit/adapter-policy.test.mjs \
 
 预期：PASS。
 
-- [ ] **步骤 8：运行全量验收。**
+- [x] **步骤 8：运行全量验收。**
 
 ```bash
 npm test
@@ -1643,7 +1643,7 @@ git diff --check
 
 预期：所有单元与 E2E 测试通过；仅既有环境条件测试允许以明确原因 skip；`git diff --check` 无输出。
 
-- [ ] **步骤 9：检查最终范围。**
+- [x] **步骤 9：检查最终范围。**
 
 ```bash
 git status --short
@@ -1652,7 +1652,7 @@ git diff --stat
 
 预期：只包含本计划列出的 Trace、测试、文档和 dist 文件；不存在临时 snapshot、fixture 仓库或未登记生成文件。
 
-- [ ] **步骤 10：提交任务 8。**
+- [x] **步骤 10：提交任务 8。**
 
 ```bash
 git add plugins/dev-flow/src/hosts/adapter-policy.ts \

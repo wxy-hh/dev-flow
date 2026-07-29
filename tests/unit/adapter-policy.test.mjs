@@ -59,6 +59,31 @@ test("heredoc to registered requirements with apps paths is allowed; control fil
       await guard.preToolBlockReason(fixture.root, { tool_name: "Write", tool_input: { file_path: ".dev-flow/active.json" } }),
       /DEV_FLOW_STATE_MUTATION_FORBIDDEN/,
     );
+    const snapshot = `.dev-flow/features/feature/traceability/snapshots/${"a".repeat(64)}.json`;
+    assert.match(
+      await guard.preToolBlockReason(fixture.root, { tool_name: "Write", tool_input: { file_path: snapshot } }),
+      /^DEV_FLOW_STATE_MUTATION_FORBIDDEN:/,
+    );
+    assert.match(
+      await guard.preToolBlockReason(fixture.root, { tool_name: "Bash", tool_input: { command: `echo x > ${snapshot}` } }),
+      /^DEV_FLOW_STATE_MUTATION_FORBIDDEN:/,
+    );
+  } finally { await fixture.dispose(); }
+});
+
+test("corrupt current Trace keeps .dev-flow and protected roots fail-closed", async () => {
+  const fixture = await createTinyApp();
+  try {
+    const state = await startStandard(fixture.root);
+    await writeFile(path.join(fixture.root, ".dev-flow", "features", "feature", state.traceability.path), "corrupt snapshot\n");
+    assert.match(
+      await guard.preToolBlockReason(fixture.root, { tool_name: "Write", tool_input: { file_path: "src/counter.js" } }),
+      /DEV_FLOW_WORKFLOW_STATE_UNREADABLE/,
+    );
+    assert.match(
+      await guard.preToolBlockReason(fixture.root, { tool_name: "Write", tool_input: { file_path: ".dev-flow/features/feature/需求文档.md" } }),
+      /DEV_FLOW_WORKFLOW_STATE_UNREADABLE/,
+    );
   } finally { await fixture.dispose(); }
 });
 

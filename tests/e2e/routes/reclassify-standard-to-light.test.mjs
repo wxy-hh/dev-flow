@@ -38,10 +38,51 @@ test("e2e standard-M downgrades to light-M and next is boundary_plan", async () 
       "太重了，改 light",
     );
     assert.equal(state.route, "light-m");
+    assert.ok(state.traceability, "standard-to-light keeps the existing immutable Trace pointer");
     const action = await next.nextAction(root, "feature");
     assert.equal(action.kind, "run-step");
     assert.equal(action.step, "boundary_plan");
   } finally {
     await rm(root, { recursive: true, force: true });
   }
+});
+
+test("e2e light-M becomes standard-M with a lazily created Trace pointer", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "dev-flow-e2e-reclass-light-"));
+  try {
+    await mkdir(path.join(root, "src"), { recursive: true });
+    await writeFile(path.join(root, "src", "x.js"), "export {}\n");
+    await store.initProject(root, config);
+    let state = await store.startFeature(root, { featureId: "feature", host: "claude", level: "M", topology: "local", execution: "light" });
+    assert.equal(state.traceability, undefined);
+    state = await store.reclassifyFeature(
+      root,
+      "feature",
+      state.revision,
+      { level: "M", topology: "local", execution: "standard", requirements: "provided-confirmed" },
+      "scope gained requirements",
+      "需要标准路线",
+    );
+    assert.equal(state.route, "standard-m");
+    assert.ok(state.traceability);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test("e2e legacy standard state remains readable without a Trace capability stamp", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "dev-flow-e2e-legacy-trace-"));
+  try {
+    await mkdir(path.join(root, "src"), { recursive: true });
+    await writeFile(path.join(root, "src", "x.js"), "export {}\n");
+    await store.initProject(root, config);
+    let state = await store.startFeature(root, {
+      featureId: "feature", host: "claude", level: "M", topology: "local", execution: "standard", requirements: "provided-confirmed",
+    });
+    state = await store.mutate(root, "feature", state.revision, "legacy-fixture", (draft) => {
+      delete draft.workflowCapabilities;
+      delete draft.traceability;
+    });
+    assert.equal(state.workflowCapabilities, undefined);
+    assert.equal(state.traceability, undefined);
+    assert.equal((await next.nextAction(root, "feature")).kind, "scaffold-artifact");
+  } finally { await rm(root, { recursive: true, force: true }); }
 });

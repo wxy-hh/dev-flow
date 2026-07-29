@@ -3,12 +3,12 @@
 // plugins/dev-flow/src/mcp/server.ts
 import readline from "node:readline";
 import { fileURLToPath } from "node:url";
-import path10 from "node:path";
+import path11 from "node:path";
 
 // plugins/dev-flow/src/core/artifacts.ts
-import { createHash as createHash4 } from "node:crypto";
-import { readFile as readFile4, writeFile as writeFile3 } from "node:fs/promises";
-import path5 from "node:path";
+import { createHash as createHash6 } from "node:crypto";
+import { readFile as readFile5, writeFile as writeFile3 } from "node:fs/promises";
+import path6 from "node:path";
 
 // plugins/dev-flow/policy/contract.json
 var contract_default = {
@@ -39,6 +39,7 @@ var contract_default = {
       orderedSteps: ["requirements", "requirement_confirmation", "implementation_plan", "coverage_review", "rollback_unit", "plan_review", "implementation_approval", "implementation", "code_review", "verification", "feature_check", "finalize"],
       requiredArtifacts: ["requirements", "implementation-plan", "status", "coverage-matrix"],
       artifactSteps: { requirements: ["requirements"], implementation_plan: ["implementation-plan"], coverage_review: ["coverage-matrix"], implementation_approval: ["status"] },
+      artifactTransitions: [{ artifact: "plan-review", capability: "review", from: "absent", to: "generated", steps: ["plan_review"] }],
       featureCheckRequired: true
     },
     "light-l": {
@@ -51,6 +52,7 @@ var contract_default = {
       orderedSteps: ["requirements", "requirement_confirmation", "implementation_plan", "coverage_review", "rollback_unit", "plan_review", "implementation_approval", "implementation", "code_review", "verification", "feature_check", "finalize"],
       requiredArtifacts: ["requirements", "implementation-plan", "coverage-matrix", "rollback-units", "plan-review", "code-review", "verification"],
       artifactSteps: { requirements: ["requirements"], implementation_plan: ["implementation-plan"], coverage_review: ["coverage-matrix"], rollback_unit: ["rollback-units"], plan_review: ["plan-review"], code_review: ["code-review"], verification: ["verification"] },
+      artifactTransitions: [{ artifact: "plan-review", capability: "review", from: "editable", to: "generated", steps: ["plan_review"] }],
       featureCheckRequired: true
     }
   },
@@ -72,6 +74,20 @@ var contract_default = {
   topologyStrictOrder: ["local", "shared-contract", "multi-chain", "coordinated-rollback"]
 };
 
+// plugins/dev-flow/src/policy/types.ts
+var ZERO_WORKFLOW_CAPABILITIES = Object.freeze({
+  trace: 0,
+  review: 0,
+  checkpoints: 0,
+  rollbackExecution: 0
+});
+var SUPPORTED_WORKFLOW_CAPABILITIES = Object.freeze({
+  trace: 1,
+  review: 0,
+  checkpoints: 0,
+  rollbackExecution: 0
+});
+
 // plugins/dev-flow/src/policy/contract.ts
 var contract = contract_default;
 if (contract.schemaVersion !== 1) {
@@ -80,6 +96,172 @@ if (contract.schemaVersion !== 1) {
 var allowedRiskLabels = Object.freeze(Object.keys(contract.riskEnhancements));
 function routeDefinition(route) {
   return contract.routes[route];
+}
+function cloneArtifactSteps(steps) {
+  if (!steps) return void 0;
+  return Object.fromEntries(Object.entries(steps).map(([step, artifacts]) => [step, [...artifacts]]));
+}
+function cloneRouteDefinition(definition) {
+  return {
+    ...definition,
+    orderedSteps: [...definition.orderedSteps],
+    requiredArtifacts: [...definition.requiredArtifacts],
+    ...definition.generatedArtifacts ? { generatedArtifacts: [...definition.generatedArtifacts] } : {},
+    ...definition.artifactSteps ? { artifactSteps: cloneArtifactSteps(definition.artifactSteps) } : {},
+    ...definition.generatedArtifactSteps ? { generatedArtifactSteps: cloneArtifactSteps(definition.generatedArtifactSteps) } : {},
+    ...definition.artifactTransitions ? {
+      artifactTransitions: definition.artifactTransitions.map((transition) => ({ ...transition, steps: [...transition.steps] }))
+    } : {}
+  };
+}
+function ensureGeneratedArtifact(definition, artifact) {
+  if (!definition.generatedArtifacts) definition.generatedArtifacts = [];
+  if (!definition.generatedArtifacts.includes(artifact)) definition.generatedArtifacts.push(artifact);
+}
+function moveArtifactSteps(definition, artifact, steps) {
+  if (!definition.generatedArtifactSteps) definition.generatedArtifactSteps = {};
+  const sourceSteps = steps ?? Object.entries(definition.artifactSteps ?? {}).filter(([, artifacts]) => artifacts.includes(artifact)).map(([step]) => step);
+  for (const step of sourceSteps) {
+    const source = definition.artifactSteps?.[step] ?? [];
+    if (source.includes(artifact)) {
+      const remaining = source.filter((kind) => kind !== artifact);
+      if (remaining.length === 0) delete definition.artifactSteps?.[step];
+      else if (definition.artifactSteps) definition.artifactSteps[step] = remaining;
+    }
+    const generated = definition.generatedArtifactSteps[step] ?? [];
+    if (!generated.includes(artifact)) definition.generatedArtifactSteps[step] = [...generated, artifact];
+  }
+}
+function moveArtifactToGenerated(definition, artifact, steps) {
+  definition.requiredArtifacts = definition.requiredArtifacts.filter((kind) => kind !== artifact);
+  ensureGeneratedArtifact(definition, artifact);
+  moveArtifactSteps(definition, artifact, steps);
+}
+function validateArtifactModes(definition) {
+  const generated = definition.generatedArtifacts ?? [];
+  const overlap = definition.requiredArtifacts.find((artifact) => generated.includes(artifact));
+  if (overlap) throw new Error(`route contract artifact ${overlap} cannot be both editable and generated`);
+}
+function normalizeWorkflowCapabilities(value) {
+  const candidate = value ?? ZERO_WORKFLOW_CAPABILITIES;
+  if (candidate.trace !== 0 && candidate.trace !== 1 || candidate.review !== 0 && candidate.review !== 1 || candidate.checkpoints !== 0 && candidate.checkpoints !== 1 || candidate.rollbackExecution !== 0 && candidate.rollbackExecution !== 1) {
+    throw new Error("workflow capabilities must use 0 or 1");
+  }
+  return Object.freeze({ ...candidate });
+}
+function routeDefinitionForFeature(route, capabilities) {
+  const definition = cloneRouteDefinition(routeDefinition(route));
+  const normalized = normalizeWorkflowCapabilities(capabilities);
+  if (route === "risk-minimal" || route === "standard-m") {
+    moveArtifactToGenerated(definition, "status");
+  }
+  for (const transition of definition.artifactTransitions ?? []) {
+    if (normalized[transition.capability] === 1) {
+      moveArtifactToGenerated(definition, transition.artifact, transition.steps);
+    }
+  }
+  validateArtifactModes(definition);
+  return definition;
+}
+function traceEnforcementRequired(route, capabilities) {
+  return normalizeWorkflowCapabilities(capabilities).trace === 1 && (route === "standard-m" || route === "standard-l");
+}
+
+// plugins/dev-flow/src/core/artifact-templates.ts
+function frontMatter(context, kind, grillStatus) {
+  return [
+    "---",
+    "dev_flow:",
+    "  schema_version: 1",
+    `  feature_id: ${context.featureId}`,
+    `  route: ${context.route}`,
+    `  kind: ${kind}`,
+    ...grillStatus ? [`  grill_status: ${grillStatus}`] : [],
+    "---",
+    ""
+  ].join("\n");
+}
+function requirementsTemplate(context) {
+  const grillStatus = context.requirementsState === "provided-confirmed" ? "not_required" : "pending";
+  return `${frontMatter(context, "requirements", grillStatus)}# \u9700\u6C42
+
+## \u8303\u56F4
+
+## \u76EE\u6807
+
+## \u975E\u76EE\u6807
+
+## \u9A8C\u6536\u6761\u4EF6
+
+<!-- dev-flow:id=REQ-001 kind=requirement -->
+### REQ-001\uFF1A\u9700\u6C42
+
+- \u63CF\u8FF0\uFF1A
+
+<!-- dev-flow:id=AC-001 kind=acceptance-criterion -->
+#### AC-001\uFF1A\u9A8C\u6536\u6761\u4EF6\uFF08parent: REQ-001\uFF09
+
+- \u9A8C\u6536\u6761\u4EF6\uFF1A
+
+## \u51B3\u7B56\u8BB0\u5F55
+
+| ID | \u95EE\u9898 | \u51B3\u7B56 | \u6765\u6E90 | \u5F71\u54CD |
+| --- | --- | --- | --- | --- |
+
+## \u5F00\u653E\u95EE\u9898
+
+- \u65E0
+`;
+}
+function implementationPlanTemplate(context) {
+  const rollback = context.route === "standard-m" ? "\n<!-- dev-flow:id=RU-001 kind=rollback -->\n### RU-001\uFF1A\u56DE\u64A4\u5355\u5143\n\n- tasks: TASK-001\n- depends_on: []\n- file_scope:\n- covers: REQ-001\n- forward_verification: unit\n- rollback_verification: unit\n" : "";
+  return `${frontMatter(context, "implementation-plan")}# \u5B9E\u73B0\u8BA1\u5212
+
+<!-- dev-flow:id=TASK-001 kind=task -->
+### TASK-001\uFF1A\u5B9E\u73B0\u4EFB\u52A1
+
+- covers: REQ-001
+- rollback_unit: RU-001
+${rollback}`;
+}
+function coverageMatrixTemplate(context) {
+  return `${frontMatter(context, "coverage-matrix")}# \u8986\u76D6\u77E9\u9635
+
+<!-- dev-flow:id=TEST-001 kind=test -->
+### TEST-001\uFF1A\u9A8C\u8BC1\u573A\u666F\uFF08verifies: AC-001\uFF09
+
+- \u9A8C\u8BC1\u65B9\u6CD5\uFF1A
+`;
+}
+function rollbackUnitsTemplate(context) {
+  return `${frontMatter(context, "rollback-units")}# \u56DE\u64A4\u5355\u5143
+
+<!-- dev-flow:id=RU-001 kind=rollback -->
+### RU-001\uFF1A\u56DE\u64A4\u5355\u5143
+
+- tasks: TASK-001
+- depends_on: []
+- file_scope:
+- covers: REQ-001
+- forward_verification: unit
+- rollback_verification: unit
+`;
+}
+function renderArtifactTemplate(context, kind) {
+  switch (kind) {
+    case "requirements":
+      return requirementsTemplate(context);
+    case "implementation-plan":
+      return implementationPlanTemplate(context);
+    case "coverage-matrix":
+      return coverageMatrixTemplate(context);
+    case "rollback-units":
+      return rollbackUnitsTemplate(context);
+    default:
+      return `${frontMatter(context, kind)}# ${kind}
+
+`;
+  }
 }
 
 // plugins/dev-flow/src/core/errors.ts
@@ -108,7 +290,7 @@ function gatesInvalidatedByArtifact(kind) {
   return Object.keys(gateBasisArtifacts).filter((gate) => gateBasisArtifacts[gate].includes(kind));
 }
 function gateBasis(state, gate) {
-  return {
+  const basis = {
     route: state.route,
     scope: state.scope,
     classification: state.classification,
@@ -116,13 +298,17 @@ function gateBasis(state, gate) {
       gateBasisArtifacts[gate].map((kind) => [kind, state.artifacts[kind]])
     )
   };
+  if (gate === "implementation_approval" && traceEnforcementRequired(state.route, state.workflowCapabilities)) {
+    basis.traceability = state.traceability;
+  }
+  return basis;
 }
 
 // plugins/dev-flow/src/core/state-store.ts
-import { randomUUID, createHash as createHash3 } from "node:crypto";
-import { access, mkdir, open, readFile as readFile3, rename, rm, writeFile as writeFile2 } from "node:fs/promises";
+import { randomUUID as randomUUID2, createHash as createHash4 } from "node:crypto";
+import { access, mkdir as mkdir2, open as open2, readFile as readFile4, rename as rename2, rm, writeFile as writeFile2 } from "node:fs/promises";
 import { hostname } from "node:os";
-import path4 from "node:path";
+import path5 from "node:path";
 
 // plugins/dev-flow/src/policy/validation.ts
 var PolicyError = class extends Error {
@@ -424,14 +610,14 @@ async function collect(root2, relative, files) {
 async function fingerprintProtectedRoots(root2, protectedRoots) {
   const files = [];
   for (const item of [...protectedRoots].sort()) await collect(root2, item, files);
-  const digest3 = createHash2("sha256");
+  const digest4 = createHash2("sha256");
   for (const relative of files.sort()) {
-    digest3.update(relative);
-    digest3.update("\0");
-    digest3.update(await readFile2(path2.join(root2, relative)));
-    digest3.update("\0");
+    digest4.update(relative);
+    digest4.update("\0");
+    digest4.update(await readFile2(path2.join(root2, relative)));
+    digest4.update("\0");
   }
-  return digest3.digest("hex");
+  return digest4.digest("hex");
 }
 
 // plugins/dev-flow/src/core/project-config.ts
@@ -473,6 +659,650 @@ function validateProjectConfig(value) {
   }
 }
 
+// plugins/dev-flow/src/core/traceability.ts
+var ALLOWED_TRACE_KINDS = {
+  requirements: ["requirement", "acceptance-criterion"],
+  "implementation-plan": ["task", "rollback"],
+  "coverage-matrix": ["test"],
+  "rollback-units": ["rollback"]
+};
+var inputKeys = {
+  requirement: ["kind", "id"],
+  "acceptance-criterion": ["kind", "id", "parentRequirement"],
+  task: ["kind", "id", "covers", "rollbackUnit"],
+  test: ["kind", "id", "verifies"],
+  rollback: ["kind", "id", "tasks", "dependsOn", "fileScope", "covers", "forwardVerification", "rollbackVerification"]
+};
+var idPrefix = {
+  requirement: "REQ",
+  "acceptance-criterion": "AC",
+  task: "TASK",
+  test: "TEST",
+  rollback: "RU"
+};
+function invalid(message, details = {}) {
+  throw new DevFlowError("TRACE_GRAPH_INVALID", message, details);
+}
+function sliceError(code, message, details = {}) {
+  throw new DevFlowError(code, message, details);
+}
+function isRecord(value) {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+function isStringArray(value, allowEmpty = false) {
+  return Array.isArray(value) && (allowEmpty || value.length > 0) && value.every((item) => typeof item === "string" && item.length > 0);
+}
+function assertId(kind, id) {
+  if (typeof id !== "string" || !new RegExp(`^${idPrefix[kind]}-[0-9]{3,}$`).test(id)) {
+    invalid("node ID does not match its kind", { kind, id });
+  }
+}
+function assertNoDuplicate(values, field, id) {
+  if (new Set(values).size !== values.length) invalid("node relationship contains duplicates", { field, id });
+}
+function validateNodeInput(value) {
+  if (!isRecord(value) || typeof value.kind !== "string" || !(value.kind in inputKeys)) invalid("node input has an unknown kind");
+  const kind = value.kind;
+  const keys = Object.keys(value);
+  if (keys.some((key) => !inputKeys[kind].includes(key))) invalid("node input contains Core-owned or unknown fields", { kind, keys });
+  assertId(kind, value.id);
+  if (kind === "acceptance-criterion") assertId("requirement", value.parentRequirement);
+  if (kind === "task") {
+    if (!isStringArray(value.covers)) invalid("task covers must be a non-empty string array", { id: value.id });
+    assertNoDuplicate(value.covers, "covers", value.id);
+    assertId("rollback", value.rollbackUnit);
+  }
+  if (kind === "test") {
+    if (!isStringArray(value.verifies)) invalid("test verifies must be a non-empty string array", { id: value.id });
+    assertNoDuplicate(value.verifies, "verifies", value.id);
+    for (const id of value.verifies) assertId("acceptance-criterion", id);
+  }
+  if (kind === "rollback") {
+    const rollback = value;
+    for (const [field, allowEmpty] of [["tasks", false], ["dependsOn", true], ["fileScope", false], ["covers", false], ["forwardVerification", false], ["rollbackVerification", false]]) {
+      if (!isStringArray(value[field], allowEmpty)) invalid("rollback relationship must be a string array", { field, id: value.id });
+      assertNoDuplicate(value[field], field, value.id);
+    }
+    for (const id of rollback.tasks) assertId("task", id);
+    for (const id of rollback.dependsOn) assertId("rollback", id);
+  }
+}
+function validateTraceDelta(value) {
+  if (!isRecord(value) || Object.keys(value).length !== 1 || !Array.isArray(value.nodes)) invalid("Trace delta must contain only nodes");
+  const ids = /* @__PURE__ */ new Set();
+  for (const node of value.nodes) {
+    validateNodeInput(node);
+    if (ids.has(node.id)) invalid("Trace delta declares an ID more than once", { id: node.id });
+    ids.add(node.id);
+  }
+}
+function currentNodes(nodes) {
+  return Object.values(nodes).filter((node) => node.status !== "tombstoned");
+}
+function nodeById(nodes, id) {
+  const node = nodes[id];
+  return node?.status === "tombstoned" ? void 0 : node;
+}
+function sourceFor(input, node, source) {
+  const common = {
+    sourceArtifact: input.artifactKind,
+    sourceSha256: input.artifactSha256,
+    sourceAnchor: source.sourceAnchor,
+    sourceBlockSha256: source.sourceBlockSha256,
+    status: "current"
+  };
+  switch (node.kind) {
+    case "requirement":
+      return { ...common, kind: node.kind, id: node.id };
+    case "acceptance-criterion":
+      return { ...common, kind: node.kind, id: node.id, parentRequirement: node.parentRequirement };
+    case "task":
+      return { ...common, kind: node.kind, id: node.id, covers: [...node.covers], rollbackUnit: node.rollbackUnit };
+    case "test":
+      return { ...common, kind: node.kind, id: node.id, verifies: [...node.verifies] };
+    case "rollback":
+      return {
+        ...common,
+        kind: node.kind,
+        id: node.id,
+        tasks: [...node.tasks],
+        dependsOn: [...node.dependsOn],
+        fileScope: [...node.fileScope],
+        covers: [...node.covers],
+        forwardVerification: [...node.forwardVerification],
+        rollbackVerification: [...node.rollbackVerification],
+        sourceArtifact: input.artifactKind,
+        verificationConfigSha256: input.projectConfigSha256
+      };
+  }
+}
+function inputMeaning(node) {
+  return JSON.stringify(node);
+}
+function nodeMeaning(node) {
+  switch (node.kind) {
+    case "requirement":
+      return JSON.stringify({ kind: node.kind, id: node.id });
+    case "acceptance-criterion":
+      return JSON.stringify({ kind: node.kind, id: node.id, parentRequirement: node.parentRequirement });
+    case "task":
+      return JSON.stringify({ kind: node.kind, id: node.id, covers: node.covers, rollbackUnit: node.rollbackUnit });
+    case "test":
+      return JSON.stringify({ kind: node.kind, id: node.id, verifies: node.verifies });
+    case "rollback":
+      return JSON.stringify({ kind: node.kind, id: node.id, tasks: node.tasks, dependsOn: node.dependsOn, fileScope: node.fileScope, covers: node.covers, forwardVerification: node.forwardVerification, rollbackVerification: node.rollbackVerification });
+  }
+}
+function assertSourceBlocks(input) {
+  const sourceBlocks = /* @__PURE__ */ new Map();
+  for (const block of input.sourceBlocks) {
+    if (!isRecord(block) || typeof block.id !== "string" || typeof block.kind !== "string" || typeof block.sourceAnchor !== "string" || typeof block.sourceBlockSha256 !== "string") {
+      invalid("source block is invalid");
+    }
+    if (sourceBlocks.has(block.id)) invalid("source block ID is declared more than once", { id: block.id });
+    sourceBlocks.set(block.id, block);
+  }
+  const ids = new Set(input.delta.nodes.map((node) => node.id));
+  if (ids.size !== sourceBlocks.size || [...ids].some((id) => !sourceBlocks.has(id))) invalid("source blocks must exactly match delta nodes");
+  for (const node of input.delta.nodes) {
+    const source = sourceBlocks.get(node.id);
+    if (source.kind !== node.kind) invalid("source anchor kind does not match delta node", { id: node.id });
+  }
+  return sourceBlocks;
+}
+function assertArtifactDeltaContract(input) {
+  const allowed = ALLOWED_TRACE_KINDS[input.artifactKind];
+  if (input.delta.nodes.some((node) => !allowed.includes(node.kind))) invalid("delta kind is not allowed for its artifact", { artifactKind: input.artifactKind });
+  const has = (kind) => input.delta.nodes.some((node) => node.kind === kind);
+  if (input.artifactKind === "implementation-plan" && input.route === "standard-m" && (!has("task") || !has("rollback"))) {
+    invalid("standard M implementation plans require both tasks and rollback units");
+  }
+  if (input.artifactKind === "implementation-plan" && input.route === "standard-l" && has("rollback")) {
+    invalid("standard L implementation plans cannot declare rollback units");
+  }
+  if (input.artifactKind === "rollback-units" && input.route !== "standard-l") invalid("rollback-units are only valid for standard L");
+  for (const node of input.delta.nodes) {
+    if (node.kind !== "rollback") continue;
+    if (!["implementation-plan", "rollback-units"].includes(input.artifactKind)) invalid("rollback node has an invalid source artifact");
+    if (node.forwardVerification.some((id) => !input.verificationCommandIds.includes(id)) || node.rollbackVerification.some((id) => !input.verificationCommandIds.includes(id))) {
+      invalid("rollback verification references an unknown command ID", { id: node.id });
+    }
+  }
+}
+function deriveTraceEdges(nodes) {
+  const edges = [];
+  for (const node of currentNodes(nodes)) {
+    if (node.kind === "acceptance-criterion") edges.push({ from: node.id, type: "parent", to: node.parentRequirement });
+    if (node.kind === "task") {
+      for (const target of node.covers) edges.push({ from: node.id, type: "covers", to: target });
+      edges.push({ from: node.id, type: "rollback-unit", to: node.rollbackUnit });
+    }
+    if (node.kind === "test") for (const target of node.verifies) edges.push({ from: node.id, type: "verifies", to: target });
+    if (node.kind === "rollback") {
+      for (const target of node.tasks) edges.push({ from: node.id, type: "contains-task", to: target });
+      for (const target of node.dependsOn) edges.push({ from: node.id, type: "depends-on", to: target });
+      for (const target of node.covers) edges.push({ from: node.id, type: "covers", to: target });
+    }
+  }
+  return edges.sort((a, b) => `${a.from}\0${a.type}\0${a.to}`.localeCompare(`${b.from}\0${b.type}\0${b.to}`));
+}
+function traceSummary(nodes) {
+  const values = Object.values(nodes);
+  return {
+    total: values.length,
+    current: values.filter((node) => node.status === "current").length,
+    stale: values.filter((node) => node.status === "stale").length,
+    tombstoned: values.filter((node) => node.status === "tombstoned").length
+  };
+}
+function assertReference(nodes, id, kinds, details) {
+  const node = nodeById(nodes, id);
+  if (!node || !kinds.includes(node.kind)) invalid("graph reference is missing or has the wrong kind", { id, ...details });
+  return node;
+}
+function assertRollbackDag(nodes) {
+  const visiting = /* @__PURE__ */ new Set();
+  const visited = /* @__PURE__ */ new Set();
+  const visit = (id) => {
+    if (visited.has(id)) return;
+    if (visiting.has(id)) invalid("rollback dependency graph contains a cycle", { id });
+    visiting.add(id);
+    const node = nodeById(nodes, id);
+    if (node?.kind === "rollback") for (const dependency of node.dependsOn) visit(dependency);
+    visiting.delete(id);
+    visited.add(id);
+  };
+  for (const node of currentNodes(nodes)) if (node.kind === "rollback") visit(node.id);
+}
+function sameEdges(left, right) {
+  return left.length === right.length && left.every((edge, index) => {
+    const candidate = right[index];
+    return edge.from === candidate?.from && edge.type === candidate.type && edge.to === candidate.to;
+  });
+}
+function sameSummary(left, right) {
+  return left.total === right.total && left.current === right.current && left.stale === right.stale && left.tombstoned === right.tombstoned;
+}
+var statusValues = /* @__PURE__ */ new Set(["current", "stale", "tombstoned"]);
+var sourceArtifacts = /* @__PURE__ */ new Set(["requirements", "implementation-plan", "coverage-matrix", "rollback-units"]);
+var hex64 = /^[a-f0-9]{64}$/;
+function assertPersistedNode(recordId, value) {
+  if (!isRecord(value)) invalid("persisted node is not an object", { id: recordId });
+  const kind = value.kind;
+  if (typeof kind !== "string" || !(kind in idPrefix)) invalid("persisted node has an unknown kind", { id: recordId, kind });
+  assertId(kind, value.id);
+  if (value.id !== recordId) invalid("persisted node id does not match its record key", { id: recordId, nodeId: value.id });
+  if (!statusValues.has(value.status)) invalid("persisted node has an invalid status", { id: recordId, status: value.status });
+  if (typeof value.sourceArtifact !== "string" || !sourceArtifacts.has(value.sourceArtifact)) {
+    invalid("persisted node has an invalid sourceArtifact", { id: recordId, sourceArtifact: value.sourceArtifact });
+  }
+  if (typeof value.sourceSha256 !== "string" || !hex64.test(value.sourceSha256)) {
+    invalid("persisted node has an invalid sourceSha256", { id: recordId });
+  }
+  if (typeof value.sourceAnchor !== "string" || !value.sourceAnchor.includes(`id=${value.id}`)) {
+    invalid("persisted node has an invalid sourceAnchor", { id: recordId });
+  }
+  if (typeof value.sourceBlockSha256 !== "string" || !hex64.test(value.sourceBlockSha256)) {
+    invalid("persisted node has an invalid sourceBlockSha256", { id: recordId });
+  }
+  if (kind === "acceptance-criterion") assertId("requirement", value.parentRequirement);
+  if (kind === "task") {
+    if (!isStringArray(value.covers)) invalid("persisted task covers is invalid", { id: recordId });
+    assertId("rollback", value.rollbackUnit);
+  }
+  if (kind === "test") {
+    if (!isStringArray(value.verifies)) invalid("persisted test verifies is invalid", { id: recordId });
+  }
+  if (kind === "rollback") {
+    for (const [field, allowEmpty] of [["tasks", false], ["dependsOn", true], ["fileScope", false], ["covers", false], ["forwardVerification", false], ["rollbackVerification", false]]) {
+      if (!isStringArray(value[field], allowEmpty)) invalid("persisted rollback field is invalid", { id: recordId, field });
+    }
+    if (value.sourceArtifact !== "implementation-plan" && value.sourceArtifact !== "rollback-units") {
+      invalid("persisted rollback has an invalid sourceArtifact", { id: recordId });
+    }
+    if (typeof value.verificationConfigSha256 !== "string" || !hex64.test(value.verificationConfigSha256)) {
+      invalid("persisted rollback has an invalid verificationConfigSha256", { id: recordId });
+    }
+  }
+}
+function assertPersistedLedgerShape(ledger) {
+  if (typeof ledger.featureId !== "string" || !ledger.featureId) invalid("ledger featureId is invalid");
+  if (!Number.isInteger(ledger.revision) || ledger.revision < 0) invalid("ledger revision is invalid");
+  if (!Number.isInteger(ledger.stateRevision) || ledger.stateRevision < 0) invalid("ledger stateRevision is invalid");
+  if (typeof ledger.projectConfigSha256 !== "string" || !hex64.test(ledger.projectConfigSha256)) {
+    invalid("ledger projectConfigSha256 is invalid");
+  }
+  for (const [id, node] of Object.entries(ledger.nodes)) assertPersistedNode(id, node);
+}
+function validateTraceGraph(ledger, route, mode) {
+  if (!isRecord(ledger) || ledger.schemaVersion !== 1 || !isRecord(ledger.nodes) || !Array.isArray(ledger.edges)) invalid("traceability ledger has an invalid shape");
+  assertPersistedLedgerShape(ledger);
+  const nodes = ledger.nodes;
+  for (const node of currentNodes(nodes)) {
+    if (node.kind === "acceptance-criterion") assertReference(nodes, node.parentRequirement, ["requirement"], { from: node.id });
+    if (node.kind === "task") {
+      if (node.covers.length === 0) invalid("task cannot be orphaned", { id: node.id });
+      for (const covered of node.covers) assertReference(nodes, covered, ["requirement", "acceptance-criterion"], { from: node.id });
+      const rollback = nodeById(nodes, node.rollbackUnit);
+      if (!rollback && !(route === "standard-l" && mode === "partial")) invalid("task references a missing rollback unit", { id: node.id, rollbackUnit: node.rollbackUnit });
+      if (rollback && rollback.kind !== "rollback") invalid("task rollback unit has the wrong kind", { id: node.id });
+      if (rollback?.kind === "rollback" && !rollback.tasks.includes(node.id)) {
+        invalid("task rollback unit must list the task", { id: node.id, rollbackUnit: node.rollbackUnit });
+      }
+    }
+    if (node.kind === "test") for (const verified of node.verifies) assertReference(nodes, verified, ["acceptance-criterion"], { from: node.id });
+    if (node.kind === "rollback") {
+      for (const taskId of node.tasks) {
+        const task = assertReference(nodes, taskId, ["task"], { from: node.id });
+        if (task.kind !== "task" || task.rollbackUnit !== node.id) invalid("rollback unit tasks must be symmetric with task rollbackUnit", { id: node.id, taskId });
+      }
+      for (const dependency of node.dependsOn) assertReference(nodes, dependency, ["rollback"], { from: node.id });
+      for (const covered of node.covers) assertReference(nodes, covered, ["requirement", "acceptance-criterion"], { from: node.id });
+    }
+  }
+  assertRollbackDag(nodes);
+  const edges = deriveTraceEdges(nodes);
+  if (!sameEdges(ledger.edges, edges)) invalid("ledger edges do not match nodes");
+  if (!sameSummary(ledger.summary, traceSummary(nodes))) invalid("ledger summary does not match nodes");
+  if (mode === "complete") {
+    const kinds = new Set(currentNodes(nodes).map((node) => node.kind));
+    for (const kind of ["requirement", "acceptance-criterion", "task", "test", "rollback"]) if (!kinds.has(kind)) invalid("complete graph is missing a required node kind", { kind });
+    if (currentNodes(nodes).some((node) => node.status !== "current")) invalid("complete graph cannot contain stale nodes");
+    for (const node of currentNodes(nodes)) {
+      if (node.kind === "acceptance-criterion" && !currentNodes(nodes).some((candidate) => candidate.kind === "test" && candidate.verifies.includes(node.id))) {
+        invalid("every acceptance criterion requires a test", { id: node.id });
+      }
+    }
+  }
+}
+function downstream(nodes, changed, protectedIds = /* @__PURE__ */ new Set()) {
+  const reverse = /* @__PURE__ */ new Map();
+  for (const edge of deriveTraceEdges(nodes)) {
+    const items = reverse.get(edge.to) ?? [];
+    items.push(edge.from);
+    reverse.set(edge.to, items);
+  }
+  const queue = [...changed];
+  const seen = new Set(queue);
+  while (queue.length) {
+    const id = queue.shift();
+    for (const dependent of reverse.get(id) ?? []) {
+      if (seen.has(dependent)) continue;
+      seen.add(dependent);
+      queue.push(dependent);
+      if (protectedIds.has(dependent)) continue;
+      const node = nodes[dependent];
+      if (node && node.status !== "tombstoned") node.status = "stale";
+    }
+  }
+}
+function emptyTraceabilityLedger(featureId, stateRevision, projectConfigSha256) {
+  return { schemaVersion: 1, featureId, revision: 0, stateRevision, projectConfigSha256, nodes: {}, edges: [], summary: { total: 0, current: 0, stale: 0, tombstoned: 0 } };
+}
+function applyTraceDelta(input) {
+  validateTraceDelta(input.delta);
+  assertArtifactDeltaContract(input);
+  const sourceBlocks = assertSourceBlocks(input);
+  const nodes = structuredClone(input.current.nodes);
+  const changed = /* @__PURE__ */ new Set();
+  for (const node of input.delta.nodes) {
+    const previous = nodes[node.id];
+    if (previous?.status === "tombstoned") invalid("tombstoned IDs cannot be reused", { id: node.id });
+    const next = sourceFor(input, node, sourceBlocks.get(node.id));
+    if (previous && previous.sourceArtifact !== input.artifactKind) invalid("node ID already belongs to a different source artifact", { id: node.id });
+    if (previous && (previous.sourceBlockSha256 !== next.sourceBlockSha256 || nodeMeaning(previous) !== inputMeaning(node))) changed.add(node.id);
+    nodes[node.id] = next;
+  }
+  const inputIds = new Set(input.delta.nodes.map((node) => node.id));
+  for (const node of Object.values(nodes)) {
+    if (node.sourceArtifact !== input.artifactKind || inputIds.has(node.id) || node.status === "tombstoned") continue;
+    node.status = "tombstoned";
+    changed.add(node.id);
+  }
+  downstream(nodes, changed, inputIds);
+  const ledger = {
+    schemaVersion: 1,
+    featureId: input.current.featureId,
+    revision: input.current.revision + 1,
+    stateRevision: input.nextStateRevision,
+    projectConfigSha256: input.projectConfigSha256,
+    nodes,
+    edges: deriveTraceEdges(nodes),
+    summary: traceSummary(nodes)
+  };
+  validateTraceGraph(ledger, input.route, "partial");
+  return ledger;
+}
+function assertConfigCurrent(ledger, currentProjectConfigSha256) {
+  if (ledger.projectConfigSha256 !== currentProjectConfigSha256) sliceError("TRACE_SLICE_STALE", "project configuration changed since Trace registration");
+  for (const node of currentNodes(ledger.nodes)) {
+    if (node.kind === "rollback" && node.verificationConfigSha256 !== currentProjectConfigSha256) {
+      sliceError("TRACE_SLICE_STALE", "rollback verification configuration is stale", { id: node.id });
+    }
+  }
+}
+function requireCurrentKinds(ledger, kinds) {
+  for (const kind of kinds) {
+    const nodes = currentNodes(ledger.nodes).filter((node) => node.kind === kind);
+    if (nodes.length === 0) sliceError("TRACE_SLICE_INCOMPLETE", "Trace slice is missing a required node", { kind });
+    if (nodes.some((node) => node.status === "stale")) sliceError("TRACE_SLICE_STALE", "Trace slice contains stale nodes", { kind });
+  }
+}
+function assertTraceabilityComplete(ledger, route, currentProjectConfigSha256) {
+  assertConfigCurrent(ledger, currentProjectConfigSha256);
+  if (Object.values(ledger.nodes).some((node) => node.status === "stale")) {
+    sliceError("TRACE_SLICE_STALE", "complete Trace graph contains stale nodes");
+  }
+  try {
+    validateTraceGraph(ledger, route, "complete");
+  } catch (error) {
+    if (error instanceof DevFlowError) sliceError("TRACE_SLICE_INCOMPLETE", error.message, error.details);
+    throw error;
+  }
+}
+function assertTraceSliceCurrent(ledger, route, step, currentProjectConfigSha256) {
+  assertConfigCurrent(ledger, currentProjectConfigSha256);
+  const completeSteps = /* @__PURE__ */ new Set(["plan_review", "implementation_approval", "implementation", "feature_check", "finalize"]);
+  if (completeSteps.has(step)) return assertTraceabilityComplete(ledger, route, currentProjectConfigSha256);
+  const requirements = ["requirement", "acceptance-criterion"];
+  if (["requirements", "requirement_confirmation"].includes(step)) {
+    requireCurrentKinds(ledger, [...requirements]);
+    try {
+      validateTraceGraph(ledger, route, "partial");
+    } catch (error) {
+      if (error instanceof DevFlowError) sliceError("TRACE_SLICE_INCOMPLETE", error.message, error.details);
+      throw error;
+    }
+    return;
+  }
+  const kinds = step === "implementation_plan" ? [...requirements, "task", ...route === "standard-m" ? ["rollback"] : []] : step === "coverage_review" ? [...requirements, "task", "test"] : step === "rollback_unit" ? [...requirements, "task", "test", "rollback"] : [...requirements, "task", "test", "rollback"];
+  requireCurrentKinds(ledger, kinds);
+  try {
+    validateTraceGraph(ledger, route, step === "rollback_unit" ? "complete" : "partial");
+    if (step === "coverage_review") {
+      for (const node of currentNodes(ledger.nodes)) if (node.kind === "acceptance-criterion" && !currentNodes(ledger.nodes).some((candidate) => candidate.kind === "test" && candidate.verifies.includes(node.id))) {
+        sliceError("TRACE_SLICE_INCOMPLETE", "coverage review requires a test for every acceptance criterion", { id: node.id });
+      }
+    }
+  } catch (error) {
+    if (error instanceof DevFlowError) sliceError("TRACE_SLICE_INCOMPLETE", error.message, error.details);
+    throw error;
+  }
+}
+
+// plugins/dev-flow/src/core/step-order.ts
+function currentOpenStep(state) {
+  return routeDefinitionForFeature(state.route, state.workflowCapabilities).orderedSteps.find((step) => state.steps[step]?.status !== "satisfied");
+}
+function assertCurrentStep(state, step) {
+  if (currentOpenStep(state) !== step) throw new DevFlowError("STEP_OUT_OF_ORDER", `${step} is not the current route step`, { expected: currentOpenStep(state) });
+}
+function artifactsRequiredBeforeGate(state, gate) {
+  const definition = routeDefinitionForFeature(state.route, state.workflowCapabilities);
+  const index = definition.orderedSteps.indexOf(gate);
+  return [...new Set(definition.orderedSteps.slice(0, index).flatMap((step) => [
+    ...definition.artifactSteps?.[step] ?? [],
+    ...definition.generatedArtifactSteps?.[step] ?? []
+  ]))];
+}
+
+// plugins/dev-flow/src/core/traceability-store.ts
+import { createHash as createHash3, randomUUID } from "node:crypto";
+import { mkdir, open, readFile as readFile3, readdir as readdir2, rename } from "node:fs/promises";
+import path4 from "node:path";
+function sortValue(value) {
+  if (Array.isArray(value)) return value.map(sortValue);
+  if (value && typeof value === "object") {
+    return Object.fromEntries(Object.entries(value).sort(([left], [right]) => left.localeCompare(right)).map(([key, child]) => [key, sortValue(child)]));
+  }
+  return value;
+}
+function canonicalTraceJson(ledger) {
+  return `${JSON.stringify(sortValue(ledger), null, 2)}
+`;
+}
+function snapshotDirectory(root2, featureId) {
+  return path4.join(root2, ".dev-flow", "features", featureId, "traceability", "snapshots");
+}
+function digest2(contents) {
+  return createHash3("sha256").update(contents).digest("hex");
+}
+async function fsyncDirectory(directory) {
+  const handle = await open(directory, "r");
+  try {
+    await handle.sync();
+  } finally {
+    await handle.close();
+  }
+}
+async function writeTraceSnapshot(root2, ledger, options = {}) {
+  const contents = canonicalTraceJson(ledger);
+  const sha256 = digest2(contents);
+  const directory = snapshotDirectory(root2, ledger.featureId);
+  const target = path4.join(directory, `${sha256}.json`);
+  await mkdir(directory, { recursive: true });
+  try {
+    const existing = await readFile3(target, "utf8");
+    if (existing !== contents) throw new DevFlowError("TRACEABILITY_INTEGRITY_FAILED", "existing snapshot does not match its content address");
+  } catch (error) {
+    if (error.code !== "ENOENT") throw error;
+    await options.fault?.("before-temp-write");
+    const temporary = path4.join(directory, `.${sha256}.${randomUUID()}.tmp`);
+    const handle = await open(temporary, "wx");
+    try {
+      await handle.writeFile(contents);
+      await handle.sync();
+    } finally {
+      await handle.close();
+    }
+    await options.fault?.("after-temp-fsync");
+    try {
+      await rename(temporary, target);
+    } catch (renameError) {
+      if (renameError.code !== "EEXIST") throw renameError;
+      const existing = await readFile3(target, "utf8");
+      if (existing !== contents) throw new DevFlowError("TRACEABILITY_INTEGRITY_FAILED", "concurrent snapshot does not match its content address");
+    }
+    await fsyncDirectory(directory);
+    await options.fault?.("after-snapshot-rename");
+  }
+  return {
+    path: `traceability/snapshots/${sha256}.json`,
+    sha256,
+    revision: ledger.revision,
+    summary: traceSummary(ledger.nodes)
+  };
+}
+function integrity(message, details = {}) {
+  throw new DevFlowError("TRACEABILITY_INTEGRITY_FAILED", message, details);
+}
+function safeSnapshotPath(pointer) {
+  if (!/^traceability\/snapshots\/[a-f0-9]{64}\.json$/.test(pointer.path) || pointer.path !== `traceability/snapshots/${pointer.sha256}.json`) {
+    integrity("Trace pointer path is invalid");
+  }
+  return pointer.path;
+}
+function sameEdges2(left, right) {
+  return left.length === right.length && left.every((edge, index) => {
+    const candidate = right[index];
+    return edge.from === candidate?.from && edge.type === candidate.type && edge.to === candidate.to;
+  });
+}
+async function readTraceability(root2, state) {
+  if (!state.traceability) integrity("Trace pointer is missing", { featureId: state.featureId });
+  const pointer = state.traceability;
+  const relative = safeSnapshotPath(pointer);
+  const file = path4.join(root2, ".dev-flow", "features", state.featureId, relative);
+  let contents;
+  try {
+    contents = await readFile3(file, "utf8");
+  } catch {
+    integrity("Trace snapshot cannot be read", { featureId: state.featureId, path: relative });
+  }
+  if (digest2(contents) !== pointer.sha256) integrity("Trace snapshot digest does not match pointer", { featureId: state.featureId });
+  let ledger;
+  try {
+    ledger = JSON.parse(contents);
+  } catch {
+    integrity("Trace snapshot is not valid JSON", { featureId: state.featureId });
+  }
+  try {
+    validateTraceGraph(ledger, state.route, "partial");
+  } catch (error) {
+    integrity("Trace snapshot graph is invalid", { cause: error instanceof Error ? error.message : String(error) });
+  }
+  if (ledger.featureId !== state.featureId || ledger.revision !== pointer.revision || ledger.stateRevision > state.revision) {
+    integrity("Trace pointer and ledger revisions do not match", { featureId: state.featureId });
+  }
+  if (ledger.summary.total !== pointer.summary.total || ledger.summary.current !== pointer.summary.current || ledger.summary.stale !== pointer.summary.stale || ledger.summary.tombstoned !== pointer.summary.tombstoned || !sameEdges2(deriveTraceEdges(ledger.nodes), ledger.edges)) {
+    integrity("Trace pointer summary or ledger edges do not match", { featureId: state.featureId });
+  }
+  return ledger;
+}
+async function listOrphanTraceSnapshots(root2, state) {
+  const directory = snapshotDirectory(root2, state.featureId);
+  let entries;
+  try {
+    entries = await readdir2(directory);
+  } catch (error) {
+    if (error.code === "ENOENT") return [];
+    throw error;
+  }
+  const active = state.traceability?.path.split("/").at(-1);
+  return entries.filter((entry) => /^[a-f0-9]{64}\.json$/.test(entry) && entry !== active).sort();
+}
+async function readProjectConfigSnapshot(root2) {
+  const file = path4.join(root2, ".dev-flow", "project.json");
+  let raw;
+  try {
+    raw = await readFile3(file, "utf8");
+  } catch {
+    throw new DevFlowError("PROJECT_NOT_INITIALIZED", "run dev_flow_init_project first");
+  }
+  let config;
+  try {
+    config = JSON.parse(raw);
+    validateProjectConfig(config);
+  } catch (error) {
+    if (error instanceof DevFlowError) throw error;
+    throw new DevFlowError("INVALID_PROJECT_CONFIG", "project configuration is unreadable");
+  }
+  return { config, sha256: digest2(raw) };
+}
+
+// plugins/dev-flow/src/core/traceability-gates.ts
+function traceIsEnforced(state) {
+  return traceEnforcementRequired(state.route, state.workflowCapabilities);
+}
+function blockerFor(step, error) {
+  const value = error;
+  if (value?.code === "TRACE_SLICE_STALE" || value?.code === "TRACE_SLICE_INCOMPLETE") {
+    return {
+      code: value.code,
+      step,
+      details: typeof value.details === "object" && value.details !== null && !Array.isArray(value.details) ? value.details : {}
+    };
+  }
+  return {
+    code: "TRACE_SLICE_INCOMPLETE",
+    step,
+    details: {
+      cause: typeof value?.code === "string" ? value.code : "TRACEABILITY_UNREADABLE",
+      ...typeof value?.message === "string" ? { message: value.message } : {}
+    }
+  };
+}
+async function inspectTraceGate(root2, state, step) {
+  if (!traceIsEnforced(state)) return { enforced: false };
+  let ledger;
+  try {
+    ledger = await readTraceability(root2, state);
+    const { sha256 } = await readProjectConfigSnapshot(root2);
+    assertTraceSliceCurrent(ledger, state.route, step, sha256);
+    return { enforced: true, ledger, effectiveSummary: ledger.summary };
+  } catch (error) {
+    return {
+      enforced: true,
+      ...ledger ? { ledger, effectiveSummary: ledger.summary } : {},
+      blocker: blockerFor(step, error)
+    };
+  }
+}
+async function inspectCurrentTrace(root2, state) {
+  if (!traceIsEnforced(state)) return { enforced: false };
+  const step = currentOpenStep(state);
+  return step ? inspectTraceGate(root2, state, step) : { enforced: true };
+}
+async function assertTraceGateCurrent(root2, state, step) {
+  const inspection = await inspectTraceGate(root2, state, step);
+  if (!inspection.blocker) return inspection.ledger;
+  throw new DevFlowError(
+    inspection.blocker.code,
+    `Trace slice is not ready for ${step}`,
+    inspection.blocker.details
+  );
+}
+
 // plugins/dev-flow/src/core/state-store.ts
 var lifecycles = /* @__PURE__ */ new Set(["active", "paused", "finalized", "abandoned"]);
 function validateFeatureState(value) {
@@ -480,6 +1310,22 @@ function validateFeatureState(value) {
   if (state?.schemaVersion !== 1) throw new DevFlowError("UNSUPPORTED_STATE_SCHEMA", "only state schema v1 is supported");
   if (typeof state.featureId !== "string" || !state.featureId || !Number.isInteger(state.revision) || (state.revision ?? -1) < 0 || !lifecycles.has(state.lifecycle) || !routeDefinition(state.route) || !state.classification || !state.scope || !Array.isArray(state.scope.inScope) || !Array.isArray(state.scope.outOfScope) || !state.steps || !state.humanGates || !state.artifacts || !state.verification || !Array.isArray(state.verification.attempts) || state.interactions !== void 0 && (typeof state.interactions !== "object" || state.interactions === null || Array.isArray(state.interactions)) || !state.featureCheck || !Array.isArray(state.blockingFindings) || typeof state.logicComplete !== "boolean" || !state.lastUpdatedBy) {
     throw new DevFlowError("INVALID_STATE_SCHEMA", "state is not a valid v1 feature state");
+  }
+  if (state.workflowCapabilities !== void 0) {
+    try {
+      normalizeWorkflowCapabilities(state.workflowCapabilities);
+    } catch {
+      throw new DevFlowError("INVALID_STATE_SCHEMA", "workflowCapabilities are invalid");
+    }
+  }
+  if (state.traceability !== void 0) {
+    const pointer = state.traceability;
+    if (typeof pointer !== "object" || pointer === null || !/^traceability\/snapshots\/[a-f0-9]{64}\.json$/.test(pointer.path) || !/^[a-f0-9]{64}$/.test(pointer.sha256) || pointer.path !== `traceability/snapshots/${pointer.sha256}.json` || !Number.isInteger(pointer.revision) || pointer.revision < 0 || !pointer.summary || !["total", "current", "stale", "tombstoned"].every((key) => Number.isInteger(pointer.summary[key]) && pointer.summary[key] >= 0)) {
+      throw new DevFlowError("INVALID_STATE_SCHEMA", "traceability pointer is invalid");
+    }
+  }
+  if (traceEnforcementRequired(state.route, state.workflowCapabilities) && !state.traceability) {
+    throw new DevFlowError("INVALID_STATE_SCHEMA", "trace-enforced standard feature requires a traceability pointer");
   }
 }
 function validateScopeInput(scope) {
@@ -509,16 +1355,16 @@ function validateScopeInput(scope) {
   return { inScope: value.inScope, outOfScope: value.outOfScope };
 }
 var delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-var devFlow = (root2) => path4.join(root2, ".dev-flow");
-var features = (root2) => path4.join(devFlow(root2), "features");
-var statePath = (root2, id) => path4.join(features(root2), id, "state.json");
-var eventPath = (root2, id) => path4.join(features(root2), id, "events.jsonl");
-var activePath = (root2) => path4.join(devFlow(root2), "active.json");
-var recoveryTxnPath = (root2) => path4.join(devFlow(root2), "recovery-transaction.json");
-var recoveryEventsPath = (root2) => path4.join(devFlow(root2), "recovery-events.jsonl");
+var devFlow = (root2) => path5.join(root2, ".dev-flow");
+var features = (root2) => path5.join(devFlow(root2), "features");
+var statePath = (root2, id) => path5.join(features(root2), id, "state.json");
+var eventPath = (root2, id) => path5.join(features(root2), id, "events.jsonl");
+var activePath = (root2) => path5.join(devFlow(root2), "active.json");
+var recoveryTxnPath = (root2) => path5.join(devFlow(root2), "recovery-transaction.json");
+var recoveryEventsPath = (root2) => path5.join(devFlow(root2), "recovery-events.jsonl");
 async function readProjectConfig(root2) {
   try {
-    const value = JSON.parse(await readFile3(path4.join(devFlow(root2), "project.json"), "utf8"));
+    const value = JSON.parse(await readFile4(path5.join(devFlow(root2), "project.json"), "utf8"));
     validateProjectConfig(value);
     return value;
   } catch (error) {
@@ -528,12 +1374,12 @@ async function readProjectConfig(root2) {
 }
 async function initProject(root2, config) {
   validateProjectConfig(config);
-  await mkdir(devFlow(root2), { recursive: true });
-  await writeAtomic(path4.join(devFlow(root2), "project.json"), config);
+  await mkdir2(devFlow(root2), { recursive: true });
+  await writeAtomic(path5.join(devFlow(root2), "project.json"), config);
 }
 async function writeAtomic(file, value) {
-  const temp = `${file}.${randomUUID()}.tmp`;
-  const handle = await open(temp, "w");
+  const temp = `${file}.${randomUUID2()}.tmp`;
+  const handle = await open2(temp, "w");
   try {
     await handle.writeFile(`${JSON.stringify(value, null, 2)}
 `);
@@ -541,17 +1387,28 @@ async function writeAtomic(file, value) {
   } finally {
     await handle.close();
   }
-  await rename(temp, file);
-  const directory = await open(path4.dirname(file), "r");
+  await rename2(temp, file);
+  const directory = await open2(path5.dirname(file), "r");
   try {
     await directory.sync();
   } finally {
     await directory.close();
   }
 }
-async function writeStatusProjection(root2, state, revision) {
+async function prepareStatusProjection(root2, state, revision) {
   const status = state.artifacts.status;
   if (!status) return;
+  const trace = await inspectCurrentTrace(root2, state);
+  const summary = trace.effectiveSummary;
+  const traceLines = [
+    "## Trace",
+    "",
+    `- Enforced: ${trace.enforced}`,
+    ...state.traceability ? [`- Pointer: ${state.traceability.path}`] : [],
+    ...summary ? [`- Summary: total=${summary.total} current=${summary.current} stale=${summary.stale} tombstoned=${summary.tombstoned}`] : [],
+    ...trace.blocker ? [`- Blocker: ${trace.blocker.code} (${trace.blocker.step})`] : [],
+    ""
+  ];
   const projection = [
     "---",
     "dev_flow:",
@@ -571,30 +1428,33 @@ async function writeStatusProjection(root2, state, revision) {
     "",
     "## Steps",
     "",
-    ...routeDefinition(state.route).orderedSteps.map((step) => `- ${step}: ${state.steps[step]?.status ?? "pending"}`),
-    ""
+    ...routeDefinitionForFeature(state.route, state.workflowCapabilities).orderedSteps.map((step) => `- ${step}: ${state.steps[step]?.status ?? "pending"}`),
+    "",
+    ...traceLines
   ].join("\n");
-  const file = path4.join(features(root2), state.featureId, status.path);
-  await writeFile2(file, `${projection}
-`);
-  state.artifacts.status = { ...status, sha256: createHash3("sha256").update(`${projection}
-`).digest("hex") };
+  const contents = `${projection}
+`;
+  const file = path5.join(features(root2), state.featureId, status.path);
+  state.artifacts.status = { ...status, sha256: createHash4("sha256").update(contents).digest("hex") };
+  return async () => {
+    await writeFile2(file, contents);
+  };
 }
 async function lock(root2, featureId, operation) {
-  const directory = path4.join(devFlow(root2), ".lock");
+  const directory = path5.join(devFlow(root2), ".lock");
   const started = Date.now();
-  await mkdir(devFlow(root2), { recursive: true });
+  await mkdir2(devFlow(root2), { recursive: true });
   while (true) {
     try {
-      await mkdir(directory);
-      await writeFile2(path4.join(directory, "owner.json"), JSON.stringify({ pid: process.pid, hostname: hostname(), acquiredAt: (/* @__PURE__ */ new Date()).toISOString(), featureId, operation }));
+      await mkdir2(directory);
+      await writeFile2(path5.join(directory, "owner.json"), JSON.stringify({ pid: process.pid, hostname: hostname(), acquiredAt: (/* @__PURE__ */ new Date()).toISOString(), featureId, operation }));
       return async () => {
         await rm(directory, { recursive: true, force: true });
       };
     } catch (error) {
       if (error.code !== "EEXIST") throw error;
       try {
-        const owner = JSON.parse(await readFile3(path4.join(directory, "owner.json"), "utf8"));
+        const owner = JSON.parse(await readFile4(path5.join(directory, "owner.json"), "utf8"));
         const age = Date.now() - Date.parse(owner.acquiredAt);
         let live = owner.hostname === hostname();
         if (live) {
@@ -617,7 +1477,7 @@ async function lock(root2, featureId, operation) {
 }
 async function readState(root2, featureId) {
   try {
-    const state = JSON.parse(await readFile3(statePath(root2, featureId), "utf8"));
+    const state = JSON.parse(await readFile4(statePath(root2, featureId), "utf8"));
     validateFeatureState(state);
     if (state.featureId !== featureId) throw new DevFlowError("INVALID_STATE_SCHEMA", "state feature id does not match its path");
     return state;
@@ -632,7 +1492,7 @@ async function readState(root2, featureId) {
 async function readActive(root2) {
   let raw;
   try {
-    raw = await readFile3(activePath(root2), "utf8");
+    raw = await readFile4(activePath(root2), "utf8");
   } catch (error) {
     if (error.code === "ENOENT") return void 0;
     throw new DevFlowError("ACTIVE_POINTER_UNREADABLE", "active.json cannot be read", { recoveryHint: "Run dev_flow_doctor and use recovery; do not start a new feature" });
@@ -648,7 +1508,7 @@ async function readActive(root2) {
   }
 }
 async function appendEvent(root2, id, revision, type, data) {
-  const handle = await open(eventPath(root2, id), "a");
+  const handle = await open2(eventPath(root2, id), "a");
   try {
     await handle.writeFile(`${JSON.stringify({ revision, type, at: (/* @__PURE__ */ new Date()).toISOString(), data })}
 `);
@@ -658,22 +1518,22 @@ async function appendEvent(root2, id, revision, type, data) {
   }
 }
 async function stateFileSha256(root2, featureId) {
-  const contents = await readFile3(statePath(root2, featureId));
-  return createHash3("sha256").update(contents).digest("hex");
+  const contents = await readFile4(statePath(root2, featureId));
+  return createHash4("sha256").update(contents).digest("hex");
 }
 async function readFeatureEvents(root2, id) {
   try {
-    return (await readFile3(eventPath(root2, id), "utf8")).split("\n").filter(Boolean).map((line) => JSON.parse(line));
+    return (await readFile4(eventPath(root2, id), "utf8")).split("\n").filter(Boolean).map((line) => JSON.parse(line));
   } catch (error) {
     if (error.code === "ENOENT") return [];
     throw error;
   }
 }
-async function startFeature(root2, input) {
+async function startFeature(root2, input, options = {}) {
   await readProjectConfig(root2);
   await assertNoOpenRecovery(root2);
   const scope = validateScopeInput(input.scope);
-  const id = input.featureId ?? randomUUID();
+  const id = input.featureId ?? randomUUID2();
   const release = await lock(root2, id, "start");
   try {
     await assertNoOpenRecovery(root2);
@@ -684,55 +1544,133 @@ async function startFeature(root2, input) {
     const project = await readProjectConfig(root2);
     const startBusinessFingerprint = await fingerprintProtectedRoots(root2, project.protectedRoots);
     const deliveryBaseline = await captureDeliveryBaseline(root2, project.protectedRoots);
-    await mkdir(path4.join(features(root2), id), { recursive: true });
-    const state = {
-      schemaVersion: 1,
-      featureId: id,
-      revision: 0,
-      lifecycle,
-      route,
-      classification,
-      scope,
-      steps: {},
-      humanGates: {},
-      artifacts: {},
-      verification: { attempts: [] },
-      interactions: {},
-      featureCheck: {},
-      startBusinessFingerprint,
-      deliveryBaseline,
-      blockingFindings: [],
-      logicComplete: false,
-      lastUpdatedBy: { host: input.host, pluginVersion: "1.7.0" }
-    };
-    await writeAtomic(statePath(root2, id), state);
-    await appendEvent(root2, id, 0, "started", { lifecycle, route });
-    if (lifecycle === "active") await writeAtomic(activePath(root2), { featureId: id, revision: 0, updatedAt: (/* @__PURE__ */ new Date()).toISOString() });
-    return state;
+    const directory = path5.join(features(root2), id);
+    const existedBefore = await pathExists(directory);
+    let stateCommitted = false;
+    try {
+      await mkdir2(directory, { recursive: true });
+      const workflowCapabilities = normalizeWorkflowCapabilities(SUPPORTED_WORKFLOW_CAPABILITIES);
+      const state = {
+        schemaVersion: 1,
+        featureId: id,
+        revision: 0,
+        lifecycle,
+        route,
+        classification,
+        scope,
+        steps: {},
+        humanGates: {},
+        artifacts: {},
+        verification: { attempts: [] },
+        interactions: {},
+        workflowCapabilities,
+        featureCheck: {},
+        startBusinessFingerprint,
+        deliveryBaseline,
+        blockingFindings: [],
+        logicComplete: false,
+        lastUpdatedBy: { host: input.host, pluginVersion: "1.7.0" }
+      };
+      if (traceEnforcementRequired(route, workflowCapabilities)) {
+        const configSnapshot = await readProjectConfigSnapshot(root2);
+        state.traceability = await writeTraceSnapshot(
+          root2,
+          emptyTraceabilityLedger(id, 0, configSnapshot.sha256),
+          options.snapshotFault ? { fault: options.snapshotFault } : {}
+        );
+      }
+      validateFeatureState(state);
+      await options.fault?.("before-state-commit");
+      await writeAtomic(statePath(root2, id), state);
+      stateCommitted = true;
+      const failures = [];
+      try {
+        await options.fault?.("after-state-commit");
+      } catch {
+        failures.push("after-state-commit");
+      }
+      try {
+        await options.fault?.("before-event");
+        await appendEvent(root2, id, state.revision, "started", { lifecycle, route });
+      } catch {
+        failures.push("event");
+      }
+      if (lifecycle === "active") {
+        try {
+          await options.fault?.("before-active");
+          await writeAtomic(activePath(root2), { featureId: id, revision: state.revision, updatedAt: (/* @__PURE__ */ new Date()).toISOString() });
+        } catch {
+          failures.push("active");
+        }
+      }
+      if (failures.length) {
+        throw new DevFlowError("STATE_COMMITTED_PROJECTION_FAILED", "state commit succeeded but one or more projections failed", {
+          committed: true,
+          currentRevision: state.revision,
+          failedProjections: failures
+        });
+      }
+      return state;
+    } catch (error) {
+      if (!stateCommitted && !existedBefore) await rm(directory, { recursive: true, force: true });
+      throw error;
+    }
   } finally {
     await release();
   }
 }
 async function mutate(root2, id, expectedRevision, operation, mutator, eventData = {}) {
+  return mutatePrepared(root2, id, expectedRevision, operation, async () => ({ mutate: mutator, eventData }));
+}
+async function mutatePrepared(root2, id, expectedRevision, operation, prepare, options = {}) {
   const release = await lock(root2, id, operation);
   try {
-    return await mutateLocked(root2, id, expectedRevision, operation, mutator, eventData);
+    return await mutatePreparedLocked(root2, id, expectedRevision, operation, prepare, options);
   } finally {
     await release();
   }
 }
-async function mutateLocked(root2, id, expectedRevision, operation, mutator, eventData = {}) {
+async function mutatePreparedLocked(root2, id, expectedRevision, operation, prepare, options = {}) {
   const state = await readState(root2, id);
   if (state.revision !== expectedRevision) throw new DevFlowError("STATE_REVISION_CONFLICT", "state revision changed", { currentRevision: state.revision });
-  await mutator(state);
+  const prepared = await prepare(state, state.revision + 1);
+  await prepared.mutate(state);
   state.revision += 1;
-  await writeStatusProjection(root2, state, state.revision);
+  validateFeatureState(state);
+  const writeStatus = await prepareStatusProjection(root2, state, state.revision);
+  await options.fault?.("before-state-commit");
   await writeAtomic(statePath(root2, id), state);
-  const data = typeof eventData === "function" ? eventData() : eventData;
-  await appendEvent(root2, id, state.revision, operation, data);
-  const active = await readActive(root2);
-  if (active?.featureId === id && (state.lifecycle === "finalized" || state.lifecycle === "abandoned")) await rm(activePath(root2), { force: true });
-  else if (active?.featureId === id) await writeAtomic(activePath(root2), { featureId: id, revision: state.revision, updatedAt: (/* @__PURE__ */ new Date()).toISOString() });
+  const failures = [];
+  try {
+    await options.fault?.("after-state-commit");
+  } catch {
+    failures.push("after-state-commit");
+  }
+  try {
+    await writeStatus?.();
+  } catch {
+    failures.push("status");
+  }
+  try {
+    const data = typeof prepared.eventData === "function" ? prepared.eventData() : prepared.eventData ?? {};
+    await appendEvent(root2, id, state.revision, operation, data);
+  } catch {
+    failures.push("event");
+  }
+  try {
+    const active = await readActive(root2);
+    if (active?.featureId === id && (state.lifecycle === "finalized" || state.lifecycle === "abandoned")) await rm(activePath(root2), { force: true });
+    else if (active?.featureId === id) await writeAtomic(activePath(root2), { featureId: id, revision: state.revision, updatedAt: (/* @__PURE__ */ new Date()).toISOString() });
+  } catch {
+    failures.push("active");
+  }
+  if (failures.length) {
+    throw new DevFlowError("STATE_COMMITTED_PROJECTION_FAILED", "state commit succeeded but one or more projections failed", {
+      committed: true,
+      currentRevision: state.revision,
+      failedProjections: failures
+    });
+  }
   return state;
 }
 async function switchActive(root2, from, to, reason) {
@@ -768,19 +1706,19 @@ function isRecoveryPhase(value) {
 }
 function validateRecoveryTransaction(value) {
   const transaction = value;
-  if (transaction?.schemaVersion !== 1 || typeof transaction.transactionId !== "string" || !transaction.transactionId || !isRecoveryPhase(transaction.phase) || typeof transaction.featureId !== "string" || !transaction.featureId || typeof transaction.stateSha256 !== "string" || !transaction.stateSha256 || typeof transaction.recoveredTo !== "string" || !path4.isAbsolute(transaction.recoveredTo) || typeof transaction.reason !== "string" || typeof transaction.userEvidence !== "string" || transaction.host !== "claude" && transaction.host !== "codex" || typeof transaction.at !== "string" || transaction.activeSha256 !== void 0 && typeof transaction.activeSha256 !== "string") {
+  if (transaction?.schemaVersion !== 1 || typeof transaction.transactionId !== "string" || !transaction.transactionId || !isRecoveryPhase(transaction.phase) || typeof transaction.featureId !== "string" || !transaction.featureId || typeof transaction.stateSha256 !== "string" || !transaction.stateSha256 || typeof transaction.recoveredTo !== "string" || !path5.isAbsolute(transaction.recoveredTo) || typeof transaction.reason !== "string" || typeof transaction.userEvidence !== "string" || transaction.host !== "claude" && transaction.host !== "codex" || typeof transaction.at !== "string" || transaction.activeSha256 !== void 0 && typeof transaction.activeSha256 !== "string") {
     throw new DevFlowError("RECOVERY_TRANSACTION_UNREADABLE", "recovery journal is invalid", {
       recoveryHint: "Run dev_flow_doctor; do not start a new feature or hand-edit .dev-flow"
     });
   }
-  if (path4.basename(transaction.featureId) !== transaction.featureId || transaction.featureId === "." || transaction.featureId === "..") {
+  if (path5.basename(transaction.featureId) !== transaction.featureId || transaction.featureId === "." || transaction.featureId === "..") {
     throw new DevFlowError("RECOVERY_TRANSACTION_UNREADABLE", "recovery journal has an unsafe feature id", { recoveryHint: "Run dev_flow_doctor; recovery remains fail-closed" });
   }
 }
 function validateRecoveryLocation(root2, transaction) {
-  const recoveredRoot = path4.join(devFlow(root2), "recovered");
-  const relative = path4.relative(recoveredRoot, transaction.recoveredTo);
-  if (!relative || relative.startsWith("..") || path4.isAbsolute(relative) || path4.basename(relative) !== relative) {
+  const recoveredRoot = path5.join(devFlow(root2), "recovered");
+  const relative = path5.relative(recoveredRoot, transaction.recoveredTo);
+  if (!relative || relative.startsWith("..") || path5.isAbsolute(relative) || path5.basename(relative) !== relative) {
     throw new DevFlowError("RECOVERY_TRANSACTION_UNREADABLE", "recovery journal points outside the recovered directory", {
       recoveryHint: "Run dev_flow_doctor; do not start a new feature or hand-edit .dev-flow"
     });
@@ -789,7 +1727,7 @@ function validateRecoveryLocation(root2, transaction) {
 async function readRecoveryTransaction(root2) {
   let raw;
   try {
-    raw = await readFile3(recoveryTxnPath(root2), "utf8");
+    raw = await readFile4(recoveryTxnPath(root2), "utf8");
   } catch (error) {
     if (error.code === "ENOENT") return void 0;
     throw new DevFlowError("RECOVERY_TRANSACTION_UNREADABLE", "recovery journal cannot be read", { recoveryHint: "Run dev_flow_doctor; do not start a new feature" });
@@ -821,7 +1759,7 @@ async function pathExists(file) {
   }
 }
 async function fileSha256(file) {
-  return createHash3("sha256").update(await readFile3(file)).digest("hex");
+  return createHash4("sha256").update(await readFile4(file)).digest("hex");
 }
 async function updateRecoveryTransaction(root2, transaction, phase) {
   const next = { ...transaction, phase, ...phase === "completed" ? { completedAt: (/* @__PURE__ */ new Date()).toISOString() } : {} };
@@ -830,7 +1768,7 @@ async function updateRecoveryTransaction(root2, transaction, phase) {
 }
 async function recoveryEventExists(root2, transactionId) {
   try {
-    return (await readFile3(recoveryEventsPath(root2), "utf8")).split("\n").filter(Boolean).some((line) => {
+    return (await readFile4(recoveryEventsPath(root2), "utf8")).split("\n").filter(Boolean).some((line) => {
       try {
         return JSON.parse(line).transactionId === transactionId;
       } catch {
@@ -844,7 +1782,7 @@ async function recoveryEventExists(root2, transactionId) {
 }
 async function appendRecoveryEvent(root2, transaction) {
   if (await recoveryEventExists(root2, transaction.transactionId)) return;
-  const handle = await open(recoveryEventsPath(root2), "a");
+  const handle = await open2(recoveryEventsPath(root2), "a");
   try {
     await handle.writeFile(`${JSON.stringify({ ...transaction, phase: "completed", completedAt: (/* @__PURE__ */ new Date()).toISOString() })}
 `);
@@ -854,11 +1792,11 @@ async function appendRecoveryEvent(root2, transaction) {
   }
 }
 async function resumeRecovery(root2, transaction) {
-  const sourceDir = path4.join(features(root2), transaction.featureId);
+  const sourceDir = path5.join(features(root2), transaction.featureId);
   if (transaction.phase === "prepared") {
     const [sourceExists, recoveredExists] = await Promise.all([pathExists(sourceDir), pathExists(transaction.recoveredTo)]);
     if (sourceExists === recoveredExists) throw new DevFlowError("RECOVERY_TRANSACTION_INCONSISTENT", "cannot safely determine feature-directory recovery stage", { recoveryHint: "Run dev_flow_doctor; do not start a new feature" });
-    if (sourceExists) await rename(sourceDir, transaction.recoveredTo);
+    if (sourceExists) await rename2(sourceDir, transaction.recoveredTo);
     transaction = await updateRecoveryTransaction(root2, transaction, "directory-moved");
   }
   if (transaction.phase === "directory-moved") {
@@ -867,7 +1805,7 @@ async function resumeRecovery(root2, transaction) {
         if (await fileSha256(activePath(root2)) !== transaction.activeSha256) {
           throw new DevFlowError("RECOVERY_POINTER_DIGEST_MISMATCH", "active pointer changed during recovery", { recoveryHint: "Run dev_flow_doctor; recovery remains fail-closed" });
         }
-        await rename(activePath(root2), path4.join(transaction.recoveredTo, "active.json"));
+        await rename2(activePath(root2), path5.join(transaction.recoveredTo, "active.json"));
       }
     } else {
       const active = await readActive(root2);
@@ -888,7 +1826,7 @@ async function resumeRecovery(root2, transaction) {
 async function recoverCorruptFeature(root2, input) {
   if (input.action !== "abandon") throw new DevFlowError("INVALID_RECOVERY_ACTION", "only abandon is supported in 1.3");
   if (!input.reason || !input.userEvidence) throw new DevFlowError("RECOVERY_EVIDENCE_REQUIRED", "reason and userEvidence are required");
-  if (path4.basename(input.featureId) !== input.featureId || input.featureId === "." || input.featureId === "..") throw new DevFlowError("INVALID_FEATURE_ID", "recovery featureId must name one feature directory");
+  if (path5.basename(input.featureId) !== input.featureId || input.featureId === "." || input.featureId === "..") throw new DevFlowError("INVALID_FEATURE_ID", "recovery featureId must name one feature directory");
   const release = await lock(root2, input.featureId, "recover-corrupt");
   try {
     const openTransaction = await readRecoveryTransaction(root2);
@@ -909,13 +1847,13 @@ async function recoverCorruptFeature(root2, input) {
       if (currentPointerDigest !== input.activeSha256) throw new DevFlowError("RECOVERY_POINTER_DIGEST_MISMATCH", "activeSha256 does not match active.json", { currentDigest: currentPointerDigest, recoveryHint: "Re-run dev_flow_doctor" });
       pointerRecovery = true;
     }
-    let digest3;
+    let digest4;
     try {
-      digest3 = await stateFileSha256(root2, input.featureId);
+      digest4 = await stateFileSha256(root2, input.featureId);
     } catch {
       throw new DevFlowError("RECOVERY_STATE_MISSING", "feature state file is missing", { recoveryHint: "Run dev_flow_doctor; recovery remains fail-closed" });
     }
-    if (digest3 !== input.stateSha256) throw new DevFlowError("RECOVERY_DIGEST_MISMATCH", "stateSha256 does not match current corrupt state", { currentDigest: digest3, recoveryHint: "Re-run dev_flow_doctor and use the reported stateSha256" });
+    if (digest4 !== input.stateSha256) throw new DevFlowError("RECOVERY_DIGEST_MISMATCH", "stateSha256 does not match current corrupt state", { currentDigest: digest4, recoveryHint: "Re-run dev_flow_doctor and use the reported stateSha256" });
     try {
       const state = await readState(root2, input.featureId);
       if (!pointerRecovery || state.lifecycle !== "active") throw new DevFlowError("RECOVERY_STATE_VALID", "feature state is readable; use abandon instead of recovery");
@@ -923,14 +1861,14 @@ async function recoverCorruptFeature(root2, input) {
       if (error instanceof DevFlowError && error.code === "RECOVERY_STATE_VALID") throw error;
     }
     const timestamp = (/* @__PURE__ */ new Date()).toISOString().replace(/[:.]/g, "-");
-    const recoveredDir = path4.join(devFlow(root2), "recovered", `${input.featureId}-${timestamp}`);
-    await mkdir(path4.join(devFlow(root2), "recovered"), { recursive: true });
+    const recoveredDir = path5.join(devFlow(root2), "recovered", `${input.featureId}-${timestamp}`);
+    await mkdir2(path5.join(devFlow(root2), "recovered"), { recursive: true });
     const prepared = {
       schemaVersion: 1,
-      transactionId: randomUUID(),
+      transactionId: randomUUID2(),
       phase: "prepared",
       featureId: input.featureId,
-      stateSha256: digest3,
+      stateSha256: digest4,
       recoveredTo: recoveredDir,
       reason: input.reason,
       userEvidence: input.userEvidence,
@@ -953,9 +1891,13 @@ function isDowngrade(before, after) {
 }
 function applyRouteTransition(state, selected) {
   const previousRoute = state.route;
-  const retainedArtifacts = Object.fromEntries(Object.entries(state.artifacts).filter(([kind]) => routeDefinition(previousRoute).requiredArtifacts.includes(kind) && routeDefinition(selected.route).requiredArtifacts.includes(kind)));
+  const previousDefinition = routeDefinitionForFeature(previousRoute, state.workflowCapabilities);
+  const nextDefinition = routeDefinitionForFeature(selected.route, state.workflowCapabilities);
+  const previousArtifacts = /* @__PURE__ */ new Set([...previousDefinition.requiredArtifacts, ...previousDefinition.generatedArtifacts ?? []]);
+  const nextArtifacts = /* @__PURE__ */ new Set([...nextDefinition.requiredArtifacts, ...nextDefinition.generatedArtifacts ?? []]);
+  const retainedArtifacts = Object.fromEntries(Object.entries(state.artifacts).filter(([kind]) => previousArtifacts.has(kind) && nextArtifacts.has(kind)));
   const retainedSteps = {};
-  for (const step of routeDefinition(selected.route).orderedSteps) {
+  for (const step of nextDefinition.orderedSteps) {
     if (["requirement_confirmation", "implementation_approval", "feature_check", "finalize", "verification"].includes(step)) break;
     if (state.steps[step]?.status !== "satisfied") break;
     retainedSteps[step] = state.steps[step];
@@ -1006,101 +1948,140 @@ async function reclassifyFeature(root2, id, expectedRevision, next, reason, user
     const currentFingerprint = await fingerprintProtectedRoots(root2, project.protectedRoots);
     let notice;
     let eventData = { reason };
-    const state = await mutateLocked(root2, id, expectedRevision, "reclassified", (draft) => {
-      if (draft.lifecycle !== "active") throw new DevFlowError("INVALID_LIFECYCLE", "only an active feature can be reclassified");
-      const selected = selectRoute(next);
-      const before = draft.classification;
-      const after = selected.classification;
-      const downgrade = isDowngrade(before, after);
-      if (!downgrade) {
-        const riskRemoved = before.riskLabels.some((risk) => !after.riskLabels.includes(risk));
-        if (riskRemoved) throw new DevFlowError("RECLASSIFICATION_NOT_STRICTER", "reclassification cannot lower level, topology, execution, or risk");
-        const lessStrict = levelRank2[after.level] < levelRank2[before.level] || topologyRank[after.topology] < topologyRank[before.topology] || before.execution === "standard" && after.execution === "light";
-        if (lessStrict) throw new DevFlowError("RECLASSIFICATION_NOT_STRICTER", "reclassification cannot lower level, topology, execution, or risk");
-        const changed = selected.route !== draft.route || JSON.stringify(before) !== JSON.stringify(after);
-        if (!changed) throw new DevFlowError("RECLASSIFICATION_NOT_STRICTER", "reclassification did not become stricter");
-        const transition2 = applyRouteTransition(draft, selected);
+    const state = await mutatePreparedLocked(root2, id, expectedRevision, "reclassified", async (current, nextStateRevision) => {
+      const preparedTraceability = traceEnforcementRequired(selectedAtLock.route, current.workflowCapabilities) && !current.traceability ? await (async () => {
+        const configSnapshot = await readProjectConfigSnapshot(root2);
+        return writeTraceSnapshot(root2, emptyTraceabilityLedger(id, nextStateRevision, configSnapshot.sha256));
+      })() : void 0;
+      return { mutate: async (draft) => {
+        if (draft.lifecycle !== "active") throw new DevFlowError("INVALID_LIFECYCLE", "only an active feature can be reclassified");
+        const selected = selectRoute(next);
+        if (preparedTraceability) draft.traceability = preparedTraceability;
+        const before = draft.classification;
+        const after = selected.classification;
+        const downgrade = isDowngrade(before, after);
+        if (!downgrade) {
+          const riskRemoved = before.riskLabels.some((risk) => !after.riskLabels.includes(risk));
+          if (riskRemoved) throw new DevFlowError("RECLASSIFICATION_NOT_STRICTER", "reclassification cannot lower level, topology, execution, or risk");
+          const lessStrict = levelRank2[after.level] < levelRank2[before.level] || topologyRank[after.topology] < topologyRank[before.topology] || before.execution === "standard" && after.execution === "light";
+          if (lessStrict) throw new DevFlowError("RECLASSIFICATION_NOT_STRICTER", "reclassification cannot lower level, topology, execution, or risk");
+          const changed = selected.route !== draft.route || JSON.stringify(before) !== JSON.stringify(after);
+          if (!changed) throw new DevFlowError("RECLASSIFICATION_NOT_STRICTER", "reclassification did not become stricter");
+          const transition2 = applyRouteTransition(draft, selected);
+          eventData = {
+            before,
+            after,
+            previousRoute: transition2.previousRoute,
+            nextRoute: selected.route,
+            reason,
+            invalidatedSteps: transition2.invalidatedSteps,
+            invalidatedArtifacts: transition2.invalidatedArtifacts
+          };
+          return;
+        }
+        if (before.level !== after.level || before.topology !== after.topology || !sameRisk(before.riskLabels, after.riskLabels)) {
+          throw new DevFlowError("RECLASSIFICATION_DOWNGRADE_FORBIDDEN", "1.3 only allows same level/topology/risk standard\u2192light", {
+            recoveryHint: "Abandon and restart with a lighter classification if level must change"
+          });
+        }
+        if (!(before.execution === "standard" && after.execution === "light")) {
+          throw new DevFlowError("RECLASSIFICATION_DOWNGRADE_FORBIDDEN", "only standard\u2192light downgrade is allowed", {
+            recoveryHint: "Abandon and restart with a lighter classification, or finish the current route"
+          });
+        }
+        if (!userEvidence) {
+          throw new DevFlowError("RECLASSIFICATION_EVIDENCE_REQUIRED", "downgrade requires userEvidence with the user's exact words", {
+            recoveryHint: "Pass userEvidence containing the user's request to lighten the route"
+          });
+        }
+        if (draft.steps.implementation?.status === "satisfied") {
+          throw new DevFlowError("RECLASSIFICATION_DOWNGRADE_FORBIDDEN", "implementation already satisfied", {
+            recoveryHint: "Finish the current standard route or abandon and restart"
+          });
+        }
+        const approval = draft.humanGates.implementation_approval;
+        if (historicalApproval || approval?.status === "pending" || approval?.status === "returned" || approval?.status === "confirmed") {
+          throw new DevFlowError("RECLASSIFICATION_DOWNGRADE_FORBIDDEN", "implementation_approval already presented or confirmed", {
+            recoveryHint: "Finish the current standard route or abandon and restart"
+          });
+        }
+        if (!draft.startBusinessFingerprint) {
+          throw new DevFlowError("RECLASSIFICATION_DOWNGRADE_FORBIDDEN", "missing startBusinessFingerprint baseline", {
+            recoveryHint: "Old features without baseline cannot downgrade; abandon and restart"
+          });
+        }
+        if (draft.startBusinessFingerprint !== currentFingerprint) {
+          throw new DevFlowError("RECLASSIFICATION_PROTECTED_ROOTS_CHANGED", "protected roots changed since start", {
+            recoveryHint: "Cannot downgrade after business files changed; finish the current standard route, or abandon and restart with a lighter classification"
+          });
+        }
+        const transition = applyRouteTransition(draft, selected);
         eventData = {
           before,
           after,
-          previousRoute: transition2.previousRoute,
+          previousRoute: transition.previousRoute,
           nextRoute: selected.route,
           reason,
-          invalidatedSteps: transition2.invalidatedSteps,
-          invalidatedArtifacts: transition2.invalidatedArtifacts
+          userEvidence,
+          invalidatedSteps: transition.invalidatedSteps,
+          invalidatedArtifacts: transition.invalidatedArtifacts
         };
-        return;
-      }
-      if (before.level !== after.level || before.topology !== after.topology || !sameRisk(before.riskLabels, after.riskLabels)) {
-        throw new DevFlowError("RECLASSIFICATION_DOWNGRADE_FORBIDDEN", "1.3 only allows same level/topology/risk standard\u2192light", {
-          recoveryHint: "Abandon and restart with a lighter classification if level must change"
-        });
-      }
-      if (!(before.execution === "standard" && after.execution === "light")) {
-        throw new DevFlowError("RECLASSIFICATION_DOWNGRADE_FORBIDDEN", "only standard\u2192light downgrade is allowed", {
-          recoveryHint: "Abandon and restart with a lighter classification, or finish the current route"
-        });
-      }
-      if (!userEvidence) {
-        throw new DevFlowError("RECLASSIFICATION_EVIDENCE_REQUIRED", "downgrade requires userEvidence with the user's exact words", {
-          recoveryHint: "Pass userEvidence containing the user's request to lighten the route"
-        });
-      }
-      if (draft.steps.implementation?.status === "satisfied") {
-        throw new DevFlowError("RECLASSIFICATION_DOWNGRADE_FORBIDDEN", "implementation already satisfied", {
-          recoveryHint: "Finish the current standard route or abandon and restart"
-        });
-      }
-      const approval = draft.humanGates.implementation_approval;
-      if (historicalApproval || approval?.status === "pending" || approval?.status === "returned" || approval?.status === "confirmed") {
-        throw new DevFlowError("RECLASSIFICATION_DOWNGRADE_FORBIDDEN", "implementation_approval already presented or confirmed", {
-          recoveryHint: "Finish the current standard route or abandon and restart"
-        });
-      }
-      if (!draft.startBusinessFingerprint) {
-        throw new DevFlowError("RECLASSIFICATION_DOWNGRADE_FORBIDDEN", "missing startBusinessFingerprint baseline", {
-          recoveryHint: "Old features without baseline cannot downgrade; abandon and restart"
-        });
-      }
-      if (draft.startBusinessFingerprint !== currentFingerprint) {
-        throw new DevFlowError("RECLASSIFICATION_PROTECTED_ROOTS_CHANGED", "protected roots changed since start", {
-          recoveryHint: "Cannot downgrade after business files changed; finish the current standard route, or abandon and restart with a lighter classification"
-        });
-      }
-      const transition = applyRouteTransition(draft, selected);
-      eventData = {
-        before,
-        after,
-        previousRoute: transition.previousRoute,
-        nextRoute: selected.route,
-        reason,
-        userEvidence,
-        invalidatedSteps: transition.invalidatedSteps,
-        invalidatedArtifacts: transition.invalidatedArtifacts
-      };
-      notice = `Route switched to ${selected.route}. Previous docs remain on disk but are no longer registered evidence. Next: run the light route steps.`;
-    }, () => eventData);
+        notice = `Route switched to ${selected.route}. Previous docs remain on disk but are no longer registered evidence. Next: run the light route steps.`;
+      }, eventData: () => eventData };
+    });
     return notice ? { ...state, reclassifyNotice: notice } : state;
   } finally {
     await release();
   }
 }
 
-// plugins/dev-flow/src/core/step-order.ts
-function currentOpenStep(state) {
-  return routeDefinition(state.route).orderedSteps.find((step) => state.steps[step]?.status !== "satisfied");
+// plugins/dev-flow/src/core/traceability-anchors.ts
+import { createHash as createHash5 } from "node:crypto";
+var TRACE_ANCHOR = /<!-- dev-flow:id=(REQ|AC|TASK|TEST|RU)-([0-9]{3,}) kind=(requirement|acceptance-criterion|task|test|rollback) -->/g;
+var expectedKind = {
+  REQ: "requirement",
+  AC: "acceptance-criterion",
+  TASK: "task",
+  TEST: "test",
+  RU: "rollback"
+};
+function invalidAnchor(message, details = {}) {
+  throw new DevFlowError("TRACE_SOURCE_ANCHOR_INVALID", message, details);
 }
-function assertCurrentStep(state, step) {
-  if (currentOpenStep(state) !== step) throw new DevFlowError("STEP_OUT_OF_ORDER", `${step} is not the current route step`, { expected: currentOpenStep(state) });
-}
-function artifactsRequiredBeforeGate(state, gate) {
-  const definition = routeDefinition(state.route);
-  const index = definition.orderedSteps.indexOf(gate);
-  return [...new Set(definition.orderedSteps.slice(0, index).flatMap((step) => definition.artifactSteps?.[step] ?? []))];
+function parseTraceSourceBlocks(markdown) {
+  const devFlowComments = markdown.match(/<!-- dev-flow:[\s\S]*?-->/g) ?? [];
+  TRACE_ANCHOR.lastIndex = 0;
+  const anchors = [];
+  let match;
+  while ((match = TRACE_ANCHOR.exec(markdown)) !== null) {
+    const [, prefix, suffix, rawKind] = match;
+    const kind = rawKind;
+    if (expectedKind[prefix] !== kind) {
+      invalidAnchor("anchor ID prefix does not match its kind", { prefix, kind });
+    }
+    const id = `${prefix}-${suffix}`;
+    if (anchors.some((anchor) => anchor.id === id)) {
+      invalidAnchor("anchor ID is declared more than once", { id });
+    }
+    anchors.push({ id, kind, sourceAnchor: match[0], index: match.index });
+  }
+  if (anchors.length === 0 || anchors.length !== devFlowComments.length) {
+    invalidAnchor("trace artifacts require one or more exact declaration anchors");
+  }
+  return anchors.map((anchor, index) => {
+    const end = anchors[index + 1]?.index ?? markdown.length;
+    const sourceBlock = markdown.slice(anchor.index, end);
+    return {
+      id: anchor.id,
+      kind: anchor.kind,
+      sourceAnchor: anchor.sourceAnchor,
+      sourceBlockSha256: createHash5("sha256").update(sourceBlock, "utf8").digest("hex")
+    };
+  });
 }
 
 // plugins/dev-flow/src/core/user-interactions.ts
-import { randomBytes, randomUUID as randomUUID2 } from "node:crypto";
+import { randomBytes, randomUUID as randomUUID3 } from "node:crypto";
 function interactions(state) {
   if (!state.interactions) state.interactions = {};
   return state.interactions;
@@ -1124,7 +2105,7 @@ function createInteraction(state, input) {
     throw new DevFlowError("INTERACTION_ALREADY_PENDING", input.target, { interactionId: current.id });
   }
   const interaction = {
-    id: randomUUID2(),
+    id: randomUUID3(),
     kind: input.kind,
     target: input.target,
     basisHash: input.basisHash,
@@ -1264,94 +2245,162 @@ var names = {
   "plan-review": "\u8BA1\u5212\u5BA1\u6838\u6587\u6863.md",
   "code-review": "\u4EE3\u7801\u5BA1\u6838\u6587\u6863.md"
 };
-var hash = (value) => createHash4("sha256").update(value).digest("hex");
-var featureDirectory = (root2, id) => path5.join(root2, ".dev-flow", "features", id);
+var hash = (value) => createHash6("sha256").update(value).digest("hex");
+var featureDirectory = (root2, id) => path6.join(root2, ".dev-flow", "features", id);
+var traceArtifactKinds = /* @__PURE__ */ new Set(["requirements", "implementation-plan", "coverage-matrix", "rollback-units"]);
+var traceArtifactKindList = /* @__PURE__ */ new Set(["requirements", "implementation-plan", "coverage-matrix", "rollback-units"]);
+var artifactInvalidations = {
+  requirements: { gates: ["requirement_confirmation", "implementation_approval"], afterStep: "requirements" },
+  "implementation-plan": { gates: ["implementation_approval"], afterStep: "implementation_plan" },
+  "coverage-matrix": { gates: ["implementation_approval"], afterStep: "coverage_review" },
+  "rollback-units": { gates: ["implementation_approval"], afterStep: "rollback_unit" },
+  "risk-card": { gates: ["implementation_approval"] },
+  "boundary-card": { gates: ["implementation_approval"] },
+  "rollback-safety": { gates: ["implementation_approval"] }
+};
 function template(state, id, kind) {
-  const grillStatus = kind === "requirements" && state.classification.requirements === "provided-confirmed" ? "not_required" : "pending";
-  const header = `---
+  if (traceArtifactKinds.has(kind)) {
+    return renderArtifactTemplate({ featureId: id, route: state.route, requirementsState: state.classification.requirements }, kind);
+  }
+  return `---
 dev_flow:
   schema_version: 1
   feature_id: ${id}
   route: ${state.route}
-  kind: ${kind}${kind === "requirements" ? `
-  grill_status: ${grillStatus}` : ""}
+  kind: ${kind}
 ---
 
-`;
-  if (kind !== "requirements") return `${header}# ${kind}
+# ${kind}
 
 `;
-  return `${header}# Requirements
-
-## Scope
-
-## Goals
-
-## Non-goals
-
-## Acceptance Criteria
-
-## Decision Log
-
-| ID | Question | Decision | Source | Impact |
-| --- | --- | --- | --- | --- |
-
-## Open Questions
-
-- None
-`;
+}
+function effectiveRoute(state) {
+  return routeDefinitionForFeature(state.route, state.workflowCapabilities);
+}
+function artifactKinds(definition) {
+  return [.../* @__PURE__ */ new Set([...definition.requiredArtifacts, ...definition.generatedArtifacts ?? []])];
+}
+function assertManualRegistrationAllowed(state, kind, traceAware) {
+  const route = effectiveRoute(state);
+  if ((route.generatedArtifacts ?? []).includes(kind)) {
+    throw new DevFlowError("GENERATED_ARTIFACT_READ_ONLY", `${kind} is generated from state and cannot be registered as manual evidence`);
+  }
+  if (!route.requiredArtifacts.includes(kind)) {
+    throw new DevFlowError("ARTIFACT_NOT_REQUIRED", `${kind} is not required for ${state.route}`);
+  }
+  if (!traceAware && traceArtifactKinds.has(kind) && traceEnforcementRequired(state.route, state.workflowCapabilities)) {
+    throw new DevFlowError("TRACE_AWARE_REGISTRATION_REQUIRED", `${kind} must be registered with its Trace delta`);
+  }
+}
+function invalidateArtifactDependents(state, kind, reason) {
+  const rule = artifactInvalidations[kind] ?? { gates: gatesInvalidatedByArtifact(kind) };
+  for (const gate of /* @__PURE__ */ new Set([...rule.gates, ...gatesInvalidatedByArtifact(kind)])) {
+    delete state.humanGates[gate];
+    delete state.steps[gate];
+    clearInteractionsForTarget(state, `gate:${gate}`);
+  }
+  if (rule.afterStep) {
+    const ordered = effectiveRoute(state).orderedSteps;
+    const sourceIndex = ordered.indexOf(rule.afterStep);
+    for (const step of ordered.slice(sourceIndex + 1)) {
+      delete state.steps[step];
+      clearInteractionsForTarget(state, `gate:${step}`);
+    }
+  }
+  if (kind === "requirements") clearInteractionsByKind(state, "grill");
+  state.featureCheck = {};
+  delete state.steps.feature_check;
+  state.logicComplete = false;
+  delete state.steps.finalize;
+  void reason;
 }
 async function assertArtifactCurrent(root2, id, state, kind) {
   const artifact = state.artifacts[kind];
   if (!artifact) throw new DevFlowError("MISSING_REQUIRED_ARTIFACT", kind);
-  const contents = await readFile4(path5.join(featureDirectory(root2, id), artifact.path), "utf8");
+  const contents = await readFile5(path6.join(featureDirectory(root2, id), artifact.path), "utf8");
   if (hash(contents) !== artifact.sha256) throw new DevFlowError("ARTIFACT_INTEGRITY_FAILED", kind);
   return contents;
 }
 async function scaffoldArtifact(root2, id, expectedRevision, kind) {
   const state = await readState(root2, id);
   if (state.lifecycle !== "active") throw new DevFlowError("INVALID_LIFECYCLE", "only active features can scaffold artifacts");
-  if (!routeDefinition(state.route).requiredArtifacts.includes(kind)) throw new DevFlowError("ARTIFACT_NOT_REQUIRED", `${kind} is not required for ${state.route}`);
+  const route = effectiveRoute(state);
+  if (!artifactKinds(route).includes(kind)) throw new DevFlowError("ARTIFACT_NOT_REQUIRED", `${kind} is not required for ${state.route}`);
   const currentStep = currentOpenStep(state);
-  const requiredNow = currentStep ? routeDefinition(state.route).artifactSteps?.[currentStep] ?? [] : [];
+  const requiredNow = currentStep ? [...route.artifactSteps?.[currentStep] ?? [], ...route.generatedArtifactSteps?.[currentStep] ?? []] : [];
   if (!requiredNow.includes(kind)) throw new DevFlowError("ARTIFACT_OUT_OF_ORDER", `${kind} is not required by ${currentStep ?? "a pending step"}`, { expectedStep: currentStep });
   const filename = names[kind];
   if (!filename) throw new DevFlowError("INVALID_ARTIFACT", "unknown artifact kind");
-  const target = path5.join(featureDirectory(root2, id), filename);
+  const target = path6.join(featureDirectory(root2, id), filename);
   const content = template(state, id, kind);
   await writeFile3(target, content, { flag: "wx" }).catch(async (error) => {
     if (error.code !== "EEXIST") throw error;
   });
-  const contents = await readFile4(target, "utf8");
+  const contents = await readFile5(target, "utf8");
   return mutate(root2, id, expectedRevision, "artifact-scaffolded", (current) => {
     current.artifacts[kind] = { path: filename, sha256: hash(contents) };
   });
 }
 async function recordArtifact(root2, id, expectedRevision, kind) {
   const state = await readState(root2, id);
-  if (!routeDefinition(state.route).requiredArtifacts.includes(kind)) throw new DevFlowError("ARTIFACT_NOT_REQUIRED", `${kind} is not required for ${state.route}`);
-  if (kind === "status") throw new DevFlowError("GENERATED_ARTIFACT_READ_ONLY", "status is generated from state and cannot be registered as manual evidence");
+  assertManualRegistrationAllowed(state, kind, false);
   const artifact = state.artifacts[kind];
   if (!artifact) throw new DevFlowError("MISSING_REQUIRED_ARTIFACT", kind);
-  const contents = await readFile4(path5.join(featureDirectory(root2, id), artifact.path), "utf8");
+  const contents = await readFile5(path6.join(featureDirectory(root2, id), artifact.path), "utf8");
   const checksum = hash(contents);
   return mutate(root2, id, expectedRevision, "artifact-recorded", (current) => {
     current.artifacts[kind] = { ...artifact, sha256: checksum };
-    for (const gate of gatesInvalidatedByArtifact(kind)) {
-      delete current.humanGates[gate];
-      delete current.steps[gate];
-      clearInteractionsForTarget(current, `gate:${gate}`);
-    }
-    if (kind === "requirements") clearInteractionsByKind(current, "grill");
-    current.featureCheck = {};
-    delete current.steps.feature_check;
-    current.logicComplete = false;
-    delete current.steps.finalize;
-  });
+    invalidateArtifactDependents(current, kind, "artifact-changed");
+  }, { kind, invalidationReason: "artifact-changed" });
+}
+async function recordArtifactWithTrace(root2, id, expectedRevision, artifactKind, traceDelta, options = {}) {
+  if (!traceArtifactKindList.has(artifactKind)) throw new DevFlowError("INVALID_ARTIFACT", artifactKind);
+  let eventData = { kind: artifactKind };
+  return mutatePrepared(root2, id, expectedRevision, "artifact-recorded-with-trace", async (current, nextStateRevision) => {
+    if (current.lifecycle !== "active") throw new DevFlowError("INVALID_LIFECYCLE", "only active features can register artifacts");
+    assertManualRegistrationAllowed(current, artifactKind, true);
+    const artifact = current.artifacts[artifactKind];
+    if (!artifact) throw new DevFlowError("MISSING_REQUIRED_ARTIFACT", artifactKind);
+    const contents = await readFile5(path6.join(featureDirectory(root2, id), artifact.path), "utf8");
+    const artifactSha256 = hash(contents);
+    const sourceBlocks = parseTraceSourceBlocks(contents);
+    const { config, sha256: projectConfigSha256 } = await readProjectConfigSnapshot(root2);
+    const currentLedger = await readTraceability(root2, current);
+    const ledger = applyTraceDelta({
+      current: currentLedger,
+      route: current.route,
+      artifactKind,
+      artifactSha256,
+      sourceBlocks,
+      delta: traceDelta,
+      projectConfigSha256,
+      verificationCommandIds: config.verification.commands.map((command2) => command2.id),
+      nextStateRevision
+    });
+    const pointer = await writeTraceSnapshot(root2, ledger, options.snapshot);
+    const artifactChanged = artifact.sha256 !== artifactSha256;
+    const traceChanged = JSON.stringify(currentLedger.nodes) !== JSON.stringify(ledger.nodes) || JSON.stringify(currentLedger.edges) !== JSON.stringify(ledger.edges);
+    eventData = {
+      kind: artifactKind,
+      artifactChanged,
+      traceChanged,
+      invalidationReason: artifactChanged ? "artifact-changed" : traceChanged ? "trace-changed" : void 0
+    };
+    return {
+      mutate: (draft) => {
+        draft.artifacts[artifactKind] = { ...artifact, sha256: artifactSha256 };
+        draft.traceability = pointer;
+        if (artifactChanged || traceChanged) {
+          invalidateArtifactDependents(draft, artifactKind, artifactChanged ? "artifact-changed" : "trace-changed");
+        }
+      },
+      eventData: () => eventData
+    };
+  }, options.mutation);
 }
 async function assertArtifactIntegrity(root2, id) {
   const state = await readState(root2, id);
-  for (const required of routeDefinition(state.route).requiredArtifacts) await assertArtifactCurrent(root2, id, state, required);
+  for (const kind of artifactKinds(effectiveRoute(state))) await assertArtifactCurrent(root2, id, state, kind);
 }
 
 // plugins/dev-flow/src/policy/evidence.ts
@@ -1419,9 +2468,9 @@ function invalidStatus(details) {
   });
 }
 function parseNestedDevFlow(contents) {
-  const frontMatter = contents.match(/^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/)?.[1];
-  if (!frontMatter) invalidStatus({ reason: "MISSING_FRONT_MATTER" });
-  const lines = frontMatter.split(/\r?\n/);
+  const frontMatter2 = contents.match(/^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/)?.[1];
+  if (!frontMatter2) invalidStatus({ reason: "MISSING_FRONT_MATTER" });
+  const lines = frontMatter2.split(/\r?\n/);
   const devFlowIndexes = lines.map((line, index) => line === "dev_flow:" ? index : -1).filter((index) => index >= 0);
   if (devFlowIndexes.length !== 1) invalidStatus({ reason: "MISSING_OR_DUPLICATE_DEV_FLOW" });
   const fields = {};
@@ -1581,7 +2630,7 @@ async function assertRequirementsGrillSatisfied(root2, id, state) {
 
 // plugins/dev-flow/src/core/verification.ts
 import { execFile as execFile2 } from "node:child_process";
-import path6 from "node:path";
+import path7 from "node:path";
 import { promisify as promisify2 } from "node:util";
 var run2 = promisify2(execFile2);
 function quoteForWindowsCommandProcessor(value) {
@@ -1711,7 +2760,7 @@ async function runVerification(root2, id, expectedRevision, host, commandIds, ma
     try {
       const invocation = verificationInvocation(command2);
       const result = await run2(invocation.executable, invocation.args, {
-        cwd: path6.resolve(root2, command2.cwd),
+        cwd: path7.resolve(root2, command2.cwd),
         timeout: 12e4,
         maxBuffer: 1024 * 1024
       });
@@ -1827,12 +2876,13 @@ async function recordStep(root2, id, expectedRevision, step, evidence) {
     if (state.lifecycle !== "active") {
       throw new DevFlowError("INVALID_LIFECYCLE", "only active features can record steps");
     }
-    const route = routeDefinition(state.route);
+    const route = routeDefinitionForFeature(state.route, state.workflowCapabilities);
     if (["requirement_confirmation", "implementation_approval", "verification", "feature_check", "finalize"].includes(step) || !route.orderedSteps.includes(step)) {
       throw new DevFlowError("INVALID_STEP", step);
     }
     assertCurrentStep(state, step);
     await assertRequirementsGrillSatisfied(root2, id, state);
+    await assertTraceGateCurrent(root2, state, step);
     const required = requiredEvidenceForStep(state.route, state.classification.riskLabels, step);
     assertRequiredEvidence(step, required, normalizedEvidence);
     state.steps[step] = { status: "satisfied", evidence: normalizedEvidence };
@@ -1866,10 +2916,11 @@ async function featureCheck(root2, id, expectedRevision) {
     await assertRequirementsGrillSatisfied(root2, id, state);
     assertVerificationWasNotInvalidated(state);
     assertCurrentStep(state, "feature_check");
+    await assertTraceGateCurrent(root2, state, "feature_check");
     if (state.verification.verifiedFingerprint !== state.businessFingerprint) {
       throw new DevFlowError("VERIFICATION_STALE", "protected files changed or verification did not pass");
     }
-    const orderedSteps = routeDefinition(state.route).orderedSteps;
+    const orderedSteps = routeDefinitionForFeature(state.route, state.workflowCapabilities).orderedSteps;
     const featureCheckIndex = orderedSteps.indexOf("feature_check");
     for (const step of orderedSteps.slice(0, featureCheckIndex)) {
       const required = requiredEvidenceForStep(state.route, state.classification.riskLabels, step);
@@ -1895,8 +2946,9 @@ async function finalize(root2, id, expectedRevision) {
   return mutate(root2, id, expectedRevision, "finalized", async (state) => {
     await assertRequirementsGrillSatisfied(root2, id, state);
     assertVerificationWasNotInvalidated(state);
-    const route = routeDefinition(state.route);
+    const route = routeDefinitionForFeature(state.route, state.workflowCapabilities);
     assertCurrentStep(state, "finalize");
+    await assertTraceGateCurrent(root2, state, "finalize");
     if (route.featureCheckRequired && (!state.featureCheck.passed || state.featureCheck.fingerprint !== state.businessFingerprint)) {
       throw new DevFlowError("FEATURE_CHECK_REQUIRED", "feature check is required");
     }
@@ -1909,7 +2961,7 @@ async function finalize(root2, id, expectedRevision) {
 }
 
 // plugins/dev-flow/src/core/human-gates.ts
-import { createHash as createHash5 } from "node:crypto";
+import { createHash as createHash7 } from "node:crypto";
 
 // plugins/dev-flow/src/core/gate-approval.ts
 var gateApprovalPhrases = {
@@ -1939,7 +2991,7 @@ function isExplicitGateApproval(gate, userReply) {
 }
 
 // plugins/dev-flow/src/core/human-gates.ts
-var digest2 = (value) => createHash5("sha256").update(JSON.stringify(value)).digest("hex");
+var digest3 = (value) => createHash7("sha256").update(JSON.stringify(value)).digest("hex");
 var gates = /* @__PURE__ */ new Set(["requirement_confirmation", "implementation_approval"]);
 function gateId(value) {
   if (!gates.has(value)) throw new DevFlowError("INVALID_GATE", value);
@@ -1958,7 +3010,7 @@ async function presentGate(root2, id, expectedRevision, gate) {
     if (state2.lifecycle !== "active") {
       throw new DevFlowError("INVALID_LIFECYCLE", "gate requires active feature");
     }
-    if (!routeDefinition(state2.route).orderedSteps.includes(selectedGate)) {
+    if (!routeDefinitionForFeature(state2.route, state2.workflowCapabilities).orderedSteps.includes(selectedGate)) {
       throw new DevFlowError("INVALID_GATE", selectedGate);
     }
     if (state2.humanGates[selectedGate]) {
@@ -1968,7 +3020,8 @@ async function presentGate(root2, id, expectedRevision, gate) {
     const missing = artifactsRequiredBeforeGate(state2, selectedGate).find((kind) => !state2.artifacts[kind]);
     if (missing) throw new DevFlowError("MISSING_REQUIRED_ARTIFACT", missing);
     await assertRequirementsGrillSatisfied(root2, id, state2);
-    const basisHash = digest2(gateBasis(state2, selectedGate));
+    await assertTraceGateCurrent(root2, state2, selectedGate);
+    const basisHash = digest3(gateBasis(state2, selectedGate));
     state2.humanGates[selectedGate] = {
       status: "pending",
       presentedRevision: state2.revision,
@@ -2055,13 +3108,14 @@ async function resolveGateResponse(root2, id, expectedRevision, interactionId, h
   let response;
   return mutate(root2, id, expectedRevision, "gate-interaction-resolved", async (state) => {
     await assertRequirementsGrillSatisfied(root2, id, state);
+    await assertTraceGateCurrent(root2, state, gate);
     const current = state.humanGates[gate];
     if (current?.status !== "pending") throw new DevFlowError("HUMAN_GATE_NOT_PENDING", gate);
     const interaction = getInteraction(state, interactionId);
     if (interaction.kind !== "gate" || interaction.target !== `gate:${gate}` || interaction.status !== "pending") {
       throw new DevFlowError("INTERACTION_NOT_PENDING", interactionId);
     }
-    const basisHash = digest2(gateBasis(state, gate));
+    const basisHash = digest3(gateBasis(state, gate));
     if (basisHash !== current.basisHash || basisHash !== interaction.basisHash) {
       throw new DevFlowError("HUMAN_GATE_BASIS_CHANGED", gate, {
         recoveryHint: "Present the gate again after updating its approval basis"
@@ -2114,6 +3168,7 @@ async function confirmGate(root2, id, expectedRevision, gate, userReply, provena
   if (!marker) throw new DevFlowError("HUMAN_GATE_PROVENANCE_UNAVAILABLE", "confirmation provenance is required");
   return mutate(root2, id, expectedRevision, "gate-confirmed", async (state) => {
     await assertRequirementsGrillSatisfied(root2, id, state);
+    await assertTraceGateCurrent(root2, state, selectedGate);
     const current = state.humanGates[selectedGate];
     if (current?.status !== "pending") {
       throw new DevFlowError("HUMAN_GATE_NOT_PENDING", selectedGate, {
@@ -2148,7 +3203,7 @@ async function confirmGate(root2, id, expectedRevision, gate, userReply, provena
         throw new DevFlowError("HUMAN_GATE_EVENT_CONSUMED", String(marker));
       }
     }
-    const basisHash = digest2(gateBasis(state, selectedGate));
+    const basisHash = digest3(gateBasis(state, selectedGate));
     if (basisHash !== current.basisHash) {
       throw new DevFlowError("HUMAN_GATE_BASIS_CHANGED", selectedGate, {
         recoveryHint: "Present the gate again after updating its approval basis"
@@ -2219,13 +3274,28 @@ function enrichFeatureCheck(state) {
   const requiredEvidence = requiredEvidenceForStep(state.route, state.classification.riskLabels, "feature_check");
   return requiredEvidenceIsEmpty(requiredEvidence) ? { kind: "feature-check" } : { kind: "feature-check", requiredEvidence };
 }
+function traceStepForAction(action) {
+  if (action.kind === "run-step" || action.kind === "present-human-gate") return action.step;
+  if (action.kind === "feature-check") return "feature_check";
+  if (action.kind === "finalize") return "finalize";
+  return void 0;
+}
 async function nextAction(root2, id) {
   const state = await readState(root2, id);
   const action = deriveNext(toDerivedState(state, await verificationIsStale(root2, state)));
   if (action.kind === "run-step" || action.kind === "present-human-gate") {
-    const requiredNow = routeDefinition(state.route).artifactSteps?.[action.step] ?? [];
+    const definition = routeDefinitionForFeature(state.route, state.workflowCapabilities);
+    const requiredNow = [
+      ...definition.artifactSteps?.[action.step] ?? [],
+      ...definition.generatedArtifactSteps?.[action.step] ?? []
+    ];
     const missing = requiredNow.find((artifact) => !state.artifacts[artifact]);
     if (missing) return { kind: "scaffold-artifact", step: missing };
+  }
+  const traceStep = traceStepForAction(action);
+  if (traceStep) {
+    const trace = await inspectTraceGate(root2, state, traceStep);
+    if (trace.blocker) return { kind: "repair-trace", ...trace.blocker };
   }
   if (action.kind === "run-step" && action.step === "feature_check") return enrichFeatureCheck(state);
   if (action.kind === "run-step" && action.step === "finalize") return { kind: "finalize" };
@@ -2235,15 +3305,24 @@ async function nextAction(root2, id) {
 }
 
 // plugins/dev-flow/src/core/status.ts
-import { readFile as readFile5 } from "node:fs/promises";
-import path7 from "node:path";
+import { readFile as readFile6 } from "node:fs/promises";
+import path8 from "node:path";
+async function traceStatus(root2, state) {
+  const inspection = await inspectCurrentTrace(root2, state);
+  return {
+    enforced: inspection.enforced,
+    ...inspection.enforced && state.traceability ? { pointer: state.traceability } : {},
+    ...inspection.effectiveSummary ? { effectiveSummary: inspection.effectiveSummary } : {},
+    blockers: inspection.blocker ? [inspection.blocker] : []
+  };
+}
 async function grillWait(root2, state, action) {
   if (action.kind !== "run-step" || action.step !== "requirements") return { kind: "none" };
   const artifact = state.artifacts.requirements;
   if (!artifact) return { kind: "none" };
   let contents;
   try {
-    contents = await readFile5(path7.join(root2, ".dev-flow", "features", state.featureId, artifact.path), "utf8");
+    contents = await readFile6(path8.join(root2, ".dev-flow", "features", state.featureId, artifact.path), "utf8");
   } catch {
     throw new DevFlowError("GRILL_STATUS_INVALID", "registered requirements artifact cannot be read", {
       recoveryHint: "Restore or re-scaffold the requirements artifact through MCP, then record it before continuing"
@@ -2261,7 +3340,7 @@ async function grillWait(root2, state, action) {
   };
 }
 async function buildProgress(root2, state, action) {
-  const ordered = routeDefinition(state.route).orderedSteps;
+  const ordered = routeDefinitionForFeature(state.route, state.workflowCapabilities).orderedSteps;
   const stepTotal = ordered.length;
   let currentStep;
   let stepIndex = stepTotal;
@@ -2314,13 +3393,13 @@ async function readStatusView(root2, featureId) {
   const state = await readState(root2, featureId);
   const action = await nextAction(root2, featureId);
   const progress = await buildProgress(root2, state, action);
-  return { ...state, progress };
+  return { ...state, progress, trace: await traceStatus(root2, state) };
 }
 
 // plugins/dev-flow/src/mcp/doctor.ts
-import { lstat as lstat3, readdir as readdir2, readFile as readFile6 } from "node:fs/promises";
-import path8 from "node:path";
-import { createHash as createHash6 } from "node:crypto";
+import { lstat as lstat3, readdir as readdir3, readFile as readFile7 } from "node:fs/promises";
+import path9 from "node:path";
+import { createHash as createHash8 } from "node:crypto";
 async function readable(file) {
   try {
     await lstat3(file);
@@ -2331,7 +3410,7 @@ async function readable(file) {
 }
 async function validJson(file) {
   try {
-    JSON.parse(await readFile6(file, "utf8"));
+    JSON.parse(await readFile7(file, "utf8"));
     return true;
   } catch {
     return false;
@@ -2339,8 +3418,8 @@ async function validJson(file) {
 }
 async function pointerRecoveryCandidates(root2) {
   try {
-    const directory = path8.join(root2, ".dev-flow", "features");
-    const entries = await readdir2(directory, { withFileTypes: true });
+    const directory = path9.join(root2, ".dev-flow", "features");
+    const entries = await readdir3(directory, { withFileTypes: true });
     return await Promise.all(entries.filter((entry) => entry.isDirectory()).map(async (entry) => {
       let stateSha256;
       try {
@@ -2356,7 +3435,7 @@ async function pointerRecoveryCandidates(root2) {
 async function collectDoctorReport(root2, pluginRoot2, version, tools2) {
   const diagnostics = [];
   const add = (code, status, message, recoveryHint) => diagnostics.push({ code, status, message, ...recoveryHint ? { recoveryHint } : {} });
-  const projectFile = path8.join(root2, ".dev-flow", "project.json");
+  const projectFile = path9.join(root2, ".dev-flow", "project.json");
   let project = { initialized: await readable(projectFile), valid: false };
   if (!project.initialized) add("PROJECT_NOT_INITIALIZED", "warning", "run dev_flow_init_project before starting a feature");
   else {
@@ -2368,16 +3447,18 @@ async function collectDoctorReport(root2, pluginRoot2, version, tools2) {
       add("PROJECT_CONFIG_INVALID", "error", error instanceof Error ? error.message : String(error));
     }
   }
-  const activeFile = path8.join(root2, ".dev-flow", "active.json");
+  const activeFile = path9.join(root2, ".dev-flow", "active.json");
   let activeFeature = { present: await readable(activeFile), valid: false };
   let corruptFeature;
   let corruptActivePointer;
+  let traceState;
   if (activeFeature.present) {
     try {
       const active = await readActive(root2);
       if (!active?.featureId) throw new Error("active feature id is missing");
       try {
         const state = await readState(root2, active.featureId);
+        traceState = state;
         activeFeature = { present: true, featureId: state.featureId, valid: state.lifecycle === "active" };
         add(
           activeFeature.valid ? "ACTIVE_FEATURE_VALID" : "ACTIVE_FEATURE_INVALID",
@@ -2385,17 +3466,17 @@ async function collectDoctorReport(root2, pluginRoot2, version, tools2) {
           activeFeature.valid ? `active feature ${state.featureId} is valid` : `active feature ${state.featureId} is not active`
         );
       } catch (error) {
-        let digest3;
+        let digest4;
         try {
-          digest3 = await stateFileSha256(root2, active.featureId);
+          digest4 = await stateFileSha256(root2, active.featureId);
         } catch {
         }
-        if (!digest3) {
+        if (!digest4) {
           try {
-            const raw = await readFile6(path8.join(root2, ".dev-flow", "features", active.featureId, "state.json"));
-            digest3 = createHash6("sha256").update(raw).digest("hex");
+            const raw = await readFile7(path9.join(root2, ".dev-flow", "features", active.featureId, "state.json"));
+            digest4 = createHash8("sha256").update(raw).digest("hex");
           } catch {
-            digest3 = void 0;
+            digest4 = void 0;
           }
         }
         activeFeature = {
@@ -2403,15 +3484,15 @@ async function collectDoctorReport(root2, pluginRoot2, version, tools2) {
           featureId: active.featureId,
           valid: false,
           corrupt: true,
-          stateSha256: digest3,
+          stateSha256: digest4,
           recoveryAction: "abandon"
         };
         const message = error instanceof Error ? error.message : String(error);
         add("ACTIVE_FEATURE_CORRUPT", "error", message, "Call dev_flow_recover_corrupt_feature with stateSha256, reason, and userEvidence");
-        if (digest3) {
+        if (digest4) {
           corruptFeature = {
             featureId: active.featureId,
-            stateSha256: digest3,
+            stateSha256: digest4,
             recommendedAction: "abandon",
             recoveryHint: "User must explicitly agree to abandon; then start a new feature. Do not hand-edit state.json."
           };
@@ -2422,7 +3503,7 @@ async function collectDoctorReport(root2, pluginRoot2, version, tools2) {
       if (error.code === "ACTIVE_POINTER_UNREADABLE") {
         let activeSha256;
         try {
-          activeSha256 = createHash6("sha256").update(await readFile6(activeFile)).digest("hex");
+          activeSha256 = createHash8("sha256").update(await readFile7(activeFile)).digest("hex");
         } catch {
         }
         activeFeature = { present: true, valid: false, corrupt: true, recoveryAction: "abandon" };
@@ -2449,15 +3530,48 @@ async function collectDoctorReport(root2, pluginRoot2, version, tools2) {
     `open recovery transaction phase=${String(recoveryTxn.phase)} featureId=${String(recoveryTxn.featureId ?? "")}`,
     "Re-run dev_flow_recover_corrupt_feature with the same doctor-reported input to resume the next safe journal phase"
   );
+  let trace;
+  if (traceState) {
+    const enforced = traceEnforcementRequired(traceState.route, traceState.workflowCapabilities);
+    const orphanSnapshots = await listOrphanTraceSnapshots(root2, traceState);
+    trace = { enforced, pointerPresent: Boolean(traceState.traceability), orphanSnapshots };
+    if (!enforced) {
+      add(
+        traceState.workflowCapabilities ? "TRACE_NOT_REQUIRED" : "TRACE_LEGACY_FEATURE",
+        "ok",
+        traceState.workflowCapabilities ? "Trace pointer is not required for this route" : "legacy feature has no Trace capability stamp"
+      );
+    } else {
+      try {
+        await readTraceability(root2, traceState);
+        add("TRACE_POINTER_VALID", "ok", "current Trace pointer and snapshot are valid");
+      } catch (error) {
+        add(
+          "TRACE_POINTER_INVALID",
+          "error",
+          error instanceof Error ? error.message : String(error),
+          "Restore the referenced Trace snapshot or re-register the current Trace artifact; doctor will not select a replacement snapshot automatically"
+        );
+      }
+    }
+    if (orphanSnapshots.length) {
+      add(
+        "TRACE_ORPHAN_SNAPSHOTS",
+        "warning",
+        `unreferenced Trace snapshots: ${orphanSnapshots.join(", ")}`,
+        "Orphan snapshots are retained for diagnosis; do not hand-edit state or select an orphan as the current pointer"
+      );
+    }
+  }
   const paths = {
-    claudeManifest: path8.join(pluginRoot2, ".claude-plugin", "plugin.json"),
-    codexManifest: path8.join(pluginRoot2, ".codex-plugin", "plugin.json"),
-    mcp: path8.join(pluginRoot2, ".mcp.json"),
-    claudeHooks: path8.join(pluginRoot2, "hosts", "claude", "hooks.json"),
-    codexHooks: path8.join(pluginRoot2, "hosts", "codex", "hooks.json"),
-    mcpBundle: path8.join(pluginRoot2, "dist", "mcp-server.mjs"),
-    claudeBundle: path8.join(pluginRoot2, "dist", "claude-hook.mjs"),
-    codexBundle: path8.join(pluginRoot2, "dist", "codex-hook.mjs")
+    claudeManifest: path9.join(pluginRoot2, ".claude-plugin", "plugin.json"),
+    codexManifest: path9.join(pluginRoot2, ".codex-plugin", "plugin.json"),
+    mcp: path9.join(pluginRoot2, ".mcp.json"),
+    claudeHooks: path9.join(pluginRoot2, "hosts", "claude", "hooks.json"),
+    codexHooks: path9.join(pluginRoot2, "hosts", "codex", "hooks.json"),
+    mcpBundle: path9.join(pluginRoot2, "dist", "mcp-server.mjs"),
+    claudeBundle: path9.join(pluginRoot2, "dist", "claude-hook.mjs"),
+    codexBundle: path9.join(pluginRoot2, "dist", "codex-hook.mjs")
   };
   const files = await Promise.all(Object.entries(paths).map(async ([name, file]) => [name, await readable(file)]));
   const missing = files.filter(([, exists]) => !exists).map(([name]) => name);
@@ -2475,6 +3589,7 @@ async function collectDoctorReport(root2, pluginRoot2, version, tools2) {
     corruptFeature,
     corruptActivePointer,
     recoveryTransaction: recoveryTxn ?? null,
+    trace: trace ?? null,
     mcp: { server: "running", configuration: !invalidJson },
     diagnostics
   };
@@ -2487,7 +3602,7 @@ import { promisify as promisify4 } from "node:util";
 // plugins/dev-flow/src/mcp/windows-notifications.ts
 import { execFile as execFile3 } from "node:child_process";
 import { access as access2 } from "node:fs/promises";
-import path9 from "node:path";
+import path10 from "node:path";
 import { promisify as promisify3 } from "node:util";
 var run3 = promisify3(execFile3);
 var WINDOWS_NOTIFICATION_APP_ID = "io.github.wxy_hh.dev_flow";
@@ -2500,7 +3615,7 @@ function environmentOf(options) {
 }
 function shortcutPathOf(environment) {
   const appData = environment.APPDATA;
-  return appData ? path9.win32.join(appData, "Microsoft", "Windows", "Start Menu", "Programs", shortcutName) : void 0;
+  return appData ? path10.win32.join(appData, "Microsoft", "Windows", "Start Menu", "Programs", shortcutName) : void 0;
 }
 async function command(file, args) {
   return run3(file, args);
@@ -2528,7 +3643,7 @@ $ErrorActionPreference = 'Stop'
 $shortcutPath = ${powerShellLiteral(shortcutPath)}
 $nodeExecutable = ${powerShellLiteral(nodeExecutable)}
 $nodeArguments = '-e "process.exit(0)"'
-$workingDirectory = ${powerShellLiteral(path9.win32.dirname(shortcutPath))}
+$workingDirectory = ${powerShellLiteral(path10.win32.dirname(shortcutPath))}
 $appId = ${powerShellLiteral(WINDOWS_NOTIFICATION_APP_ID)}
 $source = @'
 using System;
@@ -2724,8 +3839,8 @@ async function emitAttention(event, options = {}) {
 
 // plugins/dev-flow/src/mcp/server.ts
 var root = process.cwd();
-var moduleDirectory = path10.dirname(fileURLToPath(import.meta.url));
-var pluginRoot = path10.basename(moduleDirectory) === "dist" ? path10.resolve(moduleDirectory, "..") : path10.resolve(moduleDirectory, "../..");
+var moduleDirectory = path11.dirname(fileURLToPath(import.meta.url));
+var pluginRoot = path11.basename(moduleDirectory) === "dist" ? path11.resolve(moduleDirectory, "..") : path11.resolve(moduleDirectory, "../..");
 var tools = [
   "dev_flow_init_project",
   "dev_flow_classify",
@@ -2736,6 +3851,8 @@ var tools = [
   "dev_flow_scaffold_artifact",
   "dev_flow_record_artifact",
   "dev_flow_record_step",
+  "dev_flow_record_artifact_with_trace",
+  "dev_flow_get_traceability",
   "dev_flow_present_gate",
   "dev_flow_confirm_gate",
   "dev_flow_reclassify",
@@ -2763,6 +3880,28 @@ var featureMutation = (extra = {}) => object(
   { featureId: string, expectedRevision: integer, ...extra }
 );
 var riskLabelsSchema = { type: "array", items: { enum: allowedRiskLabels }, uniqueItems: true };
+var traceArtifactKinds2 = ["requirements", "implementation-plan", "coverage-matrix", "rollback-units"];
+var traceId = (prefix) => ({ type: "string", pattern: `^${prefix}-[0-9]{3,}$` });
+var stringArray = { type: "array", minItems: 1, items: string };
+var traceNodeSchemas = [
+  object(["kind", "id"], { kind: { const: "requirement" }, id: traceId("REQ") }),
+  object(["kind", "id", "parentRequirement"], { kind: { const: "acceptance-criterion" }, id: traceId("AC"), parentRequirement: traceId("REQ") }),
+  object(["kind", "id", "covers", "rollbackUnit"], { kind: { const: "task" }, id: traceId("TASK"), covers: stringArray, rollbackUnit: traceId("RU") }),
+  object(["kind", "id", "verifies"], { kind: { const: "test" }, id: traceId("TEST"), verifies: { type: "array", minItems: 1, items: traceId("AC") } }),
+  object(["kind", "id", "tasks", "dependsOn", "fileScope", "covers", "forwardVerification", "rollbackVerification"], {
+    kind: { const: "rollback" },
+    id: traceId("RU"),
+    tasks: { type: "array", minItems: 1, items: traceId("TASK") },
+    dependsOn: { type: "array", items: traceId("RU") },
+    fileScope: stringArray,
+    covers: stringArray,
+    forwardVerification: stringArray,
+    rollbackVerification: stringArray
+  })
+];
+var traceDeltaSchema = object(["nodes"], {
+  nodes: { type: "array", items: { oneOf: traceNodeSchemas } }
+});
 var scopeSchema = {
   type: "object",
   required: ["inScope", "outOfScope"],
@@ -2825,6 +3964,15 @@ var toolSchemas = {
   dev_flow_switch_active: { description: "Atomically hand off the single active feature.", inputSchema: object(["fromFeatureId", "toFeatureId", "reason"], { fromFeatureId: string, toFeatureId: string, reason: string }) },
   dev_flow_scaffold_artifact: { description: "Create only the current route artifact. For editable artifacts, read the registered path before editing, then record it. Generated status artifacts are read-only: scaffold them and continue with the requested step; do not edit or record them.", inputSchema: featureMutation({ kind: string }) },
   dev_flow_record_artifact: { description: "Register an edited route artifact.", inputSchema: featureMutation({ kind: string }) },
+  dev_flow_record_artifact_with_trace: {
+    description: "Atomically register one Trace source artifact and its complete Trace delta.",
+    inputSchema: featureMutation({ kind: { enum: traceArtifactKinds2 }, traceDelta: traceDeltaSchema })
+  },
+  dev_flow_get_traceability: {
+    description: "Read the current Trace pointer, ledger, effective summary, and current-step blockers.",
+    inputSchema: object(["featureId"], { featureId: string }),
+    annotations: { readOnlyHint: true }
+  },
   dev_flow_record_step: { description: "Record the current non-gate route step.", inputSchema: featureMutation({ step: string, evidence: {} }) },
   dev_flow_present_gate: { description: "Present a strict human gate.", inputSchema: featureMutation({ gate: { enum: ["requirement_confirmation", "implementation_approval"] } }) },
   dev_flow_confirm_gate: {
@@ -2927,6 +4075,25 @@ function emitAttentionNotification(event) {
 `)
   });
 }
+function assertExactToolInput(value, keys, tool) {
+  if (!value || typeof value !== "object" || Array.isArray(value) || Object.keys(value).some((key) => !keys.includes(key)) || keys.some((key) => !(key in value))) {
+    throw new DevFlowError("INVALID_TOOL_INPUT", `${tool} input does not match its schema`);
+  }
+}
+function assertTraceRegistrationInput(value) {
+  assertExactToolInput(value, ["featureId", "expectedRevision", "kind", "traceDelta"], "dev_flow_record_artifact_with_trace");
+  const input = value;
+  if (typeof input.featureId !== "string" || !input.featureId || typeof input.expectedRevision !== "number" || !Number.isInteger(input.expectedRevision) || input.expectedRevision < 0 || !traceArtifactKinds2.includes(input.kind)) {
+    throw new DevFlowError("INVALID_TOOL_INPUT", "dev_flow_record_artifact_with_trace input does not match its schema");
+  }
+  validateTraceDelta(input.traceDelta);
+}
+function assertTraceReadInput(value) {
+  assertExactToolInput(value, ["featureId"], "dev_flow_get_traceability");
+  if (typeof value.featureId !== "string" || !value.featureId) {
+    throw new DevFlowError("INVALID_TOOL_INPUT", "dev_flow_get_traceability input does not match its schema");
+  }
+}
 function interactionEnvelope(state, interaction, interactionOutcome, response) {
   return {
     ...state,
@@ -3028,6 +4195,22 @@ async function call(name, a, connection2) {
       return scaffoldArtifact(root, a.featureId, a.expectedRevision, a.kind);
     case "dev_flow_record_artifact":
       return recordArtifact(root, a.featureId, a.expectedRevision, a.kind);
+    case "dev_flow_record_artifact_with_trace": {
+      assertTraceRegistrationInput(a);
+      const input = a;
+      return recordArtifactWithTrace(root, input.featureId, input.expectedRevision, input.kind, input.traceDelta);
+    }
+    case "dev_flow_get_traceability": {
+      assertTraceReadInput(a);
+      const state = await readState(root, a.featureId);
+      const inspection = await inspectCurrentTrace(root, state);
+      return {
+        pointer: state.traceability,
+        ...inspection.ledger ? { ledger: inspection.ledger } : {},
+        ...inspection.effectiveSummary ? { effectiveSummary: inspection.effectiveSummary } : {},
+        blockers: inspection.blocker ? [inspection.blocker] : []
+      };
+    }
     case "dev_flow_record_step":
       return recordStep(root, a.featureId, a.expectedRevision, a.step, a.evidence);
     case "dev_flow_present_gate": {

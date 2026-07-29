@@ -2,12 +2,12 @@
 
 // plugins/dev-flow/src/hosts/codex-adapter.ts
 import { lstat } from "node:fs/promises";
-import path4 from "node:path";
+import path5 from "node:path";
 
 // plugins/dev-flow/src/core/state-store.ts
-import { access, mkdir, open, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { access, mkdir as mkdir2, open as open2, readFile as readFile2, rename as rename2, rm, writeFile } from "node:fs/promises";
 import { hostname } from "node:os";
-import path2 from "node:path";
+import path3 from "node:path";
 
 // plugins/dev-flow/policy/contract.json
 var contract_default = {
@@ -38,6 +38,7 @@ var contract_default = {
       orderedSteps: ["requirements", "requirement_confirmation", "implementation_plan", "coverage_review", "rollback_unit", "plan_review", "implementation_approval", "implementation", "code_review", "verification", "feature_check", "finalize"],
       requiredArtifacts: ["requirements", "implementation-plan", "status", "coverage-matrix"],
       artifactSteps: { requirements: ["requirements"], implementation_plan: ["implementation-plan"], coverage_review: ["coverage-matrix"], implementation_approval: ["status"] },
+      artifactTransitions: [{ artifact: "plan-review", capability: "review", from: "absent", to: "generated", steps: ["plan_review"] }],
       featureCheckRequired: true
     },
     "light-l": {
@@ -50,6 +51,7 @@ var contract_default = {
       orderedSteps: ["requirements", "requirement_confirmation", "implementation_plan", "coverage_review", "rollback_unit", "plan_review", "implementation_approval", "implementation", "code_review", "verification", "feature_check", "finalize"],
       requiredArtifacts: ["requirements", "implementation-plan", "coverage-matrix", "rollback-units", "plan-review", "code-review", "verification"],
       artifactSteps: { requirements: ["requirements"], implementation_plan: ["implementation-plan"], coverage_review: ["coverage-matrix"], rollback_unit: ["rollback-units"], plan_review: ["plan-review"], code_review: ["code-review"], verification: ["verification"] },
+      artifactTransitions: [{ artifact: "plan-review", capability: "review", from: "editable", to: "generated", steps: ["plan_review"] }],
       featureCheckRequired: true
     }
   },
@@ -71,6 +73,20 @@ var contract_default = {
   topologyStrictOrder: ["local", "shared-contract", "multi-chain", "coordinated-rollback"]
 };
 
+// plugins/dev-flow/src/policy/types.ts
+var ZERO_WORKFLOW_CAPABILITIES = Object.freeze({
+  trace: 0,
+  review: 0,
+  checkpoints: 0,
+  rollbackExecution: 0
+});
+var SUPPORTED_WORKFLOW_CAPABILITIES = Object.freeze({
+  trace: 1,
+  review: 0,
+  checkpoints: 0,
+  rollbackExecution: 0
+});
+
 // plugins/dev-flow/src/policy/contract.ts
 var contract = contract_default;
 if (contract.schemaVersion !== 1) {
@@ -79,6 +95,16 @@ if (contract.schemaVersion !== 1) {
 var allowedRiskLabels = Object.freeze(Object.keys(contract.riskEnhancements));
 function routeDefinition(route) {
   return contract.routes[route];
+}
+function normalizeWorkflowCapabilities(value) {
+  const candidate = value ?? ZERO_WORKFLOW_CAPABILITIES;
+  if (candidate.trace !== 0 && candidate.trace !== 1 || candidate.review !== 0 && candidate.review !== 1 || candidate.checkpoints !== 0 && candidate.checkpoints !== 1 || candidate.rollbackExecution !== 0 && candidate.rollbackExecution !== 1) {
+    throw new Error("workflow capabilities must use 0 or 1");
+  }
+  return Object.freeze({ ...candidate });
+}
+function traceEnforcementRequired(route, capabilities) {
+  return normalizeWorkflowCapabilities(capabilities).trace === 1 && (route === "standard-m" || route === "standard-l");
 }
 
 // plugins/dev-flow/src/core/errors.ts
@@ -134,6 +160,236 @@ function validateProjectConfig(value) {
   }
 }
 
+// plugins/dev-flow/src/core/traceability.ts
+var idPrefix = {
+  requirement: "REQ",
+  "acceptance-criterion": "AC",
+  task: "TASK",
+  test: "TEST",
+  rollback: "RU"
+};
+function invalid(message, details = {}) {
+  throw new DevFlowError("TRACE_GRAPH_INVALID", message, details);
+}
+function isRecord(value) {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+function isStringArray(value, allowEmpty = false) {
+  return Array.isArray(value) && (allowEmpty || value.length > 0) && value.every((item) => typeof item === "string" && item.length > 0);
+}
+function assertId(kind, id) {
+  if (typeof id !== "string" || !new RegExp(`^${idPrefix[kind]}-[0-9]{3,}$`).test(id)) {
+    invalid("node ID does not match its kind", { kind, id });
+  }
+}
+function currentNodes(nodes) {
+  return Object.values(nodes).filter((node) => node.status !== "tombstoned");
+}
+function nodeById(nodes, id) {
+  const node = nodes[id];
+  return node?.status === "tombstoned" ? void 0 : node;
+}
+function deriveTraceEdges(nodes) {
+  const edges = [];
+  for (const node of currentNodes(nodes)) {
+    if (node.kind === "acceptance-criterion") edges.push({ from: node.id, type: "parent", to: node.parentRequirement });
+    if (node.kind === "task") {
+      for (const target of node.covers) edges.push({ from: node.id, type: "covers", to: target });
+      edges.push({ from: node.id, type: "rollback-unit", to: node.rollbackUnit });
+    }
+    if (node.kind === "test") for (const target of node.verifies) edges.push({ from: node.id, type: "verifies", to: target });
+    if (node.kind === "rollback") {
+      for (const target of node.tasks) edges.push({ from: node.id, type: "contains-task", to: target });
+      for (const target of node.dependsOn) edges.push({ from: node.id, type: "depends-on", to: target });
+      for (const target of node.covers) edges.push({ from: node.id, type: "covers", to: target });
+    }
+  }
+  return edges.sort((a, b) => `${a.from}\0${a.type}\0${a.to}`.localeCompare(`${b.from}\0${b.type}\0${b.to}`));
+}
+function traceSummary(nodes) {
+  const values = Object.values(nodes);
+  return {
+    total: values.length,
+    current: values.filter((node) => node.status === "current").length,
+    stale: values.filter((node) => node.status === "stale").length,
+    tombstoned: values.filter((node) => node.status === "tombstoned").length
+  };
+}
+function assertReference(nodes, id, kinds, details) {
+  const node = nodeById(nodes, id);
+  if (!node || !kinds.includes(node.kind)) invalid("graph reference is missing or has the wrong kind", { id, ...details });
+  return node;
+}
+function assertRollbackDag(nodes) {
+  const visiting = /* @__PURE__ */ new Set();
+  const visited = /* @__PURE__ */ new Set();
+  const visit = (id) => {
+    if (visited.has(id)) return;
+    if (visiting.has(id)) invalid("rollback dependency graph contains a cycle", { id });
+    visiting.add(id);
+    const node = nodeById(nodes, id);
+    if (node?.kind === "rollback") for (const dependency of node.dependsOn) visit(dependency);
+    visiting.delete(id);
+    visited.add(id);
+  };
+  for (const node of currentNodes(nodes)) if (node.kind === "rollback") visit(node.id);
+}
+function sameEdges(left, right) {
+  return left.length === right.length && left.every((edge, index) => {
+    const candidate = right[index];
+    return edge.from === candidate?.from && edge.type === candidate.type && edge.to === candidate.to;
+  });
+}
+function sameSummary(left, right) {
+  return left.total === right.total && left.current === right.current && left.stale === right.stale && left.tombstoned === right.tombstoned;
+}
+var statusValues = /* @__PURE__ */ new Set(["current", "stale", "tombstoned"]);
+var sourceArtifacts = /* @__PURE__ */ new Set(["requirements", "implementation-plan", "coverage-matrix", "rollback-units"]);
+var hex64 = /^[a-f0-9]{64}$/;
+function assertPersistedNode(recordId, value) {
+  if (!isRecord(value)) invalid("persisted node is not an object", { id: recordId });
+  const kind = value.kind;
+  if (typeof kind !== "string" || !(kind in idPrefix)) invalid("persisted node has an unknown kind", { id: recordId, kind });
+  assertId(kind, value.id);
+  if (value.id !== recordId) invalid("persisted node id does not match its record key", { id: recordId, nodeId: value.id });
+  if (!statusValues.has(value.status)) invalid("persisted node has an invalid status", { id: recordId, status: value.status });
+  if (typeof value.sourceArtifact !== "string" || !sourceArtifacts.has(value.sourceArtifact)) {
+    invalid("persisted node has an invalid sourceArtifact", { id: recordId, sourceArtifact: value.sourceArtifact });
+  }
+  if (typeof value.sourceSha256 !== "string" || !hex64.test(value.sourceSha256)) {
+    invalid("persisted node has an invalid sourceSha256", { id: recordId });
+  }
+  if (typeof value.sourceAnchor !== "string" || !value.sourceAnchor.includes(`id=${value.id}`)) {
+    invalid("persisted node has an invalid sourceAnchor", { id: recordId });
+  }
+  if (typeof value.sourceBlockSha256 !== "string" || !hex64.test(value.sourceBlockSha256)) {
+    invalid("persisted node has an invalid sourceBlockSha256", { id: recordId });
+  }
+  if (kind === "acceptance-criterion") assertId("requirement", value.parentRequirement);
+  if (kind === "task") {
+    if (!isStringArray(value.covers)) invalid("persisted task covers is invalid", { id: recordId });
+    assertId("rollback", value.rollbackUnit);
+  }
+  if (kind === "test") {
+    if (!isStringArray(value.verifies)) invalid("persisted test verifies is invalid", { id: recordId });
+  }
+  if (kind === "rollback") {
+    for (const [field, allowEmpty] of [["tasks", false], ["dependsOn", true], ["fileScope", false], ["covers", false], ["forwardVerification", false], ["rollbackVerification", false]]) {
+      if (!isStringArray(value[field], allowEmpty)) invalid("persisted rollback field is invalid", { id: recordId, field });
+    }
+    if (value.sourceArtifact !== "implementation-plan" && value.sourceArtifact !== "rollback-units") {
+      invalid("persisted rollback has an invalid sourceArtifact", { id: recordId });
+    }
+    if (typeof value.verificationConfigSha256 !== "string" || !hex64.test(value.verificationConfigSha256)) {
+      invalid("persisted rollback has an invalid verificationConfigSha256", { id: recordId });
+    }
+  }
+}
+function assertPersistedLedgerShape(ledger) {
+  if (typeof ledger.featureId !== "string" || !ledger.featureId) invalid("ledger featureId is invalid");
+  if (!Number.isInteger(ledger.revision) || ledger.revision < 0) invalid("ledger revision is invalid");
+  if (!Number.isInteger(ledger.stateRevision) || ledger.stateRevision < 0) invalid("ledger stateRevision is invalid");
+  if (typeof ledger.projectConfigSha256 !== "string" || !hex64.test(ledger.projectConfigSha256)) {
+    invalid("ledger projectConfigSha256 is invalid");
+  }
+  for (const [id, node] of Object.entries(ledger.nodes)) assertPersistedNode(id, node);
+}
+function validateTraceGraph(ledger, route, mode) {
+  if (!isRecord(ledger) || ledger.schemaVersion !== 1 || !isRecord(ledger.nodes) || !Array.isArray(ledger.edges)) invalid("traceability ledger has an invalid shape");
+  assertPersistedLedgerShape(ledger);
+  const nodes = ledger.nodes;
+  for (const node of currentNodes(nodes)) {
+    if (node.kind === "acceptance-criterion") assertReference(nodes, node.parentRequirement, ["requirement"], { from: node.id });
+    if (node.kind === "task") {
+      if (node.covers.length === 0) invalid("task cannot be orphaned", { id: node.id });
+      for (const covered of node.covers) assertReference(nodes, covered, ["requirement", "acceptance-criterion"], { from: node.id });
+      const rollback = nodeById(nodes, node.rollbackUnit);
+      if (!rollback && !(route === "standard-l" && mode === "partial")) invalid("task references a missing rollback unit", { id: node.id, rollbackUnit: node.rollbackUnit });
+      if (rollback && rollback.kind !== "rollback") invalid("task rollback unit has the wrong kind", { id: node.id });
+      if (rollback?.kind === "rollback" && !rollback.tasks.includes(node.id)) {
+        invalid("task rollback unit must list the task", { id: node.id, rollbackUnit: node.rollbackUnit });
+      }
+    }
+    if (node.kind === "test") for (const verified of node.verifies) assertReference(nodes, verified, ["acceptance-criterion"], { from: node.id });
+    if (node.kind === "rollback") {
+      for (const taskId of node.tasks) {
+        const task = assertReference(nodes, taskId, ["task"], { from: node.id });
+        if (task.kind !== "task" || task.rollbackUnit !== node.id) invalid("rollback unit tasks must be symmetric with task rollbackUnit", { id: node.id, taskId });
+      }
+      for (const dependency of node.dependsOn) assertReference(nodes, dependency, ["rollback"], { from: node.id });
+      for (const covered of node.covers) assertReference(nodes, covered, ["requirement", "acceptance-criterion"], { from: node.id });
+    }
+  }
+  assertRollbackDag(nodes);
+  const edges = deriveTraceEdges(nodes);
+  if (!sameEdges(ledger.edges, edges)) invalid("ledger edges do not match nodes");
+  if (!sameSummary(ledger.summary, traceSummary(nodes))) invalid("ledger summary does not match nodes");
+  if (mode === "complete") {
+    const kinds = new Set(currentNodes(nodes).map((node) => node.kind));
+    for (const kind of ["requirement", "acceptance-criterion", "task", "test", "rollback"]) if (!kinds.has(kind)) invalid("complete graph is missing a required node kind", { kind });
+    if (currentNodes(nodes).some((node) => node.status !== "current")) invalid("complete graph cannot contain stale nodes");
+    for (const node of currentNodes(nodes)) {
+      if (node.kind === "acceptance-criterion" && !currentNodes(nodes).some((candidate) => candidate.kind === "test" && candidate.verifies.includes(node.id))) {
+        invalid("every acceptance criterion requires a test", { id: node.id });
+      }
+    }
+  }
+}
+
+// plugins/dev-flow/src/core/traceability-store.ts
+import { createHash, randomUUID } from "node:crypto";
+import { mkdir, open, readFile, readdir, rename } from "node:fs/promises";
+import path2 from "node:path";
+function digest(contents) {
+  return createHash("sha256").update(contents).digest("hex");
+}
+function integrity(message, details = {}) {
+  throw new DevFlowError("TRACEABILITY_INTEGRITY_FAILED", message, details);
+}
+function safeSnapshotPath(pointer) {
+  if (!/^traceability\/snapshots\/[a-f0-9]{64}\.json$/.test(pointer.path) || pointer.path !== `traceability/snapshots/${pointer.sha256}.json`) {
+    integrity("Trace pointer path is invalid");
+  }
+  return pointer.path;
+}
+function sameEdges2(left, right) {
+  return left.length === right.length && left.every((edge, index) => {
+    const candidate = right[index];
+    return edge.from === candidate?.from && edge.type === candidate.type && edge.to === candidate.to;
+  });
+}
+async function readTraceability(root, state) {
+  if (!state.traceability) integrity("Trace pointer is missing", { featureId: state.featureId });
+  const pointer = state.traceability;
+  const relative = safeSnapshotPath(pointer);
+  const file = path2.join(root, ".dev-flow", "features", state.featureId, relative);
+  let contents;
+  try {
+    contents = await readFile(file, "utf8");
+  } catch {
+    integrity("Trace snapshot cannot be read", { featureId: state.featureId, path: relative });
+  }
+  if (digest(contents) !== pointer.sha256) integrity("Trace snapshot digest does not match pointer", { featureId: state.featureId });
+  let ledger;
+  try {
+    ledger = JSON.parse(contents);
+  } catch {
+    integrity("Trace snapshot is not valid JSON", { featureId: state.featureId });
+  }
+  try {
+    validateTraceGraph(ledger, state.route, "partial");
+  } catch (error) {
+    integrity("Trace snapshot graph is invalid", { cause: error instanceof Error ? error.message : String(error) });
+  }
+  if (ledger.featureId !== state.featureId || ledger.revision !== pointer.revision || ledger.stateRevision > state.revision) {
+    integrity("Trace pointer and ledger revisions do not match", { featureId: state.featureId });
+  }
+  if (ledger.summary.total !== pointer.summary.total || ledger.summary.current !== pointer.summary.current || ledger.summary.stale !== pointer.summary.stale || ledger.summary.tombstoned !== pointer.summary.tombstoned || !sameEdges2(deriveTraceEdges(ledger.nodes), ledger.edges)) {
+    integrity("Trace pointer summary or ledger edges do not match", { featureId: state.featureId });
+  }
+  return ledger;
+}
+
 // plugins/dev-flow/src/core/state-store.ts
 var lifecycles = /* @__PURE__ */ new Set(["active", "paused", "finalized", "abandoned"]);
 function validateFeatureState(value) {
@@ -142,17 +398,33 @@ function validateFeatureState(value) {
   if (typeof state.featureId !== "string" || !state.featureId || !Number.isInteger(state.revision) || (state.revision ?? -1) < 0 || !lifecycles.has(state.lifecycle) || !routeDefinition(state.route) || !state.classification || !state.scope || !Array.isArray(state.scope.inScope) || !Array.isArray(state.scope.outOfScope) || !state.steps || !state.humanGates || !state.artifacts || !state.verification || !Array.isArray(state.verification.attempts) || state.interactions !== void 0 && (typeof state.interactions !== "object" || state.interactions === null || Array.isArray(state.interactions)) || !state.featureCheck || !Array.isArray(state.blockingFindings) || typeof state.logicComplete !== "boolean" || !state.lastUpdatedBy) {
     throw new DevFlowError("INVALID_STATE_SCHEMA", "state is not a valid v1 feature state");
   }
+  if (state.workflowCapabilities !== void 0) {
+    try {
+      normalizeWorkflowCapabilities(state.workflowCapabilities);
+    } catch {
+      throw new DevFlowError("INVALID_STATE_SCHEMA", "workflowCapabilities are invalid");
+    }
+  }
+  if (state.traceability !== void 0) {
+    const pointer = state.traceability;
+    if (typeof pointer !== "object" || pointer === null || !/^traceability\/snapshots\/[a-f0-9]{64}\.json$/.test(pointer.path) || !/^[a-f0-9]{64}$/.test(pointer.sha256) || pointer.path !== `traceability/snapshots/${pointer.sha256}.json` || !Number.isInteger(pointer.revision) || pointer.revision < 0 || !pointer.summary || !["total", "current", "stale", "tombstoned"].every((key) => Number.isInteger(pointer.summary[key]) && pointer.summary[key] >= 0)) {
+      throw new DevFlowError("INVALID_STATE_SCHEMA", "traceability pointer is invalid");
+    }
+  }
+  if (traceEnforcementRequired(state.route, state.workflowCapabilities) && !state.traceability) {
+    throw new DevFlowError("INVALID_STATE_SCHEMA", "trace-enforced standard feature requires a traceability pointer");
+  }
 }
 var delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-var devFlow = (root) => path2.join(root, ".dev-flow");
-var features = (root) => path2.join(devFlow(root), "features");
-var statePath = (root, id) => path2.join(features(root), id, "state.json");
-var eventPath = (root, id) => path2.join(features(root), id, "events.jsonl");
-var activePath = (root) => path2.join(devFlow(root), "active.json");
-var recoveryTxnPath = (root) => path2.join(devFlow(root), "recovery-transaction.json");
+var devFlow = (root) => path3.join(root, ".dev-flow");
+var features = (root) => path3.join(devFlow(root), "features");
+var statePath = (root, id) => path3.join(features(root), id, "state.json");
+var eventPath = (root, id) => path3.join(features(root), id, "events.jsonl");
+var activePath = (root) => path3.join(devFlow(root), "active.json");
+var recoveryTxnPath = (root) => path3.join(devFlow(root), "recovery-transaction.json");
 async function readProjectConfig(root) {
   try {
-    const value = JSON.parse(await readFile(path2.join(devFlow(root), "project.json"), "utf8"));
+    const value = JSON.parse(await readFile2(path3.join(devFlow(root), "project.json"), "utf8"));
     validateProjectConfig(value);
     return value;
   } catch (error) {
@@ -161,20 +433,20 @@ async function readProjectConfig(root) {
   }
 }
 async function lock(root, featureId, operation) {
-  const directory = path2.join(devFlow(root), ".lock");
+  const directory = path3.join(devFlow(root), ".lock");
   const started = Date.now();
-  await mkdir(devFlow(root), { recursive: true });
+  await mkdir2(devFlow(root), { recursive: true });
   while (true) {
     try {
-      await mkdir(directory);
-      await writeFile(path2.join(directory, "owner.json"), JSON.stringify({ pid: process.pid, hostname: hostname(), acquiredAt: (/* @__PURE__ */ new Date()).toISOString(), featureId, operation }));
+      await mkdir2(directory);
+      await writeFile(path3.join(directory, "owner.json"), JSON.stringify({ pid: process.pid, hostname: hostname(), acquiredAt: (/* @__PURE__ */ new Date()).toISOString(), featureId, operation }));
       return async () => {
         await rm(directory, { recursive: true, force: true });
       };
     } catch (error) {
       if (error.code !== "EEXIST") throw error;
       try {
-        const owner = JSON.parse(await readFile(path2.join(directory, "owner.json"), "utf8"));
+        const owner = JSON.parse(await readFile2(path3.join(directory, "owner.json"), "utf8"));
         const age = Date.now() - Date.parse(owner.acquiredAt);
         let live = owner.hostname === hostname();
         if (live) {
@@ -197,7 +469,7 @@ async function lock(root, featureId, operation) {
 }
 async function readState(root, featureId) {
   try {
-    const state = JSON.parse(await readFile(statePath(root, featureId), "utf8"));
+    const state = JSON.parse(await readFile2(statePath(root, featureId), "utf8"));
     validateFeatureState(state);
     if (state.featureId !== featureId) throw new DevFlowError("INVALID_STATE_SCHEMA", "state feature id does not match its path");
     return state;
@@ -212,7 +484,7 @@ async function readState(root, featureId) {
 async function readActive(root) {
   let raw;
   try {
-    raw = await readFile(activePath(root), "utf8");
+    raw = await readFile2(activePath(root), "utf8");
   } catch (error) {
     if (error.code === "ENOENT") return void 0;
     throw new DevFlowError("ACTIVE_POINTER_UNREADABLE", "active.json cannot be read", { recoveryHint: "Run dev_flow_doctor and use recovery; do not start a new feature" });
@@ -228,7 +500,7 @@ async function readActive(root) {
   }
 }
 async function appendEvent(root, id, revision, type, data) {
-  const handle = await open(eventPath(root, id), "a");
+  const handle = await open2(eventPath(root, id), "a");
   try {
     await handle.writeFile(`${JSON.stringify({ revision, type, at: (/* @__PURE__ */ new Date()).toISOString(), data })}
 `);
@@ -255,7 +527,7 @@ async function recordHostEvent(root, hostEvent) {
 }
 async function readFeatureEvents(root, id) {
   try {
-    return (await readFile(eventPath(root, id), "utf8")).split("\n").filter(Boolean).map((line) => JSON.parse(line));
+    return (await readFile2(eventPath(root, id), "utf8")).split("\n").filter(Boolean).map((line) => JSON.parse(line));
   } catch (error) {
     if (error.code === "ENOENT") return [];
     throw error;
@@ -266,19 +538,19 @@ function isRecoveryPhase(value) {
 }
 function validateRecoveryTransaction(value) {
   const transaction = value;
-  if (transaction?.schemaVersion !== 1 || typeof transaction.transactionId !== "string" || !transaction.transactionId || !isRecoveryPhase(transaction.phase) || typeof transaction.featureId !== "string" || !transaction.featureId || typeof transaction.stateSha256 !== "string" || !transaction.stateSha256 || typeof transaction.recoveredTo !== "string" || !path2.isAbsolute(transaction.recoveredTo) || typeof transaction.reason !== "string" || typeof transaction.userEvidence !== "string" || transaction.host !== "claude" && transaction.host !== "codex" || typeof transaction.at !== "string" || transaction.activeSha256 !== void 0 && typeof transaction.activeSha256 !== "string") {
+  if (transaction?.schemaVersion !== 1 || typeof transaction.transactionId !== "string" || !transaction.transactionId || !isRecoveryPhase(transaction.phase) || typeof transaction.featureId !== "string" || !transaction.featureId || typeof transaction.stateSha256 !== "string" || !transaction.stateSha256 || typeof transaction.recoveredTo !== "string" || !path3.isAbsolute(transaction.recoveredTo) || typeof transaction.reason !== "string" || typeof transaction.userEvidence !== "string" || transaction.host !== "claude" && transaction.host !== "codex" || typeof transaction.at !== "string" || transaction.activeSha256 !== void 0 && typeof transaction.activeSha256 !== "string") {
     throw new DevFlowError("RECOVERY_TRANSACTION_UNREADABLE", "recovery journal is invalid", {
       recoveryHint: "Run dev_flow_doctor; do not start a new feature or hand-edit .dev-flow"
     });
   }
-  if (path2.basename(transaction.featureId) !== transaction.featureId || transaction.featureId === "." || transaction.featureId === "..") {
+  if (path3.basename(transaction.featureId) !== transaction.featureId || transaction.featureId === "." || transaction.featureId === "..") {
     throw new DevFlowError("RECOVERY_TRANSACTION_UNREADABLE", "recovery journal has an unsafe feature id", { recoveryHint: "Run dev_flow_doctor; recovery remains fail-closed" });
   }
 }
 function validateRecoveryLocation(root, transaction) {
-  const recoveredRoot = path2.join(devFlow(root), "recovered");
-  const relative = path2.relative(recoveredRoot, transaction.recoveredTo);
-  if (!relative || relative.startsWith("..") || path2.isAbsolute(relative) || path2.basename(relative) !== relative) {
+  const recoveredRoot = path3.join(devFlow(root), "recovered");
+  const relative = path3.relative(recoveredRoot, transaction.recoveredTo);
+  if (!relative || relative.startsWith("..") || path3.isAbsolute(relative) || path3.basename(relative) !== relative) {
     throw new DevFlowError("RECOVERY_TRANSACTION_UNREADABLE", "recovery journal points outside the recovered directory", {
       recoveryHint: "Run dev_flow_doctor; do not start a new feature or hand-edit .dev-flow"
     });
@@ -287,7 +559,7 @@ function validateRecoveryLocation(root, transaction) {
 async function readRecoveryTransaction(root) {
   let raw;
   try {
-    raw = await readFile(recoveryTxnPath(root), "utf8");
+    raw = await readFile2(recoveryTxnPath(root), "utf8");
   } catch (error) {
     if (error.code === "ENOENT") return void 0;
     throw new DevFlowError("RECOVERY_TRANSACTION_UNREADABLE", "recovery journal cannot be read", { recoveryHint: "Run dev_flow_doctor; do not start a new feature" });
@@ -304,7 +576,7 @@ async function readRecoveryTransaction(root) {
 }
 
 // plugins/dev-flow/src/hosts/adapter-policy.ts
-import path3 from "node:path";
+import path4 from "node:path";
 
 // plugins/dev-flow/src/core/git-policy.ts
 var readOnly = /* @__PURE__ */ new Set(["status", "diff", "log", "show", "rev-parse", "ls-files", "ls-tree", "cat-file", "name-rev"]);
@@ -345,10 +617,10 @@ function isRelevantPreToolUse(event2) {
   return name === "bash" || directWriteTools.has(name);
 }
 function projectRelative(root, target) {
-  const absolute = path3.resolve(root, target);
-  const relative = path3.relative(root, absolute);
-  if (relative === "" || relative.startsWith("..") || path3.isAbsolute(relative)) return void 0;
-  return relative.split(path3.sep).join("/");
+  const absolute = path4.resolve(root, target);
+  const relative = path4.relative(root, absolute);
+  if (relative === "" || relative.startsWith("..") || path4.isAbsolute(relative)) return void 0;
+  return relative.split(path4.sep).join("/");
 }
 function isProtected(root, target, protectedRoots) {
   const relative = projectRelative(root, target);
@@ -360,7 +632,8 @@ function isDevFlowPath(relative) {
 }
 function isControlPath(relative) {
   if (!isDevFlowPath(relative)) return false;
-  const base = path3.posix.basename(relative);
+  if (/^\.dev-flow\/features\/[^/]+\/traceability(?:\/|$)/.test(relative)) return true;
+  const base = path4.posix.basename(relative);
   if (controlFileNames.has(base)) return true;
   if (relative.includes("/.lock/") || relative.endsWith("/.lock")) return true;
   if (relative === ".dev-flow/active.json" || relative === ".dev-flow/project.json") return true;
@@ -541,16 +814,17 @@ async function loadActiveWorkflow(root) {
   try {
     state = await readState(root, active.featureId);
     if (state.lifecycle !== "active" || active.revision !== state.revision) return { kind: "unreadable", reason: "active pointer does not match active state", protectedRoots: project.protectedRoots, blockAllWrites: false };
+    if (state.traceability) await readTraceability(root, state);
   } catch {
     return { kind: "unreadable", reason: "state invalid", protectedRoots: project.protectedRoots, blockAllWrites: false };
   }
   const allowedArtifacts = /* @__PURE__ */ new Set();
   for (const [kind, artifact] of Object.entries(state.artifacts ?? {})) {
     if (kind === "status" || !artifact?.path) continue;
-    if (path3.posix.dirname(artifact.path) !== "." || !artifact.path.endsWith(".md")) {
+    if (path4.posix.dirname(artifact.path) !== "." || !artifact.path.endsWith(".md")) {
       return { kind: "unreadable", reason: "artifact path invalid", protectedRoots: project.protectedRoots, blockAllWrites: false };
     }
-    const relative = `.dev-flow/features/${active.featureId}/${artifact.path}`.split(path3.sep).join("/");
+    const relative = `.dev-flow/features/${active.featureId}/${artifact.path}`.split(path4.sep).join("/");
     allowedArtifacts.add(relative);
   }
   return {
@@ -689,7 +963,7 @@ if (event.hook_event_name === "PreToolUse") {
     allow = !reason;
   } catch {
     try {
-      await lstat(path4.join(cwd, ".dev-flow", "active.json"));
+      await lstat(path5.join(cwd, ".dev-flow", "active.json"));
       allow = false;
       reason = "DEV_FLOW_WORKFLOW_STATE_UNREADABLE: Active workflow cannot be read safely; run dev_flow_doctor and recover if corrupt";
     } catch (error) {

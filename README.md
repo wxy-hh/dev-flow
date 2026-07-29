@@ -10,6 +10,12 @@ Dev Flow 是面向 **Claude Code** 与 **Codex CLI** 的预构建双宿主插件
 
 更细的契约见 [路线说明](docs/routes.md)、[架构](docs/architecture.md)、[发布](docs/publishing.md)。
 
+## Traceability（1.8.0+）
+
+标准 M/L 的 requirements、implementation plan、coverage matrix 与 standard L rollback units 通过 `dev_flow_record_artifact_with_trace` 原子登记；`dev_flow_get_traceability` 只读查看 pointer、ledger、summary 与 blocker。Markdown 只用于叙述，内容寻址 snapshot 才是事实层，state pointer 是提交点。不要直接写 `.dev-flow/features/*/traceability/**`。
+
+generated status 只由 Core scaffold/refresh；standard L 没有 status 文件，应读取 `dev_flow_status`。阶段 1 没有 review batch 或可执行 rollback，现有 `plan_review` evidence 保持不变。
+
 ---
 
 ## 安装

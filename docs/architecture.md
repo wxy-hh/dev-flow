@@ -31,6 +31,15 @@ Dev Flow 以**一个预构建插件包**同时服务 Claude Code 与 Codex CLI�
 - 验证只对配置的 protected roots 做业务指纹；指纹变化会使 verification、feature-check、logic-complete 失效。  
 - 即使绕过 Skills 直接调 MCP，core 仍拒绝乱序步骤与「抢先」创建未来资产。
 
+## Traceability 事实层（1.8.0+）
+
+- Markdown artifact 是人类可读的**叙述层**；Trace snapshot 才是需求、任务、测试与回撤关系的 Core 事实层。
+- snapshot 按内容寻址、不可变；`state.traceability` pointer 是唯一提交点。通过 `dev_flow_record_artifact_with_trace` 同一 CAS 更新 artifact hash 与 pointer。
+- `dev_flow_get_traceability` 只读返回 pointer、ledger、有效摘要及当前步骤 blocker。任何人不得直接编辑 snapshot、pointer 或 state。
+- generated `status` 由 Core scaffold/refresh，禁止人工 record；standard L 不生成 status 文件，应以 `StatusView` 为准。
+- Host Hook 将 `features/<id>/traceability/**` 视为 MCP 控制路径；当前 pointer 损坏时，`.dev-flow` 与 protected roots 均 fail closed。
+- 阶段 1 不提供 review batch 或可执行 rollback；`plan_review` 继续使用既有 evidence，rollback unit 只验证已登记的 Trace 关系。
+
 ## 需求拷问（grillme，1.1.0+）
 
 标准 M/L 的 `requirements` **步骤内**可含强制 grill 子流程（**不**新增 route step / MCP tool / HUMAN GATE）：

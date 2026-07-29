@@ -9,6 +9,7 @@
 - **1.3.0+** `dev_flow_status` 附 `progress`；artifact allowlist hook；`dev_flow_recover_corrupt_feature`；受限 `standard→light` reclassify
 - **1.4.0+** 风险证据按步骤统一派生并二次校验；`next/status` 暴露 `requiredEvidence` 与 verification freshness；gate 批准词集中管理；verification 可记录 browser 或逐场景 user-signoff 验收
 - **1.7.0+** 原生 gate/grill 控件与一次性文本回退返回统一交互结果；审批依据更新会撤销旧批准；浏览器协助仅为非阻塞建议，money 行为命令仍强制；需要决策和成功完成时发送一次 best-effort 通知
+- **1.8.0+** `dev_flow_record_artifact_with_trace` 原子登记 Trace source，`dev_flow_get_traceability` 只读查看 pointer/ledger/blocker；snapshot 与 state pointer 都是 MCP 控制文件，generated status 仅由 Core 更新，standard L 以 `dev_flow_status` 为准
 - 技能 id 为短名（如 `task`、`plan`）；斜杠为 `/dev-flow:task`；description 保留 `df-*` / `dev-flow-*` 作匹配兼容  
 
 ## Windows 系统提醒
