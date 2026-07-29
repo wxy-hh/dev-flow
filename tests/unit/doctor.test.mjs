@@ -6,6 +6,7 @@ import { createTinyApp, strictProjectConfig } from "../helpers/fixture-repo.mjs"
 import { loadSource } from "../helpers/load-source.mjs";
 
 const store = await loadSource("plugins/dev-flow/src/core/state-store.ts");
+const reviewStore = await loadSource("plugins/dev-flow/src/core/review-store.ts");
 const { collectDoctorReport } = await loadSource("plugins/dev-flow/src/mcp/doctor.ts");
 const pluginRoot = path.resolve("plugins/dev-flow");
 
@@ -84,4 +85,25 @@ test("doctor distinguishes legacy, light, and valid trace-enforced standard feat
     await light.dispose();
     await standard.dispose();
   }
+});
+
+test("doctor validates an enforced review pointer and preserves orphan snapshots as diagnostics", async () => {
+  const fixture = await createTinyApp();
+  try {
+    await store.initProject(fixture.root, strictProjectConfig);
+    let state = await store.startFeature(fixture.root, {
+      featureId: "review", host: "codex", level: "M", topology: "local", execution: "standard", requirements: "provided-confirmed",
+    });
+    const pointer = await reviewStore.writeReviewSnapshot(fixture.root, reviewStore.emptyReviewLedger("review", state.revision + 1));
+    state = await store.mutate(fixture.root, "review", state.revision, "review-pointer-fixture", (draft) => {
+      draft.workflowCapabilities = { trace: 1, review: 1, checkpoints: 0, rollbackExecution: 0 };
+      draft.review = pointer;
+    });
+    let report = await collectDoctorReport(fixture.root, pluginRoot, "1.0.0", ["dev_flow_doctor"]);
+    assert.ok(report.diagnostics.some((item) => item.code === "REVIEW_POINTER_VALID" && item.status === "ok"));
+    const snapshot = path.join(fixture.root, ".dev-flow", "features", "review", state.review.path);
+    await rm(snapshot);
+    report = await collectDoctorReport(fixture.root, pluginRoot, "1.0.0", ["dev_flow_doctor"]);
+    assert.ok(report.diagnostics.some((item) => item.code === "REVIEW_POINTER_INVALID" && item.status === "error"));
+  } finally { await fixture.dispose(); }
 });

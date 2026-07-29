@@ -130,3 +130,11 @@ export function traceEnforcementRequired(
   return normalizeWorkflowCapabilities(capabilities).trace === 1
     && (route === "standard-m" || route === "standard-l");
 }
+
+export function reviewEnforcementRequired(
+  route: RouteId,
+  capabilities: WorkflowCapabilities | undefined,
+): boolean {
+  return normalizeWorkflowCapabilities(capabilities).review === 1
+    && (route === "standard-m" || route === "standard-l");
+}

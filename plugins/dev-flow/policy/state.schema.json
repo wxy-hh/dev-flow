@@ -35,6 +35,28 @@
           }
         }
       }
+    },
+    "review": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "sha256", "revision", "summary"],
+      "properties": {
+        "path": { "type": "string", "pattern": "^review/snapshots/[a-f0-9]{64}\\.json$" },
+        "sha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+        "revision": { "type": "integer", "minimum": 0 },
+        "summary": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["batches", "current", "stale", "open", "complete"],
+          "properties": {
+            "batches": { "type": "integer", "minimum": 0 },
+            "current": { "type": "integer", "minimum": 0 },
+            "stale": { "type": "integer", "minimum": 0 },
+            "open": { "type": "integer", "minimum": 0 },
+            "complete": { "type": "integer", "minimum": 0 }
+          }
+        }
+      }
     }
   }
 }

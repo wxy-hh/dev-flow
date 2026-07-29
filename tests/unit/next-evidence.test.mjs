@@ -12,6 +12,7 @@ const checks = await loadSource("plugins/dev-flow/src/core/feature-check.ts");
 const gates = await loadSource("plugins/dev-flow/src/core/human-gates.ts");
 const next = await loadSource("plugins/dev-flow/src/core/next.ts");
 const status = await loadSource("plugins/dev-flow/src/core/status.ts");
+const reviewStore = await loadSource("plugins/dev-flow/src/core/review-store.ts");
 const config = {
   schemaVersion: 1,
   verification: { commands: [{ id: "unit", command: "node", args: ["-e", "process.exit(0)"], cwd: "." }], behaviorCommands: [] },
@@ -121,8 +122,13 @@ test("a synthetic review:1 feature exposes Core-only plan-review evidence throug
   try {
     let state = await store.readState(fixture.root, "f");
     state = await checks.recordStep(fixture.root, "f", state.revision, "rollback_unit", {});
+    const review = await reviewStore.writeReviewSnapshot(
+      fixture.root,
+      reviewStore.emptyReviewLedger("f", state.revision + 1),
+    );
     state = await store.mutate(fixture.root, "f", state.revision, "test-enable-review", (draft) => {
       draft.workflowCapabilities = { trace: 1, review: 1, checkpoints: 0, rollbackExecution: 0 };
+      draft.review = review;
     });
     assert.deepEqual(await next.nextAction(fixture.root, "f"), { kind: "scaffold-artifact", step: "plan-review" });
 

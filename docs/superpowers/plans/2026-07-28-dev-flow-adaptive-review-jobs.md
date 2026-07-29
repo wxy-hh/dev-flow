@@ -90,7 +90,7 @@ export type ReviewFindingSeverity = "blocking" | "warning" | "note";
 
 **plan-review 合同迁移：**
 
-- Task 1 只定义 capability-aware 合同，唯一发布常量暂保持 `{ trace: 1, review: 0, checkpoints: 0, rollbackExecution: 0 }`；Task 2 在能原子创建不可变 review pointer 时才把 `review` 升为 `1`。`startFeature` 始终复制当时常量，绝不回写旧 feature。
+- Task 1–3 只定义 capability-aware 合同、store 与 MCP 工具，唯一发布常量保持 `{ trace: 1, review: 0, checkpoints: 0, rollbackExecution: 0 }`；Task 4 在 batch/finding/门禁能同一 CAS fail-closed 后，才把 `review` 升为 `1` 并原子创建 pointer。`startFeature` 始终复制当时常量，绝不回写旧 feature。
 - standard M：`plan-review` 从 `absent` 转为 `generated`。
 - standard L：`plan-review` 从 `editable` 转为 `generated`。
 - `routeDefinitionForFeature` 只对 `review: 1` 应用 transition；旧 feature 继续原合同。
@@ -121,7 +121,7 @@ requiredEvidenceForStep(route, riskLabels, step, workflowCapabilities): Required
 - [x] 写 `critical_correctness` 不新增角色、所有 job depth 为 full、空 findings 仍可完成的测试。
 - [x] 写 standard M/L 的 plan-review transition 和 active `review: 0` feature 保持旧合同的测试。
 - [x] 写 `requiredEvidenceForStep` / `missingRequiredEvidence` 按 review capability 切换字段的测试。
-- [x] 写合成 `review: 1` 合同与 `review: 0` active feature 保持旧合同、不可隐式升级的测试；Task 2 再覆盖发布后新 feature 固定 `review: 1`。
+- [x] 写合成 `review: 1` 合同与 `review: 0` active feature 保持旧合同、不可隐式升级的测试；Task 4 再覆盖发布后新 feature 固定 `review: 1`。
 - [x] 写 2a 无论提交多少 executor/context 字符串都只能得到 `multi-perspective` 的测试。
 - [x] 写调用方不能传入/伪造 roles、depth、basisHash 或 assuranceLevel，且 Core 派生 roles/depth 的测试。
 - [x] 运行 `node --test tests/unit/review-policy.test.mjs`，确认红灯。
@@ -156,16 +156,18 @@ finding: open → resolved-in-successor | risk-accepted
 
 每个 batch 保存 Core 计算的完整 `ReviewBasis` hash；每个 job 保存 role、review depth、job package hash、结构化完成记录、状态、租约和诊断元数据。package 与 ledger/event 都是内容寻址不可变 snapshot；state 只保存 CAS current pointer/索引。`executorId`、`contextId` 只用于排障，不参与 2a assurance 计算。
 
+**发布时序：** Task 2–3 可直接测试 review core/MCP，但全局 capability 仍为 `review: 0`；Task 4 交付 blocking gate 后才启用 `review: 1`。避免在尚未有 Core 门禁时把 generated `plan-review` 发布给正常路线。
+
 **步骤：**
 
-- [ ] 写 immutable package、hash/feature/batch/revision 校验、job 不读取 sibling findings、basis mismatch 与 CAS 测试。
-- [ ] 写发布后新 feature 固定 `review: 1`、legacy `review: 0` 可省略 pointer、`review: 1` 缺失或形状错误 pointer fail-closed 的测试。
-- [ ] 写重复 create/claim/submit 的幂等语义、claim 60 分钟租约回收、跨 batch job ID 和 stale batch 测试。
-- [ ] 运行 `node --test tests/unit/review-jobs.test.mjs`，确认红灯。
-- [ ] 实现 batch 创建、job claim/submit 与原子持久化。
-- [ ] 从 artifact、with-trace 登记和 reclassify/state 变化调用统一失效准备器；验证任一 basis 写入在同一 CAS 使整批 stale，读取/门禁仍 fail-closed 复核。
-- [ ] 让 Hook 与 doctor 读取、校验 review pointer；current snapshot 缺失/篡改必须 fail-closed，未引用 snapshot 仅诊断 warning。
-- [ ] 提交：`feat(dev-flow): implement immutable review batches`
+- [x] 写 immutable package、hash/feature/batch/revision 校验、job 不读取 sibling findings、basis mismatch 与 CAS 测试。
+- [x] 写 legacy `review: 0` 可省略 pointer、合成 `review: 1` 缺失或形状错误 pointer fail-closed 的测试；Task 4 再覆盖发布后新 feature 固定 `review: 1`。
+- [x] 写重复 create/claim/submit 的幂等语义、claim 60 分钟租约回收、跨 batch job ID 和 stale batch 测试。
+- [x] 运行 `node --test tests/unit/review-jobs.test.mjs`，确认红灯。
+- [x] 实现 batch 创建、job claim/submit 与原子持久化。
+- [x] 从 artifact、with-trace 登记和 reclassify/state 变化调用统一失效准备器；验证任一 basis 写入在同一 CAS 使整批 stale，读取/门禁仍 fail-closed 复核。
+- [x] 让 Hook 与 doctor 读取、校验 review pointer；current snapshot 缺失/篡改必须 fail-closed，未引用 snapshot 仅诊断 warning。
+- [x] 提交：`feat(dev-flow): implement immutable review batches`
 
 ### 任务 3：暴露 2a 阶段 MCP 工具，默认执行多视角审查
 

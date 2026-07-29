@@ -7,6 +7,7 @@ import { loadSource } from "../helpers/load-source.mjs";
 
 const store = await loadSource("plugins/dev-flow/src/core/state-store.ts");
 const artifacts = await loadSource("plugins/dev-flow/src/core/artifacts.ts");
+const reviewStore = await loadSource("plugins/dev-flow/src/core/review-store.ts");
 const guard = await loadSource("plugins/dev-flow/src/hosts/adapter-policy.ts");
 
 async function startStandard(root) {
@@ -82,6 +83,23 @@ test("corrupt current Trace keeps .dev-flow and protected roots fail-closed", as
     );
     assert.match(
       await guard.preToolBlockReason(fixture.root, { tool_name: "Write", tool_input: { file_path: ".dev-flow/features/feature/需求文档.md" } }),
+      /DEV_FLOW_WORKFLOW_STATE_UNREADABLE/,
+    );
+  } finally { await fixture.dispose(); }
+});
+
+test("corrupt current Review snapshot keeps protected writes fail-closed", async () => {
+  const fixture = await createTinyApp();
+  try {
+    let state = await startStandard(fixture.root);
+    const pointer = await reviewStore.writeReviewSnapshot(fixture.root, reviewStore.emptyReviewLedger("feature", state.revision + 1));
+    state = await store.mutate(fixture.root, "feature", state.revision, "review-pointer-fixture", (draft) => {
+      draft.workflowCapabilities = { trace: 1, review: 1, checkpoints: 0, rollbackExecution: 0 };
+      draft.review = pointer;
+    });
+    await writeFile(path.join(fixture.root, ".dev-flow", "features", "feature", state.review.path), "corrupt review snapshot\n");
+    assert.match(
+      await guard.preToolBlockReason(fixture.root, { tool_name: "Write", tool_input: { file_path: "src/counter.js" } }),
       /DEV_FLOW_WORKFLOW_STATE_UNREADABLE/,
     );
   } finally { await fixture.dispose(); }

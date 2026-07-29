@@ -12,6 +12,7 @@ import { parseTraceSourceBlocks } from "./traceability-anchors.js";
 import { applyTraceDelta } from "./traceability.js";
 import { readProjectConfigSnapshot, readTraceability, type TraceStoreOptions, writeTraceSnapshot } from "./traceability-store.js";
 import { clearInteractionsByKind, clearInteractionsForTarget } from "./user-interactions.js";
+import { prepareReviewInvalidation } from "./review-store.js";
 
 const names: Record<string, string> = {
   status: "状态文档.md",
@@ -178,6 +179,9 @@ export async function recordArtifactWithTrace(
     const artifactChanged = artifact.sha256 !== artifactSha256;
     const traceChanged = JSON.stringify(currentLedger.nodes) !== JSON.stringify(ledger.nodes)
       || JSON.stringify(currentLedger.edges) !== JSON.stringify(ledger.edges);
+    const reviewPointer = artifactChanged || traceChanged
+      ? await prepareReviewInvalidation(root, current, nextStateRevision)
+      : undefined;
     eventData = {
       kind: artifactKind,
       artifactChanged,
@@ -188,6 +192,7 @@ export async function recordArtifactWithTrace(
       mutate: (draft) => {
         draft.artifacts[artifactKind] = { ...artifact, sha256: artifactSha256 };
         draft.traceability = pointer;
+        if (reviewPointer) draft.review = reviewPointer;
         if (artifactChanged || traceChanged) {
           invalidateArtifactDependents(draft, artifactKind, artifactChanged ? "artifact-changed" : "trace-changed");
         }

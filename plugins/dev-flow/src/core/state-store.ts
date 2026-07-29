@@ -2,10 +2,11 @@ import { randomUUID, createHash } from "node:crypto";
 import { access, mkdir, open, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { hostname } from "node:os";
 import path from "node:path";
-import { normalizeWorkflowCapabilities, routeDefinition, routeDefinitionForFeature, traceEnforcementRequired } from "../policy/contract.js";
+import { normalizeWorkflowCapabilities, reviewEnforcementRequired, routeDefinition, routeDefinitionForFeature, traceEnforcementRequired } from "../policy/contract.js";
 import { selectRoute } from "../policy/route.js";
 import { SUPPORTED_WORKFLOW_CAPABILITIES, type Classification, type ClassificationInput, type RouteId, type WorkflowCapabilities } from "../policy/types.js";
 import type { TraceabilityPointer } from "../policy/traceability.js";
+import type { ReviewPointer } from "../policy/review.js";
 import { DevFlowError } from "./errors.js";
 import { captureDeliveryBaseline, type DeliveryBaseline, type DeliverySnapshot } from "./delivery-snapshot.js";
 import { fingerprintProtectedRoots } from "./fingerprint.js";
@@ -13,6 +14,7 @@ import { validateProjectConfig, type ProjectConfig } from "./project-config.js";
 import { emptyTraceabilityLedger } from "./traceability.js";
 import { inspectCurrentTrace } from "./traceability-gates.js";
 import { readProjectConfigSnapshot, writeTraceSnapshot } from "./traceability-store.js";
+import { emptyReviewLedger, prepareReviewInvalidation, writeReviewSnapshot } from "./review-store.js";
 
 export type Lifecycle = "active" | "paused" | "finalized" | "abandoned";
 export interface FeatureState {
@@ -25,6 +27,8 @@ export interface FeatureState {
   workflowCapabilities?: WorkflowCapabilities;
   /** Immutable snapshot pointer; legacy and non-enforced routes may omit it. */
   traceability?: TraceabilityPointer;
+  /** Immutable review snapshot pointer; legacy and non-enforced routes may omit it. */
+  review?: ReviewPointer;
   featureCheck: { passed?: boolean; fingerprint?: string }; businessFingerprint?: string; startBusinessFingerprint?: string;
   deliveryBaseline?: DeliveryBaseline; deliverySnapshot?: DeliverySnapshot;
   blockingFindings: Array<{ blocking: boolean; message: string }>;
@@ -54,6 +58,20 @@ export function validateFeatureState(value: unknown): asserts value is FeatureSt
   }
   if (traceEnforcementRequired(state.route as RouteId, state.workflowCapabilities) && !state.traceability) {
     throw new DevFlowError("INVALID_STATE_SCHEMA", "trace-enforced standard feature requires a traceability pointer");
+  }
+  if (state.review !== undefined) {
+    const pointer = state.review;
+    if (typeof pointer !== "object" || pointer === null
+      || !/^review\/snapshots\/[a-f0-9]{64}\.json$/.test(pointer.path)
+      || !/^[a-f0-9]{64}$/.test(pointer.sha256)
+      || pointer.path !== `review/snapshots/${pointer.sha256}.json`
+      || !Number.isInteger(pointer.revision) || pointer.revision < 0
+      || !pointer.summary || !["batches", "current", "stale", "open", "complete"].every((key) => Number.isInteger(pointer.summary[key as keyof typeof pointer.summary]) && pointer.summary[key as keyof typeof pointer.summary] >= 0)) {
+      throw new DevFlowError("INVALID_STATE_SCHEMA", "review pointer is invalid");
+    }
+  }
+  if (reviewEnforcementRequired(state.route as RouteId, state.workflowCapabilities) && !state.review) {
+    throw new DevFlowError("INVALID_STATE_SCHEMA", "review-enabled standard feature requires a review pointer");
   }
 }
 
@@ -247,6 +265,9 @@ export async function startFeature(
           options.snapshotFault ? { fault: options.snapshotFault } : {},
         );
       }
+      if (reviewEnforcementRequired(route, workflowCapabilities)) {
+        state.review = await writeReviewSnapshot(root, emptyReviewLedger(id, 0));
+      }
       validateFeatureState(state);
       await options.fault?.("before-state-commit");
       await writeAtomic(statePath(root, id), state);
@@ -294,6 +315,8 @@ export async function mutate(
 export interface PreparedFeatureMutation {
   mutate: (draft: FeatureState) => void | Promise<void>;
   eventData?: unknown | (() => unknown);
+  /** A lock-protected idempotent retry returns current state without a fake revision/event. */
+  unchanged?: boolean;
 }
 
 export interface PreparedMutationOptions {
@@ -335,6 +358,7 @@ async function mutatePreparedLocked(
   const state = await readState(root, id);
   if (state.revision !== expectedRevision) throw new DevFlowError("STATE_REVISION_CONFLICT", "state revision changed", { currentRevision: state.revision });
   const prepared = await prepare(state, state.revision + 1);
+  if (prepared.unchanged) return state;
   await prepared.mutate(state);
   state.revision += 1;
   validateFeatureState(state);
@@ -651,10 +675,19 @@ export async function reclassifyFeature(
         return writeTraceSnapshot(root, emptyTraceabilityLedger(id, nextStateRevision, configSnapshot.sha256));
       })()
       : undefined;
+    const preparedReview = reviewEnforcementRequired(selectedAtLock.route, current.workflowCapabilities) && !current.review
+      ? await writeReviewSnapshot(root, emptyReviewLedger(id, nextStateRevision))
+      : undefined;
+    const reviewInvalidation = current.review
+      && (selectedAtLock.route !== current.route || JSON.stringify(selectedAtLock.classification) !== JSON.stringify(current.classification))
+      ? await prepareReviewInvalidation(root, current, nextStateRevision)
+      : undefined;
     return { mutate: async (draft) => {
     if (draft.lifecycle !== "active") throw new DevFlowError("INVALID_LIFECYCLE", "only an active feature can be reclassified");
     const selected = selectRoute(next);
     if (preparedTraceability) draft.traceability = preparedTraceability;
+    if (preparedReview) draft.review = preparedReview;
+    if (reviewInvalidation) draft.review = reviewInvalidation;
     const before = draft.classification;
     const after = selected.classification;
     const downgrade = isDowngrade(before, after);
