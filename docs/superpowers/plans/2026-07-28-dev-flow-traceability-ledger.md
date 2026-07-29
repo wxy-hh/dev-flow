@@ -838,7 +838,7 @@ traceability?: TraceabilityPointer;
 
 **步骤：**
 
-- [ ] **步骤 1：写 snapshot 红灯测试。**
+- [x] **步骤 1：写 snapshot 红灯测试。**
 
 ```js
 import assert from "node:assert/strict";
@@ -878,9 +878,9 @@ test("snapshot is immutable and addressed by canonical content", async (t) => {
 });
 ```
 
-- [ ] **步骤 2：写提交点与非 Trace 金丝雀红灯测试。** 在三个 `TraceStoreFaultPoint` 和两个 prepared mutation fault point 逐一注入错误；`before-state-commit` 以前 state revision/pointer 不变，`after-snapshot-rename` 允许既有 feature 出现孤儿 snapshot；`after-state-commit` 必须返回 `STATE_COMMITTED_PROJECTION_FAILED`，且 details 精确包含 `{ committed: true, currentRevision }`，不得声称回滚。另用普通 `mutate()` 断言 revision、status hash、event 和 active pointer 与提交 state revision 一致，并注入 status/event/active 投影失败验证 state 已提交且错误列出精确 `failedProjections`。standard start 在 state 首次提交前失败时必须清理本次新建的 feature 目录和 snapshot，不能留下没有 state 的 feature。
+- [x] **步骤 2：写提交点与非 Trace 金丝雀红灯测试。** 在三个 `TraceStoreFaultPoint` 和两个 prepared mutation fault point 逐一注入错误；`before-state-commit` 以前 state revision/pointer 不变，`after-snapshot-rename` 允许既有 feature 出现孤儿 snapshot；`after-state-commit` 必须返回 `STATE_COMMITTED_PROJECTION_FAILED`，且 details 精确包含 `{ committed: true, currentRevision }`，不得声称回滚。另用普通 `mutate()` 断言 revision、status hash、event 和 active pointer 与提交 state revision 一致，并注入 status/event/active 投影失败验证 state 已提交且错误列出精确 `failedProjections`。standard start 在 state 首次提交前失败时必须清理本次新建的 feature 目录和 snapshot，不能留下没有 state 的 feature。
 
-- [ ] **步骤 3：写 start/reclassify 红灯测试。**
+- [x] **步骤 3：写 start/reclassify 红灯测试。**
 
 ```js
 test("standard starts with a pointer while light creates it lazily", async (t) => {
@@ -927,9 +927,9 @@ test("standard starts with a pointer while light creates it lazily", async (t) =
 
 另写 standard→light 保留相同 pointer、停止强制；legacy 无 capability state 进入任何现有路径都不被升级门禁锁死。测试必须直接断言 `reclassifyFeature` 后 legacy state 仍没有 `workflowCapabilities`，而不是只断言 Trace 门禁恰好未触发。
 
-- [ ] **步骤 4：写 state Schema 与调用点收口红灯测试。** `state-schema-contract` 核对 JSON Schema 的 capability/pointer 字段与 `validateFeatureState` fixture；`route-contract-consumers` 静态检查 artifacts、state-store、next、status、step-order、feature-check、human-gates，禁止 stateful 分支重新调用裸 `routeDefinition(state.route)`。
+- [x] **步骤 4：写 state Schema 与调用点收口红灯测试。** `state-schema-contract` 核对 JSON Schema 的 capability/pointer 字段与 `validateFeatureState` fixture；`route-contract-consumers` 静态检查 artifacts、state-store、next、status、step-order、feature-check、human-gates，禁止 stateful 分支重新调用裸 `routeDefinition(state.route)`。
 
-- [ ] **步骤 5：运行红灯。**
+- [x] **步骤 5：运行红灯。**
 
 ```bash
 node --test tests/unit/traceability-store.test.mjs \
@@ -941,13 +941,13 @@ node --test tests/unit/traceability-store.test.mjs \
 
 预期：FAIL，原因是 snapshot store 和 state 字段尚不存在。
 
-- [ ] **步骤 6：实现 snapshot store。** `readTraceability` 校验安全相对路径、文件 hash、schemaVersion、featureId、`pointer.revision === ledger.revision`、`ledger.stateRevision <= state.revision`、pointer/ledger summary 与派生 edges；写入时 `ledger.stateRevision` 必须等于即将提交的 state revision。任一不一致抛 `TRACEABILITY_INTEGRITY_FAILED`。
+- [x] **步骤 6：实现 snapshot store。** `readTraceability` 校验安全相对路径、文件 hash、schemaVersion、featureId、`pointer.revision === ledger.revision`、`ledger.stateRevision <= state.revision`、pointer/ledger summary 与派生 edges；写入时 `ledger.stateRevision` 必须等于即将提交的 state revision。任一不一致抛 `TRACEABILITY_INTEGRITY_FAILED`。
 
-- [ ] **步骤 7：重构统一 CAS 提交。** 在 `state-store.ts` 增加仅供 Core 使用的 locked prepared mutation helper；现有 `mutate` 调用它。status 内容/hash 在提交前确定但文件在提交后写入，snapshot 在项目级锁内准备，`state.json` 最后提交。提交前失败保持旧 state；提交后 status/event/active 问题统一抛 `STATE_COMMITTED_PROJECTION_FAILED`，details 为 `{ committed: true, currentRevision, failedProjections }`。
+- [x] **步骤 7：重构统一 CAS 提交。** 在 `state-store.ts` 增加仅供 Core 使用的 locked prepared mutation helper；现有 `mutate` 调用它。status 内容/hash 在提交前确定但文件在提交后写入，snapshot 在项目级锁内准备，`state.json` 最后提交。提交前失败保持旧 state；提交后 status/event/active 问题统一抛 `STATE_COMMITTED_PROJECTION_FAILED`，details 为 `{ committed: true, currentRevision, failedProjections }`。
 
-- [ ] **步骤 8：实现 start/reclassify 与有效合同收口。** 只有 `startFeature` 为新 feature 固定 capability；`reclassifyFeature` 不给 legacy state 补 stamp。standard 启动和 trace:1 light→standard 先准备空 snapshot，再提交 route/pointer；legacy trace:0 升到 standard 仍不创建 pointer。standard 首次 state 提交前失败时，只清理本次调用新建的 feature 目录；不得删除调用前已存在的路径。standard→light 不删 snapshot/pointer。同步迁移所有 stateful contract 消费方，并让 `applyRouteTransition` 使用前后 effective artifact 并集。
+- [x] **步骤 8：实现 start/reclassify 与有效合同收口。** 只有 `startFeature` 为新 feature 固定 capability；`reclassifyFeature` 不给 legacy state 补 stamp。standard 启动和 trace:1 light→standard 先准备空 snapshot，再提交 route/pointer；legacy trace:0 升到 standard 仍不创建 pointer。standard 首次 state 提交前失败时，只清理本次调用新建的 feature 目录；不得删除调用前已存在的路径。standard→light 不删 snapshot/pointer。同步迁移所有 stateful contract 消费方，并让 `applyRouteTransition` 使用前后 effective artifact 并集。
 
-- [ ] **步骤 9：运行测试。**
+- [x] **步骤 9：运行测试。**
 
 ```bash
 node --test tests/unit/traceability-store.test.mjs \
@@ -964,7 +964,7 @@ npm run test:interop
 
 预期：PASS；capability 开始落盘时，所有 stateful route 消费方已经切到有效合同，普通 mutation 与全部现有 source-based 路线没有已知回归。
 
-- [ ] **步骤 10：提交任务 4。**
+- [x] **步骤 10：提交任务 4。** 已对齐 commit `41f5ea2`（`feat(dev-flow): persist traceability snapshots and CAS commit`）。
 
 ```bash
 git add plugins/dev-flow/src/core/traceability-store.ts \
