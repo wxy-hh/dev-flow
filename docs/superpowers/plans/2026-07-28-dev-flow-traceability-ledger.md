@@ -616,7 +616,7 @@ export const ALLOWED_TRACE_KINDS = {
 
 **步骤：**
 
-- [ ] **步骤 1：写 delta 来源绑定和 tombstone 红灯测试。**
+- [x] **步骤 1：写 delta 来源绑定和 tombstone 红灯测试。**
 
 ```js
 import assert from "node:assert/strict";
@@ -677,11 +677,11 @@ test("delta is a complete source replacement and caller cannot reuse tombstones"
 });
 ```
 
-- [ ] **步骤 2：写精确失效红灯测试。** 独立 `test()` 构造两个 REQ/AC、两个 TASK/TEST/RU；只改变 `REQ-001` 区块，断言关联 TASK/TEST/RU stale，而 `REQ-002` 的闭包保持 current。
+- [x] **步骤 2：写精确失效红灯测试。** 独立 `test()` 构造两个 REQ/AC、两个 TASK/TEST/RU；只改变 `REQ-001` 区块，断言关联 TASK/TEST/RU stale，而 `REQ-002` 的闭包保持 current。
 
-- [ ] **步骤 3：写不变量、slice 与 Schema 契约红灯测试。** 把 tombstone、stale、graph invariants 和 slice 分成独立 `test()`；覆盖错误前缀、重复 ID、悬空 parent/covers/verifies、孤儿 TASK、TASK 缺 RU、RU task 不对称、RU DAG 环、未知 command ID、调用方 edges/source/status 字段和 project config digest 变化。另断言 standard L 的 TASK→RU deferred reference 在 partial 模式合法、在 complete 模式返回 `TRACE_GRAPH_INVALID`。Schema 契约测试核对五种 node variant、`additionalProperties: false` 和调用方禁用字段，不把 JSON Schema 当运行时第二校验器。
+- [x] **步骤 3：写不变量、slice 与 Schema 契约红灯测试。** 把 tombstone、stale、graph invariants 和 slice 分成独立 `test()`；覆盖错误前缀、重复 ID、悬空 parent/covers/verifies、孤儿 TASK、TASK 缺 RU、RU task 不对称、RU DAG 环、未知 command ID、调用方 edges/source/status 字段和 project config digest 变化。另断言 standard L 的 TASK→RU deferred reference 在 partial 模式合法、在 complete 模式返回 `TRACE_GRAPH_INVALID`。Schema 契约测试核对五种 node variant、`additionalProperties: false` 和调用方禁用字段，不把 JSON Schema 当运行时第二校验器。
 
-- [ ] **步骤 4：运行红灯。**
+- [x] **步骤 4：运行红灯。**
 
 ```bash
 node --test tests/unit/traceability-graph.test.mjs \
@@ -690,9 +690,9 @@ node --test tests/unit/traceability-graph.test.mjs \
 
 预期：FAIL，原因是 `core/traceability.ts` 不存在。
 
-- [ ] **步骤 5：实现纯函数。** `applyTraceDelta` 不执行文件 I/O；先验证输入集合与锚点，再生成 candidate nodes、tombstone 和 stale 闭包，最后调用 `validateTraceGraph`、派生排序 edges 与 summary。任何异常都不修改传入 ledger。
+- [x] **步骤 5：实现纯函数。** `applyTraceDelta` 不执行文件 I/O；先验证输入集合与锚点，再生成 candidate nodes、tombstone 和 stale 闭包，最后调用 `validateTraceGraph`、派生排序 edges 与 summary。任何异常都不修改传入 ledger。
 
-- [ ] **步骤 6：实现阶段 slice。** 使用下表作为唯一映射：
+- [x] **步骤 6：实现阶段 slice。** 使用下表作为唯一映射：
 
 | step | 要求 |
 | --- | --- |
@@ -704,7 +704,7 @@ node --test tests/unit/traceability-graph.test.mjs \
 
 RU 的 `verificationConfigSha256` 与当前 project config 不同，统一作为 `TRACE_SLICE_STALE`。
 
-- [ ] **步骤 7：运行测试和类型检查。**
+- [x] **步骤 7：运行测试和类型检查。**
 
 ```bash
 node --test tests/unit/traceability-graph.test.mjs
@@ -715,7 +715,7 @@ npm run test:unit
 
 预期：PASS。
 
-- [ ] **步骤 8：提交任务 3。**
+- [x] **步骤 8：提交任务 3。**
 
 ```bash
 git add plugins/dev-flow/policy/traceability.schema.json \

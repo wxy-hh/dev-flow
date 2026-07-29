@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "dev-flow/traceability.schema.json",
+  "$defs": {
+    "traceDelta": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["nodes"],
+      "properties": { "nodes": { "type": "array", "items": { "$ref": "#/$defs/traceNodeInput" } } }
+    },
+    "traceNodeInput": {
+      "oneOf": [
+        { "type": "object", "additionalProperties": false, "required": ["kind", "id"], "properties": { "kind": { "const": "requirement" }, "id": { "pattern": "^REQ-[0-9]{3,}$" } } },
+        { "type": "object", "additionalProperties": false, "required": ["kind", "id", "parentRequirement"], "properties": { "kind": { "const": "acceptance-criterion" }, "id": { "pattern": "^AC-[0-9]{3,}$" }, "parentRequirement": { "pattern": "^REQ-[0-9]{3,}$" } } },
+        { "type": "object", "additionalProperties": false, "required": ["kind", "id", "covers", "rollbackUnit"], "properties": { "kind": { "const": "task" }, "id": { "pattern": "^TASK-[0-9]{3,}$" }, "covers": { "type": "array" }, "rollbackUnit": { "pattern": "^RU-[0-9]{3,}$" } } },
+        { "type": "object", "additionalProperties": false, "required": ["kind", "id", "verifies"], "properties": { "kind": { "const": "test" }, "id": { "pattern": "^TEST-[0-9]{3,}$" }, "verifies": { "type": "array" } } },
+        { "type": "object", "additionalProperties": false, "required": ["kind", "id", "tasks", "dependsOn", "fileScope", "covers", "forwardVerification", "rollbackVerification"], "properties": { "kind": { "const": "rollback" }, "id": { "pattern": "^RU-[0-9]{3,}$" }, "tasks": { "type": "array" }, "dependsOn": { "type": "array" }, "fileScope": { "type": "array" }, "covers": { "type": "array" }, "forwardVerification": { "type": "array" }, "rollbackVerification": { "type": "array" } } }
+      ]
+    }
+  }
+}
