@@ -29,6 +29,63 @@ test("reclassification only becomes stricter and invalidates downstream evidence
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 
+test("Trace-capable standard features create and retain pointers while legacy state remains unstamped", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "dev-flow-reclassify-trace-"));
+  try {
+    await store.initProject(root, config);
+    const standard = await store.startFeature(root, {
+      featureId: "standard", level: "M", topology: "local", execution: "standard", requirements: "provided-confirmed", host: "codex",
+    });
+    assert.equal(standard.workflowCapabilities.trace, 1);
+    assert.ok(standard.traceability);
+
+    const light = await store.startFeature(root, {
+      featureId: "light", activation: "paused", level: "M", topology: "local", execution: "light", requirements: "provided-confirmed", host: "codex",
+    });
+    assert.equal(light.traceability, undefined);
+    await store.switchActive(root, "standard", "light", "test trace reclassify");
+    const raised = await store.reclassifyFeature(root, "light", light.revision + 1, {
+      level: "M", topology: "local", execution: "standard", requirements: "provided-confirmed",
+    }, "risk increased");
+    assert.ok(raised.traceability);
+    const pointer = raised.traceability.sha256;
+    const lowered = await store.reclassifyFeature(root, "light", raised.revision, {
+      level: "M", topology: "local", execution: "light", requirements: "provided-confirmed",
+    }, "safe enough", "用户要求切换为 light");
+    assert.equal(lowered.traceability.sha256, pointer);
+
+    const legacyFile = path.join(root, ".dev-flow/features/light/state.json");
+    const legacy = JSON.parse(await readFile(legacyFile, "utf8"));
+    delete legacy.workflowCapabilities;
+    delete legacy.traceability;
+    legacy.route = "light-m";
+    legacy.classification = {
+      level: "M",
+      topology: "local",
+      execution: "light",
+      riskLabels: [],
+      acceptanceAssistSuggested: false,
+    };
+    legacy.steps = {};
+    legacy.humanGates = {};
+    legacy.artifacts = {};
+    legacy.revision = 0;
+    await writeFile(legacyFile, `${JSON.stringify(legacy, null, 2)}\n`);
+    const legacyState = await store.readState(root, "light");
+    assert.equal(legacyState.workflowCapabilities, undefined);
+    assert.equal(legacyState.traceability, undefined);
+    const legacyRaised = await store.reclassifyFeature(root, "light", legacyState.revision, {
+      level: "M",
+      topology: "local",
+      execution: "standard",
+      requirements: "provided-confirmed",
+    }, "legacy upgrade must not invent capabilities");
+    assert.equal(legacyRaised.workflowCapabilities, undefined);
+    assert.equal(legacyRaised.traceability, undefined);
+    assert.equal(legacyRaised.route, "standard-m");
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
 test("standard-M can downgrade to light-M with userEvidence before implementation approval", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "dev-flow-reclassify-down-"));
   try {

@@ -14,6 +14,13 @@ test("Trace schema documents five closed caller node variants", async () => {
     assert.equal(variant.additionalProperties, false);
     assert.ok(variant.required.includes("kind"));
     assert.ok(variant.required.includes("id"));
+    assert.equal(variant.properties.id.type, "string");
   }
+  const task = schema.$defs.traceNodeInput.oneOf.find((variant) => variant.properties.kind.const === "task");
+  const rollback = schema.$defs.traceNodeInput.oneOf.find((variant) => variant.properties.kind.const === "rollback");
+  assert.equal(task.properties.covers.items.type, "string");
+  assert.equal(task.properties.covers.uniqueItems, true);
+  assert.equal(rollback.properties.tasks.items.type, "string");
+  assert.equal(rollback.properties.tasks.uniqueItems, true);
   assert.equal(schema.$defs.traceDelta.additionalProperties, false);
 });

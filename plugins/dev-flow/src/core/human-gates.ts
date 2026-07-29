@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { routeDefinition } from "../policy/contract.js";
+import { routeDefinitionForFeature } from "../policy/contract.js";
 import { DevFlowError } from "./errors.js";
 import {
   gateApprovalPhrases,
@@ -52,7 +52,7 @@ export async function presentGate(
     if (state.lifecycle !== "active") {
       throw new DevFlowError("INVALID_LIFECYCLE", "gate requires active feature");
     }
-    if (!routeDefinition(state.route).orderedSteps.includes(selectedGate)) {
+    if (!routeDefinitionForFeature(state.route, state.workflowCapabilities).orderedSteps.includes(selectedGate)) {
       throw new DevFlowError("INVALID_GATE", selectedGate);
     }
     if (state.humanGates[selectedGate]) {

@@ -1,4 +1,4 @@
-import { routeDefinition } from "../policy/contract.js";
+import { routeDefinitionForFeature } from "../policy/contract.js";
 import {
   missingRequiredEvidence,
   requiredEvidenceForStep,
@@ -49,7 +49,7 @@ export async function recordStep(
     if (state.lifecycle !== "active") {
       throw new DevFlowError("INVALID_LIFECYCLE", "only active features can record steps");
     }
-    const route = routeDefinition(state.route);
+    const route = routeDefinitionForFeature(state.route, state.workflowCapabilities);
     if (["requirement_confirmation", "implementation_approval", "verification", "feature_check", "finalize"].includes(step)
       || !route.orderedSteps.includes(step)) {
       throw new DevFlowError("INVALID_STEP", step);
@@ -99,7 +99,7 @@ export async function featureCheck(
     if (state.verification.verifiedFingerprint !== state.businessFingerprint) {
       throw new DevFlowError("VERIFICATION_STALE", "protected files changed or verification did not pass");
     }
-    const orderedSteps = routeDefinition(state.route).orderedSteps;
+    const orderedSteps = routeDefinitionForFeature(state.route, state.workflowCapabilities).orderedSteps;
     const featureCheckIndex = orderedSteps.indexOf("feature_check");
     for (const step of orderedSteps.slice(0, featureCheckIndex)) {
       const required = requiredEvidenceForStep(state.route, state.classification.riskLabels, step);
@@ -130,7 +130,7 @@ export async function finalize(
   return mutate(root, id, expectedRevision, "finalized", async (state) => {
     await assertRequirementsGrillSatisfied(root, id, state);
     assertVerificationWasNotInvalidated(state);
-    const route = routeDefinition(state.route);
+    const route = routeDefinitionForFeature(state.route, state.workflowCapabilities);
     assertCurrentStep(state, "finalize");
     if (route.featureCheckRequired
       && (!state.featureCheck.passed || state.featureCheck.fingerprint !== state.businessFingerprint)) {

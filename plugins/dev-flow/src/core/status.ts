@@ -1,6 +1,6 @@
 import { readFile } from "node:fs/promises";
 import path from "node:path";
-import { routeDefinition } from "../policy/contract.js";
+import { routeDefinitionForFeature } from "../policy/contract.js";
 import type { NextAction, RequiredEvidence } from "../policy/types.js";
 import { DevFlowError } from "./errors.js";
 import { gateReplyHint, type GateId } from "./gate-approval.js";
@@ -58,7 +58,7 @@ export async function buildProgress(
   state: FeatureState,
   action: NextAction,
 ): Promise<Progress> {
-  const ordered = routeDefinition(state.route).orderedSteps;
+  const ordered = routeDefinitionForFeature(state.route, state.workflowCapabilities).orderedSteps;
   const stepTotal = ordered.length;
   let currentStep: string | undefined;
   let stepIndex = stepTotal;

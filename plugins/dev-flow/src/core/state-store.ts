@@ -2,13 +2,16 @@ import { randomUUID, createHash } from "node:crypto";
 import { access, mkdir, open, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { hostname } from "node:os";
 import path from "node:path";
-import { routeDefinition } from "../policy/contract.js";
+import { normalizeWorkflowCapabilities, routeDefinition, routeDefinitionForFeature, traceEnforcementRequired } from "../policy/contract.js";
 import { selectRoute } from "../policy/route.js";
-import type { Classification, ClassificationInput, RouteId, WorkflowCapabilities } from "../policy/types.js";
+import { SUPPORTED_WORKFLOW_CAPABILITIES, type Classification, type ClassificationInput, type RouteId, type WorkflowCapabilities } from "../policy/types.js";
+import type { TraceabilityPointer } from "../policy/traceability.js";
 import { DevFlowError } from "./errors.js";
 import { captureDeliveryBaseline, type DeliveryBaseline, type DeliverySnapshot } from "./delivery-snapshot.js";
 import { fingerprintProtectedRoots } from "./fingerprint.js";
 import { validateProjectConfig, type ProjectConfig } from "./project-config.js";
+import { emptyTraceabilityLedger } from "./traceability.js";
+import { readProjectConfigSnapshot, writeTraceSnapshot } from "./traceability-store.js";
 
 export type Lifecycle = "active" | "paused" | "finalized" | "abandoned";
 export interface FeatureState {
@@ -19,6 +22,8 @@ export interface FeatureState {
   interactions?: Record<string, unknown>;
   /** Optional so active features written before traceability capabilities remain readable. */
   workflowCapabilities?: WorkflowCapabilities;
+  /** Immutable snapshot pointer; legacy and non-enforced routes may omit it. */
+  traceability?: TraceabilityPointer;
   featureCheck: { passed?: boolean; fingerprint?: string }; businessFingerprint?: string; startBusinessFingerprint?: string;
   deliveryBaseline?: DeliveryBaseline; deliverySnapshot?: DeliverySnapshot;
   blockingFindings: Array<{ blocking: boolean; message: string }>;
@@ -30,6 +35,24 @@ export function validateFeatureState(value: unknown): asserts value is FeatureSt
   if (state?.schemaVersion !== 1) throw new DevFlowError("UNSUPPORTED_STATE_SCHEMA", "only state schema v1 is supported");
   if (typeof state.featureId !== "string" || !state.featureId || !Number.isInteger(state.revision) || (state.revision ?? -1) < 0 || !lifecycles.has(state.lifecycle as Lifecycle) || !routeDefinition(state.route as RouteId) || !state.classification || !state.scope || !Array.isArray(state.scope.inScope) || !Array.isArray(state.scope.outOfScope) || !state.steps || !state.humanGates || !state.artifacts || !state.verification || !Array.isArray(state.verification.attempts) || (state.interactions !== undefined && (typeof state.interactions !== "object" || state.interactions === null || Array.isArray(state.interactions))) || !state.featureCheck || !Array.isArray(state.blockingFindings) || typeof state.logicComplete !== "boolean" || !state.lastUpdatedBy) {
     throw new DevFlowError("INVALID_STATE_SCHEMA", "state is not a valid v1 feature state");
+  }
+  if (state.workflowCapabilities !== undefined) {
+    try { normalizeWorkflowCapabilities(state.workflowCapabilities); }
+    catch { throw new DevFlowError("INVALID_STATE_SCHEMA", "workflowCapabilities are invalid"); }
+  }
+  if (state.traceability !== undefined) {
+    const pointer = state.traceability;
+    if (typeof pointer !== "object" || pointer === null
+      || !/^traceability\/snapshots\/[a-f0-9]{64}\.json$/.test(pointer.path)
+      || !/^[a-f0-9]{64}$/.test(pointer.sha256)
+      || pointer.path !== `traceability/snapshots/${pointer.sha256}.json`
+      || !Number.isInteger(pointer.revision) || pointer.revision < 0
+      || !pointer.summary || !["total", "current", "stale", "tombstoned"].every((key) => Number.isInteger(pointer.summary[key as keyof typeof pointer.summary]) && pointer.summary[key as keyof typeof pointer.summary] >= 0)) {
+      throw new DevFlowError("INVALID_STATE_SCHEMA", "traceability pointer is invalid");
+    }
+  }
+  if (traceEnforcementRequired(state.route as RouteId, state.workflowCapabilities) && !state.traceability) {
+    throw new DevFlowError("INVALID_STATE_SCHEMA", "trace-enforced standard feature requires a traceability pointer");
   }
 }
 
@@ -84,15 +107,17 @@ async function writeAtomic(file: string, value: unknown): Promise<void> {
   await rename(temp, file);
   const directory = await open(path.dirname(file), "r"); try { await directory.sync(); } finally { await directory.close(); }
 }
-async function writeStatusProjection(root: string, state: FeatureState, revision: number): Promise<void> {
+function prepareStatusProjection(root: string, state: FeatureState, revision: number): (() => Promise<void>) | undefined {
   const status = state.artifacts.status; if (!status) return;
   const projection = [
     "---", "dev_flow:", "  schema_version: 1", `  feature_id: ${state.featureId}`, `  route: ${state.route}`, "  kind: status", "  generated: true", "---", "",
     "# Dev Flow Status", "", `- Revision: ${revision}`, `- Lifecycle: ${state.lifecycle}`, `- Route: ${state.route}`, `- Logic complete: ${state.logicComplete}`, "", "## Steps", "",
-    ...routeDefinition(state.route).orderedSteps.map((step) => `- ${step}: ${state.steps[step]?.status ?? "pending"}`), "",
+    ...routeDefinitionForFeature(state.route, state.workflowCapabilities).orderedSteps.map((step) => `- ${step}: ${state.steps[step]?.status ?? "pending"}`), "",
   ].join("\n");
-  const file = path.join(features(root), state.featureId, status.path); await writeFile(file, `${projection}\n`);
-  state.artifacts.status = { ...status, sha256: createHash("sha256").update(`${projection}\n`).digest("hex") };
+  const contents = `${projection}\n`;
+  const file = path.join(features(root), state.featureId, status.path);
+  state.artifacts.status = { ...status, sha256: createHash("sha256").update(contents).digest("hex") };
+  return async () => { await writeFile(file, contents); };
 }
 async function lock(root: string, featureId: string, operation: string): Promise<() => Promise<void>> {
   const directory = path.join(devFlow(root), ".lock"); const started = Date.now(); await mkdir(devFlow(root), { recursive: true });
@@ -166,7 +191,17 @@ export async function readFeatureEvents(root: string, id: string): Promise<Array
   try { return (await readFile(eventPath(root, id), "utf8")).split("\n").filter(Boolean).map((line) => JSON.parse(line)); }
   catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return []; throw error; }
 }
-export async function startFeature(root: string, input: ClassificationInput & { featureId?: string; activation?: "active" | "paused"; scope?: { inScope: string[]; outOfScope: string[] }; host: "claude" | "codex" }): Promise<FeatureState> {
+export interface StartFeatureOptions {
+  /** Test-only fault injection. Production callers omit this. */
+  fault?: (point: "before-state-commit" | "after-state-commit" | "before-event" | "before-active") => void | Promise<void>;
+  snapshotFault?: (point: "before-temp-write" | "after-temp-fsync" | "after-snapshot-rename") => void | Promise<void>;
+}
+
+export async function startFeature(
+  root: string,
+  input: ClassificationInput & { featureId?: string; activation?: "active" | "paused"; scope?: { inScope: string[]; outOfScope: string[] }; host: "claude" | "codex" },
+  options: StartFeatureOptions = {},
+): Promise<FeatureState> {
   await readProjectConfig(root);
   await assertNoOpenRecovery(root);
   const scope = validateScopeInput(input.scope);
@@ -181,16 +216,56 @@ export async function startFeature(root: string, input: ClassificationInput & { 
     const project = await readProjectConfig(root);
     const startBusinessFingerprint = await fingerprintProtectedRoots(root, project.protectedRoots);
     const deliveryBaseline = await captureDeliveryBaseline(root, project.protectedRoots);
-    await mkdir(path.join(features(root), id), { recursive: true });
-    const state: FeatureState = {
-      schemaVersion: 1, featureId: id, revision: 0, lifecycle, route, classification, scope, steps: {}, humanGates: {}, artifacts: {},
-      verification: { attempts: [] }, interactions: {}, featureCheck: {}, startBusinessFingerprint, deliveryBaseline, blockingFindings: [], logicComplete: false,
-      lastUpdatedBy: { host: input.host, pluginVersion: __DEV_FLOW_VERSION__ },
-    };
-    await writeAtomic(statePath(root, id), state);
-    await appendEvent(root, id, 0, "started", { lifecycle, route });
-    if (lifecycle === "active") await writeAtomic(activePath(root), { featureId: id, revision: 0, updatedAt: new Date().toISOString() });
-    return state;
+    const directory = path.join(features(root), id);
+    const existedBefore = await pathExists(directory);
+    let stateCommitted = false;
+    try {
+      await mkdir(directory, { recursive: true });
+      const workflowCapabilities = normalizeWorkflowCapabilities(SUPPORTED_WORKFLOW_CAPABILITIES);
+      const state: FeatureState = {
+        schemaVersion: 1, featureId: id, revision: 0, lifecycle, route, classification, scope, steps: {}, humanGates: {}, artifacts: {},
+        verification: { attempts: [] }, interactions: {}, workflowCapabilities, featureCheck: {}, startBusinessFingerprint, deliveryBaseline, blockingFindings: [], logicComplete: false,
+        lastUpdatedBy: { host: input.host, pluginVersion: __DEV_FLOW_VERSION__ },
+      };
+      if (traceEnforcementRequired(route, workflowCapabilities)) {
+        const configSnapshot = await readProjectConfigSnapshot(root);
+        state.traceability = await writeTraceSnapshot(
+          root,
+          emptyTraceabilityLedger(id, 0, configSnapshot.sha256),
+          options.snapshotFault ? { fault: options.snapshotFault } : {},
+        );
+      }
+      validateFeatureState(state);
+      await options.fault?.("before-state-commit");
+      await writeAtomic(statePath(root, id), state);
+      stateCommitted = true;
+      // After state.json is durable, event/active are projections: failures keep the commit
+      // and surface STATE_COMMITTED_PROJECTION_FAILED (same contract as mutatePrepared).
+      const failures: string[] = [];
+      try { await options.fault?.("after-state-commit"); } catch { failures.push("after-state-commit"); }
+      try {
+        await options.fault?.("before-event");
+        await appendEvent(root, id, state.revision, "started", { lifecycle, route });
+      } catch { failures.push("event"); }
+      if (lifecycle === "active") {
+        try {
+          await options.fault?.("before-active");
+          await writeAtomic(activePath(root), { featureId: id, revision: state.revision, updatedAt: new Date().toISOString() });
+        } catch { failures.push("active"); }
+      }
+      if (failures.length) {
+        throw new DevFlowError("STATE_COMMITTED_PROJECTION_FAILED", "state commit succeeded but one or more projections failed", {
+          committed: true,
+          currentRevision: state.revision,
+          failedProjections: failures,
+        });
+      }
+      return state;
+    } catch (error) {
+      // Pre-commit failures leave no feature dir/snapshot; post-commit projection failures keep state.json.
+      if (!stateCommitted && !existedBefore) await rm(directory, { recursive: true, force: true });
+      throw error;
+    }
   } finally { await release(); }
 }
 export async function mutate(
@@ -201,10 +276,31 @@ export async function mutate(
   mutator: (state: FeatureState) => void | Promise<void>,
   eventData: unknown | (() => unknown) = {},
 ): Promise<FeatureState> {
+  return mutatePrepared(root, id, expectedRevision, operation, async () => ({ mutate: mutator, eventData }));
+}
+
+export interface PreparedFeatureMutation {
+  mutate: (draft: FeatureState) => void | Promise<void>;
+  eventData?: unknown | (() => unknown);
+}
+
+export interface PreparedMutationOptions {
+  fault?: (point: "before-state-commit" | "after-state-commit") => void | Promise<void>;
+}
+
+export async function mutatePrepared(
+  root: string,
+  id: string,
+  expectedRevision: number,
+  operation: string,
+  prepare: (current: Readonly<FeatureState>, nextStateRevision: number) => Promise<PreparedFeatureMutation>,
+  options: PreparedMutationOptions = {},
+): Promise<FeatureState> {
   const release = await lock(root, id, operation);
-  try { return await mutateLocked(root, id, expectedRevision, operation, mutator, eventData); }
+  try { return await mutatePreparedLocked(root, id, expectedRevision, operation, prepare, options); }
   finally { await release(); }
 }
+
 async function mutateLocked(
   root: string,
   id: string,
@@ -213,17 +309,43 @@ async function mutateLocked(
   mutator: (state: FeatureState) => void | Promise<void>,
   eventData: unknown | (() => unknown) = {},
 ): Promise<FeatureState> {
+  return mutatePreparedLocked(root, id, expectedRevision, operation, async () => ({ mutate: mutator, eventData }));
+}
+
+async function mutatePreparedLocked(
+  root: string,
+  id: string,
+  expectedRevision: number,
+  operation: string,
+  prepare: (current: Readonly<FeatureState>, nextStateRevision: number) => Promise<PreparedFeatureMutation>,
+  options: PreparedMutationOptions = {},
+): Promise<FeatureState> {
   const state = await readState(root, id);
   if (state.revision !== expectedRevision) throw new DevFlowError("STATE_REVISION_CONFLICT", "state revision changed", { currentRevision: state.revision });
-  await mutator(state);
+  const prepared = await prepare(state, state.revision + 1);
+  await prepared.mutate(state);
   state.revision += 1;
-  await writeStatusProjection(root, state, state.revision);
+  validateFeatureState(state);
+  const writeStatus = prepareStatusProjection(root, state, state.revision);
+  await options.fault?.("before-state-commit");
   await writeAtomic(statePath(root, id), state);
-  const data = typeof eventData === "function" ? (eventData as () => unknown)() : eventData;
-  await appendEvent(root, id, state.revision, operation, data);
-  const active = await readActive(root);
-  if (active?.featureId === id && (state.lifecycle === "finalized" || state.lifecycle === "abandoned")) await rm(activePath(root), { force: true });
-  else if (active?.featureId === id) await writeAtomic(activePath(root), { featureId: id, revision: state.revision, updatedAt: new Date().toISOString() });
+  const failures: string[] = [];
+  try { await options.fault?.("after-state-commit"); } catch { failures.push("after-state-commit"); }
+  try { await writeStatus?.(); } catch { failures.push("status"); }
+  try {
+    const data = typeof prepared.eventData === "function" ? (prepared.eventData as () => unknown)() : prepared.eventData ?? {};
+    await appendEvent(root, id, state.revision, operation, data);
+  } catch { failures.push("event"); }
+  try {
+    const active = await readActive(root);
+    if (active?.featureId === id && (state.lifecycle === "finalized" || state.lifecycle === "abandoned")) await rm(activePath(root), { force: true });
+    else if (active?.featureId === id) await writeAtomic(activePath(root), { featureId: id, revision: state.revision, updatedAt: new Date().toISOString() });
+  } catch { failures.push("active"); }
+  if (failures.length) {
+    throw new DevFlowError("STATE_COMMITTED_PROJECTION_FAILED", "state commit succeeded but one or more projections failed", {
+      committed: true, currentRevision: state.revision, failedProjections: failures,
+    });
+  }
   return state;
 }
 export async function switchActive(root: string, from: string, to: string, reason: string): Promise<void> {
@@ -442,10 +564,14 @@ function isDowngrade(before: Classification, after: Classification): boolean {
 
 function applyRouteTransition(state: FeatureState, selected: { classification: Classification; route: RouteId }) {
   const previousRoute = state.route;
+  const previousDefinition = routeDefinitionForFeature(previousRoute, state.workflowCapabilities);
+  const nextDefinition = routeDefinitionForFeature(selected.route, state.workflowCapabilities);
+  const previousArtifacts = new Set([...previousDefinition.requiredArtifacts, ...(previousDefinition.generatedArtifacts ?? [])]);
+  const nextArtifacts = new Set([...nextDefinition.requiredArtifacts, ...(nextDefinition.generatedArtifacts ?? [])]);
   const retainedArtifacts = Object.fromEntries(Object.entries(state.artifacts).filter(([kind]) =>
-    routeDefinition(previousRoute).requiredArtifacts.includes(kind) && routeDefinition(selected.route).requiredArtifacts.includes(kind)));
+    previousArtifacts.has(kind) && nextArtifacts.has(kind)));
   const retainedSteps: FeatureState["steps"] = {};
-  for (const step of routeDefinition(selected.route).orderedSteps) {
+  for (const step of nextDefinition.orderedSteps) {
     if (["requirement_confirmation", "implementation_approval", "feature_check", "finalize", "verification"].includes(step)) break;
     if (state.steps[step]?.status !== "satisfied") break;
     retainedSteps[step] = state.steps[step];
@@ -506,9 +632,17 @@ export async function reclassifyFeature(
     const currentFingerprint = await fingerprintProtectedRoots(root, project.protectedRoots);
     let notice: string | undefined;
     let eventData: unknown = { reason };
-    const state = await mutateLocked(root, id, expectedRevision, "reclassified", (draft) => {
+    const state = await mutatePreparedLocked(root, id, expectedRevision, "reclassified", async (current, nextStateRevision) => {
+    const preparedTraceability = traceEnforcementRequired(selectedAtLock.route, current.workflowCapabilities) && !current.traceability
+      ? await (async () => {
+        const configSnapshot = await readProjectConfigSnapshot(root);
+        return writeTraceSnapshot(root, emptyTraceabilityLedger(id, nextStateRevision, configSnapshot.sha256));
+      })()
+      : undefined;
+    return { mutate: async (draft) => {
     if (draft.lifecycle !== "active") throw new DevFlowError("INVALID_LIFECYCLE", "only an active feature can be reclassified");
     const selected = selectRoute(next);
+    if (preparedTraceability) draft.traceability = preparedTraceability;
     const before = draft.classification;
     const after = selected.classification;
     const downgrade = isDowngrade(before, after);
@@ -570,7 +704,8 @@ export async function reclassifyFeature(
       invalidatedSteps: transition.invalidatedSteps, invalidatedArtifacts: transition.invalidatedArtifacts,
     };
     notice = `Route switched to ${selected.route}. Previous docs remain on disk but are no longer registered evidence. Next: run the light route steps.`;
-    }, () => eventData);
+    }, eventData: () => eventData };
+    });
     return notice ? { ...state, reclassifyNotice: notice } : state;
   } finally { await release(); }
 }

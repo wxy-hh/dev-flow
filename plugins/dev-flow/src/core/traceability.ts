@@ -261,9 +261,71 @@ function sameEdges(left: TraceEdge[], right: TraceEdge[]): boolean {
   return JSON.stringify(left) === JSON.stringify(right);
 }
 
+function sameSummary(left: TraceSummary, right: TraceSummary): boolean {
+  return left.total === right.total
+    && left.current === right.current
+    && left.stale === right.stale
+    && left.tombstoned === right.tombstoned;
+}
+
+const statusValues = new Set(["current", "stale", "tombstoned"]);
+const sourceArtifacts = new Set(["requirements", "implementation-plan", "coverage-matrix", "rollback-units"]);
+const hex64 = /^[a-f0-9]{64}$/;
+
+function assertPersistedNode(recordId: string, value: unknown): asserts value is TraceNode {
+  if (!isRecord(value)) invalid("persisted node is not an object", { id: recordId });
+  const kind = value.kind;
+  if (typeof kind !== "string" || !(kind in idPrefix)) invalid("persisted node has an unknown kind", { id: recordId, kind });
+  assertId(kind as TraceNodeInput["kind"], value.id);
+  if (value.id !== recordId) invalid("persisted node id does not match its record key", { id: recordId, nodeId: value.id });
+  if (!statusValues.has(value.status as string)) invalid("persisted node has an invalid status", { id: recordId, status: value.status });
+  if (typeof value.sourceArtifact !== "string" || !sourceArtifacts.has(value.sourceArtifact)) {
+    invalid("persisted node has an invalid sourceArtifact", { id: recordId, sourceArtifact: value.sourceArtifact });
+  }
+  if (typeof value.sourceSha256 !== "string" || !hex64.test(value.sourceSha256)) {
+    invalid("persisted node has an invalid sourceSha256", { id: recordId });
+  }
+  if (typeof value.sourceAnchor !== "string" || !value.sourceAnchor.includes(`id=${value.id}`)) {
+    invalid("persisted node has an invalid sourceAnchor", { id: recordId });
+  }
+  if (typeof value.sourceBlockSha256 !== "string" || !hex64.test(value.sourceBlockSha256)) {
+    invalid("persisted node has an invalid sourceBlockSha256", { id: recordId });
+  }
+  if (kind === "acceptance-criterion") assertId("requirement", value.parentRequirement);
+  if (kind === "task") {
+    if (!isStringArray(value.covers)) invalid("persisted task covers is invalid", { id: recordId });
+    assertId("rollback", value.rollbackUnit);
+  }
+  if (kind === "test") {
+    if (!isStringArray(value.verifies)) invalid("persisted test verifies is invalid", { id: recordId });
+  }
+  if (kind === "rollback") {
+    for (const [field, allowEmpty] of [["tasks", false], ["dependsOn", true], ["fileScope", false], ["covers", false], ["forwardVerification", false], ["rollbackVerification", false]] as const) {
+      if (!isStringArray(value[field], allowEmpty)) invalid("persisted rollback field is invalid", { id: recordId, field });
+    }
+    if (value.sourceArtifact !== "implementation-plan" && value.sourceArtifact !== "rollback-units") {
+      invalid("persisted rollback has an invalid sourceArtifact", { id: recordId });
+    }
+    if (typeof value.verificationConfigSha256 !== "string" || !hex64.test(value.verificationConfigSha256)) {
+      invalid("persisted rollback has an invalid verificationConfigSha256", { id: recordId });
+    }
+  }
+}
+
+function assertPersistedLedgerShape(ledger: TraceabilityLedger): void {
+  if (typeof ledger.featureId !== "string" || !ledger.featureId) invalid("ledger featureId is invalid");
+  if (!Number.isInteger(ledger.revision) || ledger.revision < 0) invalid("ledger revision is invalid");
+  if (!Number.isInteger(ledger.stateRevision) || ledger.stateRevision < 0) invalid("ledger stateRevision is invalid");
+  if (typeof ledger.projectConfigSha256 !== "string" || !hex64.test(ledger.projectConfigSha256)) {
+    invalid("ledger projectConfigSha256 is invalid");
+  }
+  for (const [id, node] of Object.entries(ledger.nodes)) assertPersistedNode(id, node);
+}
+
 export function validateTraceGraph(ledger: TraceabilityLedger, route: RouteId, mode: "partial" | "complete"): void {
   if (!isRecord(ledger) || ledger.schemaVersion !== 1 || !isRecord(ledger.nodes) || !Array.isArray(ledger.edges)) invalid("traceability ledger has an invalid shape");
-  const nodes = ledger.nodes;
+  assertPersistedLedgerShape(ledger as TraceabilityLedger);
+  const nodes = ledger.nodes as Record<string, TraceNode>;
   for (const node of currentNodes(nodes)) {
     if (node.kind === "acceptance-criterion") assertReference(nodes, node.parentRequirement, ["requirement"], { from: node.id });
     if (node.kind === "task") {
@@ -272,6 +334,9 @@ export function validateTraceGraph(ledger: TraceabilityLedger, route: RouteId, m
       const rollback = nodeById(nodes, node.rollbackUnit);
       if (!rollback && !(route === "standard-l" && mode === "partial")) invalid("task references a missing rollback unit", { id: node.id, rollbackUnit: node.rollbackUnit });
       if (rollback && rollback.kind !== "rollback") invalid("task rollback unit has the wrong kind", { id: node.id });
+      if (rollback?.kind === "rollback" && !rollback.tasks.includes(node.id)) {
+        invalid("task rollback unit must list the task", { id: node.id, rollbackUnit: node.rollbackUnit });
+      }
     }
     if (node.kind === "test") for (const verified of node.verifies) assertReference(nodes, verified, ["acceptance-criterion"], { from: node.id });
     if (node.kind === "rollback") {
@@ -286,11 +351,11 @@ export function validateTraceGraph(ledger: TraceabilityLedger, route: RouteId, m
   assertRollbackDag(nodes);
   const edges = deriveTraceEdges(nodes);
   if (!sameEdges(ledger.edges, edges)) invalid("ledger edges do not match nodes");
-  if (JSON.stringify(ledger.summary) !== JSON.stringify(traceSummary(nodes))) invalid("ledger summary does not match nodes");
+  if (!sameSummary(ledger.summary, traceSummary(nodes))) invalid("ledger summary does not match nodes");
   if (mode === "complete") {
     const kinds = new Set(currentNodes(nodes).map((node) => node.kind));
     for (const kind of ["requirement", "acceptance-criterion", "task", "test", "rollback"] as const) if (!kinds.has(kind)) invalid("complete graph is missing a required node kind", { kind });
-    if (Object.values(nodes).some((node) => node.status !== "current")) invalid("complete graph cannot contain stale or tombstoned nodes");
+    if (currentNodes(nodes).some((node) => node.status !== "current")) invalid("complete graph cannot contain stale nodes");
     for (const node of currentNodes(nodes)) {
       if (node.kind === "acceptance-criterion" && !currentNodes(nodes).some((candidate) => candidate.kind === "test" && candidate.verifies.includes(node.id))) {
         invalid("every acceptance criterion requires a test", { id: node.id });
@@ -299,7 +364,11 @@ export function validateTraceGraph(ledger: TraceabilityLedger, route: RouteId, m
   }
 }
 
-function downstream(nodes: Record<string, TraceNode>, changed: Set<string>): void {
+function downstream(
+  nodes: Record<string, TraceNode>,
+  changed: Set<string>,
+  protectedIds: Set<string> = new Set(),
+): void {
   const reverse = new Map<string, string[]>();
   for (const edge of deriveTraceEdges(nodes)) {
     const items = reverse.get(edge.to) ?? [];
@@ -311,6 +380,8 @@ function downstream(nodes: Record<string, TraceNode>, changed: Set<string>): voi
     for (const dependent of reverse.get(id) ?? []) {
       if (seen.has(dependent)) continue;
       seen.add(dependent); queue.push(dependent);
+      // Nodes rewritten in the same complete replacement stay current unless their own fields changed.
+      if (protectedIds.has(dependent)) continue;
       const node = nodes[dependent];
       if (node && node.status !== "tombstoned") node.status = "stale";
     }
@@ -332,8 +403,8 @@ export function applyTraceDelta(input: ApplyTraceDeltaInput): TraceabilityLedger
     if (previous?.status === "tombstoned") invalid("tombstoned IDs cannot be reused", { id: node.id });
     const next = sourceFor(input, node, sourceBlocks.get(node.id)!);
     if (previous && previous.sourceArtifact !== input.artifactKind) invalid("node ID already belongs to a different source artifact", { id: node.id });
+    // Delta nodes are rebound as current; only dependents outside this replacement become stale.
     if (previous && (previous.sourceBlockSha256 !== next.sourceBlockSha256 || nodeMeaning(previous) !== inputMeaning(node))) changed.add(node.id);
-    if (previous?.status === "stale") next.status = "stale";
     nodes[node.id] = next;
   }
   const inputIds = new Set(input.delta.nodes.map((node) => node.id));
@@ -341,7 +412,8 @@ export function applyTraceDelta(input: ApplyTraceDeltaInput): TraceabilityLedger
     if (node.sourceArtifact !== input.artifactKind || inputIds.has(node.id) || node.status === "tombstoned") continue;
     node.status = "tombstoned"; changed.add(node.id);
   }
-  downstream(nodes, changed);
+  // Protect the full replacement set so co-registered unchanged blocks stay current.
+  downstream(nodes, changed, inputIds);
   const ledger: TraceabilityLedger = {
     schemaVersion: 1,
     featureId: input.current.featureId,
@@ -367,9 +439,9 @@ function assertConfigCurrent(ledger: TraceabilityLedger, currentProjectConfigSha
 
 function requireCurrentKinds(ledger: TraceabilityLedger, kinds: TraceNode["kind"][]): void {
   for (const kind of kinds) {
-    const all = Object.values(ledger.nodes).filter((node) => node.kind === kind);
-    if (all.length === 0 || all.some((node) => node.status === "tombstoned")) sliceError("TRACE_SLICE_INCOMPLETE", "Trace slice is missing a required node", { kind });
-    if (all.some((node) => node.status === "stale")) sliceError("TRACE_SLICE_STALE", "Trace slice contains stale nodes", { kind });
+    const nodes = currentNodes(ledger.nodes).filter((node) => node.kind === kind);
+    if (nodes.length === 0) sliceError("TRACE_SLICE_INCOMPLETE", "Trace slice is missing a required node", { kind });
+    if (nodes.some((node) => node.status === "stale")) sliceError("TRACE_SLICE_STALE", "Trace slice contains stale nodes", { kind });
   }
 }
 
@@ -377,9 +449,6 @@ export function assertTraceabilityComplete(ledger: TraceabilityLedger, route: Ro
   assertConfigCurrent(ledger, currentProjectConfigSha256);
   if (Object.values(ledger.nodes).some((node) => node.status === "stale")) {
     sliceError("TRACE_SLICE_STALE", "complete Trace graph contains stale nodes");
-  }
-  if (Object.values(ledger.nodes).some((node) => node.status === "tombstoned")) {
-    sliceError("TRACE_SLICE_INCOMPLETE", "complete Trace graph contains tombstoned nodes");
   }
   try { validateTraceGraph(ledger, route, "complete"); }
   catch (error) { if (error instanceof DevFlowError) sliceError("TRACE_SLICE_INCOMPLETE", error.message, error.details); throw error; }

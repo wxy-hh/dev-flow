@@ -3,6 +3,38 @@
   "type": "object",
   "required": ["schemaVersion", "featureId", "revision", "lifecycle", "route"],
   "properties": {
-    "schemaVersion": { "const": 1 }
+    "schemaVersion": { "const": 1 },
+    "workflowCapabilities": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["trace", "review", "checkpoints", "rollbackExecution"],
+      "properties": {
+        "trace": { "enum": [0, 1] },
+        "review": { "enum": [0, 1] },
+        "checkpoints": { "enum": [0, 1] },
+        "rollbackExecution": { "enum": [0, 1] }
+      }
+    },
+    "traceability": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "sha256", "revision", "summary"],
+      "properties": {
+        "path": { "type": "string", "pattern": "^traceability/snapshots/[a-f0-9]{64}\\.json$" },
+        "sha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+        "revision": { "type": "integer", "minimum": 0 },
+        "summary": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["total", "current", "stale", "tombstoned"],
+          "properties": {
+            "total": { "type": "integer", "minimum": 0 },
+            "current": { "type": "integer", "minimum": 0 },
+            "stale": { "type": "integer", "minimum": 0 },
+            "tombstoned": { "type": "integer", "minimum": 0 }
+          }
+        }
+      }
+    }
   }
 }

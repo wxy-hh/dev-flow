@@ -1,4 +1,4 @@
-import { routeDefinition } from "../policy/contract.js";
+import { routeDefinitionForFeature } from "../policy/contract.js";
 import { deriveNext } from "../policy/derive-next.js";
 import { requiredEvidenceForStep, requiredEvidenceIsEmpty } from "../policy/evidence.js";
 import type { NextAction } from "../policy/types.js";
@@ -49,7 +49,11 @@ export async function nextAction(root: string, id: string): Promise<NextAction> 
   const action = deriveNext(toDerivedState(state, await verificationIsStale(root, state)));
 
   if (action.kind === "run-step" || action.kind === "present-human-gate") {
-    const requiredNow = routeDefinition(state.route).artifactSteps?.[action.step] ?? [];
+    const definition = routeDefinitionForFeature(state.route, state.workflowCapabilities);
+    const requiredNow = [
+      ...(definition.artifactSteps?.[action.step] ?? []),
+      ...(definition.generatedArtifactSteps?.[action.step] ?? []),
+    ];
     const missing = requiredNow.find((artifact) => !state.artifacts[artifact]);
     if (missing) return { kind: "scaffold-artifact", step: missing };
   }
