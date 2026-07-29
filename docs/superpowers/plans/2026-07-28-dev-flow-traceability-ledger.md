@@ -257,7 +257,7 @@ export interface TraceabilityLedger {
 
 **步骤：**
 
-- [ ] **步骤 1：写路线合同红灯测试。** 在 `tests/unit/traceability-policy.test.mjs` 断言：
+- [x] **步骤 1：写路线合同红灯测试。** 在 `tests/unit/traceability-policy.test.mjs` 断言：
 
 ```js
 import assert from "node:assert/strict";
@@ -301,7 +301,7 @@ test("trace enforcement is route and capability dependent", () => {
 });
 ```
 
-- [ ] **步骤 2：运行红灯。**
+- [x] **步骤 2：运行红灯。**
 
 ```bash
 node --test tests/unit/traceability-policy.test.mjs
@@ -309,9 +309,9 @@ node --test tests/unit/traceability-policy.test.mjs
 
 预期：FAIL，原因是 `routeDefinitionForFeature` 或 `traceEnforcementRequired` 尚未导出。
 
-- [ ] **步骤 3：实现非破坏性的能力与路线合同。** `normalizeWorkflowCapabilities(undefined)` 返回冻结的零能力副本；原始 `routeDefinition` 保留当前兼容基线，不直接搬移数组。`routeDefinitionForFeature` 深拷贝基线、应用 capability/global transition，并验证 editable/generated 不重叠；它把 risk-minimal 和 standard M 的 status 派生到 `generatedArtifacts/generatedArtifactSteps`。在 contract 中预声明两条 Review 2a transition：standard M 的 plan-review 为 `absent → generated`，standard L 为 `editable → generated`；本阶段 `review: 0` 不触发。`FeatureState` 先增加可选 `workflowCapabilities?: WorkflowCapabilities` 供消费方编译，但只有任务 4 的 `startFeature` 才开始持久化。任何持有 `FeatureState` 的消费方最终必须使用有效合同，但本任务不在 capability 尚未进入 state 前制造半迁移调用链。
+- [x] **步骤 3：实现非破坏性的能力与路线合同。** `normalizeWorkflowCapabilities(undefined)` 返回冻结的零能力副本；原始 `routeDefinition` 保留当前兼容基线，不直接搬移数组。`routeDefinitionForFeature` 深拷贝基线、应用 capability/global transition，并验证 editable/generated 不重叠；它把 risk-minimal 和 standard M 的 status 派生到 `generatedArtifacts/generatedArtifactSteps`。在 contract 中预声明两条 Review 2a transition：standard M 的 plan-review 为 `absent → generated`，standard L 为 `editable → generated`；本阶段 `review: 0` 不触发。`FeatureState` 先增加可选 `workflowCapabilities?: WorkflowCapabilities` 供消费方编译，但只有任务 4 的 `startFeature` 才开始持久化。任何持有 `FeatureState` 的消费方最终必须使用有效合同，但本任务不在 capability 尚未进入 state 前制造半迁移调用链。
 
-- [ ] **步骤 4：补全 Trace 类型编译检查。** 在测试中构造最小 `TraceDelta` 和 `TraceabilityLedger`，并运行：
+- [x] **步骤 4：补全 Trace 类型编译检查。** 在测试中构造最小 `TraceDelta` 和 `TraceabilityLedger`，并运行：
 
 ```bash
 npm run typecheck
@@ -319,7 +319,7 @@ npm run typecheck
 
 预期：PASS。
 
-- [ ] **步骤 5：运行策略与现有合同回归。**
+- [x] **步骤 5：运行策略与现有合同回归。**
 
 ```bash
 node --test tests/unit/traceability-policy.test.mjs tests/unit/derive-next.test.mjs
@@ -328,7 +328,7 @@ npm run test:unit
 
 预期：PASS；既有 base contract 消费方行为不变，没有已知单元回归。
 
-- [ ] **步骤 6：提交任务 1。**
+- [x] **步骤 6：提交任务 1。**
 
 ```bash
 git add plugins/dev-flow/src/policy/types.ts \

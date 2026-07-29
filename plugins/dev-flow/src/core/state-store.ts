@@ -4,7 +4,7 @@ import { hostname } from "node:os";
 import path from "node:path";
 import { routeDefinition } from "../policy/contract.js";
 import { selectRoute } from "../policy/route.js";
-import type { Classification, ClassificationInput, RouteId } from "../policy/types.js";
+import type { Classification, ClassificationInput, RouteId, WorkflowCapabilities } from "../policy/types.js";
 import { DevFlowError } from "./errors.js";
 import { captureDeliveryBaseline, type DeliveryBaseline, type DeliverySnapshot } from "./delivery-snapshot.js";
 import { fingerprintProtectedRoots } from "./fingerprint.js";
@@ -17,6 +17,8 @@ export interface FeatureState {
   humanGates: Record<string, unknown>; artifacts: Record<string, { path: string; sha256: string }>; verification: { attempts: unknown[]; satisfiedByAttemptId?: number; verifiedFingerprint?: string };
   /** Optional so v1 state written before interactive controls remains readable. */
   interactions?: Record<string, unknown>;
+  /** Optional so active features written before traceability capabilities remain readable. */
+  workflowCapabilities?: WorkflowCapabilities;
   featureCheck: { passed?: boolean; fingerprint?: string }; businessFingerprint?: string; startBusinessFingerprint?: string;
   deliveryBaseline?: DeliveryBaseline; deliverySnapshot?: DeliverySnapshot;
   blockingFindings: Array<{ blocking: boolean; message: string }>;

@@ -12,6 +12,27 @@ export type RiskLabel =
   | "irreversible_consequence";
 export type RouteId = "xs" | "s" | "risk-minimal" | "light-m" | "standard-m" | "light-l" | "standard-l";
 
+export interface WorkflowCapabilities {
+  trace: 0 | 1;
+  review: 0 | 1;
+  checkpoints: 0 | 1;
+  rollbackExecution: 0 | 1;
+}
+
+export const ZERO_WORKFLOW_CAPABILITIES: WorkflowCapabilities = Object.freeze({
+  trace: 0,
+  review: 0,
+  checkpoints: 0,
+  rollbackExecution: 0,
+});
+
+export const SUPPORTED_WORKFLOW_CAPABILITIES: WorkflowCapabilities = Object.freeze({
+  trace: 1,
+  review: 0,
+  checkpoints: 0,
+  rollbackExecution: 0,
+});
+
 export interface ClassificationInput {
   level: Level;
   topology: Topology;
@@ -36,7 +57,16 @@ export interface Classification {
 export interface RouteDefinition {
   orderedSteps: string[];
   requiredArtifacts: string[];
+  generatedArtifacts?: string[];
   artifactSteps?: Record<string, string[]>;
+  generatedArtifactSteps?: Record<string, string[]>;
+  artifactTransitions?: Array<{
+    artifact: string;
+    capability: keyof WorkflowCapabilities;
+    from: "editable" | "absent";
+    to: "generated";
+    steps: string[];
+  }>;
   featureCheckRequired: boolean;
 }
 
@@ -84,6 +114,12 @@ export type NextAction =
   | { kind: "present-human-gate"; step: string }
   | { kind: "wait-human-gate"; step: string }
   | { kind: "scaffold-artifact"; step: string }
+  | {
+      kind: "repair-trace";
+      step: string;
+      code: "TRACE_SLICE_INCOMPLETE" | "TRACE_SLICE_STALE";
+      details: Record<string, unknown>;
+    }
   | { kind: "run-step"; step: string; requiredEvidence?: RequiredEvidence }
   | { kind: "feature-check"; requiredEvidence?: RequiredEvidence }
   | { kind: "finalize" };
