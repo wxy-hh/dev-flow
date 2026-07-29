@@ -2,29 +2,54 @@
 
 ## 背景
 
-Dev Flow v1.7.0 已经具备持久状态、路线顺序、Markdown artifact 哈希、HUMAN GATE、验证新鲜度、交付快照与宿主 Hook 门禁。当前限制是：
+Dev Flow v1.7.0 已经具备持久状态、路线顺序、Markdown 产物哈希、人工门禁、验证新鲜度、交付快照与宿主钩子门禁。当前限制是：
 
-1. requirements、plan、coverage 与 rollback 的语义关系主要依赖 Agent 自觉，Core 只验证步骤、artifact 完整性与少量 evidence 字段。
-2. `plan_review` 是一个流程插槽，不会创建、隔离或审计多个 reviewer。
-3. `rollback_unit` 是计划证据，不是实现期间可执行的 checkpoint；现有反向 patch 只在 finalize 时生成，粒度为整个 feature。
+1. 需求、计划、覆盖与回撤的语义关系主要依赖智能体自觉，核心层只验证步骤、产物完整性与少量证据字段。
+2. `plan_review` 是一个流程插槽，不会创建、隔离或审计多个审查者。
+3. `rollback_unit` 是计划证据，不是实现期间可执行的检查点；现有反向补丁只在最终交付时生成，粒度为整个功能。
 
-本设计采用“实用型工作流增强”：Core 保证结构、引用、基线、独立执行事实和回撤安全；Agent 与人类继续负责语义质量。设计为未来更强的自动语义检查预留接口，但不在本阶段声称机器已经证明需求或计划正确。
+本设计采用“实用型工作流增强”：核心层保证结构、引用、基线、可验证的执行事实和回撤安全；智能体与人类继续负责语义质量。设计为未来更强的自动语义检查预留接口，但不在本阶段声称机器已经证明需求或计划正确。
 
 ## 目标
 
 1. 建立 `REQ/AC → TASK → TEST/RU` 的可审计追溯链。
-2. 让 `plan_review` 在宿主能力允许时成为真实多代理审查，并在能力不足时明确降级为多视角审查。
+2. 让 `plan_review` 先成为可审计的多视角审查，并只在具备服务端证据时升级保证等级。
 3. 让计划中的 rollback unit 成为实现阶段可确认、可预览、可安全执行的 checkpoint。
 4. 保持 Claude Code 与 Codex CLI 双宿主、风险比例路线和现有 HUMAN GATE 语义。
 5. 现有 active feature 可以按旧合同完成，不要求中途迁移。
 
+文中协议字段、错误码、MCP 工具名和代码标识符保留英文，以便与源码精确对应；其余叙述统一使用中文。
+
 ## 非目标
 
 - Core 不判断自然语言需求是否合理，也不判断某个测试是否足以证明业务语义。
-- 不允许 arbitrary graph rollback；首版只允许回到某个已确认 checkpoint，并逆序撤销其后的完整后缀。
+- 不允许任意图回撤；首版只允许回到某个已确认检查点，并逆序撤销其后的完整后缀。
 - 不要求所有宿主具备 subagent；能力不足时允许带降级标识的串行多视角审查。
 - 不以 Git commit、`git reset --hard` 或修改用户当前分支作为实现 checkpoint。
 - 不在本阶段把 TDD 变成新的全局路线步骤。
+
+## P0：开放决策
+
+以下决策是三份实施计划的共同合同，不再留给实现阶段临时选择：
+
+| 主题 | 已确定决策 |
+| --- | --- |
+| feature 合同固定 | `startFeature` 把当时可用能力写入不可变 `workflowCapabilities`；插件升级不得把新门禁施加到已启动 feature |
+| standard M 的 RU 来源 | 不新增独立文档；从 `implementation-plan` 中解析 RU，并生成统一的 `RollbackNode` |
+| standard L 的 RU 来源 | 从 `rollback-units` 文档解析，使用与 standard M 相同的 `RollbackNode` |
+| standard M 的 `rollback_unit` | 保留为无新 artifact 的校验步：断言 plan 来源的 RU slice current、DAG 合法，并继续执行现有风险 evidence 校验 |
+| plan review 文档 | 终态为 Core 生成投影；迁移只在 Review 2a 对 `review: 1` 的新 feature 生效，Trace 阶段与旧 feature 仍使用现有可编辑 artifact/evidence |
+| 路线契约 | 明确区分可编辑 `requiredArtifacts` 与 Core 生成的 `generatedArtifacts`，并分别绑定步骤 |
+| Trace 模型 | 使用带 `kind` 判别字段的联合类型；RU 在 Trace 阶段就包含依赖、scope、验证和来源字段 |
+| Trace 阶段强制力 | `trace: 1` 的追溯 artifact 禁止裸 `recordArtifact`；每次 `recordStep` 校验该阶段 trace slice；implementation 只要求全图完整且 basis current |
+| Checkpoint 强制时机 | 仅 `checkpoints: 1` 的新 feature 要求全部 RU checkpoint、无 open transaction；无 active RU 禁写也从阶段 3 开始 |
+| 唯一声明锚点 | 使用 `<!-- dev-flow:id=TASK-001 kind=task -->`；声明恰好一次、交叉引用可重复、`kind` 必须匹配节点 |
+| 图的写入权威 | node 字段（如 `covers`、`parent`、`verifies`、`tasks`）是唯一写入权威；`edges[]` 由 Core 派生，只读且写盘前重算 |
+| Review 2a 的默认保证 | 默认只声称 `multi-perspective`，不以调用方传入的 executor/context 字符串证明多代理 |
+| 更高审查保证 | `independent-sampling` 仅由服务端签发的独立 sampling 请求证明；宿主声明只能达到 `multi-agent-attested`；可信宿主身份留作未来 `multi-agent-verified` |
+| Rollback 第 3 阶段边界 | 只交付 unit lifecycle、scope Hook、checkpoint、preview/conflict；不暴露实际回撤执行 |
+| Rollback 第 4A 阶段 | 完成事务日志、恢复、独立 HUMAN GATE 后才开放 `execute` |
+| Review 第 4B 阶段 | 独立增加 sampling、身份与 provenance，不阻塞 Rollback 4A |
 
 ## 总体架构
 
@@ -42,23 +67,88 @@ review reports  ──┘      TASK → review jobs/findings
 
 为避免双主状态，人工维护的 artifact 与其 trace index 必须在同一个 MCP 事务中登记。
 
+路线合同必须显式描述可编辑与生成 artifact：
+
+```ts
+interface RouteDefinition {
+  orderedSteps: string[];
+  requiredArtifacts: string[];
+  generatedArtifacts?: string[];
+  artifactSteps?: Record<string, string[]>;
+  generatedArtifactSteps?: Record<string, string[]>;
+  artifactTransitions?: Array<{
+    artifact: string;
+    capability: keyof WorkflowCapabilities;
+    from: "editable" | "absent";
+    to: "generated";
+    steps: string[];
+  }>;
+  featureCheckRequired: boolean;
+}
+```
+
+`routeDefinitionForFeature(route, workflowCapabilities)` 根据 capability 计算有效合同。Review 2a 为 standard-M 声明 plan-review 从 `absent` 转为 `generated`，为 standard-L 声明从 `editable` 转为 `generated`；`review: 0` 仍得到旧合同。有效 `generatedArtifacts` 只能由 Core 生成、刷新和登记，Skill 可以请求刷新，但不能提交其内容。
+
+每个 feature 在启动时固定能力版本：
+
+```ts
+interface WorkflowCapabilities {
+  trace: 0 | 1;
+  review: 0 | 1;
+  checkpoints: 0 | 1;
+  rollbackExecution: 0 | 1;
+}
+```
+
+缺少该字段的旧 feature 等价于全部为 `0`。能力默认不可在 active feature 中途升级；若未来支持迁移，必须提供显式、可回滚的 MCP 迁移事务。
+
+每个发布阶段更新 Core 的单一常量 `SUPPORTED_WORKFLOW_CAPABILITIES`；`startFeature` 复制该值进入 feature state，后续读取不得用当前插件常量覆盖已保存值。
+
 ## 一、需求固化链
 
 ### 标识符
 
 | 类型 | 格式 | 含义 |
 | --- | --- | --- |
-| Requirement | `REQ-001` | 功能或约束需求 |
-| Acceptance Criterion | `AC-001` | 隶属于某个 REQ 的验收条件 |
-| Plan Task | `TASK-001` | 实现计划任务 |
-| Test Scenario | `TEST-001` | 自动或人工验证场景 |
-| Rollback Unit | `RU-001` | 一个可 checkpoint 的计划任务集合 |
+| 需求 | `REQ-001` | 功能或约束需求 |
+| 验收条件 | `AC-001` | 隶属于某个 REQ 的验收条件 |
+| 计划任务 | `TASK-001` | 实现计划任务 |
+| 测试场景 | `TEST-001` | 自动或人工验证场景 |
+| 回撤单元 | `RU-001` | 一个可 checkpoint 的计划任务集合 |
 
 ID 在一个 feature 内稳定且不可复用。删除节点保留 tombstone，防止旧 evidence 在新含义下重新生效。
 
 ### 账本模型
 
-示意：
+账本节点使用带 `kind` 的判别联合类型，避免 Trace 与 Rollback 阶段各自定义一份不兼容的 RU：
+
+```ts
+type TraceNode =
+  | RequirementNode
+  | AcceptanceCriterionNode
+  | TaskNode
+  | TestNode
+  | RollbackNode;
+
+interface RollbackNode {
+  kind: "rollback";
+  id: `RU-${string}`;
+  tasks: string[];
+  dependsOn: string[];
+  fileScope: string[];
+  covers: string[];
+  forwardVerification: string[];
+  rollbackVerification: string[];
+  sourceArtifact: "implementation-plan" | "rollback-units";
+  sourceSha256: string;
+  sourceAnchor: string;
+  status: "current" | "stale" | "tombstoned";
+}
+```
+
+`RollbackNode.status` 表示定义是否 current/stale/tombstoned；实现期的 pending/active/checkpointed/rolled_back 属于独立的 `ImplementationUnitState`。两者引用同一个 RU ID，避免把计划定义的新鲜度与运行时生命周期混成一个状态机。
+
+账本示意：
 
 ```json
 {
@@ -81,6 +171,8 @@ ID 在一个 feature 内稳定且不可复用。删除节点保留 tombstone，�
 }
 ```
 
+调用方的 trace delta 只提交 node 字段，不接受手工 `edges[]`。Core 校验节点引用后确定性派生 edges，并在读取时验证派生结果与落盘内容一致；不一致视为账本损坏。
+
 Feature state 只保存 traceability 文件路径、SHA-256、revision 与摘要，不复制完整图。
 
 ### 原子登记
@@ -100,9 +192,9 @@ dev_flow_record_artifact_with_trace
 5. 将 artifact registration 与 traceability 更新原子提交。
 6. 传播 gate、review、checkpoint 与下游 step 的 stale 状态。
 
-普通非追溯 artifact 可以继续使用原 `record_artifact`；参与追溯的 artifact 在新 feature 上必须使用原子接口。
+普通非追溯 artifact 可以继续使用原 `record_artifact`；参与追溯的 artifact 在新 feature 上必须使用原子接口。新 feature 对 requirements、plan、coverage、rollback 直接调用裸 `record_artifact` 时，Core 必须返回 `TRACE_AWARE_REGISTRATION_REQUIRED`，不能只靠 Skill 提醒。
 
-### Core 不变量
+### 核心层不变量
 
 进入 implementation approval 前必须满足：
 
@@ -114,6 +206,21 @@ dev_flow_record_artifact_with_trace
 - 不存在重复 ID、悬空引用或 stale coverage。
 
 Feature-check 在 finalize 前再次检查同一组不变量，防止旧状态或旁路调用绕过首次校验。
+
+此外，每次 `recordStep` 都必须验证当前阶段所消费的 trace slice 和 basis hash。Trace 阶段的 `recordStep(implementation)` 只检查全图完整且 basis current；只有 `workflowCapabilities.checkpoints === 1` 时，阶段 3 才追加“所有 RU 已 checkpoint、无 open rollback transaction”的约束。这样各阶段可以独立发布，也不会在插件升级时锁死旧 feature。
+
+standard M 的 `rollback_unit` 不创建新文档或新 RU。该步骤调用 `assertTraceSliceCurrent("rollback_unit")` 校验 implementation-plan 中的 RU 定义、DAG 和引用，并继续执行 `requiredEvidenceForStep` 已派生的 rollback/full-rollback 风险检查。
+
+最低 trace slice 固定如下：
+
+| 步骤 | 必须满足 |
+| --- | --- |
+| `requirements` | REQ/AC 声明合法；每个 AC 有且仅有一个 current parent REQ |
+| `implementation_plan` | TASK 不孤立；standard M 的 RU 字段完整且 DAG 合法 |
+| `coverage_review` | 每个 current AC 已由至少一个 current TEST 覆盖，本步不允许 pending coverage |
+| `rollback_unit` | standard M 校验 plan 来源 RU；standard L 校验 rollback-units 来源 RU |
+| `plan_review`、`implementation_approval`、`feature_check`、`finalize` | `assertTraceabilityComplete` 校验全图 |
+| `implementation` | Trace/Review feature 校验全图；`checkpoints: 1` 时再校验实现单元状态 |
 
 ### 失效传播
 
@@ -127,18 +234,19 @@ requirements hash 变化
 → implementation approval stale
 ```
 
-计划或 rollback artifact 变化不反向使 requirements gate stale，但会使相应 coverage、review、approval 和尚未执行的 checkpoint stale。
+计划或回撤产物变化不反向使需求门禁失效，但会使相应覆盖审查、计划审查、批准和尚未执行的检查点失效。
 
-## 二、能力自适应的多代理对抗审查
+## 二、可证明保证等级的对抗审查
 
-### Review batch
+### 审查批次
 
-`plan_review` 开始时，MCP 创建不可变 review batch。Basis 包含：
+`plan_review` 开始时，MCP 创建不可变审查批次。基线包含：
 
-- requirements、implementation plan、coverage 与 rollback artifact SHA-256
-- traceability SHA-256
+- 需求、实现计划、覆盖矩阵与回撤产物的 SHA-256
+- 追溯账本 SHA-256
 - route、classification、risk labels 与 scope
 - protected-root fingerprint
+- `.dev-flow/project.json` SHA-256
 
 每个 review job 记录：
 
@@ -148,13 +256,13 @@ requirements hash 变化
   "role": "architecture",
   "basisHash": "sha256",
   "status": "pending",
-  "executionMode": "native-subagent",
+  "executionMode": "isolated-sequential",
   "executorId": null,
   "contextId": null
 }
 ```
 
-Reviewer 在提交前只能读取 immutable review package，不能读取同 batch 的其他 findings。
+审查者在提交前只能读取不可变审查包，不能读取同批次的其他审查发现。
 
 ### 角色选择
 
@@ -162,37 +270,32 @@ Reviewer 在提交前只能读取 immutable review package，不能读取同 bat
 
 | 条件 | 必需角色 |
 | --- | --- |
-| standard M | requirement coverage、architecture/testability |
-| standard L | 上述角色 + rollback/operability |
-| `security` | security |
-| `data` / `money` / `irreversible_consequence` | data and irreversible consequences |
-| `critical_correctness` | full independent review |
+| standard M | `requirements-coverage`、`architecture-testability` |
+| standard L | 上述角色 + `rollback-operability` |
+| `security` | `security` |
+| `data` / `money` / `irreversible_consequence` | `data-irreversibility` |
+| `critical_correctness` | 不新增角色；所有必需 job 使用 `reviewDepth: "full"` |
 
 角色映射应进入 policy contract，Skill 不复制风险映射。
 
-### 能力自适应
+`reviewDepth: "full"` 要求每个 job 提交结构化覆盖证明和完成记录，但 `findings` 可以为空；禁止为了证明“审查过”而强迫 reviewer 虚构 finding。第 2a 阶段的 assurance 仍为 `multi-perspective`。
 
-执行优先级：
+### 保证等级与证据
 
-1. MCP client sampling：由 MCP 发起隔离 reviewer 调用。
-2. 宿主 subagent：Skill 按 job 分派独立 Agent。
-3. 无上述能力：基于不可变 package 串行执行多视角审查。
+审查的“角色数量”和“执行独立性”分开记录。第 2a 阶段默认创建多个角色 job，但无论 Skill 串行执行还是宿主声称使用 subagent，都只根据可验证证据升级保证等级：
 
-只有至少两个 job 由不同 `executorId/contextId` 完成时，batch 才能标记：
+| 保证等级 | 可接受证据 | 当前阶段 |
+| --- | --- | --- |
+| `multi-perspective` | 同一不可变 package 上完成多个角色 job | 2a 默认 |
+| `independent-sampling` | Core 为每个 job 签发不同 sampling request，并关联不可复用的服务端 request ID | 4B |
+| `multi-agent-attested` | 宿主声明 job 由不同 subagent 执行，并保存原始 attestation | 4B |
+| `multi-agent-verified` | 可信宿主提供可验证的 agent identity 与 provenance | 未来 |
 
-```text
-assuranceLevel: multi-agent
-```
+调用方传入的 `executorId`、`contextId`、agent 名称或任意字符串只能作为诊断元数据，不能升级 assurance。聚合器根据服务端持有的证据计算等级，调用方不能直接写入 `assuranceLevel`。
 
-否则必须标记：
+路线可以在 `multi-perspective` 下继续，但 status、plan review 投影和最终交付必须准确显示等级，不得把“多角色”叙述成已证明的“多代理”。
 
-```text
-assuranceLevel: multi-perspective
-```
-
-路线可以在能力不足时继续，但 status、plan review 投影和最终交付必须显示降级，不得声称完成多代理审查。
-
-### Findings
+### 审查发现
 
 Finding 必须结构化：
 
@@ -209,6 +312,8 @@ Finding 必须结构化：
 }
 ```
 
+协议层严重度固定为 `blocking | warning | note`；中文投影分别显示为“阻塞 / 警告 / 备注”，不得再引入 `important | advisory` 等第二套协议值。
+
 聚合器可以去重，但不能降低 blocking 严重度。Blocking finding 只能通过以下路径关闭：
 
 1. 修改 basis artifact，生成新 basis 并重审。
@@ -218,24 +323,24 @@ Finding 必须结构化：
 ### 状态转换
 
 ```text
-create batch
-→ execute independent jobs
-→ submit findings
-→ aggregate
-→ resolve/accept blocking findings
-→ record plan_review
-→ present implementation approval
+创建批次
+→ 执行必需角色任务
+→ 提交审查发现
+→ 聚合
+→ 解决或接受阻塞项风险
+→ 记录 plan_review
+→ 展示实现批准门禁
 ```
 
 首版中任一 basis artifact 改变会使整批 stale。局部 reviewer 复用留作后续优化。
 
-`plan-review.md` 改为生成投影；机器权威为 batch、jobs、findings 与 dispositions。
+当 Review 2a 发布后，`workflowCapabilities.review === 1` 的 standard M/L feature 使用 Core 生成的 `plan-review.md`；机器权威为 batch、jobs、findings、dispositions 与 assurance evidence。Review 2a 负责把路线合同迁入 `generatedArtifacts`，并把 plan-review evidence 从 `{ reviewType: "plan" }` 改为 `{ batchId, basisHash, assuranceLevel }`。`review: 0` 的已启动 feature 继续按旧可编辑合同完成。
 
 ## 三、计划任务级 checkpoint 与精确回撤
 
-### Rollback unit 定义
+### 回撤单元定义
 
-每个 RU 至少包含：
+每个 RU 在 Trace 阶段就必须包含以下字段，而不是等到 Rollback 阶段再补充：
 
 ```json
 {
@@ -251,7 +356,9 @@ create batch
 
 RU 依赖必须构成 DAG。首版的执行顺序必须是 DAG 的一个确定性拓扑序。
 
-### Implementation 子状态机
+`forwardVerification` 与 `rollbackVerification` 保存 `.dev-flow/project.json` 中的 command ID，而不是任意 shell 命令。Trace 登记时校验 ID 存在；review、checkpoint 与 rollback preview 的 basis 都包含 project config SHA-256，防止同一 ID 在配置变更后静默指向不同命令。
+
+### 实现子状态机
 
 路线仍保留一个 `implementation` step，其内部增加：
 
@@ -267,12 +374,12 @@ pending unit
 - `dev_flow_begin_implementation_unit`
 - `dev_flow_checkpoint_implementation_unit`
 - `dev_flow_preview_rollback`
-- `dev_flow_present_rollback_gate`
-- `dev_flow_execute_rollback`
 
 开始单元前校验其依赖、basis 和 approval。Checkpoint 前校验实际修改文件属于 RU 的 `fileScope`；超出范围必须修改计划并重新完成受影响的 coverage、review 与 approval。
 
-### Checkpoint 内容
+仅对 `workflowCapabilities.checkpoints === 1` 的 feature，Core 和 Hook 才启用实现单元门禁：进入 implementation 后，如果不存在 active RU，Core 返回 `IMPLEMENTATION_UNIT_REQUIRED`，宿主 Hook 映射为 `DEV_FLOW_IMPLEMENTATION_UNIT_REQUIRED`。该规则不能仅由 Skill 的操作顺序保证。
+
+### 检查点内容
 
 每个 checkpoint 保存：
 
@@ -284,8 +391,22 @@ pending unit
 - forward/reverse patch
 - verification attempts
 - requirements、plan 与 traceability basis hash
+- project config SHA-256 与解析后的 verification command 定义摘要
 
 Checkpoint 资产位于 feature 目录内，由 MCP 生成和管理，Agent 不可直接编辑。
+
+### 第 3 阶段：检查点与回撤就绪最小版本
+
+第 3 阶段只实现 unit lifecycle、scope Hook、checkpoint、rollback preview 与 conflict 检查。预览可以计算回撤后缀、文件影响和验证命令，但不得暴露 `present_rollback_gate` 或 `execute_rollback`。这样可先独立发布 checkpoint 数据模型，而不会在事务安全尚未完成时提供危险的半成品执行入口。
+
+### 第 4A 阶段：事务回撤与恢复
+
+第 4A 阶段新增：
+
+- `dev_flow_present_rollback_gate`
+- `dev_flow_execute_rollback`
+
+只有事务日志、崩溃恢复、doctor 检测、独立 HUMAN GATE 和故障注入测试均完成后，Core 才注册这两个工具。
 
 ### 回撤规则
 
@@ -330,10 +451,13 @@ Checkpoint 资产位于 feature 目录内，由 MCP 生成和管理，Agent 不�
 | `TRACE_REFERENCE_DANGLING` | 引用不存在 |
 | `TRACE_COVERAGE_INCOMPLETE` | REQ/AC/TASK/TEST/RU 不变量不满足 |
 | `TRACE_BASIS_STALE` | 来源 artifact 已变化 |
-| `REVIEW_CAPABILITY_DEGRADED` | 只能完成多视角审查 |
+| `TRACE_AWARE_REGISTRATION_REQUIRED` | 追溯 artifact 试图通过裸接口登记 |
+| `GENERATED_ARTIFACT_READ_ONLY` | 当前 feature 合同中的生成产物被人工登记 |
 | `REVIEW_JOB_BASIS_MISMATCH` | reviewer 提交基于旧 package |
 | `REVIEW_BLOCKING_FINDINGS` | 仍有未处理 blocking finding |
+| `IMPLEMENTATION_UNIT_REQUIRED` | 实现期写入时不存在 active RU |
 | `IMPLEMENTATION_UNIT_OUT_OF_SCOPE` | 修改文件超出 RU fileScope |
+| `IMPLEMENTATION_UNITS_INCOMPLETE` | `checkpoints: 1` feature 尚有未 checkpoint 的 RU |
 | `CHECKPOINT_VERIFICATION_FAILED` | 单元验证失败 |
 | `ROLLBACK_TARGET_INVALID` | 目标不是合法 checkpoint |
 | `ROLLBACK_CONFLICT` | 当前文件存在未登记修改 |
@@ -341,20 +465,29 @@ Checkpoint 资产位于 feature 目录内，由 MCP 生成和管理，Agent 不�
 
 所有失败必须保持 revision、artifact registration 和文件系统的一致性；涉及文件恢复的错误必须可由 doctor 报告并续办。
 
-## 状态与 Schema 演进
+错误码采用两层约定：
+
+- Core/MCP 业务错误使用无前缀短码，例如 `IMPLEMENTATION_UNIT_REQUIRED`。
+- 宿主 Hook 将对应拒绝映射为 `DEV_FLOW_IMPLEMENTATION_UNIT_REQUIRED`、`DEV_FLOW_IMPLEMENTATION_UNIT_OUT_OF_SCOPE` 等 `DEV_FLOW_*` 稳定码。
+
+`multi-perspective` 是 Review 2a 的正常保证等级，不是 capability degradation 错误。只有未来某条路线显式要求更高最低 assurance 且证据不足时，才应引入独立的 assurance shortfall 错误。
+
+## 状态与模式演进
 
 - 现有 active feature 保持 legacy 模式并按旧合同完成。
-- 新启动的 standard M/L feature 写入 `traceabilityVersion: 1`。
+- `startFeature` 为新 standard M/L 原子创建空 `traceability.json`、state pointer，并写入当时可用的 `workflowCapabilities`；缺少能力字段的旧 feature 等价于全部为 `0`。
+- standard→light reclassify 保留账本和 pointer 作为只读审计记录，但新 light 路线不再 enforce trace，也不再调用 with-trace 登记接口。
 - 不在原 FeatureState 中内嵌完整 trace/review/checkpoint 数据，只保存路径、SHA-256、revision 和摘要。
 - traceability、review batch、checkpoint 和 rollback transaction 各自有独立 JSON schema。
 - 状态读取必须区分 legacy feature、完整新 feature 和损坏的新 feature；缺失必要 sidecar 时 fail closed。
 
-## Hooks
+## 宿主钩子
 
 Hooks 继续只做强制策略，不推进工作流：
 
 - implementation approval 前继续拦 protected-root 写入。
-- active RU 存在时，受保护写入目标必须属于其 `fileScope`。
+- 仅 `workflowCapabilities.checkpoints === 1` 时：implementation approval 后若没有 active RU，继续拦截受保护路径写入。
+- 仅 `workflowCapabilities.checkpoints === 1` 时：active RU 存在时，受保护写入目标必须属于其 `fileScope`。
 - checkpoint 与 rollback 控制文件始终禁止 Agent 直接修改。
 - Git 写仍在 logic-complete 前拦截。
 - 回撤由 MCP 内部受控文件事务执行，不通过宿主 Bash 绕过 Hook。
@@ -368,7 +501,7 @@ Hooks 继续只做强制策略，不推进工作流：
 - implementation：active RU、最近 checkpoint、剩余 units
 - rollback：合法目标、是否存在 open transaction
 
-`status.md`、`plan-review.md` 和交付 manifest 是只读投影，不作为机器事实源。
+`status.md` 和交付 manifest 始终是只读投影；`plan-review.md` 仅在 `review: 1` 时是只读生成投影，`review: 0` 的旧 feature 仍按可编辑 artifact 合同完成。
 
 ## 测试策略
 
@@ -376,16 +509,18 @@ Hooks 继续只做强制策略，不推进工作流：
 
 - ID、引用、DAG、tombstone 和 coverage 不变量。
 - artifact + trace 原子登记与 CAS 冲突。
+- `workflowCapabilities` 启动时固定，插件升级不改变旧 feature 合同。
 - 精确 stale 传播和 gate basis 更新。
-- review capability negotiation、executor 独立性与 assurance level。
-- reviewer basis mismatch、finding 去重、blocking disposition。
+- review assurance 证据计算、调用方伪造身份不升级保证等级。
+- 审查者基线不匹配、审查发现去重、阻塞项处置。
 - RU fileScope、checkpoint blob/patch、rollback suffix 计算。
 - rollback conflict、事务中断与恢复。
 
 ### 路线测试
 
 - standard M/L 在缺失任意 REQ/AC 覆盖时不能进入 approval。
-- multi-agent 与 multi-perspective 两种能力路径都能完成，但产生不同 assurance。
+- Trace-only、Review 2a 和 Checkpoint 三个能力组合分别可以独立闭环。
+- 默认多视角审查可完成；服务端 sampling 与宿主 attestation 分别产生不同 assurance。
 - 风险标签派生正确 reviewer roles。
 - 多 RU 实现、checkpoint、回到中间 checkpoint、重新实现并 finalize。
 
@@ -403,8 +538,11 @@ Hooks 继续只做强制策略，不推进工作流：
 
 ## 分阶段交付
 
-1. **Traceability**：结构化 ID、sidecar、原子登记、coverage 与 stale 传播。
-2. **Review jobs**：review batch、能力自适应、findings、assurance 与 gate 集成。
-3. **Rollback checkpoints**：implementation units、内容快照、事务回撤与恢复。
+0. **开放决策**：先把路线产物模式、RU 来源、生成投影、核心层强制边界和保证等级词汇固化进总设计与合同测试。
+1. **追溯**：为新 feature 固定 `trace: 1, review: 0, checkpoints: 0`；交付结构化 ID、模板、同构 RU、禁用裸登记、原子 sidecar、覆盖与失效传播；plan-review 仍走旧合同。
+2. **审查 2a**：新 feature 固定 `review: 1`；本阶段迁移 plan-review 合同，交付批次、任务、审查发现、处置、生成投影和阻塞门禁；默认保证等级为 `multi-perspective`。
+3. **检查点与回撤就绪最小版本**：新 feature 固定 `checkpoints: 1`；此时才启用实现单元完成门禁、无 active RU/范围钩子、内容快照、预览与冲突；不注册回撤执行工具。
+4. **4A — 回撤加固**：事务日志、恢复、诊断、独立门禁、执行与故障注入。
+5. **4B — 审查增强**：服务端采样、宿主证明、身份/来源与更高保证等级。
 
-每个阶段独立发布并保持上一阶段的路线可用；不以三个子系统同时完成作为首次交付前提。
+4A 与 4B 可以独立排期；每个阶段独立发布并保持上一阶段路线可用，不以三个子系统同时完成作为首次交付前提。

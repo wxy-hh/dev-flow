@@ -1,422 +1,340 @@
-# Dev Flow Rollback Checkpoints Implementation Plan
+# Dev Flow 检查点与回撤实施计划
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **执行要求：** 第 3 阶段只交付回撤就绪能力；事务恢复完成前，不得注册或暴露实际回撤执行工具。
 
-**Goal:** Turn plan rollback units into implementation-time checkpoints that can safely restore the feature to any confirmed unit boundary without using `git reset --hard`.
+**目标：** 把追溯阶段定义的 RU 变成实现期可确认、可预览、可检测冲突的检查点，并在第 4A 阶段加入可恢复事务后安全执行后缀回撤。
 
-**Architecture:** The route keeps one implementation step, while Core manages an ordered implementation-unit sub-state machine. Each checkpoint stores before/after file metadata and content-addressed blobs. Rollback is previewed, approved through a basis-bound human interaction, executed through a resumable file transaction, and followed by configured rollback verification.
+**架构：** 路线仍只有一个 `implementation` 步骤，核心层在内部管理 RU 子状态机。检查点保存内容寻址数据块与前后元数据；回撤只允许恢复到已确认边界，并逆序撤销其后的完整后缀。
 
-**Tech Stack:** TypeScript 5.9, Node.js 20+, filesystem atomic rename/fsync, Git read-only inspection, JSON Schema 2020-12, esbuild, `node:test`.
+**技术栈：** TypeScript、Node.js 内置测试运行器、现有 MCP server、宿主 Hook、JSON Schema、文件系统原子操作。
 
-## Global Constraints
+## 全局约束
 
-- This plan starts after traceability and adaptive review jobs are released.
-- Version 1 rollback supports only suffix rollback to a confirmed checkpoint.
-- Core never uses `git reset --hard`, changes HEAD, stages files, or commits.
-- A file whose current hash differs from the expected chain tip produces `ROLLBACK_CONFLICT` and is not overwritten.
-- Checkpoint and transaction files are MCP-owned control files.
-- Existing finalize delivery snapshots remain the feature-level rollback artifact.
-- No runtime npm dependencies may be added.
+- 直接消费 Trace 账本中的 `RollbackNode`，不得再定义一份字段不同的 RU。
+- standard M 的 RU 来源是 `implementation-plan`，standard L 的来源是 `rollback-units`；生命周期代码不区分来源。
+- 只有启动时固定 `workflowCapabilities.checkpoints === 1` 的新 feature 启用 unit lifecycle、scope Hook 和 implementation checkpoint 门禁；旧 active feature 不在升级中途迁移。
+- 不使用 Git commit、`git reset --hard` 或修改用户分支作为 checkpoint。
+- 当前 hash 与 checkpoint chain tip 不一致时返回 `ROLLBACK_CONFLICT`，绝不覆盖用户未登记修改。
+- checkpoint、blob、transaction 与 recovery 文件均为 MCP 所有的控制文件。
+- 第 3 阶段不包含 `dev_flow_present_rollback_gate` 和 `dev_flow_execute_rollback`。
+- RU 的 forward/rollback verification 字段是 `.dev-flow/project.json` command ID；checkpoint 与 preview basis 必须绑定 project config SHA-256 和解析后的命令定义摘要。
 
----
+## 第 3 阶段：检查点与回撤就绪最小版本
 
-### Task 1: Define rollback-unit and checkpoint schemas
+### 任务 1：定义实现单元与检查点数据模式
 
-**Files:**
-- Modify: `plugins/dev-flow/src/policy/types.ts`
-- Create: `plugins/dev-flow/policy/checkpoint.schema.json`
-- Create: `plugins/dev-flow/policy/rollback-transaction.schema.json`
-- Create: `tests/unit/rollback-policy.test.mjs`
+**文件：**
 
-**Interfaces:**
-- Produces: `RollbackUnit`, `ImplementationUnitState`, `CheckpointManifest`, `CheckpointFile`, `RollbackTransaction`.
+- 修改：`plugins/dev-flow/src/policy/types.ts`
+- 新建：`plugins/dev-flow/policy/checkpoint.schema.json`
+- 新建：`tests/unit/rollback-policy.test.mjs`
 
-- [ ] **Step 1: Write failing schema/type behavior tests**
+**消费：** Trace 计划中已经稳定的 `RollbackNode`。
 
-Assert duplicate RU IDs, cyclic dependencies, empty verification command lists, absolute file scopes, and unknown properties are rejected.
-
-- [ ] **Step 2: Run the test**
-
-Run: `node --test tests/unit/rollback-policy.test.mjs`
-
-Expected: FAIL because the schemas and validators are absent.
-
-- [ ] **Step 3: Add exact types**
+**新增状态：**
 
 ```ts
-export interface RollbackUnit {
-  id: string;
-  tasks: string[];
-  dependsOn: string[];
-  fileScope: string[];
-  covers: string[];
-  forwardVerification: string[];
-  rollbackVerification: string[];
-}
-
-export interface ImplementationUnitState {
+interface ImplementationUnitState {
   unitId: string;
   status: "pending" | "active" | "verified" | "checkpointed" | "rolled_back";
+  basisHash: string;
   startedFingerprint?: string;
   checkpointId?: string;
 }
-
-export interface CheckpointFile {
-  path: string;
-  changeKind: "added" | "modified" | "deleted" | "renamed" | "mode-changed";
-  renamedFrom?: string;
-  beforeSha256: string | "missing";
-  afterSha256: string | "missing";
-  beforeBlob?: string;
-  afterBlob?: string;
-  beforeMode?: number;
-  afterMode?: number;
-}
 ```
 
-Define `CheckpointManifest` with checkpoint/unit IDs, sequence, basis hash, start/end fingerprints, files, patch hashes, attempts, and timestamps.
+`CheckpointManifest` 至少包含 checkpoint/unit ID、顺序、basis hash、开始/结束 fingerprint、文件元数据、blob/patch hash、verification attempts 与时间戳。
 
-- [ ] **Step 4: Implement DAG and scope validation**
+`RollbackNode.status` 继续表示定义的新鲜度；`ImplementationUnitState.status` 才表示运行时生命周期。两套状态通过 `unitId` 关联，不能相互覆盖。
 
-Use a Kahn topological sort. Normalize scopes to project-relative POSIX paths; reject `..`, absolute paths, `.dev-flow`, empty arrays, and duplicate command IDs.
+**步骤：**
 
-- [ ] **Step 5: Run checks and commit**
+- [ ] 写缺失 RU 字段、无效状态转换、重复 checkpoint ID 和未知 unit 测试。
+- [ ] 写 standard M/L 的同构 `RollbackNode` 都能生成 `ImplementationUnitState` 的测试。
+- [ ] 运行 `node --test tests/unit/rollback-policy.test.mjs`，确认红灯。
+- [ ] 添加状态和 checkpoint Schema，不复制 RU interface。
+- [ ] 提交：`feat(dev-flow): define implementation checkpoint schema`
 
-Run: `node --test tests/unit/rollback-policy.test.mjs && npm run typecheck`
+### 任务 2：实现单元生命周期，并在核心层和宿主钩子层限制写入
 
-Expected: PASS.
+**文件：**
 
-```bash
-git add plugins/dev-flow/src/policy/types.ts plugins/dev-flow/policy/checkpoint.schema.json plugins/dev-flow/policy/rollback-transaction.schema.json tests/unit/rollback-policy.test.mjs
-git commit -m "feat(dev-flow): define rollback checkpoint schemas"
+- 新建：`plugins/dev-flow/src/core/implementation-units.ts`
+- 修改：`plugins/dev-flow/src/core/state-store.ts`
+- 修改：`plugins/dev-flow/src/core/feature-check.ts`
+- 修改：`plugins/dev-flow/src/core/step-order.ts`
+- 修改：`plugins/dev-flow/src/hosts/adapter-policy.ts`
+- 新建：`tests/unit/implementation-units.test.mjs`
+- 修改：`tests/unit/adapter-policy.test.mjs`
+
+**状态转换：**
+
+```text
+pending → active → verified → checkpointed
+                       └────→ active（验证失败）
+checkpointed → rolled_back（仅第 4A）
 ```
 
-### Task 2: Add implementation-unit lifecycle and Hook file scopes
+**fail-closed 规则：**
 
-**Files:**
-- Create: `plugins/dev-flow/src/core/implementation-units.ts`
-- Modify: `plugins/dev-flow/src/core/state-store.ts`
-- Modify: `plugins/dev-flow/src/hosts/adapter-policy.ts`
-- Create: `tests/unit/implementation-units.test.mjs`
-- Modify: `tests/unit/adapter-policy.test.mjs`
+- 第 3 阶段把唯一发布常量更新为 `{ trace: 1, review: 1, checkpoints: 1, rollbackExecution: 0 }`；只影响此后启动的 feature。
+- `begin` 前校验依赖 RU 已 checkpoint、trace/review/approval basis 最新，且不存在其他 active RU；`review: 1` 的“review 最新”表示存在 current complete batch，`multi-perspective` 已足够。
+- Core 在 implementation approval 后没有 active RU 时返回 `IMPLEMENTATION_UNIT_REQUIRED`；宿主 Hook 映射为 `DEV_FLOW_IMPLEMENTATION_UNIT_REQUIRED`。
+- Core 在 active RU 范围外写入时返回 `IMPLEMENTATION_UNIT_OUT_OF_SCOPE`；宿主 Hook 映射为 `DEV_FLOW_IMPLEMENTATION_UNIT_OUT_OF_SCOPE`。
+- `recordStep(implementation)` 在任一 RU 未 checkpoint 时返回 `IMPLEMENTATION_UNITS_INCOMPLETE`。
+- CLI、MCP、Claude Hook 与 Codex Hook 必须调用同一 Core 判断。
+- 上述规则仅在 `checkpoints: 1` 时启用；`checkpoints: 0` feature 继续使用旧 implementation 合同。
 
-**Interfaces:**
-- Produces: `initializeImplementationUnits`, `beginImplementationUnit`, `activeImplementationUnit`, `matchesUnitScope`.
+**步骤：**
 
-- [ ] **Step 1: Write failing lifecycle tests**
+- [ ] 写依赖未完成、双 active、basis stale、无 active RU 写入和越界写入测试。
+- [ ] 写直接调用 Core 的旁路测试，证明规则不依赖 implement Skill。
+- [ ] 写阶段 3 发布前已启动的 `checkpoints: 0` feature 在升级后仍可不创建 unit 状态完成 implementation 的测试。
+- [ ] 写阶段 3 发布后新 feature 固定 `checkpoints: 1`，旧 feature capability 不变且不可隐式升级的测试。
+- [ ] 运行相关单元测试，确认红灯。
+- [ ] 实现 `beginImplementationUnit`、状态转换与 Hook policy。
+- [ ] 验证 legacy feature 与 approval 前写入规则不回归。
+- [ ] 提交：`feat(dev-flow): enforce implementation unit lifecycle`
 
-Test that RU-002 cannot begin before RU-001 is checkpointed, only one unit can be active, stale plan/review/approval prevents begin, and begin stores the current fingerprint.
+### 任务 3：创建内容寻址检查点
 
-- [ ] **Step 2: Write failing Hook scope tests**
+**文件：**
 
-With RU-001 active and `fileScope: ["src/api/**"]`, `Write src/api/client.ts` must pass and `Write src/ui/view.ts` must return `DEV_FLOW_IMPLEMENTATION_UNIT_OUT_OF_SCOPE`.
+- 新建：`plugins/dev-flow/src/core/checkpoints.ts`
+- 修改：`plugins/dev-flow/src/core/implementation-units.ts`
+- 修改：`plugins/dev-flow/src/core/verification.ts`
+- 新建：`tests/unit/checkpoints.test.mjs`
+- 修改：`tests/unit/verification-artifact.test.mjs`
 
-- [ ] **Step 3: Run focused tests**
+**接口：**
 
-Run: `node --test tests/unit/implementation-units.test.mjs tests/unit/adapter-policy.test.mjs`
+- `checkpointImplementationUnit`
+- `readCheckpoint`
+- `checkpointChain`
+- `blobPath`
 
-Expected: FAIL.
-
-- [ ] **Step 4: Add state summary**
-
-```ts
-implementationUnits?: {
-  basisHash: string;
-  order: string[];
-  units: Record<string, ImplementationUnitState>;
-  activeUnitId?: string;
-  latestCheckpointId?: string;
-};
-```
-
-Initialize it when implementation first opens by reading current RU nodes from traceability and validating the DAG.
-
-- [ ] **Step 5: Implement scope matching**
-
-Support exact paths and terminal `/**` directory prefixes only. Do not add a general glob dependency.
-
-```ts
-export function matchesUnitScope(file: string, scopes: string[]): boolean {
-  return scopes.some((scope) => scope.endsWith("/**")
-    ? file.startsWith(scope.slice(0, -3) + "/")
-    : file === scope);
-}
-```
-
-- [ ] **Step 6: Run tests and commit**
-
-Run: `node --test tests/unit/implementation-units.test.mjs tests/unit/adapter-policy.test.mjs`
-
-Expected: PASS.
-
-```bash
-git add plugins/dev-flow/src/core/implementation-units.ts plugins/dev-flow/src/core/state-store.ts plugins/dev-flow/src/hosts/adapter-policy.ts tests/unit/implementation-units.test.mjs tests/unit/adapter-policy.test.mjs
-git commit -m "feat(dev-flow): enforce implementation unit scopes"
-```
-
-### Task 3: Create content-addressed checkpoints
-
-**Files:**
-- Create: `plugins/dev-flow/src/core/checkpoints.ts`
-- Modify: `plugins/dev-flow/src/core/implementation-units.ts`
-- Create: `tests/unit/checkpoints.test.mjs`
-
-**Interfaces:**
-- Produces: `checkpointImplementationUnit`, `readCheckpoint`, `checkpointChain`, `blobPath`.
-
-- [ ] **Step 1: Write failing file-kind tests**
-
-Cover tracked text modification, binary modification, untracked addition, deletion, Git-detected rename with `renamedFrom`, and executable-bit change. Assert equal content writes no duplicate blob.
-
-- [ ] **Step 2: Run the test**
-
-Run: `node --test tests/unit/checkpoints.test.mjs`
-
-Expected: FAIL.
-
-- [ ] **Step 3: Implement the blob store**
-
-Store blobs at:
+Blob 路径：
 
 ```text
 .dev-flow/features/<id>/checkpoints/blobs/<sha256>
 ```
 
-Write with `wx`, fsync the file, and verify an existing blob hash before reuse. A blob filename is always the SHA-256 of its bytes.
+**记录内容：**
 
-- [ ] **Step 4: Capture before and after**
+- 开始与结束 fingerprint。
+- 新增、修改、删除、重命名和权限变化。
+- 每个文件的 before/after SHA-256 与内容 blob。
+- forward/reverse patch hash。
+- forward verification 命令、attempt ID 与结果。
+- requirements、plan、traceability 与 approval basis hash。
+- `.dev-flow/project.json` SHA-256、实际解析的 command ID 与命令定义摘要。
 
-At begin-unit, save the start manifest for paths currently in scope. At checkpoint, combine Git status inspection and scope traversal to find changes. Require every changed protected file since the previous checkpoint to belong to the active scope. Record before/after bytes and mode.
+**步骤：**
 
-- [ ] **Step 5: Run forward verification**
+- [ ] 写文本、二进制、新增、删除、重命名、chmod 与相同 blob 去重测试。
+- [ ] 写 scope 外改动、验证失败、写 manifest 中断和 hash mismatch 测试。
+- [ ] 写未知 command ID、同 ID 命令定义变化和 project config digest 变化导致 checkpoint 拒绝的测试。
+- [ ] 运行 `node --test tests/unit/checkpoints.test.mjs`，确认红灯。
+- [ ] 复用 verification command runner；失败时 unit 保持 active 且不产生 confirmed manifest。
+- [ ] 使用临时文件、fsync 与 atomic rename 写 blob/manifest。
+- [ ] 运行 checkpoint 与 verification 回归测试。
+- [ ] 提交：`feat(dev-flow): create content addressed checkpoints`
 
-Reuse configured verification command execution through a shared command runner extracted from `verification.ts`. Store attempts on the checkpoint. A non-zero exit leaves the unit `active` and throws `CHECKPOINT_VERIFICATION_FAILED`; it does not create a confirmed manifest.
+### 任务 4：实现回撤预览与冲突检测
 
-- [ ] **Step 6: Generate audit patches**
+**文件：**
 
-Generate forward and reverse binary patches for human inspection, but make blob manifests the restoration authority.
+- 新建：`plugins/dev-flow/src/core/rollback.ts`
+- 修改：`plugins/dev-flow/src/core/status.ts`
+- 修改：`plugins/dev-flow/src/core/next.ts`
+- 新建：`tests/unit/rollback-preview.test.mjs`
 
-- [ ] **Step 7: Run tests and commit**
+**预览规则：**
 
-Run: `node --test tests/unit/checkpoints.test.mjs tests/unit/verification-artifact.test.mjs`
+- 目标必须是 confirmed checkpoint。
+- 只允许撤销目标后的完整后缀，不允许抽掉中间依赖。
+- 撤销顺序为确定性的逆拓扑序。
+- 折叠 checkpoint file records，计算每个文件的最终恢复状态。
+- 逐文件校验当前状态等于 chain tip；任一冲突使整个预览失败。
+- 校验当前 project config SHA-256 和命令定义摘要与 checkpoint basis 一致。
+- 生成 preview basis hash，但第 3 阶段不创建 HUMAN GATE。
 
-Expected: PASS.
+示例：RU-001、RU-002、RU-003 均已确认，预览回到 RU-001 时，撤销顺序必须是 `[RU-003, RU-002]`。
 
-```bash
-git add plugins/dev-flow/src/core/checkpoints.ts plugins/dev-flow/src/core/implementation-units.ts plugins/dev-flow/src/core/verification.ts tests/unit/checkpoints.test.mjs tests/unit/verification-artifact.test.mjs
-git commit -m "feat(dev-flow): create implementation checkpoints"
-```
+**步骤：**
 
-### Task 4: Add rollback preview and human gate
+- [ ] 写合法后缀、非法目标、依赖中洞、文件冲突和旧 basis 测试。
+- [ ] 运行 `node --test tests/unit/rollback-preview.test.mjs`，确认红灯。
+- [ ] 实现 `previewRollback`，只返回计划，不修改工作区或状态。
+- [ ] status 显示合法目标、冲突摘要和 checkpoint chain。
+- [ ] 提交：`feat(dev-flow): preview checkpoint rollback`
 
-**Files:**
-- Create: `plugins/dev-flow/src/core/rollback.ts`
-- Modify: `plugins/dev-flow/src/core/user-interactions.ts`
-- Modify: `plugins/dev-flow/src/core/gate-basis.ts`
-- Create: `tests/unit/rollback-preview.test.mjs`
+### 任务 5：只暴露第 3 阶段安全工具并更新技能
 
-**Interfaces:**
-- Produces: `previewRollback`, `presentRollbackGate`, `resolveRollbackGate`, `RollbackPreview`.
+**文件：**
 
-- [ ] **Step 1: Write failing suffix and conflict tests**
+- 修改：`plugins/dev-flow/src/mcp/server.ts`
+- 修改：`plugins/dev-flow/skills/implement/SKILL.md`
+- 修改：`plugins/dev-flow/skills/rollback-safety/SKILL.md`
+- 修改：`plugins/dev-flow/skills/status/SKILL.md`
+- 修改：`tests/unit/mcp-server.test.mjs`
+- 修改：`tests/unit/status-progress.test.mjs`
+- 修改：`tests/unit/skills.test.mjs`
 
-For RU-001, RU-002, RU-003, previewing RU-001 must return undo order `[RU-003, RU-002]`. Previewing an uncheckpointed RU returns `ROLLBACK_TARGET_INVALID`. A current hash mismatch returns `ROLLBACK_CONFLICT`.
+**第 3 阶段工具：**
 
-- [ ] **Step 2: Run the test**
+- `dev_flow_begin_implementation_unit`
+- `dev_flow_checkpoint_implementation_unit`
+- `dev_flow_preview_rollback`
 
-Run: `node --test tests/unit/rollback-preview.test.mjs`
+三个工具都必须拒绝 `checkpoints: 0` feature；该 feature 继续通过旧 `dev_flow_record_step(implementation)` 完成路线。
 
-Expected: FAIL.
+**负向合同：**
 
-- [ ] **Step 3: Implement preview**
+- 工具列表中不存在 `dev_flow_present_rollback_gate`。
+- 工具列表中不存在 `dev_flow_execute_rollback`。
+- rollback-safety Skill 只能预览并说明当前尚不可执行，不能通过 Bash 自行恢复文件。
 
-```ts
-export interface RollbackPreview {
-  targetUnitId: string;
-  targetCheckpointId: string;
-  undoUnitIds: string[];
-  files: Array<{ path: string; currentSha256: string | "missing"; restoreSha256: string | "missing" }>;
-  verificationCommandIds: string[];
-  basisHash: string;
-}
-```
+**步骤：**
 
-Build the file result by folding checkpoint files in reverse sequence. Verify current files match the chain-tip after hashes before returning a preview.
+- [ ] 写工具发现、严格输入 Schema、状态输出和 execute 工具不存在的测试。
+- [ ] 更新 implement Skill：begin → 仅改 scope → checkpoint → 下一 RU → 全部完成后 record implementation。
+- [ ] 更新 status：显示 active RU、最近 checkpoint、剩余 units 与合法预览目标。
+- [ ] 运行 MCP、status 与 Skills 测试。
+- [ ] 提交：`feat(dev-flow): expose rollback readiness workflow`
 
-- [ ] **Step 4: Add a dedicated interaction**
+### 任务 6：保护控制文件并验收第 3 阶段
 
-Create interaction kind `rollback` with target `rollback:<preview basisHash>` and actions `confirm` and `cancel`. Confirmation must use native elicitation or a later one-time token response and cannot reuse a requirement/implementation gate event.
+**文件：**
 
-- [ ] **Step 5: Run tests and commit**
+- 修改：`plugins/dev-flow/src/hosts/adapter-policy.ts`
+- 修改：`tests/unit/adapter-policy.test.mjs`
+- 新建：`tests/e2e/routes/standard-m-checkpoints.test.mjs`
+- 新建：`tests/e2e/cross-host/checkpoint-preview.test.mjs`
+- 修改：`docs/architecture.md`
+- 修改：`docs/routes.md`
+- 修改：`README.md`
 
-Run: `node --test tests/unit/rollback-preview.test.mjs tests/unit/user-interactions.test.mjs`
+**验收场景：**
 
-Expected: PASS.
+- 三个 RU 依次 begin/checkpoint，未 begin 写入和 scope 外写入均失败。
+- Claude checkpoint RU-001，Codex 读取同一 revision 并 checkpoint RU-002。
+- 回撤预览准确列出后缀与文件，但任何宿主都找不到 execute 工具。
+- 直接或 Bash 写 checkpoint manifests、blobs 和控制目录返回 `DEV_FLOW_STATE_MUTATION_FORBIDDEN`。
+- 阶段 3 发布前已启动的 feature 升级后仍按 `checkpoints: 0` 完成，不触发无 active RU 门禁。
 
-```bash
-git add plugins/dev-flow/src/core/rollback.ts plugins/dev-flow/src/core/user-interactions.ts plugins/dev-flow/src/core/gate-basis.ts tests/unit/rollback-preview.test.mjs
-git commit -m "feat(dev-flow): preview and approve checkpoint rollback"
-```
+**步骤：**
 
-### Task 5: Execute resumable rollback transactions
+- [ ] 增加双路线/跨宿主 E2E 与 Hook 负向测试。
+- [ ] 更新中文文档，明确第 3 阶段是“回撤就绪”而非“可执行回撤”。
+- [ ] 运行全量测试、类型检查、构建与 `git diff --check`。
+- [ ] 提交：`feat(dev-flow): complete checkpoint readiness mvp`
 
-**Files:**
-- Modify: `plugins/dev-flow/src/core/rollback.ts`
-- Modify: `plugins/dev-flow/src/core/state-store.ts`
-- Modify: `plugins/dev-flow/src/mcp/doctor.ts`
-- Create: `tests/unit/rollback-transaction.test.mjs`
+## 第 4A 阶段：事务回撤与恢复加固
 
-**Interfaces:**
-- Produces: `executeRollback`, `resumeRollbackTransaction`, doctor rollback report.
+第 4A 发布后启动的新 feature 固定 `rollbackExecution: 1`。此前已经启动的 `rollbackExecution: 0` feature 可以继续 checkpoint 和 preview，但不能在升级中途获得 execute 权限；未来若需要迁移，必须设计显式 MCP 迁移事务。
 
-- [ ] **Step 1: Write failure-injection tests**
+本阶段把唯一发布常量更新为 `{ trace: 1, review: 1, checkpoints: 1, rollbackExecution: 1 }`。
 
-Inject failure after transaction prepare, after recovery backup, after first restore rename, during verification, and before final state commit. Assert each phase can resume without losing the pre-rollback bytes.
+### 任务 7：定义回撤事务、独立 HUMAN GATE 与恢复协议
 
-- [ ] **Step 2: Run the test**
+**文件：**
 
-Run: `node --test tests/unit/rollback-transaction.test.mjs`
+- 新建：`plugins/dev-flow/policy/rollback-transaction.schema.json`
+- 修改：`plugins/dev-flow/src/core/rollback.ts`
+- 修改：`plugins/dev-flow/src/core/state-store.ts`
+- 修改：`plugins/dev-flow/src/core/user-interactions.ts`
+- 修改：`plugins/dev-flow/src/core/gate-basis.ts`
+- 新建：`tests/unit/rollback-gate.test.mjs`
 
-Expected: FAIL.
+**规则：**
 
-- [ ] **Step 3: Define transaction phases**
+- 先根据当前 chain 重新生成 preview 与 basis hash。
+- 只有 `checkpoints: 1` 且 `rollbackExecution: 1` 才能展示或确认回撤门禁。
+- 展示独立 `ROLLBACK_CONFIRMATION` HUMAN GATE。
+- 用户响应必须来自后续交互，且绑定 feature、target、preview basis 与 revision。
+- 旧响应、其他 gate 响应、修改后的工作区和过期 preview 均不能执行。
 
-```ts
-type RollbackPhase =
-  | "prepared"
-  | "backed-up"
-  | "restoring"
-  | "restored"
-  | "verified"
-  | "state-committed"
-  | "completed";
-```
+**步骤：**
 
-Persist `nextFileIndex`, preview basis, backup directory, target checkpoint, current phase, and verification attempt IDs.
+- [ ] 写同消息自批、响应重放、basis 改变和 target 替换测试。
+- [ ] 写第 4A 发布后新 feature 固定 `rollbackExecution: 1`，既有 `rollbackExecution: 0` feature 仍不能展示 gate 的测试。
+- [ ] 定义 transaction phases 与恢复所需全部字段。
+- [ ] 实现 `presentRollbackGate`，仍不修改文件。
+- [ ] 提交：`feat(dev-flow): gate checkpoint rollback execution`
 
-- [ ] **Step 4: Implement safe restoration**
+### 任务 8：实现可续办的文件事务与补偿恢复
 
-For each file, first copy current bytes/mode to the transaction backup. Restore a blob through a same-directory temp file, fsync it, chmod it, and atomic rename. For a target `missing`, move the file into transaction recovery rather than unlinking it before the transaction commits.
+**文件：**
 
-- [ ] **Step 5: Handle verification failure**
+- 修改：`plugins/dev-flow/src/core/rollback.ts`
+- 修改：`plugins/dev-flow/src/core/state-store.ts`
+- 修改：`plugins/dev-flow/src/mcp/doctor.ts`
+- 新建：`tests/unit/rollback-transaction.test.mjs`
+- 修改：`tests/unit/doctor.test.mjs`
 
-If rollback verification fails, restore every file from transaction backup, run the same verification commands against the restored chain tip, and leave the transaction report with `outcome: "rolled-back-rollback"`. If compensation verification also fails, doctor reports a blocking recovery with both attempt IDs.
+**事务顺序：**
 
-- [ ] **Step 6: Commit workflow state**
+1. 写 `rollback-transaction.json` 并 fsync。
+2. 将所有当前文件 bytes/mode 备份到 recovery。
+3. 对每个目标使用同目录临时文件、fsync、chmod 与 atomic rename。
+4. 删除目标不直接 unlink，先移动到 recovery。
+5. 执行 rollback verification。
+6. 成功后原子提交状态；失败时从 recovery 补偿恢复。
+7. 补偿验证也失败时，doctor 报告 blocking recovery 和两组 attempt ID。
 
-After successful rollback verification, mark undone units `rolled_back`, clear their checkpoint IDs from the active chain summary, make the first undone unit pending, and invalidate implementation completion, code review, verification, feature-check, logicComplete, and finalize.
+事务保存 `nextFileIndex`、preview basis、backup directory、target checkpoint、phase 与 verification attempt IDs，确保每个阶段都可续办。
 
-- [ ] **Step 7: Run tests and commit**
+**步骤：**
 
-Run: `node --test tests/unit/rollback-transaction.test.mjs tests/unit/doctor.test.mjs`
+- [ ] 在 prepare、backup、首个 rename、verification、state commit 前后注入故障。
+- [ ] 断言每个故障点均可 resume，且不会丢失回撤前 bytes/mode。
+- [ ] 运行 `node --test tests/unit/rollback-transaction.test.mjs`，确认红灯。
+- [ ] 实现事务、补偿与 doctor recovery。
+- [ ] 成功后将撤销 units 标记 `rolled_back`，首个撤销 unit 变回 pending。
+- [ ] 使 code review、verification、feature-check、logic-complete 与 finalize stale；basis 未变时保留 implementation approval。
+- [ ] 提交：`feat(dev-flow): execute resumable checkpoint rollback`
 
-Expected: PASS.
+### 任务 9：开放执行工具并完成端到端验收
 
-```bash
-git add plugins/dev-flow/src/core/rollback.ts plugins/dev-flow/src/core/state-store.ts plugins/dev-flow/src/mcp/doctor.ts tests/unit/rollback-transaction.test.mjs tests/unit/doctor.test.mjs
-git commit -m "feat(dev-flow): execute resumable checkpoint rollback"
-```
+**文件：**
 
-### Task 6: Add MCP tools, status, and Skills
+- 修改：`plugins/dev-flow/src/mcp/server.ts`
+- 修改：`plugins/dev-flow/src/core/status.ts`
+- 修改：`plugins/dev-flow/skills/rollback-safety/SKILL.md`
+- 修改：`tests/unit/mcp-server.test.mjs`
+- 新建：`tests/e2e/routes/standard-m-rollback.test.mjs`
+- 新建：`tests/e2e/cross-host/checkpoint-rollback.test.mjs`
+- 修改：`docs/architecture.md`
+- 修改：`docs/routes.md`
+- 修改：`README.md`
 
-**Files:**
-- Modify: `plugins/dev-flow/src/mcp/server.ts`
-- Modify: `plugins/dev-flow/src/core/status.ts`
-- Modify: `plugins/dev-flow/src/core/next.ts`
-- Modify: `plugins/dev-flow/skills/implement/SKILL.md`
-- Modify: `plugins/dev-flow/skills/rollback-safety/SKILL.md`
-- Modify: `plugins/dev-flow/skills/status/SKILL.md`
-- Modify: `tests/unit/mcp-server.test.mjs`
-- Modify: `tests/unit/status-progress.test.mjs`
-- Modify: `tests/unit/skills.test.mjs`
+**第 4A 新工具：**
 
-**Interfaces:**
-- Produces: begin/checkpoint/preview/present/execute rollback MCP tools and `progress.implementation`.
+- `dev_flow_present_rollback_gate`
+- `dev_flow_execute_rollback`
 
-- [ ] **Step 1: Write failing MCP/status tests**
+**验收场景：**
 
-Assert tools/list includes:
+- 三个 RU checkpoint 后预览回到 RU-001，后续用户确认，再执行撤销 RU-003/RU-002。
+- 重新实现两个 RU 后可完成 code review、verification、feature-check 和 finalize。
+- 跨宿主读取同一 transaction/revision，CAS 防止并发重复执行。
+- 任一 open transaction 阻止其他 feature mutation，doctor 给出 resume/compensate 指引。
 
-```text
-dev_flow_begin_implementation_unit
-dev_flow_checkpoint_implementation_unit
-dev_flow_preview_rollback
-dev_flow_present_rollback_gate
-dev_flow_execute_rollback
-```
+**步骤：**
 
-Assert status publishes active unit, latest checkpoint, remaining units, legal rollback targets, and open transaction.
+- [ ] 先写工具只在 transaction schema/doctor 就绪后注册的合同测试。
+- [ ] 运行回撤路线、跨宿主、故障注入和控制文件 Hook 测试。
+- [ ] 更新中文文档，区分 unit checkpoint 与 finalize 的 feature 级反向 patch。
+- [ ] 运行全量测试、类型检查、构建和 `git diff --check`。
+- [ ] 提交：`feat(dev-flow): complete transactional checkpoint rollback`
 
-- [ ] **Step 2: Run focused tests**
+## 完成条件
 
-Run: `node --test tests/unit/mcp-server.test.mjs tests/unit/status-progress.test.mjs tests/unit/skills.test.mjs`
-
-Expected: FAIL.
-
-- [ ] **Step 3: Add strict schemas and dispatch**
-
-Begin requires featureId, expectedRevision, unitId, host. Checkpoint additionally accepts no arbitrary command: Core reads command IDs from the approved RU. Preview is read-only. Present gate and execute require preview/interaction basis and host provenance.
-
-- [ ] **Step 4: Update Skills**
-
-Implement must begin exactly the next pending RU, edit only its scope, checkpoint it once, and continue until all units are checkpointed before recording the route implementation step. Rollback-safety handles preview/gate/execute. Status describes legal targets without implying rollback has run.
-
-- [ ] **Step 5: Run tests and commit**
-
-Run: `node --test tests/unit/mcp-server.test.mjs tests/unit/status-progress.test.mjs tests/unit/skills.test.mjs`
-
-Expected: PASS.
-
-```bash
-git add plugins/dev-flow/src/mcp/server.ts plugins/dev-flow/src/core/status.ts plugins/dev-flow/src/core/next.ts plugins/dev-flow/skills/implement/SKILL.md plugins/dev-flow/skills/rollback-safety/SKILL.md plugins/dev-flow/skills/status/SKILL.md tests/unit/mcp-server.test.mjs tests/unit/status-progress.test.mjs tests/unit/skills.test.mjs
-git commit -m "feat(dev-flow): expose checkpoint rollback workflow"
-```
-
-### Task 7: Protect controls and verify end-to-end rollback
-
-**Files:**
-- Modify: `plugins/dev-flow/src/hosts/adapter-policy.ts`
-- Modify: `tests/unit/adapter-policy.test.mjs`
-- Create: `tests/e2e/routes/standard-m-rollback.test.mjs`
-- Create: `tests/e2e/cross-host/checkpoint-rollback.test.mjs`
-- Modify: `docs/architecture.md`
-- Modify: `docs/routes.md`
-- Modify: `README.md`
-
-**Interfaces:**
-- Produces: Hook protection, route proof, cross-host recovery proof, and user documentation.
-
-- [ ] **Step 1: Add Hook control tests**
-
-Direct and Bash writes to checkpoint manifests, blobs, rollback transactions, and recovery directories must return `DEV_FLOW_STATE_MUTATION_FORBIDDEN`.
-
-- [ ] **Step 2: Add route E2E**
-
-Implement three RUs, checkpoint each, preview rollback to RU-001, record a later human confirmation, execute rollback, assert RU-002/RU-003 are rolled back, reimplement them, run code review/verification/feature-check, and finalize with the existing delivery snapshot.
-
-- [ ] **Step 3: Add cross-host E2E**
-
-Claude begins and checkpoints RU-001; Codex reads status, checkpoints RU-002, previews rollback, and executes it after a captured later user response. Assert both hosts observe the same checkpoint chain revision.
-
-- [ ] **Step 4: Document operational behavior**
-
-Document legal rollback targets, conflict refusal, verification, transaction recovery, scope amendment, and the difference between unit checkpoints and the final feature patch.
-
-- [ ] **Step 5: Run the complete suite**
-
-Run: `npm test`
-
-Expected: PASS.
-
-- [ ] **Step 6: Commit**
-
-```bash
-git add plugins/dev-flow/src/hosts/adapter-policy.ts tests/unit/adapter-policy.test.mjs tests/e2e/routes/standard-m-rollback.test.mjs tests/e2e/cross-host/checkpoint-rollback.test.mjs docs/architecture.md docs/routes.md README.md plugins/dev-flow/dist/mcp-server.mjs plugins/dev-flow/dist/claude-hook.mjs plugins/dev-flow/dist/codex-hook.mjs
-git commit -m "test(dev-flow): verify checkpoint rollback end to end"
-```
-
-## Self-Review
-
-- Spec coverage: RU schema, DAG, implementation lifecycle, file scopes, content blobs, verification, preview, human gate, conflict refusal, transaction recovery, downstream invalidation, status, Hooks, routes, and cross-host execution are covered.
-- Placeholder scan: no deferred rollback behavior remains.
-- Type consistency: `RollbackUnit`, `ImplementationUnitState`, `CheckpointManifest`, `RollbackPreview`, `RollbackTransaction`, `checkpointImplementationUnit`, `previewRollback`, and `executeRollback` remain stable across tasks.
+- Trace 与 Rollback 共用同一个 RU 数据模型。
+- 无 active RU、越界写入和未完成 implementation 都由 Core/Hook 拒绝。
+- 上述门禁只作用于 `checkpoints: 1`，插件升级不会锁死旧 active feature。
+- 第 3 阶段只读预览且独立可发布，不存在半成品 execute 入口。
+- 第 4A 的 gate、事务、补偿、doctor 与故障注入全部通过后才开放回撤执行。
+- verification command ID、project config digest 和命令定义摘要贯穿 RU、checkpoint、preview 与 transaction basis。
+- 冲突时不修改任何文件，故障时始终保留可恢复证据。

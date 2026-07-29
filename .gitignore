@@ -20,3 +20,4 @@ coverage/
 # Temporary files
 *.log
 *.tmp
+.codefree*

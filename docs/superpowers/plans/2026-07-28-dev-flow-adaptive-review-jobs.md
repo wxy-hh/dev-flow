@@ -1,366 +1,338 @@
-# Dev Flow Adaptive Review Jobs Implementation Plan
+# Dev Flow 对抗审查任务实施计划
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **执行要求：** 先交付可验证的审查 2a，再独立实施审查 4B。不得把“多角色”直接描述成已经证明的“多代理”。
 
-**Goal:** Replace the plan-review marker with immutable review batches, capability-adaptive independent jobs, structured findings, explicit assurance levels, and blocking-finding dispositions.
+**目标：** 用不可变批次、结构化审查发现、处置结果、生成投影和阻塞门禁替代 `plan_review` 标记，并让保证等级只由可审计证据计算。
 
-**Architecture:** MCP owns review batches and findings. Each batch is bound to the current requirements, plan, coverage, rollback, traceability, classification, scope, and protected-root fingerprint. Review execution uses MCP sampling when available, host subagents otherwise, and an explicitly degraded multi-perspective path as the final fallback.
+**架构：** MCP/核心层是批次、任务、审查发现、处置结果与保证等级证据的事实源。第 2a 阶段默认执行多视角审查；第 4B 阶段才增加服务端采样、宿主证明和身份来源证明。
 
-**Tech Stack:** TypeScript 5.9, Node.js 20+, MCP JSON-RPC, JSON Schema 2020-12, esbuild, `node:test`.
+**技术栈：** TypeScript、Node.js 内置测试运行器、JSON Schema、现有 MCP server 与 HUMAN GATE。
 
-## Global Constraints
+## 全局约束
 
-- This plan starts after the traceability ledger plan is released.
-- Reviewers cannot see sibling findings until their own job is submitted.
-- Only distinct executor/context identities qualify for `multi-agent`.
-- The degraded path is allowed but must be visible as `multi-perspective`.
-- Aggregation cannot silently downgrade a blocking finding.
-- No runtime npm dependencies may be added.
+- review batch 绑定 requirements、plan、coverage、rollback、traceability、路线、分类、scope 与 protected-root fingerprint。
+- review batch 同时绑定 `.dev-flow/project.json` SHA-256，避免验证命令配置变化后复用旧审查。
+- reviewer 只能读取 immutable package；提交前不能读取同 batch 的其他 findings。
+- 调用方不能写 `assuranceLevel`，也不能用任意字符串把等级升级。
+- `review: 1` 的 standard M/L 使用 Core 生成的 `plan-review.md`，它不是可编辑事实源。
+- blocking finding 未解决或未接受风险时，Core 必须拒绝 `recordStep(plan_review)`。
+- 只有启动时固定 `workflowCapabilities.review === 1` 的 feature 使用本合同；`review: 0` 的 active feature 继续走旧 plan-review artifact/evidence。
 
----
+## 第 2a 阶段：批次、审查发现、保证等级、投影与阻塞
 
-### Task 1: Define review policy, roles, and schemas
+### 任务 1：定义审查角色、数据模式与保证等级
 
-**Files:**
-- Modify: `plugins/dev-flow/src/policy/types.ts`
-- Modify: `plugins/dev-flow/policy/contract.json`
-- Modify: `plugins/dev-flow/src/policy/contract.ts`
-- Create: `plugins/dev-flow/policy/review.schema.json`
-- Create: `tests/unit/review-policy.test.mjs`
+**文件：**
 
-**Interfaces:**
-- Produces: `ReviewRole`, `ReviewExecutionMode`, `ReviewAssurance`, `ReviewFinding`, `ReviewJob`, `ReviewBatch`, `requiredReviewRoles(route, riskLabels)`.
+- 修改：`plugins/dev-flow/src/policy/types.ts`
+- 修改：`plugins/dev-flow/policy/contract.json`
+- 修改：`plugins/dev-flow/src/policy/contract.ts`
+- 修改：`plugins/dev-flow/src/policy/evidence.ts`
+- 修改：`plugins/dev-flow/src/core/state-store.ts`
+- 新建：`plugins/dev-flow/policy/review.schema.json`
+- 新建：`tests/unit/review-policy.test.mjs`
+- 修改：`tests/unit/risk-evidence.test.mjs`
+- 修改：`tests/unit/next-evidence.test.mjs`
+- 修改：`tests/unit/state-store.test.mjs`
 
-- [ ] **Step 1: Write the failing role derivation test**
-
-```js
-assert.deepEqual(requiredReviewRoles("standard-m", []), ["architecture-testability", "requirement-coverage"]);
-assert.deepEqual(requiredReviewRoles("standard-l", ["security"]), [
-  "architecture-testability",
-  "requirement-coverage",
-  "rollback-operability",
-  "security",
-]);
-assert.deepEqual(requiredReviewRoles("standard-l", ["irreversible_consequence"]), [
-  "architecture-testability",
-  "data-irreversibility",
-  "requirement-coverage",
-  "rollback-operability",
-]);
-```
-
-- [ ] **Step 2: Run the test**
-
-Run: `node --test tests/unit/review-policy.test.mjs`
-
-Expected: FAIL because review policy is not defined.
-
-- [ ] **Step 3: Add exact types**
+**类型：**
 
 ```ts
+export type ReviewAssurance =
+  | "multi-perspective"
+  | "independent-sampling"
+  | "multi-agent-attested"
+  | "multi-agent-verified";
+
+export type ReviewExecutionMode =
+  | "isolated-sequential"
+  | "mcp-sampling"
+  | "native-subagent";
+
 export type ReviewRole =
-  | "requirement-coverage"
+  | "requirements-coverage"
   | "architecture-testability"
   | "rollback-operability"
   | "security"
   | "data-irreversibility";
-export type ReviewExecutionMode = "mcp-sampling" | "native-subagent" | "isolated-sequential";
-export type ReviewAssurance = "multi-agent" | "multi-perspective";
-export type FindingSeverity = "blocking" | "important" | "advisory";
-export type FindingStatus = "open" | "resolved" | "accepted";
+
+export type ReviewDepth = "standard" | "full";
+export type ReviewFindingSeverity = "blocking" | "warning" | "note";
 ```
 
-Define `ReviewFinding` with `findingId`, `jobId`, `severity`, `category`, `targets`, `evidence`, `claim`, `recommendation`, and `status`. Define `ReviewJob` with immutable `basisHash`, role, execution mode, executor/context IDs, and timestamps.
+**语义：**
 
-- [ ] **Step 4: Add review role policy**
+| 等级 | 证明条件 |
+| --- | --- |
+| `multi-perspective` | 同一不可变 package 上完成多个必需角色 |
+| `independent-sampling` | 服务端为不同 job 签发不可复用的 sampling request ID |
+| `multi-agent-attested` | 宿主提交不同 subagent 的原始 attestation |
+| `multi-agent-verified` | 未来可信宿主提供可验证 identity/provenance |
 
-Place route defaults, risk additions, and `critical_correctness`/`irreversible_consequence` review-depth overrides in `contract.json`. Sort derived roles and reject unknown roles during contract load. `critical_correctness` sets `reviewDepth: "full"` for every required role; it does not invent a redundant role name.
+第 2a 阶段只产生 `multi-perspective`。先定义完整枚举是为了 Schema 前向兼容，但不得在 2a 代码中伪造更高等级。
 
-- [ ] **Step 5: Add strict JSON schema and run checks**
+**角色与深度策略：**
 
-Run: `node --test tests/unit/review-policy.test.mjs && npm run typecheck`
+- standard M：`requirements-coverage`、`architecture-testability`。
+- standard L：上述角色加 `rollback-operability`。
+- `security`：增加 `security`。
+- `data`、`money`、`irreversible_consequence`：增加 `data-irreversibility`。
+- `critical_correctness`：不增加新角色；所有必需 job 使用 `reviewDepth: "full"`，2a assurance 仍为 `multi-perspective`。
+- 每个 job 必须提交结构化完成记录、覆盖摘要和 review depth；`findings: []` 合法，不强迫 reviewer 虚构问题。
 
-Expected: PASS.
+**plan-review 合同迁移：**
 
-- [ ] **Step 6: Commit**
+- 本阶段把唯一发布常量更新为 `{ trace: 1, review: 1, checkpoints: 0, rollbackExecution: 0 }`；`startFeature` 复制该值，绝不回写旧 feature。
+- standard M：`plan-review` 从 `absent` 转为 `generated`。
+- standard L：`plan-review` 从 `editable` 转为 `generated`。
+- `routeDefinitionForFeature` 只对 `review: 1` 应用 transition；旧 feature 继续原合同。
+- `requiredEvidenceForStep(plan_review)` 对 `review: 0` 仍要求 `{ reviewType: "plan" }`；对 `review: 1` 要求 `{ batchId, basisHash, assuranceLevel }`。
 
-```bash
-git add plugins/dev-flow/src/policy/types.ts plugins/dev-flow/policy/contract.json plugins/dev-flow/src/policy/contract.ts plugins/dev-flow/policy/review.schema.json tests/unit/review-policy.test.mjs
-git commit -m "feat(dev-flow): define adaptive review policy"
-```
-
-### Task 2: Implement immutable review batches and job submission
-
-**Files:**
-- Create: `plugins/dev-flow/src/core/review-jobs.ts`
-- Modify: `plugins/dev-flow/src/core/state-store.ts`
-- Create: `tests/unit/review-jobs.test.mjs`
-
-**Interfaces:**
-- Produces: `createReviewBatch`, `readReviewBatch`, `claimReviewJob`, `submitReviewJob`, `reviewAssurance`.
-
-- [ ] **Step 1: Write failing isolation and basis tests**
-
-Test that the batch basis changes when any bound artifact or trace hash changes, that a pending job response omits sibling findings, and that submission with a mismatched basis returns `REVIEW_JOB_BASIS_MISMATCH`.
-
-- [ ] **Step 2: Run the tests**
-
-Run: `node --test tests/unit/review-jobs.test.mjs`
-
-Expected: FAIL because the module is absent.
-
-- [ ] **Step 3: Implement the basis**
+现有 evidence API 扩展为：
 
 ```ts
-export async function reviewBasis(root: string, state: FeatureState): Promise<Record<string, unknown>> {
-  const config = await readProjectConfig(root);
-  const protectedFingerprint = await fingerprintProtectedRoots(root, config.protectedRoots);
-  return {
-    route: state.route,
-    classification: state.classification,
-    scope: state.scope,
-    protectedFingerprint,
-    traceability: state.traceability,
-    artifacts: Object.fromEntries(
-      ["requirements", "implementation-plan", "coverage-matrix", "rollback-units", "rollback-safety"]
-        .map((kind) => [kind, state.artifacts[kind]]),
-    ),
+interface RequiredEvidence {
+  fields: {
+    reviewType?: "plan" | "code";
+    reviewDepth?: "full";
+    reviewBatch?: true;
   };
+  checks: string[];
+  verificationKinds: VerificationKind[];
 }
+
+requiredEvidenceForStep(route, riskLabels, step, workflowCapabilities): RequiredEvidence;
 ```
 
-Hash the canonical JSON representation with SHA-256.
+当 `reviewBatch: true` 时，`missingRequiredEvidence` 必须校验非空 `batchId`、合法 SHA-256 `basisHash` 和协议内 `assuranceLevel`；`assertReviewComplete` 再验证它们确实引用当前 complete batch，而不是只做字符串形状检查。
 
-- [ ] **Step 4: Implement job lifecycle**
+**步骤：**
 
-Allowed transitions:
+- [ ] 写角色派生、未知角色、重复角色和 Schema 附加字段拒绝测试。
+- [ ] 写 severity 只能为 `blocking | warning | note`，中文仅是投影映射的测试。
+- [ ] 写 `critical_correctness` 不新增角色、所有 job depth 为 full、空 findings 仍可完成的测试。
+- [ ] 写 standard M/L 的 plan-review transition 和 active `review: 0` feature 保持旧合同的测试。
+- [ ] 写 `requiredEvidenceForStep` / `missingRequiredEvidence` 按 review capability 切换字段的测试。
+- [ ] 写 Review 2a 发布后新 feature 固定 `review: 1`，此前 feature 的 capability 不变且不可隐式升级的测试。
+- [ ] 写 2a 无论提交多少 executor/context 字符串都只能得到 `multi-perspective` 的测试。
+- [ ] 运行 `node --test tests/unit/review-policy.test.mjs`，确认红灯。
+- [ ] 最小实现合同、类型与解析器。
+- [ ] 提交：`feat(dev-flow): define review jobs and assurance vocabulary`
+
+### 任务 2：实现不可变批次与审查任务生命周期
+
+**文件：**
+
+- 新建：`plugins/dev-flow/src/core/review-jobs.ts`
+- 修改：`plugins/dev-flow/src/core/state-store.ts`
+- 新建：`tests/unit/review-jobs.test.mjs`
+
+**状态：**
 
 ```text
-pending → claimed → submitted
-pending/claimed/submitted → stale
+batch: current → complete | stale
+job: pending → claimed → submitted
+finding: open → resolved | risk-accepted
 ```
 
-`claimReviewJob` stores execution mode, executor ID, and context ID. `submitReviewJob` requires the same identities and basis hash, then records findings. The public pending-job view includes only its review package and never the batch findings array.
+每个 batch 保存完整 basis hash，包括 project config SHA-256；每个 job 保存 role、review depth、job package hash、结构化完成记录、状态和诊断元数据。`executorId`、`contextId` 只用于排障，不参与 2a assurance 计算。
 
-- [ ] **Step 5: Calculate assurance**
+**步骤：**
+
+- [ ] 写 immutable package、job 不读取 sibling findings、basis mismatch 与 CAS 测试。
+- [ ] 写重复 claim、重复 submit、跨 batch job ID 和 stale batch 测试。
+- [ ] 运行 `node --test tests/unit/review-jobs.test.mjs`，确认红灯。
+- [ ] 实现 batch 创建、job claim/submit 与原子持久化。
+- [ ] 验证 batch basis artifact 任一变化会使整批 stale。
+- [ ] 提交：`feat(dev-flow): implement immutable review batches`
+
+### 任务 3：暴露 2a 阶段 MCP 工具，默认执行多视角审查
+
+**文件：**
+
+- 修改：`plugins/dev-flow/src/mcp/server.ts`
+- 修改：`tests/unit/mcp-server.test.mjs`
+
+**2a 工具：**
+
+- `dev_flow_create_review_batch`
+- `dev_flow_get_review_job`
+- `dev_flow_claim_review_job`
+- `dev_flow_submit_review_job`
+
+**明确不包含：**
+
+- 不调用 `sampling/createMessage`。
+- 不根据 client capability 自动声称独立执行。
+- 不允许请求参数包含 `assuranceLevel`。
+
+**步骤：**
+
+- [ ] 写工具发现、严格输入 Schema、只读/写入边界与错误映射测试。
+- [ ] 写恶意传入不同 `executorId/contextId` 仍不能升级 assurance 的测试。
+- [ ] 运行 `node --test tests/unit/mcp-server.test.mjs`，确认红灯。
+- [ ] 接入 Core API；默认 `executionMode` 为 `isolated-sequential`。
+- [ ] 提交：`feat(dev-flow): expose review batch tools`
+
+### 任务 4：聚合审查发现、处理处置结果并阻塞阶段推进
+
+**文件：**
+
+- 修改：`plugins/dev-flow/src/core/review-jobs.ts`
+- 修改：`plugins/dev-flow/src/core/user-interactions.ts`
+- 修改：`plugins/dev-flow/src/core/human-gates.ts`
+- 修改：`plugins/dev-flow/src/core/feature-check.ts`
+- 修改：`plugins/dev-flow/src/core/step-order.ts`
+- 新建：`tests/unit/review-findings.test.mjs`
+
+**Finding 最小字段：**
 
 ```ts
-export function reviewAssurance(jobs: ReviewJob[]): ReviewAssurance {
-  const contextIds = new Set(
-    jobs.filter((job) => job.status === "submitted")
-      .map((job) => job.contextId)
-      .filter((value): value is string => Boolean(value)),
-  );
-  return contextIds.size >= 2 ? "multi-agent" : "multi-perspective";
+interface ReviewFinding {
+  findingId: string;
+  jobId: string;
+  severity: "blocking" | "warning" | "note";
+  category: string;
+  targets: string[];
+  evidence: Array<{ path: string; line?: number }>;
+  claim: string;
+  recommendation: string;
 }
 ```
 
-An empty identity never qualifies as independent. Different executor labels inside one context remain multi-perspective; repeated calls by the same model qualify as independent only when the client supplies distinct context IDs.
+**关闭 blocking finding 的唯一方式：**
+
+1. 修改 basis，创建新 batch 并重审。
+2. 原角色 reviewer 对修订明确标记 resolved。
+3. 用户通过独立风险接受交互确认，并保存 provenance。
 
-- [ ] **Step 6: Run tests and commit**
+**步骤：**
 
-Run: `node --test tests/unit/review-jobs.test.mjs && npm run typecheck`
+- [ ] 写去重不降级 severity、无效 target、伪造 disposition 和旧 gate response 测试。
+- [ ] 写 findings 为空但结构化完成记录完整时 job 可提交；缺完成记录时不可提交的测试。
+- [ ] 写 `recordStep(plan_review)` 在缺角色、batch stale 或存在 blocking finding 时拒绝的测试。
+- [ ] 运行 `node --test tests/unit/review-findings.test.mjs`，确认红灯。
+- [ ] 实现聚合、disposition、风险接受交互与 `assertReviewComplete`。
+- [ ] 将 `{ batchId, basisHash, assuranceLevel }` 作为 plan review evidence。
+- [ ] 提交：`feat(dev-flow): gate plan review on structured findings`
 
-Expected: PASS.
+### 任务 5：生成只读计划审查投影并同步状态
 
-```bash
-git add plugins/dev-flow/src/core/review-jobs.ts plugins/dev-flow/src/core/state-store.ts tests/unit/review-jobs.test.mjs
-git commit -m "feat(dev-flow): persist isolated review jobs"
-```
+**文件：**
 
-### Task 3: Add MCP capability negotiation and review job tools
+- 修改：`plugins/dev-flow/src/core/artifacts.ts`
+- 修改：`plugins/dev-flow/src/core/status.ts`
+- 修改：`plugins/dev-flow/src/core/next.ts`
+- 修改：`plugins/dev-flow/src/core/gate-basis.ts`
+- 修改：`plugins/dev-flow/skills/plan-review/SKILL.md`
+- 修改：`plugins/dev-flow/skills/status/SKILL.md`
+- 修改：`plugins/dev-flow/templates/plan-review.md`
+- 修改：`tests/unit/status-progress.test.mjs`
+- 修改：`tests/unit/skills.test.mjs`
 
-**Files:**
-- Modify: `plugins/dev-flow/src/mcp/server.ts`
-- Modify: `tests/unit/mcp-server.test.mjs`
+**投影内容：**
 
-**Interfaces:**
-- Produces: `dev_flow_create_review_batch`, `dev_flow_claim_review_job`, `dev_flow_submit_review_job`, `dev_flow_get_review_job`; MCP sampling capability detection.
+- batch ID 与 basis hash。
+- 当前 assurance 及其证据类型。
+- 必需角色、job 状态和诊断执行信息。
+- findings、dispositions 与未解决 blocking 数量。
+- 降级说明和 stale 状态。
 
-- [ ] **Step 1: Write failing capability and tool-list tests**
+**步骤：**
 
-Assert initialize with `{ sampling: {} }` selects `mcp-sampling`, initialize without sampling exposes host-claim tools, and all four tools reject additional properties.
+- [ ] 写 `review: 1` 的 standard M/L 都自动生成投影的测试。
+- [ ] 写 `review: 1` 手工 `recordArtifact(plan-review)` 返回 `GENERATED_ARTIFACT_READ_ONLY`，而 `review: 0` active feature 仍可按旧合同登记的测试。
+- [ ] 写 basis 变化后投影和 approval 同时 stale 的测试。
+- [ ] 更新 Skills：只编排 job，不手写投影、不自行判断保证等级。
+- [ ] 运行 status、Skills 与 artifact 测试。
+- [ ] 提交：`feat(dev-flow): generate review projection and status`
 
-- [ ] **Step 2: Run the MCP test**
+### 任务 6：完成 2a 路线与跨宿主验收
 
-Run: `node --test tests/unit/mcp-server.test.mjs`
+**文件：**
 
-Expected: FAIL because review tools and sampling detection are absent.
+- 修改：`tests/helpers/route-flow.mjs`
+- 修改：`tests/e2e/routes/standard-m.test.mjs`
+- 修改：`tests/e2e/routes/standard-l.test.mjs`
+- 修改：`tests/e2e/cross-host/claude-to-codex.test.mjs`
+- 修改：`tests/e2e/cross-host/codex-to-claude.test.mjs`
+- 修改：`docs/architecture.md`
+- 修改：`docs/routes.md`
+- 修改：`README.md`
 
-- [ ] **Step 3: Extend connection capabilities**
+**验收场景：**
 
-```ts
-class McpConnection {
-  private supportsFormElicitation = false;
-  private supportsSampling = false;
+- standard M/L 自动派生不同角色集合。
+- 不同宿主可领取不同 job，但 2a 投影仍准确标为 `multi-perspective`。
+- blocking finding 阻止 approval，修订或风险接受后可继续。
+- requirements/plan/trace hash 变化使 batch、投影和 approval 一起 stale。
+- Review 2a 发布前已启动的 `review: 0` feature 在升级后仍使用旧 plan-review artifact 和 `{ reviewType: "plan" }` 完成，不发生中途迁移。
 
-  configure(capabilities: unknown): void {
-    this.supportsFormElicitation = hasObjectCapability(capabilities, "elicitation");
-    this.supportsSampling = hasObjectCapability(capabilities, "sampling");
-  }
+**步骤：**
 
-  reviewExecutionMode(): ReviewExecutionMode {
-    return this.supportsSampling ? "mcp-sampling" : "native-subagent";
-  }
-}
-```
+- [ ] 更新路线 helper，禁止直接注入完成状态。
+- [ ] 运行两条路线与双向跨宿主 E2E。
+- [ ] 更新中文文档，明确“多视角不等于已证明多代理”。
+- [ ] 运行全量测试、类型检查、构建和 `git diff --check`。
+- [ ] 提交：`feat(dev-flow): complete review phase 2a`
 
-Keep elicitation behavior compatible with v1.7.0.
+## 第 4B 阶段：采样、身份与来源证明增强
 
-- [ ] **Step 4: Add job tools**
+### 任务 7：增加服务端采样证据
 
-`create_review_batch` takes feature mutation fields and host. `get_review_job` is read-only and takes featureId/jobId. `claim_review_job` requires jobId, executionMode, executorId, contextId. `submit_review_job` requires jobId, basisHash, executorId, contextId, and findings.
+**文件：**
 
-- [ ] **Step 5: Add sampling execution**
+- 修改：`plugins/dev-flow/src/mcp/server.ts`
+- 修改：`plugins/dev-flow/src/core/review-jobs.ts`
+- 修改：`plugins/dev-flow/policy/review.schema.json`
+- 新建：`tests/unit/review-sampling.test.mjs`
 
-For each job, send one `sampling/createMessage` request containing the immutable package and strict JSON response contract. Do not include sibling job output. Parse the response through the same `submitReviewJob` validator used by host subagents. If sampling fails, leave the job pending and return a recovery hint for native-subagent or isolated-sequential claim; do not silently mark it complete.
+**规则：**
 
-- [ ] **Step 6: Run MCP tests and commit**
+- Core 为每个 job 签发 server-owned、单次使用的 request ID。
+- 每次 `sampling/createMessage` 只包含该 job 的 immutable package，不包含 sibling 输出。
+- 响应通过与普通 submit 相同的 finding validator。
+- 至少两个不同 job 具有有效且不同的 sampling request provenance 时，计算为 `independent-sampling`。
+- sampling 失败时 job 保持 pending，不静默标记完成。
 
-Run: `node --test tests/unit/mcp-server.test.mjs`
+**步骤：**
 
-Expected: PASS.
+- [ ] 写 request ID 重放、伪造、跨 batch 复用和部分失败测试。
+- [ ] 写 caller-supplied request ID 不能升级 assurance 的测试。
+- [ ] 实现 sampling 请求、provenance 持久化与等级计算。
+- [ ] 提交：`feat(dev-flow): add independently sampled reviews`
 
-```bash
-git add plugins/dev-flow/src/mcp/server.ts tests/unit/mcp-server.test.mjs
-git commit -m "feat(dev-flow): expose adaptive review jobs"
-```
+### 任务 8：增加宿主证明，并为可信身份留接口
 
-### Task 4: Implement finding aggregation and dispositions
+**文件：**
 
-**Files:**
-- Modify: `plugins/dev-flow/src/core/review-jobs.ts`
-- Modify: `plugins/dev-flow/src/core/user-interactions.ts`
-- Modify: `plugins/dev-flow/src/core/human-gates.ts`
-- Create: `tests/unit/review-findings.test.mjs`
+- 修改：`plugins/dev-flow/src/hosts/adapter-policy.ts`
+- 修改：`plugins/dev-flow/src/core/review-jobs.ts`
+- 修改：`plugins/dev-flow/src/core/status.ts`
+- 新建：`tests/unit/review-identity.test.mjs`
+- 修改：`docs/architecture.md`
+- 修改：`README.md`
 
-**Interfaces:**
-- Produces: `aggregateReviewFindings`, `resolveReviewFinding`, `acceptReviewFinding`, `assertReviewComplete`.
+**规则：**
 
-- [ ] **Step 1: Write failing blocking-finding tests**
+- 普通宿主提供的 subagent 证明最多得到 `multi-agent-attested`。
+- 原始 attestation、宿主类型、签发时间与关联 job 必须持久化。
+- `multi-agent-verified` 仅预留 verifier 接口；没有可信 verifier 时不可产生该值。
+- 最终投影同时显示 assurance 和证据来源，避免把 attested 写成 verified。
 
-Assert duplicate findings remain linked to both source jobs, aggregation never changes `blocking` to a lower severity, and implementation approval fails with `REVIEW_BLOCKING_FINDINGS`.
+**步骤：**
 
-- [ ] **Step 2: Run the test**
+- [ ] 写相同 attestation 重用、调用方自报 verified 和未知宿主测试。
+- [ ] 实现 attestation validator 与投影。
+- [ ] 运行 2a 全量回归，确认无 sampling/attestation 时仍可按 `multi-perspective` 工作。
+- [ ] 运行全量测试、构建与 `git diff --check`。
+- [ ] 提交：`feat(dev-flow): attest review agent provenance`
 
-Run: `node --test tests/unit/review-findings.test.mjs`
+## 完成条件
 
-Expected: FAIL.
-
-- [ ] **Step 3: Implement deterministic aggregation**
-
-Use a fingerprint of `category`, sorted targets, normalized claim, and evidence locations. Store `sourceFindingIds` on an aggregate; severity is the maximum where blocking outranks important and important outranks advisory.
-
-- [ ] **Step 4: Implement disposition rules**
-
-`resolveReviewFinding` requires a submitted job with the same role and current batch basis. `acceptReviewFinding` creates an interaction with target `review-finding:<id>`, requires an explicit later user response, and stores prompt/interaction provenance. Only blocking findings require the dedicated acceptance interaction.
-
-- [ ] **Step 5: Gate plan review completion**
-
-`recordStep(plan_review)` must call `assertReviewComplete`: all required roles submitted, batch current, no open blocking findings. Persist `{ batchId, assuranceLevel }` as plan-review evidence instead of accepting only `{ reviewType: "plan" }`.
-
-- [ ] **Step 6: Run tests and commit**
-
-Run: `node --test tests/unit/review-findings.test.mjs tests/unit/human-gates.test.mjs tests/unit/user-interactions.test.mjs`
-
-Expected: PASS.
-
-```bash
-git add plugins/dev-flow/src/core/review-jobs.ts plugins/dev-flow/src/core/user-interactions.ts plugins/dev-flow/src/core/human-gates.ts tests/unit/review-findings.test.mjs
-git commit -m "feat(dev-flow): enforce adversarial review findings"
-```
-
-### Task 5: Integrate stale propagation, status, projection, and Skills
-
-**Files:**
-- Modify: `plugins/dev-flow/src/core/artifacts.ts`
-- Modify: `plugins/dev-flow/src/core/status.ts`
-- Modify: `plugins/dev-flow/src/core/next.ts`
-- Modify: `plugins/dev-flow/src/core/gate-basis.ts`
-- Modify: `plugins/dev-flow/skills/plan-review/SKILL.md`
-- Modify: `plugins/dev-flow/skills/status/SKILL.md`
-- Modify: `plugins/dev-flow/templates/plan-review.md`
-- Modify: `tests/unit/status-progress.test.mjs`
-- Modify: `tests/unit/skills.test.mjs`
-
-**Interfaces:**
-- Produces: `progress.review` with batch, assurance, pending roles, blocking count, and stale state.
-
-- [ ] **Step 1: Write failing stale and status tests**
-
-Create a current submitted batch, change `implementation-plan`, record the artifact with trace, and assert all jobs become stale, implementation approval is revoked, and status reports `review.status === "stale"`.
-
-- [ ] **Step 2: Run focused tests**
-
-Run: `node --test tests/unit/status-progress.test.mjs tests/unit/skills.test.mjs`
-
-Expected: FAIL.
-
-- [ ] **Step 3: Add batch invalidation**
-
-Any artifact or traceability pointer in `reviewBasis` changing marks the active batch and its jobs stale. Preserve findings and dispositions for audit; never delete the batch.
-
-- [ ] **Step 4: Generate the plan-review projection**
-
-Replace the editable plan-review artifact with a generated projection containing batch ID, basis hash, assurance level, each role/executor, findings, and dispositions. Add it to generated read-only artifact handling.
-
-- [ ] **Step 5: Update plan-review Skill**
-
-The Skill must create/read the batch, dispatch or claim exactly the pending jobs, submit each independently, handle blocking findings, and only record plan review after `assertReviewComplete`. It must label the fallback as multi-perspective.
-
-- [ ] **Step 6: Run tests and commit**
-
-Run: `node --test tests/unit/status-progress.test.mjs tests/unit/skills.test.mjs tests/unit/artifacts.test.mjs`
-
-Expected: PASS.
-
-```bash
-git add plugins/dev-flow/src/core/artifacts.ts plugins/dev-flow/src/core/status.ts plugins/dev-flow/src/core/next.ts plugins/dev-flow/src/core/gate-basis.ts plugins/dev-flow/skills/plan-review/SKILL.md plugins/dev-flow/skills/status/SKILL.md plugins/dev-flow/templates/plan-review.md tests/unit/status-progress.test.mjs tests/unit/skills.test.mjs
-git commit -m "feat(dev-flow): surface review assurance and findings"
-```
-
-### Task 6: Complete route, cross-host, docs, and build verification
-
-**Files:**
-- Modify: `tests/helpers/route-flow.mjs`
-- Modify: `tests/e2e/routes/standard-m.test.mjs`
-- Modify: `tests/e2e/routes/standard-l.test.mjs`
-- Modify: `tests/e2e/cross-host/claude-to-codex.test.mjs`
-- Modify: `tests/e2e/cross-host/codex-to-claude.test.mjs`
-- Modify: `docs/architecture.md`
-- Modify: `docs/routes.md`
-- Modify: `README.md`
-
-**Interfaces:**
-- Produces: end-to-end proof for sampling, native-subagent claims, degraded fallback, stale re-review, and cross-host handoff.
-
-- [ ] **Step 1: Add route scenarios**
-
-Standard-M must complete with two different executor/context pairs and report `multi-agent`. Standard-L fallback must complete all required roles with one identity and report `multi-perspective`. A security route must include the security job.
-
-- [ ] **Step 2: Add cross-host scenarios**
-
-Claude creates the batch and submits requirement coverage; Codex claims architecture/testability with a different identity, submits it, and completes plan review. Add the reverse direction.
-
-- [ ] **Step 3: Document guarantees and limits**
-
-State that multi-agent is an audited assurance level, not a label inferred from role count. Document capability order and the allowed degraded path.
-
-- [ ] **Step 4: Run the complete suite**
-
-Run: `npm test`
-
-Expected: PASS.
-
-- [ ] **Step 5: Commit**
-
-```bash
-git add tests/helpers/route-flow.mjs tests/e2e/routes/standard-m.test.mjs tests/e2e/routes/standard-l.test.mjs tests/e2e/cross-host/claude-to-codex.test.mjs tests/e2e/cross-host/codex-to-claude.test.mjs docs/architecture.md docs/routes.md README.md plugins/dev-flow/dist/mcp-server.mjs plugins/dev-flow/dist/claude-hook.mjs plugins/dev-flow/dist/codex-hook.mjs
-git commit -m "test(dev-flow): verify adaptive review workflow"
-```
-
-## Self-Review
-
-- Spec coverage: immutable basis, role policy, three capability paths, independent identities, findings, dispositions, assurance, stale propagation, projection, routes, and cross-host handoff are covered.
-- Placeholder scan: no deferred review behavior remains.
-- Type consistency: `ReviewBatch`, `ReviewJob`, `ReviewFinding`, `ReviewAssurance`, `createReviewBatch`, `submitReviewJob`, and `assertReviewComplete` remain stable across tasks.
+- Review 2a 独立可发布，默认且诚实地报告 `multi-perspective`。
+- plan-review 的 editable/absent→generated 迁移只作用于 `review: 1` feature，旧 active feature 不受影响。
+- 角色、review depth、severity 和 required evidence 均有唯一协议枚举与合同测试。
+- batch、findings、dispositions、blocking 和生成投影均由 Core 强制。
+- 任意 caller 字符串都不能提升 assurance。
+- 4B 的 sampling 与 attestation 有服务端证据、重放保护和清晰的等级边界。
