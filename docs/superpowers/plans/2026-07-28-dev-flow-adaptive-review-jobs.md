@@ -18,6 +18,16 @@
 - blocking finding 未解决或未接受风险时，Core 必须拒绝 `recordStep(plan_review)`。
 - 只有启动时固定 `workflowCapabilities.review === 1` 的 feature 使用本合同；`review: 0` 的 active feature 继续走旧 plan-review artifact/evidence。
 
+## P0 已确定决策（对抗审查收口）
+
+- **唯一 basis：** Core 定义 `ReviewBasis` canonical JSON，`basisHash = sha256(canonicalJson)`。它包含 feature ID、route、冻结 capability、分类/risk labels、`reviewBasisArtifacts`、trace pointer/ledger revision、`project.json` 原始字节 hash、scope manifest hash 和 protected-root fingerprint。调用方不得传入或填充 `basisHash`、`assuranceLevel`、roles 或 depth；`recordStep(plan_review)` 从当前可用 batch 自动派生 evidence。
+- **basis artifact 白名单：** 仅 requirements、implementation-plan、coverage-matrix 和 standard L 的 rollback-units 参与。显式排除 status、plan-review、review package/ledger、job 输出和后续 implementation/verification artifacts，防止生成投影自失效；risk-card 若成为审查输入，必须显式纳入白名单并有 stale 测试。
+- **不可变存储与失效：** package 和 review ledger/event snapshot 均内容寻址、不可覆盖；state 只经 CAS 保存 current review pointer/索引。claim、submit、stale、risk acceptance 和 successor batch 先写 snapshot 再更新 pointer。所有改变 basis 的 Core 写路径必须在同一 CAS 标 stale；读取和门禁再次 fail-closed 校验。
+- **状态与重试：** batch 使用正交字段 `validity: current | stale` 与 `progress: open | complete`；job 为 `pending → claimed → submitted`。claim 租约固定 60 分钟，过期回收为 pending 并使旧 capability 失效。create 按 current basis 幂等，submit 按 job capability + canonical payload hash 幂等，claim 使用高熵 `claimRequestId` 重试键；风险接受 interaction token 单次消费且可幂等重试。
+- **角色、隔离与可见性：** Core 从 route、冻结 capability、规范化 risk labels 派生有序去重的 roles/depth；`critical_correctness` 只将全部必需 job 设为 full。claim 签发仅存 hash 的高熵 capability；`get_review_job`/`submit_review_job` 必须出示它。job 未全部提交前，所有无 capability 的读取面只能返回粗粒度进度，不能泄露 sibling findings 或诊断；完成后才公开投影。
+- **finding 与风险接受：** Core 生成 scope manifest（current Trace 的 RU `fileScope` 与规范化 protected roots）；拒绝 root 外、遍历、未知或无 evidence 的 blocking finding。finding 在原 batch 不可变；修复后由 successor batch 中相同 role 引用旧 finding 并提交 resolution evidence。风险接受绑定 batch、basis 和排序后的 finding ID+内容 hash 集合，任一变化即失效；不提供“接受全部风险”。
+- **路线与投影：** `next` 对 review:1 的 `plan_review` 先导出 `create-review-batch`，随后导出待 claim/submit 状态；仅 current + complete + 无未处置 blocking finding 时导出 `run-step(plan_review)`。create 对同 basis 幂等。`plan-review.md` 永不参与 basis；所有 review mutation 根据 pending state 生成投影，Core review state 是门禁权威，投影故障 fail-closed。
+
 ## 第 2a 阶段：批次、审查发现、保证等级、投影与阻塞
 
 ### 任务 1：定义审查角色、数据模式与保证等级
@@ -29,11 +39,13 @@
 - 修改：`plugins/dev-flow/src/policy/contract.ts`
 - 修改：`plugins/dev-flow/src/policy/evidence.ts`
 - 修改：`plugins/dev-flow/src/core/state-store.ts`
+- 修改：`plugins/dev-flow/policy/state.schema.json`
 - 新建：`plugins/dev-flow/policy/review.schema.json`
 - 新建：`tests/unit/review-policy.test.mjs`
 - 修改：`tests/unit/risk-evidence.test.mjs`
 - 修改：`tests/unit/next-evidence.test.mjs`
 - 修改：`tests/unit/state-store.test.mjs`
+- 修改：`tests/unit/state-schema-contract.test.mjs`
 
 **类型：**
 
@@ -104,7 +116,7 @@ interface RequiredEvidence {
 requiredEvidenceForStep(route, riskLabels, step, workflowCapabilities): RequiredEvidence;
 ```
 
-当 `reviewBatch: true` 时，`missingRequiredEvidence` 必须校验非空 `batchId`、合法 SHA-256 `basisHash` 和协议内 `assuranceLevel`；`assertReviewComplete` 再验证它们确实引用当前 complete batch，而不是只做字符串形状检查。
+当 `reviewBatch: true` 时，调用方不提供 batch evidence；Core 仅从 current batch 派生 `{ batchId, basisHash, assuranceLevel }`。`assertReviewComplete` 必须验证 `validity === "current"`、`progress === "complete"`、basis 仍匹配且不存在未处置 blocking finding，不能只做字符串形状检查。
 
 **步骤：**
 
@@ -115,6 +127,8 @@ requiredEvidenceForStep(route, riskLabels, step, workflowCapabilities): Required
 - [ ] 写 `requiredEvidenceForStep` / `missingRequiredEvidence` 按 review capability 切换字段的测试。
 - [ ] 写 Review 2a 发布后新 feature 固定 `review: 1`，此前 feature 的 capability 不变且不可隐式升级的测试。
 - [ ] 写 2a 无论提交多少 executor/context 字符串都只能得到 `multi-perspective` 的测试。
+- [ ] 写调用方不能传入/伪造 roles、depth、basisHash 或 assuranceLevel，且 Core 派生 roles/depth 的测试。
+- [ ] 写 review pointer 的 state schema、legacy `review: 0` 可省略 pointer、`review: 1` 缺失或形状错误 pointer fail-closed 的测试。
 - [ ] 运行 `node --test tests/unit/review-policy.test.mjs`，确认红灯。
 - [ ] 最小实现合同、类型与解析器。
 - [ ] 提交：`feat(dev-flow): define review jobs and assurance vocabulary`
@@ -124,26 +138,34 @@ requiredEvidenceForStep(route, riskLabels, step, workflowCapabilities): Required
 **文件：**
 
 - 新建：`plugins/dev-flow/src/core/review-jobs.ts`
+- 新建：`plugins/dev-flow/src/core/review-store.ts`
 - 修改：`plugins/dev-flow/src/core/state-store.ts`
+- 修改：`plugins/dev-flow/src/core/artifacts.ts`
+- 修改：`plugins/dev-flow/src/hosts/adapter-policy.ts`
+- 修改：`plugins/dev-flow/src/mcp/doctor.ts`
 - 新建：`tests/unit/review-jobs.test.mjs`
+- 修改：`tests/unit/adapter-policy.test.mjs`
+- 修改：`tests/unit/doctor.test.mjs`
 
 **状态：**
 
 ```text
-batch: current → complete | stale
+batch.validity: current | stale
+batch.progress: open | complete
 job: pending → claimed → submitted
-finding: open → resolved | risk-accepted
+finding: open → resolved-in-successor | risk-accepted
 ```
 
-每个 batch 保存完整 basis hash，包括 project config SHA-256；每个 job 保存 role、review depth、job package hash、结构化完成记录、状态和诊断元数据。`executorId`、`contextId` 只用于排障，不参与 2a assurance 计算。
+每个 batch 保存 Core 计算的完整 `ReviewBasis` hash；每个 job 保存 role、review depth、job package hash、结构化完成记录、状态、租约和诊断元数据。package 与 ledger/event 都是内容寻址不可变 snapshot；state 只保存 CAS current pointer/索引。`executorId`、`contextId` 只用于排障，不参与 2a assurance 计算。
 
 **步骤：**
 
-- [ ] 写 immutable package、job 不读取 sibling findings、basis mismatch 与 CAS 测试。
-- [ ] 写重复 claim、重复 submit、跨 batch job ID 和 stale batch 测试。
+- [ ] 写 immutable package、hash/feature/batch/revision 校验、job 不读取 sibling findings、basis mismatch 与 CAS 测试。
+- [ ] 写重复 create/claim/submit 的幂等语义、claim 60 分钟租约回收、跨 batch job ID 和 stale batch 测试。
 - [ ] 运行 `node --test tests/unit/review-jobs.test.mjs`，确认红灯。
 - [ ] 实现 batch 创建、job claim/submit 与原子持久化。
-- [ ] 验证 batch basis artifact 任一变化会使整批 stale。
+- [ ] 从 artifact、with-trace 登记和 reclassify/state 变化调用统一失效准备器；验证任一 basis 写入在同一 CAS 使整批 stale，读取/门禁仍 fail-closed 复核。
+- [ ] 让 Hook 与 doctor 读取、校验 review pointer；current snapshot 缺失/篡改必须 fail-closed，未引用 snapshot 仅诊断 warning。
 - [ ] 提交：`feat(dev-flow): implement immutable review batches`
 
 ### 任务 3：暴露 2a 阶段 MCP 工具，默认执行多视角审查
@@ -165,10 +187,12 @@ finding: open → resolved | risk-accepted
 - 不调用 `sampling/createMessage`。
 - 不根据 client capability 自动声称独立执行。
 - 不允许请求参数包含 `assuranceLevel`。
+- 不允许请求参数包含 basis、roles、depth、scope 或 protected roots；claim 仅接受高熵 `claimRequestId`，后续读取/提交必须携带 claim 返回的 capability。
 
 **步骤：**
 
 - [ ] 写工具发现、严格输入 Schema、只读/写入边界与错误映射测试。
+- [ ] 写 capability 隔离、claimRequestId 重试、未完成 batch 的旁路读取不泄露 sibling findings，以及拒绝 caller-supplied basis/assurance/roles/depth 测试。
 - [ ] 写恶意传入不同 `executorId/contextId` 仍不能升级 assurance 的测试。
 - [ ] 运行 `node --test tests/unit/mcp-server.test.mjs`，确认红灯。
 - [ ] 接入 Core API；默认 `executionMode` 为 `isolated-sequential`。
@@ -192,7 +216,7 @@ interface ReviewFinding {
   findingId: string;
   jobId: string;
   severity: "blocking" | "warning" | "note";
-  category: string;
+  category: ReviewFindingCategory;
   targets: string[];
   evidence: Array<{ path: string; line?: number }>;
   claim: string;
@@ -202,13 +226,15 @@ interface ReviewFinding {
 
 **关闭 blocking finding 的唯一方式：**
 
-1. 修改 basis，创建新 batch 并重审。
-2. 原角色 reviewer 对修订明确标记 resolved。
-3. 用户通过独立风险接受交互确认，并保存 provenance。
+1. 修改 basis，创建 successor batch；同一 role 的新 job 引用旧 finding ID 并提交 resolution evidence。
+2. 用户通过独立风险接受交互确认，并保存当前 batch/basis/finding 内容 provenance。
+
+原 batch 的 finding 不可原地改写；任何 basis、finding 或 disposition 变化都会使旧风险接受失效。
 
 **步骤：**
 
-- [ ] 写去重不降级 severity、无效 target、伪造 disposition 和旧 gate response 测试。
+- [ ] 写去重不降级 severity、scope manifest 外 target/路径遍历/缺 evidence、伪造 disposition 和旧 gate response 测试。
+- [ ] 写 successor batch resolution evidence、风险接受绑定精确 finding 集合且不可重放/扩展的测试。
 - [ ] 写 findings 为空但结构化完成记录完整时 job 可提交；缺完成记录时不可提交的测试。
 - [ ] 写 `recordStep(plan_review)` 在缺角色、batch stale 或存在 blocking finding 时拒绝的测试。
 - [ ] 运行 `node --test tests/unit/review-findings.test.mjs`，确认红灯。
@@ -224,11 +250,16 @@ interface ReviewFinding {
 - 修改：`plugins/dev-flow/src/core/status.ts`
 - 修改：`plugins/dev-flow/src/core/next.ts`
 - 修改：`plugins/dev-flow/src/core/gate-basis.ts`
+- 修改：`plugins/dev-flow/src/policy/types.ts`
+- 修改：`plugins/dev-flow/src/policy/derive-next.ts`
+- 新建：`plugins/dev-flow/src/core/review-projection.ts`
 - 修改：`plugins/dev-flow/skills/plan-review/SKILL.md`
 - 修改：`plugins/dev-flow/skills/status/SKILL.md`
-- 修改：`plugins/dev-flow/templates/plan-review.md`
+- 删除：`plugins/dev-flow/templates/plan-review.md`（生成投影不读取静态模板）
 - 修改：`tests/unit/status-progress.test.mjs`
 - 修改：`tests/unit/skills.test.mjs`
+- 修改：`tests/unit/derive-next.test.mjs`
+- 修改：`tests/unit/next-evidence.test.mjs`
 
 **投影内容：**
 
@@ -243,6 +274,9 @@ interface ReviewFinding {
 - [ ] 写 `review: 1` 的 standard M/L 都自动生成投影的测试。
 - [ ] 写 `review: 1` 手工 `recordArtifact(plan-review)` 返回 `GENERATED_ARTIFACT_READ_ONLY`，而 `review: 0` active feature 仍可按旧合同登记的测试。
 - [ ] 写 basis 变化后投影和 approval 同时 stale 的测试。
+- [ ] 写投影不进入 ReviewBasis、review state 为门禁权威且投影故障 fail-closed 的测试。
+- [ ] 写 next 依次导出 `create-review-batch`、待 claim/submit 状态，并只在 current+complete+无未处置 blocking 时导出 `run-step(plan_review)` 的测试。
+- [ ] 写 `StatusView`/Markdown 的预完成粗粒度可见性、完成后的完整投影，以及 gate basis 绑定 current review pointer 的测试。
 - [ ] 更新 Skills：只编排 job，不手写投影、不自行判断保证等级。
 - [ ] 运行 status、Skills 与 artifact 测试。
 - [ ] 提交：`feat(dev-flow): generate review projection and status`
@@ -266,6 +300,7 @@ interface ReviewFinding {
 - 不同宿主可领取不同 job，但 2a 投影仍准确标为 `multi-perspective`。
 - blocking finding 阻止 approval，修订或风险接受后可继续。
 - requirements/plan/trace hash 变化使 batch、投影和 approval 一起 stale。
+- 不完整 batch 的跨宿主读取不泄露 sibling findings；claim 超时和 MCP 重试不会重复提交或永久阻塞路线。
 - Review 2a 发布前已启动的 `review: 0` feature 在升级后仍使用旧 plan-review artifact 和 `{ reviewType: "plan" }` 完成，不发生中途迁移。
 
 **步骤：**
