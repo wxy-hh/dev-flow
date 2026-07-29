@@ -216,6 +216,7 @@ interface RollbackNode {
   sourceSha256: string;
   sourceAnchor: string;
   sourceBlockSha256: string;
+  verificationConfigSha256: string;
   status: TraceStatus;
 }
 
@@ -266,7 +267,7 @@ interface TraceabilityLedger {
   revision: number;
   stateRevision: number;
   projectConfigSha256: string;
-  nodes: Record<TraceId, TraceNode>;
+  nodes: Record<string, TraceNode>;
   edges: TraceEdge[];
   summary: TraceSummary;
 }
@@ -274,7 +275,9 @@ interface TraceabilityLedger {
 
 `RollbackNode.status` 表示定义是否 current/stale/tombstoned；实现期的 pending/active/checkpointed/rolled_back 属于独立的 `ImplementationUnitState`。两者引用同一个 RU ID，避免把计划定义的新鲜度与运行时生命周期混成一个状态机。
 
-调用方每次提交一个 artifact 的完整节点集合，不接受 `source*`、`status`、tombstone 或 `edges[]`。Core 按 artifact/route 限制合法 kind，绑定来源和区块哈希；同一来源中消失的旧 ID 由 Core 生成 tombstone。Core 校验引用后确定性派生 edges，并在读取时验证派生结果与落盘内容一致；不一致视为账本损坏。
+调用方每次提交一个 artifact 的完整节点集合，不接受 `source*`、`verificationConfigSha256`、`status`、tombstone 或 `edges[]`。Core 按 artifact/route 限制合法 kind，绑定来源和区块哈希；RU 额外绑定完成 command ID 校验时的 project config SHA-256；同一来源中消失的旧 ID 由 Core 生成 tombstone。Core 校验引用后确定性派生 edges，并在读取时验证派生结果与落盘内容一致；不一致视为账本损坏。
+
+图校验区分 partial 与 complete。standard L 的 implementation-plan 可以声明 `TaskNode.rollbackUnit`，而对应 RU 要到后续 rollback-units artifact 才出现；这是 partial 图唯一允许的 deferred reference。`implementation_plan` 和 `coverage_review` 可以在该引用待解析时完成，但 `rollback_unit`、plan review、approval、implementation、feature-check 与 finalize 必须要求 TASK↔RU 两端存在、current 且对称。其他悬空引用在任何阶段都非法。
 
 Feature state 只保存 `TraceabilityPointer`，不复制完整图。snapshot 文件名是其规范 JSON 内容的 SHA-256；旧 snapshot 不覆盖、不修改。
 
@@ -322,9 +325,9 @@ standard M 的 `rollback_unit` 不创建新文档或新 RU。该步骤调用 `as
 | 步骤 | 必须满足 |
 | --- | --- |
 | `requirements` | REQ/AC 声明合法；每个 AC 有且仅有一个 current parent REQ |
-| `implementation_plan` | TASK 不孤立；standard M 的 RU 字段完整且 DAG 合法 |
-| `coverage_review` | 每个 current AC 已由至少一个 current TEST 覆盖，本步不允许 pending coverage |
-| `rollback_unit` | standard M 校验 plan 来源 RU；standard L 校验 rollback-units 来源 RU |
+| `implementation_plan` | REQ/AC current；TASK 不孤立；standard M 的 RU 字段完整且 DAG 合法；standard L 仅允许 TASK→未来 RU 的 deferred reference |
+| `coverage_review` | REQ/AC/TASK current；每个 current AC 已由至少一个 current TEST 覆盖；standard L 仍只允许上述 deferred RU |
+| `rollback_unit` | REQ/AC/TASK/TEST current；standard M 校验 plan 来源 RU；standard L 校验 rollback-units 来源 RU；不再允许 deferred reference |
 | `plan_review`、`implementation_approval`、`feature_check`、`finalize` | `assertTraceabilityComplete` 校验全图 |
 | `implementation` | Trace/Review feature 校验全图；`checkpoints: 1` 时再校验实现单元状态 |
 
@@ -340,7 +343,7 @@ standard M 的 `rollback_unit` 不创建新文档或新 RU。该步骤调用 `as
 → implementation approval stale
 ```
 
-同一 artifact 中区块哈希未变化的节点更新 `sourceSha256` 后保持 current，其无关下游不失效。计划或回撤产物变化不反向使需求门禁失效，但会使相应覆盖审查、计划审查、批准和尚未执行的检查点失效。
+只有区块哈希与调用方可提交的结构字段都未变化时，节点才可在更新 `sourceSha256` 后保持 current；`parentRequirement`、`covers`、`verifies`、`rollbackUnit`、`tasks`、`dependsOn`、scope 或验证 command ID 任一变化都视为该节点发生语义变化并传播 stale。RU 的 `verificationConfigSha256` 与当前 project config 不一致时，即使 Markdown 未变化也按 stale 处理，重新登记 RU 来源后才能恢复 current。计划或回撤产物变化不反向使需求门禁失效，但会使相应覆盖审查、计划审查、批准和尚未执行的检查点失效。
 
 ## 二、可证明保证等级的对抗审查
 
@@ -562,6 +565,7 @@ Checkpoint 资产位于 feature 目录内，由 MCP 生成和管理，Agent 不�
 | `TRACE_VERIFICATION_COMMAND_UNKNOWN` | RU 引用了 project config 中不存在的 command ID |
 | `TRACE_AWARE_REGISTRATION_REQUIRED` | 追溯 artifact 试图通过裸接口登记 |
 | `GENERATED_ARTIFACT_READ_ONLY` | 当前 feature 合同中的生成产物被人工登记 |
+| `STATE_COMMITTED_PROJECTION_FAILED` | state 提交已经成功，但 status/event/active 派生投影至少一项待修复；details 必须包含 `committed: true` 与当前 revision |
 | `REVIEW_JOB_BASIS_MISMATCH` | reviewer 提交基于旧 package |
 | `REVIEW_BLOCKING_FINDINGS` | 仍有未处理 blocking finding |
 | `IMPLEMENTATION_UNIT_REQUIRED` | 实现期写入时不存在 active RU |
