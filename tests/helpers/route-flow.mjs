@@ -4,6 +4,7 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { loadSource } from "./load-source.mjs";
+import { registerTraceFixture } from "./trace-fixtures.mjs";
 import { promisify } from "node:util";
 
 const store = await loadSource("plugins/dev-flow/src/core/state-store.ts");
@@ -29,19 +30,31 @@ export async function runRoute(input, expectedRoute, options = {}) {
     await store.initProject(root, config);
     let state = await store.startFeature(root, { ...input, featureId: "feature", host: "claude" });
     assert.equal(state.route, expectedRoute);
-    const definition = definitions.routeDefinition(expectedRoute);
+    const definition = definitions.routeDefinitionForFeature(expectedRoute, state.workflowCapabilities);
     for (const step of definition.orderedSteps) {
       if (["feature_check", "finalize"].includes(step)) continue;
-      for (const kind of definition.artifactSteps?.[step] ?? []) {
+      const stepArtifacts = [
+        ...(definition.artifactSteps?.[step] ?? []),
+        ...(definition.generatedArtifactSteps?.[step] ?? []),
+      ];
+      for (const kind of stepArtifacts) {
         state = await artifacts.scaffoldArtifact(root, "feature", state.revision, kind);
       }
+      for (const kind of definition.artifactSteps?.[step] ?? []) {
+        if (["requirements", "implementation-plan", "coverage-matrix", "rollback-units"].includes(kind)) {
+          state = await registerTraceFixture({
+            root,
+            featureId: "feature",
+            state,
+            kind,
+            edit: kind === "requirements" && ["missing-or-unclear", "documented-unconfirmed"].includes(input.requirements)
+              ? (markdown) => markdown.replace(/^  grill_status: pending$/m, "  grill_status: complete")
+              : undefined,
+          });
+        }
+      }
       if (step === "requirements" && ["missing-or-unclear", "documented-unconfirmed"].includes(input.requirements)) {
-        const file = path.join(root, ".dev-flow", "features", "feature", "需求文档.md");
-        await writeFile(file, (await readFile(file, "utf8")).replace(
-          /^  grill_status: pending$/m,
-          "  grill_status: complete",
-        ));
-        state = await artifacts.recordArtifact(root, "feature", state.revision, "requirements");
+        // The Trace fixture above registers the same runtime scaffold after this edit.
       }
       if (["requirement_confirmation", "implementation_approval"].includes(step)) {
         state = await gates.presentGate(root, "feature", state.revision, step);

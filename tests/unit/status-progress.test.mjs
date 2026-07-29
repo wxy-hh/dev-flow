@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { loadSource } from "../helpers/load-source.mjs";
+import { registerTraceFixture } from "../helpers/trace-fixtures.mjs";
 
 const store = await loadSource("plugins/dev-flow/src/core/state-store.ts");
 const artifacts = await loadSource("plugins/dev-flow/src/core/artifacts.ts");
@@ -19,11 +20,6 @@ const config = {
   protectedRoots: ["src"],
 };
 
-async function setRequirements(root, body) {
-  const file = path.join(root, ".dev-flow", "features", "f", "需求文档.md");
-  await writeFile(file, body);
-}
-
 test("status progress reports grill wait without changing revision", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "dev-flow-status-"));
   try {
@@ -32,25 +28,13 @@ test("status progress reports grill wait without changing revision", async () =>
       featureId: "f", host: "claude", level: "M", topology: "local", execution: "standard", requirements: "missing-or-unclear",
     });
     state = await artifacts.scaffoldArtifact(root, "f", state.revision, "requirements");
-    await setRequirements(root, `---
-dev_flow:
-  schema_version: 1
-  feature_id: f
-  route: standard-m
-  kind: requirements
-  grill_status: in_progress
-  grill_question_id: Q-002
-  grill_response_hint: "回复 A / B / C"
-  grill_question_limit: 3
----
-
-# Requirements
-
-## Open Questions
-
-- Q-002
-`);
-    state = await artifacts.recordArtifact(root, "f", state.revision, "requirements");
+    state = await registerTraceFixture({
+      root, featureId: "f", state, kind: "requirements",
+      edit: (markdown) => markdown.replace(
+        /^  grill_status: pending$/m,
+        "  grill_status: in_progress\n  grill_question_id: Q-002\n  grill_response_hint: \"回复 A / B / C\"\n  grill_question_limit: 3",
+      ),
+    });
     const before = state.revision;
     const view = await status.readStatusView(root, "f");
     assert.equal(view.revision, before);
@@ -167,16 +151,10 @@ test("status surfaces incomplete in-progress grill metadata", async () => {
       featureId: "f", host: "claude", level: "M", topology: "local", execution: "standard", requirements: "missing-or-unclear",
     });
     state = await artifacts.scaffoldArtifact(root, "f", state.revision, "requirements");
-    await setRequirements(root, `---
-dev_flow:
-  schema_version: 1
-  feature_id: f
-  route: standard-m
-  kind: requirements
-  grill_status: in_progress
----
-`);
-    state = await artifacts.recordArtifact(root, "f", state.revision, "requirements");
+    state = await registerTraceFixture({
+      root, featureId: "f", state, kind: "requirements",
+      edit: (markdown) => markdown.replace(/^  grill_status: pending$/m, "  grill_status: in_progress"),
+    });
     await assert.rejects(() => status.readStatusView(root, "f"), (error) => error.code === "GRILL_STATUS_INVALID");
   } finally { await rm(root, { recursive: true, force: true }); }
 });

@@ -93,6 +93,13 @@ function safeSnapshotPath(pointer: TraceabilityPointer): string {
   return pointer.path;
 }
 
+function sameEdges(left: TraceabilityLedger["edges"], right: TraceabilityLedger["edges"]): boolean {
+  return left.length === right.length && left.every((edge, index) => {
+    const candidate = right[index];
+    return edge.from === candidate?.from && edge.type === candidate.type && edge.to === candidate.to;
+  });
+}
+
 export async function readTraceability(root: string, state: FeatureState): Promise<TraceabilityLedger> {
   if (!state.traceability) integrity("Trace pointer is missing", { featureId: state.featureId });
   const pointer = state.traceability;
@@ -114,7 +121,7 @@ export async function readTraceability(root: string, state: FeatureState): Promi
     || ledger!.summary.current !== pointer.summary.current
     || ledger!.summary.stale !== pointer.summary.stale
     || ledger!.summary.tombstoned !== pointer.summary.tombstoned
-    || JSON.stringify(deriveTraceEdges(ledger!.nodes)) !== JSON.stringify(ledger!.edges)) {
+    || !sameEdges(deriveTraceEdges(ledger!.nodes), ledger!.edges)) {
     integrity("Trace pointer summary or ledger edges do not match", { featureId: state.featureId });
   }
   return ledger!;

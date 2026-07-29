@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { loadSource } from "../helpers/load-source.mjs";
+import { registerTraceFixture } from "../helpers/trace-fixtures.mjs";
 
 const store = await loadSource("plugins/dev-flow/src/core/state-store.ts");
 const artifacts = await loadSource("plugins/dev-flow/src/core/artifacts.ts");
@@ -26,9 +27,9 @@ test("route asset requirements are exact and edited assets require re-registrati
     await assert.rejects(() => artifacts.scaffoldArtifact(root, "f", state.revision, "code-review"), /ARTIFACT_NOT_REQUIRED/);
     state = await artifacts.scaffoldArtifact(root, "f", state.revision, "requirements");
     assert.equal(state.artifacts.requirements.path, "需求文档.md");
-    const file = path.join(root, ".dev-flow", "features", "f", "需求文档.md"); await writeFile(file, "# changed requirements\n");
+    const file = path.join(root, ".dev-flow", "features", "f", "需求文档.md"); await writeFile(file, `${await readFile(file, "utf8")}\n# changed requirements\n`);
     await assert.rejects(() => artifacts.assertArtifactCurrent(root, "f", state, "requirements"), /ARTIFACT_INTEGRITY_FAILED/);
-    state = await artifacts.recordArtifact(root, "f", state.revision, "requirements");
+    state = await registerTraceFixture({ root, featureId: "f", state, kind: "requirements" });
     assert.ok(state.artifacts.requirements.sha256);
   } finally { await rm(root, { recursive: true, force: true }); }
 });
@@ -81,7 +82,7 @@ test("recording changed requirements revokes both downstream human approvals", a
       featureId: "f", host: "codex", level: "M", topology: "local", execution: "standard", requirements: "missing-or-unclear",
     });
     state = await artifacts.scaffoldArtifact(root, "f", state.revision, "requirements");
-    state = await artifacts.recordArtifact(root, "f", state.revision, "requirements");
+    state = await registerTraceFixture({ root, featureId: "f", state, kind: "requirements" });
     state = await store.mutate(root, "f", state.revision, "test-confirmed-gates", (draft) => {
       draft.humanGates.requirement_confirmation = { status: "confirmed" };
       draft.humanGates.implementation_approval = { status: "confirmed" };
@@ -90,8 +91,8 @@ test("recording changed requirements revokes both downstream human approvals", a
     });
 
     const file = path.join(root, ".dev-flow", "features", "f", state.artifacts.requirements.path);
-    await writeFile(file, "# updated requirements\n");
-    state = await artifacts.recordArtifact(root, "f", state.revision, "requirements");
+    await writeFile(file, `${await readFile(file, "utf8")}\n# updated requirements\n`);
+    state = await registerTraceFixture({ root, featureId: "f", state, kind: "requirements" });
 
     assert.equal(state.humanGates.requirement_confirmation, undefined);
     assert.equal(state.humanGates.implementation_approval, undefined);

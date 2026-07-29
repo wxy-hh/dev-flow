@@ -5,6 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { loadSource } from "../helpers/load-source.mjs";
+import { registerTraceFixture } from "../helpers/trace-fixtures.mjs";
 
 const store = await loadSource("plugins/dev-flow/src/core/state-store.ts");
 const artifacts = await loadSource("plugins/dev-flow/src/core/artifacts.ts");
@@ -52,15 +53,15 @@ test("requirements step and gate require a registered, complete grill", async ()
 
     await setStatus(root, "complete");
     await assert.rejects(() => checks.recordStep(root, "f", state.revision, "requirements", {}), (error) => error.code === "ARTIFACT_INTEGRITY_FAILED");
-    state = await artifacts.recordArtifact(root, "f", state.revision, "requirements");
+    state = await registerTraceFixture({ root, featureId: "f", state, kind: "requirements" });
     state = await checks.recordStep(root, "f", state.revision, "requirements", {});
 
     await setStatus(root, "in_progress");
-    state = await artifacts.recordArtifact(root, "f", state.revision, "requirements");
+    state = await registerTraceFixture({ root, featureId: "f", state, kind: "requirements" });
     await assert.rejects(() => gates.presentGate(root, "f", state.revision, "requirement_confirmation"), (error) => error.code === "GRILL_INCOMPLETE");
 
     await setStatus(root, "complete");
-    state = await artifacts.recordArtifact(root, "f", state.revision, "requirements");
+    state = await registerTraceFixture({ root, featureId: "f", state, kind: "requirements" });
     state = await gates.presentGate(root, "f", state.revision, "requirement_confirmation");
     assert.equal(state.humanGates.requirement_confirmation.status, "pending");
   } finally { await rm(root, { recursive: true, force: true }); }
@@ -72,10 +73,10 @@ test("documented requirements enforce the same pending and in-progress gate", as
     let state = await start(root, "documented-unconfirmed");
     await assert.rejects(() => checks.recordStep(root, "f", state.revision, "requirements", {}), (error) => error.code === "GRILL_INCOMPLETE");
     await setStatus(root, "complete");
-    state = await artifacts.recordArtifact(root, "f", state.revision, "requirements");
+    state = await registerTraceFixture({ root, featureId: "f", state, kind: "requirements" });
     state = await checks.recordStep(root, "f", state.revision, "requirements", {});
     await setStatus(root, "in_progress");
-    state = await artifacts.recordArtifact(root, "f", state.revision, "requirements");
+    state = await registerTraceFixture({ root, featureId: "f", state, kind: "requirements" });
     await assert.rejects(() => gates.presentGate(root, "f", state.revision, "requirement_confirmation"), (error) => error.code === "GRILL_INCOMPLETE");
   } finally { await rm(root, { recursive: true, force: true }); }
 });
@@ -85,7 +86,7 @@ test("provided-confirmed requirements accept an explicit completed grill", async
   try {
     let state = await start(root, "provided-confirmed");
     await setStatus(root, "complete");
-    state = await artifacts.recordArtifact(root, "f", state.revision, "requirements");
+    state = await registerTraceFixture({ root, featureId: "f", state, kind: "requirements" });
     state = await checks.recordStep(root, "f", state.revision, "requirements", {});
     state = await gates.presentGate(root, "f", state.revision, "requirement_confirmation");
     assert.equal(state.humanGates.requirement_confirmation.status, "pending");
@@ -102,13 +103,13 @@ test("invalid grill status is rejected and registered edits revoke a confirmed r
     state = await gates.confirmGate(root, "f", state.revision, "requirement_confirmation", "approved", { promptEventId: "later" }, "claude");
 
     await setStatus(root, "in_progress");
-    state = await artifacts.recordArtifact(root, "f", state.revision, "requirements");
+    state = await registerTraceFixture({ root, featureId: "f", state, kind: "requirements" });
     assert.equal(state.humanGates.requirement_confirmation, undefined);
     assert.equal(state.steps.requirement_confirmation, undefined);
     await assert.rejects(() => gates.presentGate(root, "f", state.revision, "requirement_confirmation"), (error) => error.code === "GRILL_INCOMPLETE");
 
     await setStatus(root, "unsupported");
-    state = await artifacts.recordArtifact(root, "f", state.revision, "requirements");
+    state = await registerTraceFixture({ root, featureId: "f", state, kind: "requirements" });
     await assert.rejects(() => gates.presentGate(root, "f", state.revision, "requirement_confirmation"), (error) => error.code === "GRILL_STATUS_INVALID");
   } finally { await rm(root, { recursive: true, force: true }); }
 });
@@ -119,7 +120,7 @@ test("grill status must occur exactly once inside dev_flow front matter", async 
     let state = await start(root, "provided-confirmed");
     const file = fileFor(root);
     await writeFile(file, `${(await readFile(file, "utf8")).replace(/^  grill_status: not_required\r?\n/m, "")}\n  grill_status: complete\n`);
-    state = await artifacts.recordArtifact(root, "f", state.revision, "requirements");
+    state = await registerTraceFixture({ root, featureId: "f", state, kind: "requirements" });
     await assert.rejects(() => checks.recordStep(root, "f", state.revision, "requirements", {}), (error) => error.code === "GRILL_STATUS_INVALID");
 
     const duplicateRoot = await mkdtemp(path.join(os.tmpdir(), "dev-flow-grill-duplicate-"));
@@ -127,7 +128,7 @@ test("grill status must occur exactly once inside dev_flow front matter", async 
       state = await start(duplicateRoot, "missing-or-unclear");
       const duplicate = fileFor(duplicateRoot);
       await writeFile(duplicate, (await readFile(duplicate, "utf8")).replace(/^  grill_status: pending$/m, "  grill_status: complete\n  grill_status: complete"));
-      state = await artifacts.recordArtifact(duplicateRoot, "f", state.revision, "requirements");
+    state = await registerTraceFixture({ root: duplicateRoot, featureId: "f", state, kind: "requirements" });
       await assert.rejects(() => checks.recordStep(duplicateRoot, "f", state.revision, "requirements", {}), (error) => error.code === "GRILL_STATUS_INVALID");
     } finally { await rm(duplicateRoot, { recursive: true, force: true }); }
   } finally { await rm(root, { recursive: true, force: true }); }
@@ -162,7 +163,7 @@ test("grill decisions use native structured choices or one-time replies and pres
       /^  grill_status: pending$/m,
       "  grill_status: in_progress\n  grill_question_id: Q-001\n  grill_response_hint: \"请选择一个方案\"\n  grill_question_limit: 3",
     ));
-    state = await artifacts.recordArtifact(root, "f", state.revision, "requirements");
+    state = await registerTraceFixture({ root, featureId: "f", state, kind: "requirements" });
     const input = {
       questionId: "Q-001",
       question: "选择同步方案",
@@ -181,7 +182,7 @@ test("grill decisions use native structured choices or one-time replies and pres
     assert.equal(resolved.response.action, "hosted");
     assert.equal(resolved.response.source, "elicitation");
 
-    state = await artifacts.recordArtifact(root, "f", resolved.state.revision, "requirements");
+    state = await registerTraceFixture({ root, featureId: "f", state: resolved.state, kind: "requirements" });
     decision = await grill.requestGrillDecision(root, "f", state.revision, input);
     const reply = decision.interaction.fallback.replies.find((candidate) => candidate.action === "other").reply.replace(" <修改意见>", " 支持离线同步");
     await store.recordHostEvent(root, { eventId: "grill-token", type: "user-prompt", host: "claude", text: reply });

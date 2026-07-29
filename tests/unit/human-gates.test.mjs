@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { loadSource } from "../helpers/load-source.mjs";
+import { registerTraceFixture } from "../helpers/trace-fixtures.mjs";
 
 const store = await loadSource("plugins/dev-flow/src/core/state-store.ts");
 const artifacts = await loadSource("plugins/dev-flow/src/core/artifacts.ts");
@@ -19,7 +20,7 @@ test("human confirmation is explicit, later, and tied to the artifact basis", as
     state = await artifacts.scaffoldArtifact(root, "f", state.revision, "requirements");
     const file = path.join(root, ".dev-flow", "features", "f", "需求文档.md");
     await writeFile(file, (await readFile(file, "utf8")).replace(/^  grill_status: pending$/m, "  grill_status: complete"));
-    state = await artifacts.recordArtifact(root, "f", state.revision, "requirements");
+    state = await registerTraceFixture({ root, featureId: "f", state, kind: "requirements" });
     state = await (await loadSource("plugins/dev-flow/src/core/feature-check.ts")).recordStep(root, "f", state.revision, "requirements", {});
     state = await gates.presentGate(root, "f", state.revision, "requirement_confirmation");
     await assert.rejects(() => gates.confirmGate(root, "f", state.revision, "requirement_confirmation", "", { promptEventId: "p1" }, "claude"), /HUMAN_GATE_REPLY_REQUIRED/);
@@ -53,7 +54,7 @@ test("gate hints bind an exact later prompt automatically and dedupe retried hos
     state = await artifacts.scaffoldArtifact(root, "f", state.revision, "requirements");
     const file = path.join(root, ".dev-flow", "features", "f", "需求文档.md");
     await writeFile(file, (await readFile(file, "utf8")).replace(/^  grill_status: pending$/m, "  grill_status: complete"));
-    state = await artifacts.recordArtifact(root, "f", state.revision, "requirements");
+    state = await registerTraceFixture({ root, featureId: "f", state, kind: "requirements" });
     state = await (await loadSource("plugins/dev-flow/src/core/feature-check.ts")).recordStep(root, "f", state.revision, "requirements", {});
 
     state = await gates.presentGate(root, "f", state.revision, "requirement_confirmation");
@@ -82,7 +83,7 @@ test("native gate choices confirm directly, require feedback for changes, and re
     state = await artifacts.scaffoldArtifact(root, "f", state.revision, "requirements");
     const file = path.join(root, ".dev-flow", "features", "f", "需求文档.md");
     await writeFile(file, (await readFile(file, "utf8")).replace(/^  grill_status: pending$/m, "  grill_status: complete"));
-    state = await artifacts.recordArtifact(root, "f", state.revision, "requirements");
+    state = await registerTraceFixture({ root, featureId: "f", state, kind: "requirements" });
     state = await (await loadSource("plugins/dev-flow/src/core/feature-check.ts")).recordStep(root, "f", state.revision, "requirements", {});
 
     state = await gates.presentGate(root, "f", state.revision, "requirement_confirmation");
@@ -99,13 +100,13 @@ test("native gate choices confirm directly, require feedback for changes, and re
       (error) => error.code === "HUMAN_GATE_NOT_PENDING",
     );
 
-    state = await artifacts.recordArtifact(root, "f", state.revision, "requirements");
+    state = await registerTraceFixture({ root, featureId: "f", state, kind: "requirements" });
     state = await gates.presentGate(root, "f", state.revision, "requirement_confirmation");
     state = await gates.resolveGateElicitation(root, "f", state.revision, state.gateInteraction.id, "confirm", undefined, "codex");
     assert.equal(state.steps.requirement_confirmation.status, "satisfied");
     assert.equal(state.humanGates.requirement_confirmation.confirmation.source, "elicitation");
 
-    state = await artifacts.recordArtifact(root, "f", state.revision, "requirements");
+    state = await registerTraceFixture({ root, featureId: "f", state, kind: "requirements" });
     state = await gates.presentGate(root, "f", state.revision, "requirement_confirmation");
     const reply = state.gateInteraction.fallback.replies.find((candidate) => candidate.action === "confirm").reply;
     await store.recordHostEvent(root, { eventId: "token", type: "user-prompt", host: "codex", text: reply });

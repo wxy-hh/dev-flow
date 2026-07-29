@@ -1,5 +1,6 @@
 import type { GateId } from "./gate-approval.js";
 import type { FeatureState } from "./state-store.js";
+import { traceEnforcementRequired } from "../policy/contract.js";
 
 /** Artifact evidence whose revision invalidates each human approval. */
 export const gateBasisArtifacts: Record<GateId, readonly string[]> = {
@@ -23,7 +24,7 @@ export function gatesInvalidatedByArtifact(kind: string): GateId[] {
 
 /** Stable, explicit approval basis used for both presentation and confirmation. */
 export function gateBasis(state: FeatureState, gate: GateId): Record<string, unknown> {
-  return {
+  const basis: Record<string, unknown> = {
     route: state.route,
     scope: state.scope,
     classification: state.classification,
@@ -31,4 +32,8 @@ export function gateBasis(state: FeatureState, gate: GateId): Record<string, unk
       gateBasisArtifacts[gate].map((kind) => [kind, state.artifacts[kind]]),
     ),
   };
+  if (gate === "implementation_approval" && traceEnforcementRequired(state.route, state.workflowCapabilities)) {
+    basis.traceability = state.traceability;
+  }
+  return basis;
 }

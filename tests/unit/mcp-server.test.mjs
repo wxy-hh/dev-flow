@@ -6,6 +6,7 @@ import path from "node:path";
 import test from "node:test";
 import { createTinyApp, strictProjectConfig } from "../helpers/fixture-repo.mjs";
 import { loadSource } from "../helpers/load-source.mjs";
+import { registerTraceFixture } from "../helpers/trace-fixtures.mjs";
 
 const store = await loadSource("plugins/dev-flow/src/core/state-store.ts");
 const artifacts = await loadSource("plugins/dev-flow/src/core/artifacts.ts");
@@ -147,7 +148,7 @@ test("MCP nests a native confirmation control and records its structured user de
     state = await artifacts.scaffoldArtifact(root, "f", state.revision, "requirements");
     const requirements = path.join(root, ".dev-flow", "features", "f", "需求文档.md");
     await writeFile(requirements, (await readFile(requirements, "utf8")).replace(/^  grill_status: pending$/m, "  grill_status: complete"));
-    state = await artifacts.recordArtifact(root, "f", state.revision, "requirements");
+    state = await registerTraceFixture({ root, featureId: "f", state, kind: "requirements" });
     state = await checks.recordStep(root, "f", state.revision, "requirements", {});
 
     const response = await requestWithElicitation({
@@ -177,7 +178,7 @@ test("MCP nests native grill choices and returns a free-text other response", as
       /^  grill_status: pending$/m,
       "  grill_status: in_progress\n  grill_question_id: Q-001\n  grill_response_hint: \"请选择一个方案\"\n  grill_question_limit: 3",
     ));
-    state = await artifacts.recordArtifact(root, "f", state.revision, "requirements");
+    state = await registerTraceFixture({ root, featureId: "f", state, kind: "requirements" });
 
     const response = await requestWithElicitation({
       name: "dev_flow_request_grill_decision",

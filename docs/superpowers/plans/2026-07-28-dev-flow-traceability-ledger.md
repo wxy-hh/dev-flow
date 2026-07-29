@@ -1164,7 +1164,7 @@ export async function registerTraceFixture({
 
 **步骤：**
 
-- [ ] **步骤 1：写裸登记与生成产物红灯测试。**
+- [x] **步骤 1：写裸登记与生成产物红灯测试。**
 
 ```js
 await assert.rejects(
@@ -1177,13 +1177,13 @@ await assert.rejects(
 );
 ```
 
-- [ ] **步骤 2：写原子登记红灯测试。** 覆盖成功登记、旧 expectedRevision、锚点不匹配、未知 command ID、snapshot 写失败和 state commit 失败；失败后重新读取 state，断言 revision、artifact registration、pointer 和 gate basis 未变化。
+- [x] **步骤 2：写原子登记红灯测试。** 覆盖成功登记、旧 expectedRevision、锚点不匹配、未知 command ID、snapshot 写失败和 state commit 失败；失败后重新读取 state，断言 revision、artifact registration、pointer 和 gate basis 未变化。
 
-- [ ] **步骤 3：写精确失效红灯测试。** 两组独立 REQ→TASK→TEST/RU 已批准后，只改变第一组区块；断言第一组 stale、coverage/plan-review/approval 失效，第二组节点保持 current，requirement gate 仅在 requirements 变化时失效。
+- [x] **步骤 3：写精确失效红灯测试。** 两组独立 REQ→TASK→TEST/RU 已批准后，只改变第一组区块；断言第一组 stale、coverage/plan-review/approval 失效，第二组节点保持 current，requirement gate 仅在 requirements 变化时失效。
 
-- [ ] **步骤 4：交付真实 artifact fixture 并迁移裸登记调用点。** `trace-fixtures.mjs` 只读取/编辑 Task 2 runtime scaffold，校验锚点 ID 与 delta 完全一致，再调用 with-trace；不得从零生成 Markdown 或注入 ledger/state。`route-flow` 从本任务开始使用该 helper。`artifacts.test.mjs` 保留一条“裸登记必须拒绝”的断言；requirements-grill、human-gates、status-progress 和 mcp-server 中的新 standard feature 都改用真实 with-trace。grill 测试必须证明只改 front matter 时 REQ/AC block hash 保持不变、gate basis 按 artifact hash 失效，但 Trace 节点不误 stale。
+- [x] **步骤 4：交付真实 artifact fixture 并迁移裸登记调用点。** `trace-fixtures.mjs` 只读取/编辑 Task 2 runtime scaffold，校验锚点 ID 与 delta 完全一致，再调用 with-trace；不得从零生成 Markdown 或注入 ledger/state。`route-flow` 从本任务开始使用该 helper。`artifacts.test.mjs` 保留一条“裸登记必须拒绝”的断言；requirements-grill、human-gates、status-progress 和 mcp-server 中的新 standard feature 都改用真实 with-trace。grill 测试必须证明只改 front matter 时 REQ/AC block hash 保持不变、gate basis 按 artifact hash 失效，但 Trace 节点不误 stale。
 
-- [ ] **步骤 5：运行红灯。**
+- [x] **步骤 5：运行红灯。**
 
 ```bash
 node --test tests/unit/traceability-artifacts.test.mjs
@@ -1191,11 +1191,11 @@ node --test tests/unit/traceability-artifacts.test.mjs
 
 预期：FAIL，原因是 `recordArtifactWithTrace` 不存在。
 
-- [ ] **步骤 6：实现原子登记。** 所有 I/O 和 delta 计算在现有项目级 `.dev-flow/.lock` 内完成；调用任务 3/4 的纯函数和 snapshot store，不在 `artifacts.ts` 复制图规则或文件原子写入代码。
+- [x] **步骤 6：实现原子登记。** 所有 I/O 和 delta 计算在现有项目级 `.dev-flow/.lock` 内完成；调用任务 3/4 的纯函数和 snapshot store，不在 `artifacts.ts` 复制图规则或文件原子写入代码。
 
-- [ ] **步骤 7：实现统一失效表。** artifact kind 到 gate/step 的映射只保留一份；删除受影响的 step、gate interaction、featureCheck、logicComplete/finalize，并把失效原因保存到 event data。
+- [x] **步骤 7：实现统一失效表。** artifact kind 到 gate/step 的映射只保留一份；删除受影响的 step、gate interaction、featureCheck、logicComplete/finalize，并把失效原因保存到 event data。
 
-- [ ] **步骤 8：运行回归。**
+- [x] **步骤 8：运行回归。**
 
 ```bash
 node --test tests/unit/traceability-artifacts.test.mjs \
@@ -1211,7 +1211,7 @@ npm run test:routes
 
 预期：PASS；启用裸登记拒绝后，仓库中已执行的 standard source 测试不再依赖旧登记路径。
 
-- [ ] **步骤 9：提交任务 5。**
+- [x] **步骤 9：提交任务 5。**
 
 ```bash
 git add plugins/dev-flow/src/core/artifacts.ts \

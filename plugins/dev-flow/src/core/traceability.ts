@@ -258,7 +258,10 @@ function assertRollbackDag(nodes: Record<string, TraceNode>): void {
 }
 
 function sameEdges(left: TraceEdge[], right: TraceEdge[]): boolean {
-  return JSON.stringify(left) === JSON.stringify(right);
+  return left.length === right.length && left.every((edge, index) => {
+    const candidate = right[index];
+    return edge.from === candidate?.from && edge.type === candidate.type && edge.to === candidate.to;
+  });
 }
 
 function sameSummary(left: TraceSummary, right: TraceSummary): boolean {
