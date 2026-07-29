@@ -12,6 +12,7 @@ import { buildTestBundles } from "../helpers/test-bundle.mjs";
 const store = await loadSource("plugins/dev-flow/src/core/state-store.ts");
 const artifacts = await loadSource("plugins/dev-flow/src/core/artifacts.ts");
 const checks = await loadSource("plugins/dev-flow/src/core/feature-check.ts");
+const reviewStore = await loadSource("plugins/dev-flow/src/core/review-store.ts");
 const distBefore = await Promise.all(["mcp-server.mjs", "claude-hook.mjs", "codex-hook.mjs"].map((name) => readFile(path.resolve("plugins/dev-flow/dist", name))));
 const bundles = await buildTestBundles();
 after(() => bundles.dispose());
@@ -80,7 +81,7 @@ test("MCP server initializes, advertises the complete public interface, and maps
   assert.ok(Array.isArray(responses[1].result.tools));
   assert.equal(responses[1].result.content, undefined);
   const names = responses[1].result.tools.map((tool) => tool.name);
-  for (const name of ["dev_flow_init_project", "dev_flow_classify", "dev_flow_start", "dev_flow_next", "dev_flow_verify", "dev_flow_confirm_gate", "dev_flow_respond_interaction", "dev_flow_request_grill_decision", "dev_flow_resolve_grill_decision", "dev_flow_enable_windows_notifications", "dev_flow_finalize", "dev_flow_recover_corrupt_feature", "dev_flow_status", "dev_flow_record_artifact_with_trace", "dev_flow_get_traceability"]) {
+  for (const name of ["dev_flow_init_project", "dev_flow_classify", "dev_flow_start", "dev_flow_next", "dev_flow_verify", "dev_flow_confirm_gate", "dev_flow_respond_interaction", "dev_flow_request_grill_decision", "dev_flow_resolve_grill_decision", "dev_flow_enable_windows_notifications", "dev_flow_finalize", "dev_flow_recover_corrupt_feature", "dev_flow_status", "dev_flow_record_artifact_with_trace", "dev_flow_get_traceability", "dev_flow_create_review_batch", "dev_flow_get_review_job", "dev_flow_claim_review_job", "dev_flow_submit_review_job"]) {
     assert.ok(names.includes(name), `missing tool ${name}`);
   }
   const contract = JSON.parse(await readFile(path.resolve("plugins/dev-flow/policy/contract.json"), "utf8"));
@@ -113,6 +114,13 @@ test("MCP server initializes, advertises the complete public interface, and maps
   const traceGet = responses[1].result.tools.find((tool) => tool.name === "dev_flow_get_traceability");
   assert.deepEqual(traceGet.inputSchema.required, ["featureId"]);
   assert.equal(traceGet.annotations.readOnlyHint, true);
+  const reviewGet = responses[1].result.tools.find((tool) => tool.name === "dev_flow_get_review_job");
+  assert.deepEqual(reviewGet.inputSchema.required, ["featureId", "batchId", "jobId", "capability"]);
+  assert.equal(reviewGet.annotations.readOnlyHint, true);
+  const reviewSubmit = responses[1].result.tools.find((tool) => tool.name === "dev_flow_submit_review_job");
+  assert.equal("basisHash" in reviewSubmit.inputSchema.properties, false);
+  assert.equal("assuranceLevel" in reviewSubmit.inputSchema.properties, false);
+  assert.equal("roles" in reviewSubmit.inputSchema.properties, false);
 
   // tools/call keeps CallToolResult content shape
   assert.equal(responses[2].error.data.code, "UNKNOWN_TOOL");
@@ -163,6 +171,87 @@ test("MCP Trace tools reject Core-owned fields, preserve CAS errors, and keep ge
     assert.deepEqual(trace.effectiveSummary, winner.traceability.summary);
     assert.deepEqual(trace.blockers, []);
     assert.equal((await store.readState(root, "f")).revision, winner.revision);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+async function reviewReadyMcpFeature(root) {
+  await mkdir(path.join(root, "src"));
+  await writeFile(path.join(root, "src", "app.js"), "export const value = 1;\n");
+  await store.initProject(root, config);
+  let state = await store.startFeature(root, {
+    featureId: "f", host: "codex", level: "M", topology: "local", execution: "standard", requirements: "provided-confirmed", riskLabels: ["security"],
+  });
+  const pointer = await reviewStore.writeReviewSnapshot(root, reviewStore.emptyReviewLedger("f", state.revision + 1));
+  state = await store.mutate(root, "f", state.revision, "review-mcp-pointer", (draft) => {
+    draft.workflowCapabilities = { trace: 1, review: 1, checkpoints: 0, rollbackExecution: 0 };
+    draft.review = pointer;
+  });
+  state = await registerTraceFixture({ root, featureId: "f", state, kind: "requirements" });
+  state = await store.mutate(root, "f", state.revision, "review-mcp-requirements", (draft) => {
+    draft.steps.requirements = { status: "satisfied" };
+    draft.steps.requirement_confirmation = { status: "satisfied" };
+  });
+  state = await registerTraceFixture({ root, featureId: "f", state, kind: "implementation-plan" });
+  state = await store.mutate(root, "f", state.revision, "review-mcp-plan", (draft) => {
+    draft.steps.implementation_plan = { status: "satisfied" };
+  });
+  return registerTraceFixture({ root, featureId: "f", state, kind: "coverage-matrix" });
+}
+
+test("MCP review tools enforce Core-owned inputs, isolate capabilities, and preserve retry semantics", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "dev-flow-mcp-review-"));
+  try {
+    const initial = await reviewReadyMcpFeature(root);
+    const create = { name: "dev_flow_create_review_batch", arguments: { featureId: "f", expectedRevision: initial.revision } };
+    let responses = await request([
+      { jsonrpc: "2.0", id: 1, method: "tools/call", params: { ...create, arguments: { ...create.arguments, basisHash: "forged", assuranceLevel: "multi-agent-verified", roles: ["security"], depth: "full", scope: { inScope: ["src"], outOfScope: [] }, protectedRoots: ["src"] } } },
+      { jsonrpc: "2.0", id: 2, method: "tools/call", params: create },
+    ], root);
+    assert.equal(responses[0].error.data.code, "INVALID_TOOL_INPUT");
+    const created = responses[1].result.structuredContent;
+    assert.equal(created.created, true);
+    assert.equal(created.batch.executionMode, "isolated-sequential");
+    assert.equal(created.batch.assuranceLevel, "multi-perspective");
+    const firstJob = created.batch.jobs[0];
+    const secondJob = created.batch.jobs[1];
+    const claimRequestId = "claim-1234567890-mcp-isolated-capability-abcdef";
+    responses = await request([
+      { jsonrpc: "2.0", id: 3, method: "tools/call", params: { name: "dev_flow_claim_review_job", arguments: { featureId: "f", expectedRevision: created.state.revision, batchId: created.batch.batchId, jobId: firstJob.jobId, claimRequestId, executorId: "forged", contextId: "forged" } } },
+      { jsonrpc: "2.0", id: 4, method: "tools/call", params: { name: "dev_flow_claim_review_job", arguments: { featureId: "f", expectedRevision: created.state.revision, batchId: created.batch.batchId, jobId: firstJob.jobId, claimRequestId } } },
+    ], root);
+    assert.equal(responses[0].error.data.code, "INVALID_TOOL_INPUT");
+    const claimed = responses[1].result.structuredContent;
+    assert.equal(claimed.capability, claimRequestId);
+    responses = await request([
+      { jsonrpc: "2.0", id: 5, method: "tools/call", params: { name: "dev_flow_get_review_job", arguments: { featureId: "f", batchId: created.batch.batchId, jobId: secondJob.jobId, capability: claimRequestId } } },
+      { jsonrpc: "2.0", id: 6, method: "tools/call", params: { name: "dev_flow_get_review_job", arguments: { featureId: "f", batchId: created.batch.batchId, jobId: firstJob.jobId, capability: claimRequestId } } },
+      { jsonrpc: "2.0", id: 7, method: "tools/call", params: { name: "dev_flow_claim_review_job", arguments: { featureId: "f", expectedRevision: claimed.state.revision, batchId: created.batch.batchId, jobId: firstJob.jobId, claimRequestId } } },
+    ], root);
+    assert.equal(responses[0].error.data.code, "REVIEW_JOB_CAPABILITY_INVALID");
+    assert.equal(responses[1].result.structuredContent.package.jobId, firstJob.jobId);
+    assert.equal(responses[2].result.structuredContent.idempotent, true);
+    const retried = responses[2].result.structuredContent;
+    responses = await request([
+      { jsonrpc: "2.0", id: 8, method: "tools/call", params: { name: "dev_flow_submit_review_job", arguments: { featureId: "f", expectedRevision: retried.state.revision, batchId: created.batch.batchId, jobId: firstJob.jobId, capability: claimRequestId, completion: { coverageSummary: "Complete", findings: [], assuranceLevel: "multi-agent-verified" } } } },
+      { jsonrpc: "2.0", id: 9, method: "tools/call", params: { name: "dev_flow_submit_review_job", arguments: { featureId: "f", expectedRevision: retried.state.revision, batchId: created.batch.batchId, jobId: firstJob.jobId, capability: claimRequestId, completion: { coverageSummary: "Complete", findings: [] } } } },
+    ], root);
+    assert.equal(responses[0].error.data.code, "INVALID_TOOL_INPUT");
+    const firstSubmission = responses[1].result.structuredContent;
+    assert.equal(firstSubmission.job.status, "submitted");
+    assert.equal("submission" in firstSubmission.batch.jobs.find((job) => job.jobId === firstJob.jobId), false);
+    const secondCapability = "claim-1234567890-second-reviewer-capability";
+    responses = await request([
+      { jsonrpc: "2.0", id: 10, method: "tools/call", params: { name: "dev_flow_claim_review_job", arguments: { featureId: "f", expectedRevision: firstSubmission.state.revision, batchId: created.batch.batchId, jobId: secondJob.jobId, claimRequestId: secondCapability } } },
+    ], root);
+    const secondClaim = responses[0].result.structuredContent;
+    responses = await request([
+      { jsonrpc: "2.0", id: 11, method: "tools/call", params: { name: "dev_flow_submit_review_job", arguments: { featureId: "f", expectedRevision: secondClaim.state.revision, batchId: created.batch.batchId, jobId: secondJob.jobId, capability: secondCapability, completion: { coverageSummary: "Second review complete", findings: [] } } } },
+    ], root);
+    const secondSubmission = responses[0].result.structuredContent;
+    assert.equal(secondSubmission.batch.progress, "open");
+    assert.equal(secondSubmission.job.jobId, secondJob.jobId);
+    assert.equal(secondSubmission.job.submission.coverageSummary, "Second review complete");
+    assert.equal("submission" in secondSubmission.batch.jobs.find((job) => job.jobId === firstJob.jobId), false);
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 

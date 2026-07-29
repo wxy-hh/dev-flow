@@ -192,12 +192,12 @@ finding: open → resolved-in-successor | risk-accepted
 
 **步骤：**
 
-- [ ] 写工具发现、严格输入 Schema、只读/写入边界与错误映射测试。
-- [ ] 写 capability 隔离、claimRequestId 重试、未完成 batch 的旁路读取不泄露 sibling findings，以及拒绝 caller-supplied basis/assurance/roles/depth 测试。
-- [ ] 写恶意传入不同 `executorId/contextId` 仍不能升级 assurance 的测试。
-- [ ] 运行 `node --test tests/unit/mcp-server.test.mjs`，确认红灯。
-- [ ] 接入 Core API；默认 `executionMode` 为 `isolated-sequential`。
-- [ ] 提交：`feat(dev-flow): expose review batch tools`
+- [x] 写工具发现、严格输入 Schema、只读/写入边界与错误映射测试。
+- [x] 写 capability 隔离、claimRequestId 重试、未完成 batch 的旁路读取不泄露 sibling findings，以及拒绝 caller-supplied basis/assurance/roles/depth 测试。
+- [x] 写恶意传入不同 `executorId/contextId` 仍不能升级 assurance 的测试。
+- [x] 运行 `node --test tests/unit/mcp-server.test.mjs`，确认红灯。
+- [x] 接入 Core API；默认 `executionMode` 为 `isolated-sequential`。
+- [x] 提交：`feat(dev-flow): expose review batch tools`
 
 ### 任务 4：聚合审查发现、处理处置结果并阻塞阶段推进
 

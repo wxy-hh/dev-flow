@@ -19,6 +19,7 @@ import { enableWindowsNotifications } from "./windows-notifications.js";
 import { requestGrillDecision, resolveGrillElicitation, resolveGrillToken } from "../core/requirements-grill.js";
 import { validateTraceDelta } from "../core/traceability.js";
 import { inspectCurrentTrace } from "../core/traceability-gates.js";
+import { claimReviewJob, createReviewBatch, getReviewJob, submitReviewJob } from "../core/review-jobs.js";
 import {
   getInteraction,
   interactionResponse,
@@ -34,6 +35,7 @@ const tools = [
   "dev_flow_init_project", "dev_flow_classify", "dev_flow_start", "dev_flow_status", "dev_flow_next",
   "dev_flow_switch_active", "dev_flow_scaffold_artifact", "dev_flow_record_artifact", "dev_flow_record_step",
   "dev_flow_record_artifact_with_trace", "dev_flow_get_traceability",
+  "dev_flow_create_review_batch", "dev_flow_get_review_job", "dev_flow_claim_review_job", "dev_flow_submit_review_job",
   "dev_flow_present_gate", "dev_flow_confirm_gate", "dev_flow_reclassify", "dev_flow_verify",
   "dev_flow_respond_interaction", "dev_flow_request_grill_decision", "dev_flow_resolve_grill_decision",
   "dev_flow_feature_check", "dev_flow_finalize", "dev_flow_abandon", "dev_flow_enable_windows_notifications", "dev_flow_doctor",
@@ -67,6 +69,10 @@ const traceNodeSchemas = [
 ];
 const traceDeltaSchema = object(["nodes"], {
   nodes: { type: "array", items: { oneOf: traceNodeSchemas } },
+});
+const reviewCompletionSchema = object(["coverageSummary", "findings"], {
+  coverageSummary: string,
+  findings: { type: "array", items: {} },
 });
 
 const scopeSchema = {
@@ -142,6 +148,23 @@ const toolSchemas: Record<string, { description: string; inputSchema: Record<str
     description: "Read the current Trace pointer, ledger, effective summary, and current-step blockers.",
     inputSchema: object(["featureId"], { featureId: string }),
     annotations: { readOnlyHint: true },
+  },
+  dev_flow_create_review_batch: {
+    description: "Create or return the Core-derived immutable review batch for the current basis.",
+    inputSchema: featureMutation(),
+  },
+  dev_flow_get_review_job: {
+    description: "Read only the claimed job's immutable package. A job capability never reveals sibling jobs.",
+    inputSchema: object(["featureId", "batchId", "jobId", "capability"], { featureId: string, batchId: string, jobId: string, capability: string }),
+    annotations: { readOnlyHint: true },
+  },
+  dev_flow_claim_review_job: {
+    description: "Claim one current review job using a high-entropy retry key; returns the job capability.",
+    inputSchema: featureMutation({ batchId: string, jobId: string, claimRequestId: string }),
+  },
+  dev_flow_submit_review_job: {
+    description: "Submit one claimed job's structured completion. Assurance, role, depth, and basis are Core-derived.",
+    inputSchema: featureMutation({ batchId: string, jobId: string, capability: string, completion: reviewCompletionSchema }),
   },
   dev_flow_record_step: { description: "Record the current non-gate route step.", inputSchema: featureMutation({ step: string, evidence: {} }) },
   dev_flow_present_gate: { description: "Present a strict human gate.", inputSchema: featureMutation({ gate: { enum: ["requirement_confirmation", "implementation_approval"] } }) },
@@ -278,6 +301,44 @@ function assertTraceReadInput(value: unknown): asserts value is { featureId: str
   }
 }
 
+function assertReviewMutationInput(
+  value: unknown,
+  tool: string,
+  stringExtras: string[],
+  otherExtras: string[] = [],
+): asserts value is Record<string, unknown> & { featureId: string; expectedRevision: number } {
+  assertExactToolInput(value, ["featureId", "expectedRevision", ...stringExtras, ...otherExtras], tool);
+  if (typeof value.featureId !== "string" || !value.featureId
+    || typeof value.expectedRevision !== "number" || !Number.isInteger(value.expectedRevision) || value.expectedRevision < 0
+    || stringExtras.some((key) => typeof value[key] !== "string" || !(value[key] as string))) {
+    throw new DevFlowError("INVALID_TOOL_INPUT", `${tool} input does not match its schema`);
+  }
+}
+
+function assertReviewGetInput(value: unknown): asserts value is { featureId: string; batchId: string; jobId: string; capability: string } {
+  assertExactToolInput(value, ["featureId", "batchId", "jobId", "capability"], "dev_flow_get_review_job");
+  if (typeof value.featureId !== "string" || !value.featureId || typeof value.batchId !== "string" || !value.batchId
+    || typeof value.jobId !== "string" || !value.jobId || typeof value.capability !== "string" || !value.capability) {
+    throw new DevFlowError("INVALID_TOOL_INPUT", "dev_flow_get_review_job input does not match its schema");
+  }
+}
+
+function assertReviewSubmitInput(value: unknown): asserts value is Record<string, unknown> & {
+  featureId: string; expectedRevision: number; batchId: string; jobId: string; capability: string; completion: unknown;
+} {
+  assertReviewMutationInput(value, "dev_flow_submit_review_job", ["batchId", "jobId", "capability"], ["completion"]);
+  const completion = value.completion;
+  const coverageSummary = completion && typeof completion === "object" && !Array.isArray(completion)
+    ? (completion as Record<string, unknown>).coverageSummary
+    : undefined;
+  if (!completion || typeof completion !== "object" || Array.isArray(completion)
+    || Object.keys(completion as Record<string, unknown>).some((key) => key !== "coverageSummary" && key !== "findings")
+    || typeof coverageSummary !== "string" || !coverageSummary.trim()
+    || !Array.isArray((completion as Record<string, unknown>).findings)) {
+    throw new DevFlowError("INVALID_TOOL_INPUT", "dev_flow_submit_review_job input does not match its schema");
+  }
+}
+
 type ElicitationResult = { action: "accept" | "decline" | "cancel"; content?: Record<string, unknown> };
 type ElicitationSelection = { action: string; comment?: string };
 
@@ -293,6 +354,30 @@ function interactionEnvelope(
     interaction,
     interactionOutcome,
     ...(response ? { response } : {}),
+  };
+}
+
+/** A submitter may inspect its own accepted payload, never sibling review output. */
+function reviewSubmissionEnvelope(
+  result: Awaited<ReturnType<typeof submitReviewJob>>,
+  submittedJobId: string,
+) {
+  const job = result.batch.jobs.find((candidate) => candidate.jobId === submittedJobId);
+  if (!job) throw new DevFlowError("REVIEW_INTEGRITY_FAILED", "submitted review job is missing from its batch", { submittedJobId });
+  const { claim: _claim, ...publicJob } = job;
+  return {
+    state: result.state,
+    idempotent: result.idempotent,
+    job: publicJob,
+    batch: {
+      batchId: result.batch.batchId,
+      basisHash: result.batch.basisHash,
+      validity: result.batch.validity,
+      progress: result.batch.progress,
+      assuranceLevel: result.batch.assuranceLevel,
+      executionMode: result.batch.executionMode,
+      jobs: result.batch.jobs.map(({ jobId, role, reviewDepth, status }) => ({ jobId, role, reviewDepth, status })),
+    },
   };
 }
 
@@ -402,6 +487,23 @@ async function call(name: string, a: any, connection: McpConnection) {
         ...(inspection.effectiveSummary ? { effectiveSummary: inspection.effectiveSummary } : {}),
         blockers: inspection.blocker ? [inspection.blocker] : [],
       };
+    }
+    case "dev_flow_create_review_batch": {
+      assertReviewMutationInput(a, "dev_flow_create_review_batch", []);
+      return createReviewBatch(root, a.featureId, a.expectedRevision);
+    }
+    case "dev_flow_get_review_job": {
+      assertReviewGetInput(a);
+      return getReviewJob(root, a.featureId, a.batchId, a.jobId, a.capability);
+    }
+    case "dev_flow_claim_review_job": {
+      assertReviewMutationInput(a, "dev_flow_claim_review_job", ["batchId", "jobId", "claimRequestId"]);
+      return claimReviewJob(root, a.featureId, a.expectedRevision, a.batchId as string, a.jobId as string, a.claimRequestId as string);
+    }
+    case "dev_flow_submit_review_job": {
+      assertReviewSubmitInput(a);
+      const result = await submitReviewJob(root, a.featureId, a.expectedRevision, a.batchId, a.jobId, a.capability, a.completion);
+      return reviewSubmissionEnvelope(result, a.jobId);
     }
     case "dev_flow_record_step": return recordStep(root, a.featureId, a.expectedRevision, a.step, a.evidence);
     case "dev_flow_present_gate": {
