@@ -4,6 +4,8 @@ import { readActive, readProjectConfig, readRecoveryTransaction, readState, type
 import { readTraceability } from "../core/traceability-store.js";
 import { readReviewLedger } from "../core/review-store.js";
 
+/** Host adapters never mint review attestations or assurance; those enter only via MCP/Core. */
+
 export interface HookEvent {
   hook_event_name?: string;
   tool_name?: string;

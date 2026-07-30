@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { mkdir, open, readFile, readdir, rename } from "node:fs/promises";
 import path from "node:path";
-import { assuranceForReviewBatch, type ReviewBatch, type ReviewJob, type ReviewLedger, type ReviewPointer, type ReviewSamplingAttempt, type ReviewSummary } from "../policy/review.js";
+import { assuranceForReviewBatch, type ReviewAgentAttestation, type ReviewBatch, type ReviewJob, type ReviewLedger, type ReviewPointer, type ReviewSamplingAttempt, type ReviewSummary } from "../policy/review.js";
 import type { FeatureState } from "./state-store.js";
 import { DevFlowError } from "./errors.js";
 
@@ -101,6 +101,17 @@ function validSamplingAttempts(value: unknown, status: ReviewJob["status"], subm
       && attempt.payloadSha256 === submission.payloadSha256);
 }
 
+function validAttestation(value: unknown): value is ReviewAgentAttestation {
+  return isRecord(value)
+    && (value.host === "claude" || value.host === "codex")
+    && typeof value.agentId === "string" && value.agentId.trim().length > 0
+    && typeof value.issuedAt === "string" && !Number.isNaN(Date.parse(value.issuedAt))
+    && typeof value.raw === "string" && value.raw.trim().length > 0
+    && validHash(value.rawSha256)
+    && typeof value.acceptedAt === "string"
+    && digest(value.raw) === value.rawSha256;
+}
+
 function validateBatch(value: unknown): value is ReviewBatch {
   if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
   const batch = value as Partial<ReviewBatch>;
@@ -112,6 +123,7 @@ function validateBatch(value: unknown): value is ReviewBatch {
       && batch.assuranceLevel !== "multi-agent-attested" && batch.assuranceLevel !== "multi-agent-verified"
     || !Array.isArray(batch.jobs)) return false;
   const ids = new Set<string>();
+  const attestationRaws = new Set<string>();
   return batch.jobs.every((job) => {
     if (!job || typeof job !== "object" || typeof job.jobId !== "string" || !job.jobId || ids.has(job.jobId)
       || typeof job.role !== "string" || (job.reviewDepth !== "standard" && job.reviewDepth !== "full")
@@ -119,18 +131,26 @@ function validateBatch(value: unknown): value is ReviewBatch {
     ids.add(job.jobId);
     if (!validSamplingAttempts(job.samplingAttempts, job.status, job.submission)) return false;
     if (job.status === "pending") return !job.claim && !job.submission;
-    if (job.status === "sampling") return !job.claim;
+    if (job.status === "sampling") return !job.claim && !job.submission?.attestation;
     if (job.status === "claimed") {
       return !job.submission && !!job.claim && validHash(job.claim.requestSha256)
         && typeof job.claim.claimedAt === "string" && typeof job.claim.leaseExpiresAt === "string";
     }
     const sampled = Boolean(job.submission?.samplingProvenance);
+    const attested = Boolean(job.submission?.attestation);
+    if (sampled && attested) return false;
     if (!sampled && (!job.claim || !validHash(job.claim.requestSha256)
       || typeof job.claim.claimedAt !== "string" || typeof job.claim.leaseExpiresAt !== "string")) return false;
     if (sampled && job.claim) return false;
-    return !!job.submission && validHash(job.submission.payloadSha256)
-      && typeof job.submission.coverageSummary === "string" && Array.isArray(job.submission.findings)
-      && typeof job.submission.submittedAt === "string";
+    if (!job.submission || !validHash(job.submission.payloadSha256)
+      || typeof job.submission.coverageSummary !== "string" || !Array.isArray(job.submission.findings)
+      || typeof job.submission.submittedAt !== "string") return false;
+    if (attested) {
+      if (!validAttestation(job.submission.attestation)) return false;
+      if (attestationRaws.has(job.submission.attestation!.rawSha256)) return false;
+      attestationRaws.add(job.submission.attestation!.rawSha256);
+    }
+    return true;
   });
 }
 
@@ -151,13 +171,29 @@ function validateLedger(value: unknown): asserts value is ReviewLedger {
       || (batch.progress === "complete") !== batch.jobs.every((job) => job.status === "submitted")) {
       integrity("review snapshot batch is inconsistent");
     }
-    if (batch.executionMode === "mcp-sampling" && batch.assuranceLevel !== assuranceForReviewBatch(batch)) {
-      integrity("MCP sampling batch assurance is not derived from persisted provenance", { batchId: batch.batchId });
+    if (batch.assuranceLevel !== assuranceForReviewBatch(batch)) {
+      integrity("review batch assurance is not derived from persisted provenance", { batchId: batch.batchId });
     }
     if (batch.executionMode === "isolated-sequential" && batch.assuranceLevel !== "multi-perspective") {
       integrity("isolated review batch assurance is not Core-derived", { batchId: batch.batchId });
     }
+    // mcp-sampling may later accept manual host attestation on claim/submit; ladder
+    // can then reach multi-agent-attested while executionMode remains diagnostic.
     batchIds.add(batch.batchId);
+  }
+  const attestationRaws = new Set<string>();
+  for (const batch of ledger.batches) {
+    for (const job of batch.jobs) {
+      const rawSha256 = job.submission?.attestation?.rawSha256;
+      if (!rawSha256) continue;
+      if (attestationRaws.has(rawSha256)) {
+        integrity("host attestation raw hash is reused across the review ledger", {
+          batchId: batch.batchId,
+          jobId: job.jobId,
+        });
+      }
+      attestationRaws.add(rawSha256);
+    }
   }
   if (!sameSummary(ledger.summary, reviewSummary(ledger.batches))) integrity("review snapshot summary is inconsistent");
 }

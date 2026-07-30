@@ -30,7 +30,7 @@ import {
   resolveReviewRiskAcceptanceToken,
   submitReviewJob,
 } from "../core/review-jobs.js";
-import { parseReviewJobCompletion } from "../policy/review.js";
+import { parseHostAttestation, parseReviewJobCompletion } from "../policy/review.js";
 import {
   getInteraction,
   interactionResponse,
@@ -100,6 +100,12 @@ const reviewCompletionSchema = object(["coverageSummary", "findings"], {
   coverageSummary: string,
   findings: { type: "array", items: reviewFindingSchema },
   resolutions: { type: "array", items: reviewResolutionSchema },
+});
+const reviewAttestationSchema = object(["host", "agentId", "issuedAt", "raw"], {
+  host: { enum: ["claude", "codex"] },
+  agentId: string,
+  issuedAt: string,
+  raw: string,
 });
 
 const scopeSchema = {
@@ -190,8 +196,14 @@ const toolSchemas: Record<string, { description: string; inputSchema: Record<str
     inputSchema: featureMutation({ batchId: string, jobId: string, claimRequestId: string }),
   },
   dev_flow_submit_review_job: {
-    description: "Submit one claimed job's structured completion. Assurance, role, depth, and basis are Core-derived.",
-    inputSchema: featureMutation({ batchId: string, jobId: string, capability: string, completion: reviewCompletionSchema }),
+    description: "Submit one claimed job's structured completion. Optional host attestation can raise multi-agent-attested only; Core still owns assurance.",
+    inputSchema: featureMutation({
+      batchId: string,
+      jobId: string,
+      capability: string,
+      completion: reviewCompletionSchema,
+      attestation: reviewAttestationSchema,
+    }),
   },
   dev_flow_sample_review_job: {
     description: "Ask a sampling-capable MCP client to complete one pending review job. The server owns the one-use request and submits only a validated response.",
@@ -373,12 +385,19 @@ function assertReviewGetInput(value: unknown): asserts value is { featureId: str
 }
 
 function assertReviewSubmitInput(value: unknown): asserts value is Record<string, unknown> & {
-  featureId: string; expectedRevision: number; batchId: string; jobId: string; capability: string; completion: unknown;
+  featureId: string; expectedRevision: number; batchId: string; jobId: string; capability: string; completion: unknown; attestation?: unknown;
 } {
-  assertReviewMutationInput(value, "dev_flow_submit_review_job", ["batchId", "jobId", "capability"], ["completion"]);
+  const extras = ["completion", ...(value && typeof value === "object" && !Array.isArray(value) && "attestation" in value ? ["attestation"] : [])];
+  assertReviewMutationInput(value, "dev_flow_submit_review_job", ["batchId", "jobId", "capability"], extras);
   try { parseReviewJobCompletion(value.completion); }
   catch {
     throw new DevFlowError("INVALID_TOOL_INPUT", "dev_flow_submit_review_job input does not match its schema");
+  }
+  if (value.attestation !== undefined) {
+    try { parseHostAttestation(value.attestation); }
+    catch {
+      throw new DevFlowError("INVALID_TOOL_INPUT", "dev_flow_submit_review_job attestation does not match its schema");
+    }
   }
 }
 
@@ -616,7 +635,9 @@ async function call(name: string, a: any, connection: McpConnection) {
     }
     case "dev_flow_submit_review_job": {
       assertReviewSubmitInput(a);
-      const result = await submitReviewJob(root, a.featureId, a.expectedRevision, a.batchId, a.jobId, a.capability, a.completion);
+      const result = await submitReviewJob(
+        root, a.featureId, a.expectedRevision, a.batchId, a.jobId, a.capability, a.completion, a.attestation,
+      );
       return reviewSubmissionEnvelope(result, a.jobId);
     }
     case "dev_flow_sample_review_job": {

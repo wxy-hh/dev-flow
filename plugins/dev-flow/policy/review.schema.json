@@ -17,6 +17,9 @@
     },
     "samplingProvenance": {
       "$ref": "#/$defs/reviewSamplingProvenance"
+    },
+    "agentAttestation": {
+      "$ref": "#/$defs/reviewAgentAttestation"
     }
   },
   "$defs": {
@@ -78,6 +81,19 @@
         "requestSha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
         "issuedAt": { "type": "string" },
         "completedAt": { "type": "string" }
+      }
+    },
+    "reviewAgentAttestation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["host", "agentId", "issuedAt", "raw", "rawSha256", "acceptedAt"],
+      "properties": {
+        "host": { "enum": ["claude", "codex"] },
+        "agentId": { "type": "string", "minLength": 1 },
+        "issuedAt": { "type": "string" },
+        "raw": { "type": "string", "minLength": 1 },
+        "rawSha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+        "acceptedAt": { "type": "string" }
       }
     }
   }

@@ -49,6 +49,14 @@ Dev Flow 以**一个预构建插件包**同时服务 Claude Code 与 Codex CLI�
 - incomplete batch 的 status / next / 无 capability 读取面只暴露粗粒度 job 进度，不泄露 sibling findings；claim 使用高熵 capability 与 60 分钟租约。
 - Host Hook 将 `features/<id>/review/**` 视为控制路径；当前 review pointer 损坏时 fail closed。
 
+## Review 4B：采样与宿主证明
+
+- **服务端采样**（`dev_flow_sample_review_job`）：Core 签发一次性 request（snapshot 只存 hash）；MCP 在客户端声明 `sampling` 后调用 `sampling/createMessage`；≥2 个不同 job 的有效 sampling provenance → `independent-sampling`。
+- **宿主 attestation**（`dev_flow_submit_review_job` 可选 `attestation`）：普通宿主 subagent 证明最多 `multi-agent-attested`（≥2 不同 job × 不同 `agentId` × 不同 raw）。相同 raw 不可跨 job 复用；调用方自报 `verified` / `assuranceLevel` 无效。
+- **`multi-agent-verified`** 仅经可信 `ReviewIdentityVerifier` 接口；默认 verifier 恒不信任，**永不**仅凭宿主字段产生 verified。
+- 投影与 status 同时展示 `assurance.level` 与 `evidenceSources`（`role-jobs` / `server-sampling` / `host-attestation`），禁止把 attested 写成 verified。
+- 无 sampling/attestation 时行为与 Review 2a 相同，仍为 `multi-perspective`。
+
 ## 需求拷问（grillme，1.1.0+）
 
 标准 M/L 的 `requirements` **步骤内**可含强制 grill 子流程（**不**新增 route step / MCP tool / HUMAN GATE）：

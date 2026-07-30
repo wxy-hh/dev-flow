@@ -358,11 +358,11 @@ interface ReviewFinding {
 
 **步骤：**
 
-- [ ] 写相同 attestation 重用、调用方自报 verified 和未知宿主测试。
-- [ ] 实现 attestation validator 与投影。
-- [ ] 运行 2a 全量回归，确认无 sampling/attestation 时仍可按 `multi-perspective` 工作。
-- [ ] 运行全量测试、构建与 `git diff --check`。
-- [ ] 提交：`feat(dev-flow): attest review agent provenance`
+- [x] 写相同 attestation 重用、调用方自报 verified 和未知宿主测试。
+- [x] 实现 attestation validator 与投影。
+- [x] 运行 2a 全量回归，确认无 sampling/attestation 时仍可按 `multi-perspective` 工作。
+- [x] 运行全量测试、构建与 `git diff --check`。
+- [x] 提交：`feat(dev-flow): attest review agent provenance`
 
 ## 完成条件
 

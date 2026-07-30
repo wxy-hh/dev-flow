@@ -62,6 +62,8 @@ export interface ReviewJob {
     resolutions: ReviewFindingResolutionInput[];
     submittedAt: string;
     samplingProvenance?: ReviewSamplingProvenance;
+    /** Ordinary host subagent proof; never elevates to multi-agent-verified alone. */
+    attestation?: ReviewAgentAttestation;
   };
 }
 
@@ -81,6 +83,27 @@ export interface ReviewSamplingProvenance {
   issuedAt: string;
   completedAt: string;
 }
+
+/** Persisted host subagent proof. Callers cannot write assuranceLevel or verified. */
+export interface ReviewAgentAttestation {
+  host: "claude" | "codex";
+  agentId: string;
+  issuedAt: string;
+  raw: string;
+  rawSha256: string;
+  acceptedAt: string;
+}
+
+/** Future trusted hosts plug in here; the default verifier never attests verified. */
+export interface ReviewIdentityVerifier {
+  verify(attestation: ReviewAgentAttestation): { trusted: boolean };
+}
+
+export const defaultReviewIdentityVerifier: ReviewIdentityVerifier = {
+  verify: () => ({ trusted: false }),
+};
+
+export type ReviewEvidenceSource = "role-jobs" | "server-sampling" | "host-attestation";
 
 export type ReviewFindingDisposition =
   | { kind: "resolved-in-successor"; successorBatchId: string; resolutionJobId: string; resolvedAt: string }
@@ -116,11 +139,60 @@ export interface ReviewLedger {
   summary: ReviewSummary;
 }
 
-/** Only persisted, successful server-issued sampling provenance can raise assurance. */
-export function assuranceForReviewBatch(batch: Pick<ReviewBatch, "jobs">): ReviewAssurance {
+/**
+ * Derive assurance only from persisted Core evidence.
+ * Ladder: multi-agent-verified (trusted verifier only) >
+ * multi-agent-attested (≥2 jobs, distinct agentId + raw) >
+ * independent-sampling (≥2 jobs, distinct sampling request hashes) >
+ * multi-perspective.
+ */
+export function assuranceForReviewBatch(
+  batch: Pick<ReviewBatch, "jobs">,
+  verifier: ReviewIdentityVerifier = defaultReviewIdentityVerifier,
+): ReviewAssurance {
+  const attested = batch.jobs.filter((job) => job.status === "submitted" && job.submission?.attestation);
+  const trusted = attested.filter((job) => verifier.verify(job.submission!.attestation!).trusted);
+  const trustedAgents = new Set(trusted.map((job) => job.submission!.attestation!.agentId));
+  const trustedRaws = new Set(trusted.map((job) => job.submission!.attestation!.rawSha256));
+  if (trusted.length >= 2 && trustedAgents.size >= 2 && trustedRaws.size >= 2) return "multi-agent-verified";
+
+  const agentIds = new Set(attested.map((job) => job.submission!.attestation!.agentId));
+  const rawHashes = new Set(attested.map((job) => job.submission!.attestation!.rawSha256));
+  if (attested.length >= 2 && agentIds.size >= 2 && rawHashes.size >= 2) return "multi-agent-attested";
+
   const sampled = batch.jobs.filter((job) => job.status === "submitted" && job.submission?.samplingProvenance);
   const hashes = new Set(sampled.map((job) => job.submission!.samplingProvenance!.requestSha256));
-  return sampled.length >= 2 && hashes.size >= 2 ? "independent-sampling" : "multi-perspective";
+  if (sampled.length >= 2 && hashes.size >= 2) return "independent-sampling";
+  return "multi-perspective";
+}
+
+/** Honest projection labels for which evidence classes contributed. */
+export function evidenceSourcesForReviewBatch(batch: Pick<ReviewBatch, "jobs"> | undefined): ReviewEvidenceSource[] {
+  if (!batch) return [];
+  const sources: ReviewEvidenceSource[] = [];
+  if (batch.jobs.some((job) => job.status === "submitted")) sources.push("role-jobs");
+  if (batch.jobs.some((job) => job.submission?.samplingProvenance)) sources.push("server-sampling");
+  if (batch.jobs.some((job) => job.submission?.attestation)) sources.push("host-attestation");
+  return sources;
+}
+
+/** Parse host attestation input. Rejects verified/assurance self-reports. */
+export function parseHostAttestation(value: unknown): Omit<ReviewAgentAttestation, "rawSha256" | "acceptedAt"> {
+  if (!isRecord(value)
+    || Object.keys(value).some((key) => !["host", "agentId", "issuedAt", "raw"].includes(key))
+    || (value.host !== "claude" && value.host !== "codex")
+    || typeof value.agentId !== "string" || !value.agentId.trim()
+    || typeof value.issuedAt !== "string" || !value.issuedAt.trim()
+    || Number.isNaN(Date.parse(value.issuedAt))
+    || typeof value.raw !== "string" || !value.raw.trim()) {
+    protocolInvalid("host attestation has an invalid shape");
+  }
+  return {
+    host: value.host,
+    agentId: value.agentId.trim(),
+    issuedAt: value.issuedAt,
+    raw: value.raw,
+  };
 }
 
 const reviewRoles = [

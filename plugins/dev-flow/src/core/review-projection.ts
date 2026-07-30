@@ -2,8 +2,8 @@ import { createHash, randomUUID } from "node:crypto";
 import { mkdir, open, readFile, rename } from "node:fs/promises";
 import path from "node:path";
 import { reviewEnforcementRequired } from "../policy/contract.js";
-import { deriveReviewJobRequirements } from "../policy/review.js";
-import type { ReviewBatch, ReviewFindingDisposition, ReviewJob, ReviewLedger } from "../policy/review.js";
+import { deriveReviewJobRequirements, evidenceSourcesForReviewBatch } from "../policy/review.js";
+import type { ReviewBatch, ReviewEvidenceSource, ReviewFindingDisposition, ReviewJob, ReviewLedger } from "../policy/review.js";
 import type { ReviewFinding } from "../policy/types.js";
 import { DevFlowError } from "./errors.js";
 import { readReviewLedger } from "./review-store.js";
@@ -34,7 +34,12 @@ export interface ReviewProjection {
   featureId: string;
   route: string;
   reviewPointer: { path: string; sha256: string; revision: number };
-  assurance: { level?: string; evidenceType: "core-derived-review-batch" };
+  assurance: {
+    level?: string;
+    evidenceType: "core-derived-review-batch";
+    /** Honest labels for which evidence classes contributed; never invent verified. */
+    evidenceSources: ReviewEvidenceSource[];
+  };
   batch: {
     status: "not-created" | "current" | "stale";
     batchId?: string;
@@ -123,7 +128,11 @@ export function reviewProjectionModel(state: FeatureState, ledger: ReviewLedger)
       sha256: state.review!.sha256,
       revision: state.review!.revision,
     },
-    assurance: { ...(batch ? { level: batch.assuranceLevel } : {}), evidenceType: "core-derived-review-batch" },
+    assurance: {
+      ...(batch ? { level: batch.assuranceLevel } : {}),
+      evidenceType: "core-derived-review-batch",
+      evidenceSources: evidenceSourcesForReviewBatch(batch),
+    },
     batch: {
       status: batch ? batch.validity : "not-created",
       ...(batch ? {
@@ -166,6 +175,15 @@ export function renderReviewProjection(model: ReviewProjection): string {
     `- Batch status: ${batch.status}`,
     `- Evidence type: ${model.assurance.evidenceType}`,
     ...(model.assurance.level ? [`- Assurance: ${model.assurance.level}`] : []),
+    ...(model.assurance.evidenceSources.length
+      ? [`- Evidence sources: ${model.assurance.evidenceSources.join(", ")}`]
+      : []),
+    ...(model.assurance.level === "multi-agent-attested"
+      ? ["- Note: multi-agent-attested is host subagent proof, not multi-agent-verified identity."]
+      : []),
+    ...(model.assurance.level === "independent-sampling"
+      ? ["- Note: independent-sampling is server sampling provenance, not multi-agent identity."]
+      : []),
     ...(batch.batchId ? [`- Batch ID: ${batch.batchId}`, `- Basis hash: ${batch.basisHash}`, `- Diagnostic execution: ${batch.executionMode}`, `- Progress: ${batch.progress}`] : []),
     "",
     "## Required Review Jobs",

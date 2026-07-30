@@ -397,6 +397,27 @@ async function readTraceability(root, state) {
 import { createHash as createHash2, randomUUID as randomUUID2 } from "node:crypto";
 import { mkdir as mkdir2, open as open2, readFile as readFile2, readdir as readdir2, rename as rename2 } from "node:fs/promises";
 import path3 from "node:path";
+
+// plugins/dev-flow/src/policy/review.ts
+var defaultReviewIdentityVerifier = {
+  verify: () => ({ trusted: false })
+};
+function assuranceForReviewBatch(batch, verifier = defaultReviewIdentityVerifier) {
+  const attested = batch.jobs.filter((job) => job.status === "submitted" && job.submission?.attestation);
+  const trusted = attested.filter((job) => verifier.verify(job.submission.attestation).trusted);
+  const trustedAgents = new Set(trusted.map((job) => job.submission.attestation.agentId));
+  const trustedRaws = new Set(trusted.map((job) => job.submission.attestation.rawSha256));
+  if (trusted.length >= 2 && trustedAgents.size >= 2 && trustedRaws.size >= 2) return "multi-agent-verified";
+  const agentIds = new Set(attested.map((job) => job.submission.attestation.agentId));
+  const rawHashes = new Set(attested.map((job) => job.submission.attestation.rawSha256));
+  if (attested.length >= 2 && agentIds.size >= 2 && rawHashes.size >= 2) return "multi-agent-attested";
+  const sampled = batch.jobs.filter((job) => job.status === "submitted" && job.submission?.samplingProvenance);
+  const hashes = new Set(sampled.map((job) => job.submission.samplingProvenance.requestSha256));
+  if (sampled.length >= 2 && hashes.size >= 2) return "independent-sampling";
+  return "multi-perspective";
+}
+
+// plugins/dev-flow/src/core/review-store.ts
 function sortValue(value) {
   if (Array.isArray(value)) return value.map(sortValue);
   if (value && typeof value === "object") {
@@ -424,18 +445,62 @@ function sameSummary2(left, right) {
 function validHash(value) {
   return typeof value === "string" && /^[a-f0-9]{64}$/.test(value);
 }
+function isRecord2(value) {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+function validSamplingAttempt(value) {
+  if (!isRecord2(value) || !validHash(value.requestSha256) || typeof value.issuedAt !== "string" || typeof value.leaseExpiresAt !== "string" || value.status !== "issued" && value.status !== "failed" && value.status !== "submitted") return false;
+  if (value.status === "issued") {
+    return value.completedAt === void 0 && value.payloadSha256 === void 0 && value.failureCode === void 0;
+  }
+  if (typeof value.completedAt !== "string") return false;
+  if (value.status === "failed") {
+    return value.payloadSha256 === void 0 && (value.failureCode === "client-error" || value.failureCode === "timeout" || value.failureCode === "invalid-response" || value.failureCode === "validation-failed");
+  }
+  return validHash(value.payloadSha256) && value.failureCode === void 0;
+}
+function validSamplingAttempts(value, status, submission) {
+  if (value === void 0) return status !== "sampling" && !submission?.samplingProvenance;
+  if (!Array.isArray(value) || !value.length || !value.every(validSamplingAttempt)) return false;
+  const attempts = value;
+  const issued = attempts.filter((attempt) => attempt.status === "issued");
+  if (issued.length > 1 || status === "sampling" !== (issued.length === 1)) return false;
+  if (status === "sampling" && submission) return false;
+  if (status === "sampling") return attempts.every((attempt) => attempt.status === "failed" || attempt.status === "issued");
+  if (status === "pending" || status === "claimed") return attempts.every((attempt) => attempt.status === "failed");
+  if (!submission?.samplingProvenance) return attempts.every((attempt) => attempt.status === "failed");
+  return attempts.every((attempt) => attempt.status === "failed" || attempt.status === "submitted") && attempts.filter((attempt) => attempt.status === "submitted").length === 1 && attempts.some((attempt) => attempt.status === "submitted" && attempt.requestSha256 === submission.samplingProvenance.requestSha256 && attempt.issuedAt === submission.samplingProvenance.issuedAt && attempt.completedAt === submission.samplingProvenance.completedAt && attempt.payloadSha256 === submission.payloadSha256);
+}
+function validAttestation(value) {
+  return isRecord2(value) && (value.host === "claude" || value.host === "codex") && typeof value.agentId === "string" && value.agentId.trim().length > 0 && typeof value.issuedAt === "string" && !Number.isNaN(Date.parse(value.issuedAt)) && typeof value.raw === "string" && value.raw.trim().length > 0 && validHash(value.rawSha256) && typeof value.acceptedAt === "string" && digest2(value.raw) === value.rawSha256;
+}
 function validateBatch(value) {
   if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
   const batch = value;
   if (typeof batch.batchId !== "string" || !batch.batchId || !validHash(batch.basisHash) || !batch.basis || batch.validity !== "current" && batch.validity !== "stale" || batch.progress !== "open" && batch.progress !== "complete" || batch.executionMode !== "isolated-sequential" && batch.executionMode !== "mcp-sampling" && batch.executionMode !== "native-subagent" || batch.assuranceLevel !== "multi-perspective" && batch.assuranceLevel !== "independent-sampling" && batch.assuranceLevel !== "multi-agent-attested" && batch.assuranceLevel !== "multi-agent-verified" || !Array.isArray(batch.jobs)) return false;
   const ids = /* @__PURE__ */ new Set();
+  const attestationRaws = /* @__PURE__ */ new Set();
   return batch.jobs.every((job) => {
-    if (!job || typeof job !== "object" || typeof job.jobId !== "string" || !job.jobId || ids.has(job.jobId) || typeof job.role !== "string" || job.reviewDepth !== "standard" && job.reviewDepth !== "full" || !validHash(job.packageSha256) || job.status !== "pending" && job.status !== "claimed" && job.status !== "submitted") return false;
+    if (!job || typeof job !== "object" || typeof job.jobId !== "string" || !job.jobId || ids.has(job.jobId) || typeof job.role !== "string" || job.reviewDepth !== "standard" && job.reviewDepth !== "full" || !validHash(job.packageSha256) || job.status !== "pending" && job.status !== "claimed" && job.status !== "sampling" && job.status !== "submitted") return false;
     ids.add(job.jobId);
+    if (!validSamplingAttempts(job.samplingAttempts, job.status, job.submission)) return false;
     if (job.status === "pending") return !job.claim && !job.submission;
-    if (!job.claim || !validHash(job.claim.requestSha256) || typeof job.claim.claimedAt !== "string" || typeof job.claim.leaseExpiresAt !== "string") return false;
-    if (job.status === "claimed") return !job.submission;
-    return !!job.submission && validHash(job.submission.payloadSha256) && typeof job.submission.coverageSummary === "string" && Array.isArray(job.submission.findings) && typeof job.submission.submittedAt === "string";
+    if (job.status === "sampling") return !job.claim && !job.submission?.attestation;
+    if (job.status === "claimed") {
+      return !job.submission && !!job.claim && validHash(job.claim.requestSha256) && typeof job.claim.claimedAt === "string" && typeof job.claim.leaseExpiresAt === "string";
+    }
+    const sampled = Boolean(job.submission?.samplingProvenance);
+    const attested = Boolean(job.submission?.attestation);
+    if (sampled && attested) return false;
+    if (!sampled && (!job.claim || !validHash(job.claim.requestSha256) || typeof job.claim.claimedAt !== "string" || typeof job.claim.leaseExpiresAt !== "string")) return false;
+    if (sampled && job.claim) return false;
+    if (!job.submission || !validHash(job.submission.payloadSha256) || typeof job.submission.coverageSummary !== "string" || !Array.isArray(job.submission.findings) || typeof job.submission.submittedAt !== "string") return false;
+    if (attested) {
+      if (!validAttestation(job.submission.attestation)) return false;
+      if (attestationRaws.has(job.submission.attestation.rawSha256)) return false;
+      attestationRaws.add(job.submission.attestation.rawSha256);
+    }
+    return true;
   });
 }
 function validateLedger(value) {
@@ -449,7 +514,27 @@ function validateLedger(value) {
     if (batchIds.has(batch.batchId) || batch.basis.featureId !== ledger.featureId || digest2(canonicalReviewValueJson(batch.basis)) !== batch.basisHash || batch.progress === "complete" !== batch.jobs.every((job) => job.status === "submitted")) {
       integrity2("review snapshot batch is inconsistent");
     }
+    if (batch.assuranceLevel !== assuranceForReviewBatch(batch)) {
+      integrity2("review batch assurance is not derived from persisted provenance", { batchId: batch.batchId });
+    }
+    if (batch.executionMode === "isolated-sequential" && batch.assuranceLevel !== "multi-perspective") {
+      integrity2("isolated review batch assurance is not Core-derived", { batchId: batch.batchId });
+    }
     batchIds.add(batch.batchId);
+  }
+  const attestationRaws = /* @__PURE__ */ new Set();
+  for (const batch of ledger.batches) {
+    for (const job of batch.jobs) {
+      const rawSha256 = job.submission?.attestation?.rawSha256;
+      if (!rawSha256) continue;
+      if (attestationRaws.has(rawSha256)) {
+        integrity2("host attestation raw hash is reused across the review ledger", {
+          batchId: batch.batchId,
+          jobId: job.jobId
+        });
+      }
+      attestationRaws.add(rawSha256);
+    }
   }
   if (!sameSummary2(ledger.summary, reviewSummary(ledger.batches))) integrity2("review snapshot summary is inconsistent");
 }
