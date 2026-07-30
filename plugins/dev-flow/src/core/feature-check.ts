@@ -1,4 +1,4 @@
-import { routeDefinitionForFeature } from "../policy/contract.js";
+import { routeDefinitionForFeature, checkpointsEnforcementRequired } from "../policy/contract.js";
 import {
   missingRequiredEvidence,
   requiredEvidenceForStep,
@@ -17,6 +17,7 @@ import { assertRequirementsGrillSatisfied } from "./requirements-grill.js";
 import { mutate, readProjectConfig, readState, type FeatureState } from "./state-store.js";
 import { assertCurrentStep } from "./step-order.js";
 import { assertTraceGateCurrent } from "./traceability-gates.js";
+import { readTraceability } from "./traceability-store.js";
 import { invalidateStaleVerification } from "./verification.js";
 import { assertReviewComplete } from "./review-jobs.js";
 
@@ -59,6 +60,9 @@ export async function recordStep(
     assertCurrentStep(state, step);
     await assertRequirementsGrillSatisfied(root, id, state);
     await assertTraceGateCurrent(root, state, step);
+    if (step === "implementation" && checkpointsEnforcementRequired(state.route, state.workflowCapabilities)) {
+      await assertImplementationUnitsComplete(root, state);
+    }
     const required = requiredEvidenceForStep(
       state.route,
       state.classification.riskLabels,
@@ -73,6 +77,20 @@ export async function recordStep(
     }
     state.steps[step] = { status: "satisfied", evidence: normalizedEvidence };
   });
+}
+
+async function assertImplementationUnitsComplete(root: string, state: FeatureState): Promise<void> {
+  const ledger = await readTraceability(root, state);
+  const required = Object.values(ledger.nodes).filter((node) => node.kind === "rollback" && node.status === "current");
+  const units = new Map((state.implementationUnits ?? []).map((unit) => [unit.unitId, unit]));
+  const incomplete = required
+    .map((node) => node.id as `RU-${string}`)
+    .filter((nodeId) => units.get(nodeId)?.status !== "checkpointed");
+  if (incomplete.length) {
+    throw new DevFlowError("IMPLEMENTATION_UNITS_INCOMPLETE", "every rollback unit must be checkpointed before recording implementation", {
+      incomplete,
+    });
+  }
 }
 
 async function invalidateBeforeFinalClaim(root: string, id: string, expectedRevision: number): Promise<void> {

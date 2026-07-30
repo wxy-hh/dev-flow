@@ -138,3 +138,13 @@ export function reviewEnforcementRequired(
   return normalizeWorkflowCapabilities(capabilities).review === 1
     && (route === "standard-m" || route === "standard-l");
 }
+
+export function checkpointsEnforcementRequired(
+  route: RouteId,
+  capabilities: WorkflowCapabilities | undefined,
+): boolean {
+  // Checkpoints build on the trace rollback graph: enforcement requires the
+  // trace capability and a standard route, just like traceEnforcementRequired.
+  return normalizeWorkflowCapabilities(capabilities).checkpoints === 1
+    && traceEnforcementRequired(route, capabilities);
+}

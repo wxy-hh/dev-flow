@@ -53,7 +53,7 @@ interface ImplementationUnitState {
 - [x] 写 standard M/L 的同构 `RollbackNode` 都能生成 `ImplementationUnitState` 的测试。
 - [x] 运行 `node --test tests/unit/rollback-policy.test.mjs`，确认红灯。
 - [x] 添加状态和 checkpoint Schema，不复制 RU interface。
-- [ ] 提交：`feat(dev-flow): define implementation checkpoint schema`
+- [x] 提交：`feat(dev-flow): define implementation checkpoint schema`
 
 ### 任务 2：实现单元生命周期，并在核心层和宿主钩子层限制写入
 
@@ -87,13 +87,13 @@ checkpointed → rolled_back（仅第 4A）
 
 **步骤：**
 
-- [ ] 写依赖未完成、双 active、basis stale、无 active RU 写入和越界写入测试。
-- [ ] 写直接调用 Core 的旁路测试，证明规则不依赖 implement Skill。
-- [ ] 写阶段 3 发布前已启动的 `checkpoints: 0` feature 在升级后仍可不创建 unit 状态完成 implementation 的测试。
-- [ ] 写阶段 3 发布后新 feature 固定 `checkpoints: 1`，旧 feature capability 不变且不可隐式升级的测试。
-- [ ] 运行相关单元测试，确认红灯。
-- [ ] 实现 `beginImplementationUnit`、状态转换与 Hook policy。
-- [ ] 验证 legacy feature 与 approval 前写入规则不回归。
+- [x] 写依赖未完成、双 active、basis stale、无 active RU 写入和越界写入测试。
+- [x] 写直接调用 Core 的旁路测试，证明规则不依赖 implement Skill。
+- [x] 写阶段 3 发布前已启动的 `checkpoints: 0` feature 在升级后仍可不创建 unit 状态完成 implementation 的测试。
+- [x] 写阶段 3 发布后新 feature 固定 `checkpoints: 1`，旧 feature capability 不变且不可隐式升级的测试。
+- [x] 运行相关单元测试，确认红灯。
+- [x] 实现 `beginImplementationUnit`、状态转换与 Hook policy。
+- [x] 验证 legacy feature 与 approval 前写入规则不回归。
 - [ ] 提交：`feat(dev-flow): enforce implementation unit lifecycle`
 
 ### 任务 3：创建内容寻址检查点

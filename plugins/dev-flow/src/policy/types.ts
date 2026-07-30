@@ -29,7 +29,7 @@ export const ZERO_WORKFLOW_CAPABILITIES: WorkflowCapabilities = Object.freeze({
 export const SUPPORTED_WORKFLOW_CAPABILITIES: WorkflowCapabilities = Object.freeze({
   trace: 1,
   review: 1,
-  checkpoints: 0,
+  checkpoints: 1,
   rollbackExecution: 0,
 });
 

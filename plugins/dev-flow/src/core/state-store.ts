@@ -7,6 +7,7 @@ import { selectRoute } from "../policy/route.js";
 import { SUPPORTED_WORKFLOW_CAPABILITIES, type Classification, type ClassificationInput, type RouteId, type WorkflowCapabilities } from "../policy/types.js";
 import type { TraceabilityPointer } from "../policy/traceability.js";
 import type { ReviewPointer } from "../policy/review.js";
+import type { ImplementationUnitState } from "../policy/rollback.js";
 import { DevFlowError } from "./errors.js";
 import { captureDeliveryBaseline, type DeliveryBaseline, type DeliverySnapshot } from "./delivery-snapshot.js";
 import { fingerprintProtectedRoots } from "./fingerprint.js";
@@ -30,12 +31,41 @@ export interface FeatureState {
   traceability?: TraceabilityPointer;
   /** Immutable review snapshot pointer; legacy and non-enforced routes may omit it. */
   review?: ReviewPointer;
+  /** Runtime lifecycle of rollback units; absent until the first begin and on legacy features. */
+  implementationUnits?: ImplementationUnitState[];
   featureCheck: { passed?: boolean; fingerprint?: string }; businessFingerprint?: string; startBusinessFingerprint?: string;
   deliveryBaseline?: DeliveryBaseline; deliverySnapshot?: DeliverySnapshot;
   blockingFindings: Array<{ blocking: boolean; message: string }>;
   logicComplete: boolean; lastUpdatedBy: { host: "claude" | "codex"; pluginVersion: string };
 }
 const lifecycles = new Set<Lifecycle>(["active", "paused", "finalized", "abandoned"]);
+const unitStatuses = new Set(["pending", "active", "verified", "checkpointed", "rolled_back"]);
+function validateImplementationUnits(units: unknown): asserts units is ImplementationUnitState[] {
+  if (!Array.isArray(units)) throw new DevFlowError("INVALID_STATE_SCHEMA", "implementationUnits must be an array");
+  const ids = new Set<string>();
+  const checkpoints = new Set<string>();
+  for (const value of units) {
+    const unit = value as Partial<ImplementationUnitState> | undefined;
+    if (!unit || typeof unit !== "object" || Array.isArray(unit)
+      || typeof unit.unitId !== "string" || !/^RU-[0-9]{3,}$/.test(unit.unitId)
+      || typeof unit.status !== "string" || !unitStatuses.has(unit.status)
+      || typeof unit.basisHash !== "string" || !/^[a-f0-9]{64}$/.test(unit.basisHash)
+      || (unit.startedFingerprint !== undefined && (typeof unit.startedFingerprint !== "string" || !/^[a-f0-9]{64}$/.test(unit.startedFingerprint)))
+      || (unit.checkpointId !== undefined && typeof unit.checkpointId !== "string")) {
+      throw new DevFlowError("INVALID_STATE_SCHEMA", "implementation unit state is invalid");
+    }
+    const started = unit.startedFingerprint !== undefined;
+    const checkpointed = unit.checkpointId !== undefined;
+    const consistent = (unit.status === "pending" && !started && !checkpointed)
+      || ((unit.status === "active" || unit.status === "verified") && started && !checkpointed)
+      || ((unit.status === "checkpointed" || unit.status === "rolled_back") && started && checkpointed);
+    if (!consistent) throw new DevFlowError("INVALID_STATE_SCHEMA", "implementation unit status is inconsistent with its fields");
+    if (ids.has(unit.unitId)) throw new DevFlowError("INVALID_STATE_SCHEMA", "implementation units duplicate a rollback unit");
+    if (checkpointed && checkpoints.has(unit.checkpointId!)) throw new DevFlowError("INVALID_STATE_SCHEMA", "implementation units duplicate a checkpoint id");
+    ids.add(unit.unitId);
+    if (checkpointed) checkpoints.add(unit.checkpointId!);
+  }
+}
 export function validateFeatureState(value: unknown): asserts value is FeatureState {
   const state = value as Partial<FeatureState>;
   if (state?.schemaVersion !== 1) throw new DevFlowError("UNSUPPORTED_STATE_SCHEMA", "only state schema v1 is supported");
@@ -74,6 +104,7 @@ export function validateFeatureState(value: unknown): asserts value is FeatureSt
   if (reviewEnforcementRequired(state.route as RouteId, state.workflowCapabilities) && !state.review) {
     throw new DevFlowError("INVALID_STATE_SCHEMA", "review-enabled standard feature requires a review pointer");
   }
+  if (state.implementationUnits !== undefined) validateImplementationUnits(state.implementationUnits);
 }
 
 export function validateScopeInput(scope: unknown): { inScope: string[]; outOfScope: string[] } {

@@ -300,6 +300,6 @@ test("checkpoint schema closes unit status, file change kinds, and manifest shap
   assert.equal(schema.$defs.checkpointManifest.properties.sequence.minimum, 1);
 });
 
-test("Task 1 keeps the checkpoints capability unreleased", () => {
-  assert.equal(types.SUPPORTED_WORKFLOW_CAPABILITIES.checkpoints, 0);
+test("Task 2 releases checkpoints:1 only for features started after phase 3", () => {
+  assert.equal(types.SUPPORTED_WORKFLOW_CAPABILITIES.checkpoints, 1);
 });

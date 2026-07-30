@@ -57,6 +57,21 @@
           }
         }
       }
+    },
+    "implementationUnits": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["unitId", "status", "basisHash"],
+        "properties": {
+          "unitId": { "type": "string", "pattern": "^RU-[0-9]{3,}$" },
+          "status": { "enum": ["pending", "active", "verified", "checkpointed", "rolled_back"] },
+          "basisHash": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+          "startedFingerprint": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+          "checkpointId": { "type": "string", "minLength": 1 }
+        }
+      }
     }
   }
 }

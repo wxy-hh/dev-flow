@@ -89,6 +89,57 @@ const ROLLBACK_ID = /^RU-[0-9]{3,}$/;
 const SHA256 = /^[0-9a-f]{64}$/;
 const FILE_MODE = /^[0-7]{3,4}$/;
 
+/**
+ * Single scope-matching semantics for every fileScope consumer (Hook scope
+ * gate, checkpoint verification, rollback preview). A pattern with glob
+ * characters is matched segment by segment (** crosses segments); a pattern
+ * without glob characters is a bare prefix that covers an exact file or an
+ * entire subtree. Unsafe patterns never match (fail closed).
+ */
+export function pathWithinFileScope(path: string, fileScope: string[]): boolean {
+  return fileScope.some((pattern) => scopePatternMatches(pattern, path));
+}
+
+function scopePatternMatches(pattern: string, target: string): boolean {
+  if (typeof pattern !== "string" || !pattern.trim() || typeof target !== "string" || !target.trim()) return false;
+  if (pattern.includes("\\") || target.includes("\\")) return false;
+  if (pattern.startsWith("/") || target.startsWith("/")) return false;
+  const segments = pattern.split("/");
+  if (segments.some((segment) => segment === "..")) return false;
+  const parts = target.split("/");
+  if (parts.some((part) => part === "..")) return false;
+  if (/[*?]/.test(pattern)) return globSegmentsMatch(segments, parts);
+  if (pattern === ".") return true;
+  return target === pattern || target.startsWith(`${pattern}/`);
+}
+
+function globSegmentsMatch(pattern: string[], target: string[]): boolean {
+  if (pattern.length === 0) return target.length === 0;
+  const [head, ...rest] = pattern;
+  if (head === "**") {
+    if (rest.length === 0) return true;
+    for (let skip = 0; skip <= target.length; skip += 1) {
+      if (globSegmentsMatch(rest, target.slice(skip))) return true;
+    }
+    return false;
+  }
+  if (target.length === 0 || !globSegmentMatches(head, target[0])) return false;
+  return globSegmentsMatch(rest, target.slice(1));
+}
+
+function globSegmentMatches(pattern: string, segment: string): boolean {
+  if (pattern === "") return segment === "";
+  const [head, ...rest] = pattern;
+  if (head === "*") {
+    for (let take = 0; take <= segment.length; take += 1) {
+      if (globSegmentMatches(rest.join(""), segment.slice(take))) return true;
+    }
+    return false;
+  }
+  if (head === "?") return segment.length > 0 && globSegmentMatches(rest.join(""), segment.slice(1));
+  return segment.startsWith(head) && globSegmentMatches(rest.join(""), segment.slice(head.length));
+}
+
 function invalid(message: string): never {
   throw new Error(`ROLLBACK_PROTOCOL_INVALID: ${message}`);
 }

@@ -16,6 +16,9 @@ const next = await loadSource("plugins/dev-flow/src/core/next.ts");
 const reviewJobs = await loadSource("plugins/dev-flow/src/core/review-jobs.ts");
 const reviewStore = await loadSource("plugins/dev-flow/src/core/review-store.ts");
 const projection = await loadSource("plugins/dev-flow/src/core/review-projection.ts");
+const units = await loadSource("plugins/dev-flow/src/core/implementation-units.ts");
+const traceStore = await loadSource("plugins/dev-flow/src/core/traceability-store.ts");
+const contract = await loadSource("plugins/dev-flow/src/policy/contract.ts");
 const evidencePolicy = await loadSource("plugins/dev-flow/src/policy/evidence.ts");
 const run = promisify(execFile);
 
@@ -230,9 +233,36 @@ async function driveUntil(root, featureId, state, options = {}) {
       );
       if (action.step === "implementation") {
         const files = options.implementationFiles ?? { "src/main.js": "export const m = 1;\n" };
-        for (const [file, contents] of Object.entries(files)) {
-          await mkdir(path.dirname(path.join(root, file)), { recursive: true });
-          await writeFile(path.join(root, file), contents);
+        if (contract.checkpointsEnforcementRequired(current.route, current.workflowCapabilities)) {
+          // Phase-3 flow: begin each rollback unit in dependency order. Until
+          // Task 3 ships real checkpoints, completed units are stamped in state.
+          const ledger = await traceStore.readTraceability(root, current);
+          const nodes = Object.values(ledger.nodes).filter((node) => node.kind === "rollback" && node.status === "current");
+          const done = new Set();
+          let filesWritten = false;
+          while (done.size < nodes.length) {
+            const ready = nodes.find((node) => !done.has(node.id) && node.dependsOn.every((dep) => done.has(dep)));
+            if (!ready) throw new Error("route-flow fixture has a rollback dependency cycle");
+            current = await units.beginImplementationUnit(root, featureId, current.revision, ready.id);
+            if (!filesWritten) {
+              for (const [file, contents] of Object.entries(files)) {
+                await mkdir(path.dirname(path.join(root, file)), { recursive: true });
+                await writeFile(path.join(root, file), contents);
+              }
+              filesWritten = true;
+            }
+            current = await store.mutate(root, featureId, current.revision, "route-flow-checkpoint", (draft) => {
+              const unit = draft.implementationUnits.find((unit) => unit.unitId === ready.id);
+              unit.status = "checkpointed";
+              unit.checkpointId = `CP-${ready.id}`;
+            });
+            done.add(ready.id);
+          }
+        } else {
+          for (const [file, contents] of Object.entries(files)) {
+            await mkdir(path.dirname(path.join(root, file)), { recursive: true });
+            await writeFile(path.join(root, file), contents);
+          }
         }
         current = await checks.recordStep(root, featureId, current.revision, "implementation", {
           ...required.fields,

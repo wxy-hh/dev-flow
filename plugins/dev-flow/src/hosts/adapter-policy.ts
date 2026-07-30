@@ -3,6 +3,7 @@ import { classifyGitCommand } from "../core/git-policy.js";
 import { readActive, readProjectConfig, readRecoveryTransaction, readState, type FeatureState } from "../core/state-store.js";
 import { readTraceability } from "../core/traceability-store.js";
 import { readReviewLedger } from "../core/review-store.js";
+import { implementationUnitWriteBlock } from "../core/implementation-units.js";
 
 /** Host adapters never mint review attestations or assurance; those enter only via MCP/Core. */
 
@@ -15,6 +16,8 @@ export interface HookEvent {
 export type PreToolBlockCode =
   | "DEV_FLOW_GIT_GUARD"
   | "DEV_FLOW_IMPLEMENTATION_APPROVAL_REQUIRED"
+  | "DEV_FLOW_IMPLEMENTATION_UNIT_REQUIRED"
+  | "DEV_FLOW_IMPLEMENTATION_UNIT_OUT_OF_SCOPE"
   | "DEV_FLOW_STATE_MUTATION_FORBIDDEN"
   | "DEV_FLOW_ARTIFACT_NOT_REGISTERED"
   | "DEV_FLOW_WORKFLOW_STATE_UNREADABLE"
@@ -228,6 +231,9 @@ interface ActiveWorkflow {
   approvalConfirmed: boolean;
   allowedArtifacts: Set<string>;
   protectedRoots: string[];
+  /** Read-only Core inputs for the shared implementation-unit judgment. */
+  state?: FeatureState;
+  ledger?: Awaited<ReturnType<typeof readTraceability>>;
 }
 
 type UnreadableWorkflow = { kind: "unreadable"; reason: string; protectedRoots?: string[]; blockAllWrites: boolean };
@@ -261,10 +267,11 @@ async function loadActiveWorkflow(root: string): Promise<
   catch { return { kind: "unreadable", reason: "project.json invalid", blockAllWrites: true }; }
 
   let state: FeatureState;
+  let ledger: Awaited<ReturnType<typeof readTraceability>> | undefined;
   try {
     state = await readState(root, active.featureId);
     if (state.lifecycle !== "active" || active.revision !== state.revision) return { kind: "unreadable", reason: "active pointer does not match active state", protectedRoots: project.protectedRoots, blockAllWrites: false };
-    if (state.traceability) await readTraceability(root, state);
+    if (state.traceability) ledger = await readTraceability(root, state);
     if (state.review) await readReviewLedger(root, state);
   } catch { return { kind: "unreadable", reason: "state invalid", protectedRoots: project.protectedRoots, blockAllWrites: false }; }
 
@@ -281,15 +288,19 @@ async function loadActiveWorkflow(root: string): Promise<
     allowedArtifacts.add(relative);
   }
 
+  const approvalConfirmed = (state.humanGates.implementation_approval as { status?: string } | undefined)?.status === "confirmed";
+
   return {
     kind: "ready",
     workflow: {
       featureId: active.featureId,
       route: state.route,
       logicComplete: state.logicComplete,
-      approvalConfirmed: (state.humanGates.implementation_approval as { status?: string } | undefined)?.status === "confirmed",
+      approvalConfirmed,
       allowedArtifacts,
       protectedRoots: project.protectedRoots,
+      state,
+      ledger,
     },
   };
 }
@@ -329,6 +340,24 @@ function classifyTarget(
       code: "DEV_FLOW_IMPLEMENTATION_APPROVAL_REQUIRED",
       recoveryHint: "Target is under a protected root; finish the route and wait for implementation approval",
     };
+  }
+  if (workflow.state && isProtected(root, target, workflow.protectedRoots)) {
+    // Hooks delegate to the one Core judgment; they only map its codes.
+    const relative = projectRelative(root, target)!;
+    const block = implementationUnitWriteBlock(workflow.state, workflow.ledger, relative);
+    if (block?.code === "IMPLEMENTATION_UNIT_REQUIRED") {
+      return {
+        code: "DEV_FLOW_IMPLEMENTATION_UNIT_REQUIRED",
+        recoveryHint: "Begin the next rollback unit via dev_flow_begin_implementation_unit before writing protected files",
+      };
+    }
+    if (block?.code === "IMPLEMENTATION_UNIT_OUT_OF_SCOPE") {
+      const scope = (block.details.fileScope as string[] | undefined) ?? [];
+      return {
+        code: "DEV_FLOW_IMPLEMENTATION_UNIT_OUT_OF_SCOPE",
+        recoveryHint: `Active rollback unit ${block.details.unitId} covers only: ${scope.join(", ") || "(no current scope)"}`,
+      };
+    }
   }
   return undefined;
 }

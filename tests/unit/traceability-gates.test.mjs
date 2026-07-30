@@ -63,6 +63,9 @@ async function standardThroughVerification(root) {
   state = await completePlanReview(root, state);
   state = await artifacts.scaffoldArtifact(root, "f", state.revision, "status");
   state = await confirmImplementation(root, state);
+  state = await store.mutate(root, "f", state.revision, "test-checkpointed-units", (draft) => {
+    draft.implementationUnits = [{ unitId: "RU-001", status: "checkpointed", basisHash: "a".repeat(64), startedFingerprint: "b".repeat(64), checkpointId: "CP-001" }];
+  });
   state = await checks.recordStep(root, "f", state.revision, "implementation", { files: [] });
   assert.deepEqual(state.steps.implementation.evidence, { files: [] });
   state = await checks.recordStep(root, "f", state.revision, "code_review", { reviewType: "code" });
