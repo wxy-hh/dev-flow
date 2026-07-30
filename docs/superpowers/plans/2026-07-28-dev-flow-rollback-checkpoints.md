@@ -201,7 +201,7 @@ Blob 路径：
 - [x] 更新 implement Skill：begin → 仅改 scope → checkpoint → 下一 RU → 全部完成后 record implementation。
 - [x] 更新 status：显示 active RU、最近 checkpoint、剩余 units 与合法预览目标。
 - [x] 运行 MCP、status 与 Skills 测试。
-- [ ] 提交：`feat(dev-flow): expose rollback readiness workflow`
+- [x] 提交：`feat(dev-flow): expose rollback readiness workflow`
 
 ### 任务 6：保护控制文件并验收第 3 阶段
 
@@ -225,10 +225,10 @@ Blob 路径：
 
 **步骤：**
 
-- [ ] 增加双路线/跨宿主 E2E 与 Hook 负向测试。
-- [ ] 更新中文文档，明确第 3 阶段是“回撤就绪”而非“可执行回撤”。
-- [ ] 运行全量测试、类型检查、构建与 `git diff --check`。
-- [ ] 提交：`feat(dev-flow): complete checkpoint readiness mvp`
+- [x] 增加双路线/跨宿主 E2E 与 Hook 负向测试。
+- [x] 更新中文文档，明确第 3 阶段是”回撤就绪”而非”可执行回撤”。
+- [x] 运行全量测试、类型检查、构建与 `git diff --check`。
+- [x] 提交：`feat(dev-flow): complete checkpoint readiness mvp`
 
 ## 第 4A 阶段：事务回撤与恢复加固
 
