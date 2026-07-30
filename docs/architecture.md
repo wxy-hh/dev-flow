@@ -38,7 +38,7 @@ Dev Flow 以**一个预构建插件包**同时服务 Claude Code 与 Codex CLI�
 - `dev_flow_get_traceability` 只读返回 pointer、ledger、有效摘要及当前步骤 blocker。任何人不得直接编辑 snapshot、pointer 或 state。
 - generated `status` 由 Core scaffold/refresh，禁止人工 record；standard L 不生成 status 文件，应以 `StatusView` 为准。
 - Host Hook 将 `features/<id>/traceability/**` 视为 MCP 控制路径；当前 pointer 损坏时，`.dev-flow` 与 protected roots 均 fail closed。
-- rollback unit 只验证已登记的 Trace 关系；checkpoint 由 `checkpoints: 1` 能力门控发布。当前仅提供只读回撤预览（`dev_flow_preview_rollback`）；可执行回撤与确认门禁属于后续阶段（`rollbackExecution` 为 0）。
+- rollback unit 只验证已登记的 Trace 关系；可执行 rollback / checkpoint 仍未发布。
 
 ## Checkpoints 实现单元生命周期（1.7.0+，`checkpoints: 1`）
 
