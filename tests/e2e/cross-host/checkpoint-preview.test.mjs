@@ -44,31 +44,6 @@ async function writeStatusArtifact(root, featureId, route) {
   return hash(content);
 }
 
-async function advanceToImplementation(root, featureId, state) {
-  state = await store.mutate(root, featureId, state.revision, "xhost-capabilities", (draft) => {
-    draft.workflowCapabilities = { trace: 1, review: 0, checkpoints: 1, rollbackExecution: 0 };
-  });
-  state = await registerTraceFixture({ root, featureId, state, kind: "requirements" });
-  state = await store.mutate(root, featureId, state.revision, "xhost-adv-req", (draft) => {
-    draft.steps.requirements = { status: "satisfied" };
-    draft.steps.requirement_confirmation = { status: "satisfied" };
-  });
-  state = await registerTraceFixture({ root, featureId, state, kind: "implementation-plan" });
-  state = await store.mutate(root, featureId, state.revision, "xhost-adv-plan", (draft) => {
-    draft.steps.implementation_plan = { status: "satisfied" };
-  });
-  state = await registerTraceFixture({ root, featureId, state, kind: "coverage-matrix" });
-  const statusSha = await writeStatusArtifact(root, featureId, state.route);
-  return store.mutate(root, featureId, state.revision, "xhost-adv-final", (draft) => {
-    const defn = contract.routeDefinitionForFeature(draft.route, draft.workflowCapabilities);
-    for (const step of defn.orderedSteps.slice(0, defn.orderedSteps.indexOf("implementation"))) {
-      draft.steps[step] = { status: "satisfied", ...(step === "plan_review" ? { evidence: { reviewType: "plan" } } : {}) };
-    }
-    draft.humanGates.implementation_approval = { status: "confirmed" };
-    draft.artifacts.status = { path: statusArtifactName, sha256: statusSha };
-  });
-}
-
 async function advanceToImplementationTwoClosures(root, featureId, state) {
   state = await store.mutate(root, featureId, state.revision, "xhost-capabilities", (draft) => {
     draft.workflowCapabilities = { trace: 1, review: 0, checkpoints: 1, rollbackExecution: 0 };
@@ -139,9 +114,9 @@ test("Claude checkpoints RU-001; Codex reads same revision and checkpoints RU-00
     state = (await checkpoints.checkpointImplementationUnit(root, "f", state.revision, "RU-002")).state;
     assert.notEqual(state.revision, claudeRevision);
 
-    // Both hosts see the same preview targets.
+    // Both hosts see the same preview targets (the live chain tip is excluded).
     let view = await status.readStatusView(root, "f");
-    assert.deepEqual(view.rollback.validTargets, ["CP-001", "CP-002"]);
+    assert.deepEqual(view.rollback.validTargets, ["CP-001"]);
     assert.deepEqual(view.rollback.chain, [
       { checkpointId: "CP-001", unitId: "RU-001", sequence: 1 },
       { checkpointId: "CP-002", unitId: "RU-002", sequence: 2 },
@@ -168,21 +143,26 @@ test("both hosts see preview targets but no execute-ready gate after checkpointi
   try {
     await mkdir(path.join(root, "src"), { recursive: true });
     await writeFile(path.join(root, "src", "one.ts"), "export const a = 1;\n");
+    await writeFile(path.join(root, "src", "two.ts"), "export const b = 2;\n");
     await store.initProject(root, config);
     initGit(root);
 
     let state = await store.startFeature(root, {
       featureId: "f", host: "claude", level: "M", topology: "local", execution: "standard", requirements: "provided-confirmed",
     });
-    state = await advanceToImplementation(root, "f", state);
+    state = await advanceToImplementationTwoClosures(root, "f", state);
     state = await units.beginImplementationUnit(root, "f", state.revision, "RU-001");
     await writeFile(path.join(root, "src", "one.ts"), "export const a = 2;\n");
     state = (await checkpoints.checkpointImplementationUnit(root, "f", state.revision, "RU-001")).state;
+    state = await units.beginImplementationUnit(root, "f", state.revision, "RU-002");
+    await writeFile(path.join(root, "src", "two.ts"), "export const b = 3;\n");
+    state = (await checkpoints.checkpointImplementationUnit(root, "f", state.revision, "RU-002")).state;
 
-    // Both hosts see preview but not execute gate.
+    // Both hosts see the same preview targets (the live chain tip is excluded)
+    // but no execute gate.
     for (const host of ["claude", "codex"]) {
       const view = await status.readStatusView(root, "f");
-      assert.ok(view.rollback.validTargets.length >= 1, `${host} should see valid targets`);
+      assert.deepEqual(view.rollback.validTargets, ["CP-001"], `${host} should see valid targets`);
       assert.equal(view.implementation.enforced, true);
     }
 

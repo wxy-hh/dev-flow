@@ -73,6 +73,49 @@ test("recovery rejects valid state and missing evidence", async () => {
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 
+test("recovery refuses to move a feature while any rollback journal is open", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "dev-flow-recover-rollback-open-"));
+  try {
+    await store.initProject(root, config);
+    await store.startFeature(root, { featureId: "c", host: "claude", level: "XS", topology: "local" });
+    // Plant an open rollback journal on the active feature (control evidence in-flight).
+    const journal = {
+      schemaVersion: 1,
+      transactionId: "open-txn",
+      featureId: "c",
+      phase: "backing-up",
+      targetCheckpointId: "CP-001",
+      targetUnitId: "RU-001",
+      undoOrder: ["RU-002"],
+      previewBasisHash: "a".repeat(64),
+      stateRevision: 0,
+      backupDirectory: "checkpoints/recovery/open-txn",
+      nextFileIndex: 0,
+      filePlan: [{ action: "delete", path: "src/x" }],
+      verificationAttemptIds: [],
+      projectConfigSha256: "b".repeat(64),
+      startedAt: new Date().toISOString(),
+    };
+    await writeFile(
+      path.join(root, ".dev-flow", "features", "c", "rollback-transaction.json"),
+      `${JSON.stringify(journal, null, 2)}\n`,
+    );
+    const stateFile = path.join(root, ".dev-flow", "features", "c", "state.json");
+    const corrupt = "{broken";
+    await writeFile(stateFile, corrupt);
+    const digest = createHash("sha256").update(corrupt).digest("hex");
+    await assert.rejects(
+      () => store.recoverCorruptFeature(root, {
+        featureId: "c", stateSha256: digest, action: "abandon", reason: "r", userEvidence: "e", host: "claude",
+      }),
+      (error) => error.code === "ROLLBACK_TRANSACTION_OPEN",
+    );
+    // Evidence stays put.
+    await access(path.join(root, ".dev-flow", "features", "c", "rollback-transaction.json"));
+    await access(stateFile);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
 test("open recovery journal resumes safely and blocks new starts", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "dev-flow-recover-resume-"));
   try {

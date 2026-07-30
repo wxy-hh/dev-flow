@@ -280,7 +280,8 @@ test("status exposes unit lifecycle progress and rollback preview targets", asyn
     assert.equal(view.implementation.activeUnitId, undefined);
     assert.equal(view.implementation.lastCheckpointId, "CP-001");
     assert.deepEqual(view.implementation.remainingUnitIds, []);
-    assert.deepEqual(view.rollback.validTargets, ["CP-001"]);
+    // The lone checkpoint is the live chain tip: nothing to undo, no target.
+    assert.deepEqual(view.rollback.validTargets, []);
     assert.deepEqual(view.rollback.chain, [{ checkpointId: "CP-001", unitId: "RU-001", sequence: 1 }]);
   } finally { await rm(root, { recursive: true, force: true }); }
 });

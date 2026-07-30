@@ -134,13 +134,13 @@ test("rollback gate can be presented for a valid target on rollbackExecution:1 f
   await withRoot(async (root) => {
     const state = await checkpointedFeature(root);
 
-    const result = await rollback.presentRollbackGate(root, "f", state.revision, "CP-003");
+    const result = await rollback.presentRollbackGate(root, "f", state.revision, "CP-002");
     const rollbackGate = result.state.rollbackGate;
 
     assert.ok(rollbackGate, "rollbackGate must be set after presentation");
     assert.equal(rollbackGate.status, "pending");
-    assert.equal(rollbackGate.targetCheckpointId, "CP-003");
-    assert.equal(rollbackGate.targetUnitId, "RU-003");
+    assert.equal(rollbackGate.targetCheckpointId, "CP-002");
+    assert.equal(rollbackGate.targetUnitId, "RU-002");
     assert.match(rollbackGate.previewBasisHash, /^[a-f0-9]{64}$/);
     assert.ok(rollbackGate.interactionId, "interactionId must be set");
     assert.equal(rollbackGate.stateRevision, state.revision);
@@ -151,7 +151,7 @@ test("rollback gate can be presented for a valid target on rollbackExecution:1 f
     assert.equal(result.interaction.options[1].id, "request-changes");
 
     assert.ok(result.preview.previewBasisHash, "preview basis must be computed");
-    assert.equal(result.preview.targetCheckpointId, "CP-003");
+    assert.equal(result.preview.targetCheckpointId, "CP-002");
   });
 });
 
@@ -174,19 +174,34 @@ test("rollback:0 feature cannot present rollback gate", async () => {
     const state = await checkpointedFeature(root, { rollbackExecution: 0 });
 
     await assert.rejects(
-      () => rollback.presentRollbackGate(root, "f", state.revision, "CP-003"),
+      () => rollback.presentRollbackGate(root, "f", state.revision, "CP-002"),
       (error) => error.code === "ROLLBACK_EXECUTION_NOT_ALLOWED",
     );
+  });
+});
+
+test("a paused feature cannot present a rollback gate", async () => {
+  await withRoot(async (root) => {
+    let state = await checkpointedFeature(root);
+    state = await stateStore.mutate(root, "f", state.revision, "gate-test-pause", (draft) => {
+      draft.lifecycle = "paused";
+    });
+
+    await assert.rejects(
+      () => rollback.presentRollbackGate(root, "f", state.revision, "CP-002"),
+      (error) => error.code === "INVALID_LIFECYCLE",
+    );
+    assert.equal((await stateStore.readState(root, "f")).rollbackGate, undefined);
   });
 });
 
 test("double presentation is rejected", async () => {
   await withRoot(async (root) => {
     const state = await checkpointedFeature(root);
-    await rollback.presentRollbackGate(root, "f", state.revision, "CP-003");
+    await rollback.presentRollbackGate(root, "f", state.revision, "CP-002");
 
     await assert.rejects(
-      () => rollback.presentRollbackGate(root, "f", state.revision + 1, "CP-003"),
+      () => rollback.presentRollbackGate(root, "f", state.revision + 1, "CP-002"),
       (error) => error.code === "ROLLBACK_GATE_ALREADY_PRESENTED",
     );
   });
@@ -206,7 +221,7 @@ test("invalid target checkpoint is rejected by preview before gate", async () =>
 test("confirm via elicitation resolves gate to confirmed", async () => {
   await withRoot(async (root) => {
     const state = await checkpointedFeature(root);
-    const { state: presented, interaction: pub } = await rollback.presentRollbackGate(root, "f", state.revision, "CP-003");
+    const { state: presented, interaction: pub } = await rollback.presentRollbackGate(root, "f", state.revision, "CP-002");
 
     const final = await rollback.resolveRollbackGateElicitation(
       root, "f", presented.revision, pub.id, "confirm", undefined, "codex",
@@ -225,7 +240,7 @@ test("confirm via elicitation resolves gate to confirmed", async () => {
 test("request-changes clears the gate for re-presentation", async () => {
   await withRoot(async (root) => {
     const state = await checkpointedFeature(root);
-    const { state: presented, interaction: pub } = await rollback.presentRollbackGate(root, "f", state.revision, "CP-003");
+    const { state: presented, interaction: pub } = await rollback.presentRollbackGate(root, "f", state.revision, "CP-002");
 
     const returned = await rollback.resolveRollbackGateElicitation(
       root, "f", presented.revision, pub.id, "request-changes", "需要重新审查范围", "codex",
@@ -234,7 +249,7 @@ test("request-changes clears the gate for re-presentation", async () => {
     assert.equal(returned.rollbackGate, undefined);
 
     // Re-presentation should work.
-    const represented = await rollback.presentRollbackGate(root, "f", returned.revision, "CP-003");
+    const represented = await rollback.presentRollbackGate(root, "f", returned.revision, "CP-002");
     assert.equal(represented.state.rollbackGate.status, "pending");
   });
 });
@@ -242,7 +257,7 @@ test("request-changes clears the gate for re-presentation", async () => {
 test("workspace conflict clears the gate and allows re-presentation", async () => {
   await withRoot(async (root) => {
     const state = await checkpointedFeature(root);
-    const { state: presented, interaction: pub } = await rollback.presentRollbackGate(root, "f", state.revision, "CP-003");
+    const { state: presented, interaction: pub } = await rollback.presentRollbackGate(root, "f", state.revision, "CP-002");
 
     // Modify a file tracked by the chain tip — this changes the preview basis.
     await writeFile(path.join(root, "src/one/a.txt"), "unauthorized change\n");
@@ -258,7 +273,7 @@ test("workspace conflict clears the gate and allows re-presentation", async () =
 
     // After reverting the change, re-presentation should succeed.
     await writeFile(path.join(root, "src/one/a.txt"), "one v2\n");
-    const represented = await rollback.presentRollbackGate(root, "f", afterFailed.revision, "CP-003");
+    const represented = await rollback.presentRollbackGate(root, "f", afterFailed.revision, "CP-002");
     assert.equal(represented.state.rollbackGate.status, "pending");
   });
 });
@@ -276,7 +291,7 @@ test("text-token resolution requires later-turn provenance", async () => {
       at: new Date().toISOString(),
     });
 
-    const { state: presented, interaction: pub } = await rollback.presentRollbackGate(root, "f", state.revision, "CP-003");
+    const { state: presented, interaction: pub } = await rollback.presentRollbackGate(root, "f", state.revision, "CP-002");
 
     await assert.rejects(
       () => rollback.resolveRollbackGateToken(root, "f", presented.revision, pub.id, `${pub.fallback.token} confirm`, "codex", "pre-gate-event"),
@@ -288,7 +303,7 @@ test("text-token resolution requires later-turn provenance", async () => {
 test("wrong interactionId or already-resolved interaction is rejected", async () => {
   await withRoot(async (root) => {
     const state = await checkpointedFeature(root);
-    const { state: presented, interaction: pub } = await rollback.presentRollbackGate(root, "f", state.revision, "CP-003");
+    const { state: presented, interaction: pub } = await rollback.presentRollbackGate(root, "f", state.revision, "CP-002");
 
     // Resolve once.
     await rollback.resolveRollbackGateElicitation(root, "f", presented.revision, pub.id, "confirm", undefined, "codex");
@@ -306,7 +321,7 @@ test("STATE_REVISION_CONFLICT when expectedRevision does not match", async () =>
     const state = await checkpointedFeature(root);
 
     await assert.rejects(
-      () => rollback.presentRollbackGate(root, "f", 999, "CP-003"),
+      () => rollback.presentRollbackGate(root, "f", 999, "CP-002"),
       (error) => error.code === "STATE_REVISION_CONFLICT",
     );
   });
@@ -315,7 +330,7 @@ test("STATE_REVISION_CONFLICT when expectedRevision does not match", async () =>
 test("text-token with tool-event type is rejected", async () => {
   await withRoot(async (root) => {
     const state = await checkpointedFeature(root);
-    const { state: presented, interaction: pub } = await rollback.presentRollbackGate(root, "f", state.revision, "CP-003");
+    const { state: presented, interaction: pub } = await rollback.presentRollbackGate(root, "f", state.revision, "CP-002");
 
     // Record a tool event (not user-prompt) after gate presentation.
     await stateStore.mutate(root, "f", presented.revision, "bump-rev", (draft) => {
@@ -339,7 +354,7 @@ test("text-token with tool-event type is rejected", async () => {
 test("text-token with mismatched reply text is rejected", async () => {
   await withRoot(async (root) => {
     const state = await checkpointedFeature(root);
-    const { state: presented, interaction: pub } = await rollback.presentRollbackGate(root, "f", state.revision, "CP-003");
+    const { state: presented, interaction: pub } = await rollback.presentRollbackGate(root, "f", state.revision, "CP-002");
 
     // Record a user-prompt with different reply text after gate presentation.
     await stateStore.mutate(root, "f", presented.revision, "bump-rev", (draft) => {
@@ -363,7 +378,7 @@ test("text-token with mismatched reply text is rejected", async () => {
 test("text-token with missing eventId is rejected", async () => {
   await withRoot(async (root) => {
     const state = await checkpointedFeature(root);
-    const { state: presented, interaction: pub } = await rollback.presentRollbackGate(root, "f", state.revision, "CP-003");
+    const { state: presented, interaction: pub } = await rollback.presentRollbackGate(root, "f", state.revision, "CP-002");
 
     await assert.rejects(
       () => rollback.resolveRollbackGateToken(root, "f", presented.revision, pub.id, `${pub.fallback.token} confirm`, "codex", ""),
@@ -375,7 +390,7 @@ test("text-token with missing eventId is rejected", async () => {
 test("gate resolved via text-token with post-presentation event succeeds", async () => {
   await withRoot(async (root) => {
     const state = await checkpointedFeature(root);
-    const { state: presented, interaction: pub } = await rollback.presentRollbackGate(root, "f", state.revision, "CP-003");
+    const { state: presented, interaction: pub } = await rollback.presentRollbackGate(root, "f", state.revision, "CP-002");
 
     // Record a host event at a revision AFTER the gate presentation.
     const laterRevision = presented.revision + 1;

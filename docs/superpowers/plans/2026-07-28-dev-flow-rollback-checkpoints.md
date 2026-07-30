@@ -287,12 +287,12 @@ Blob 路径：
 
 **步骤：**
 
-- [ ] 在 prepare、backup、首个 rename、verification、state commit 前后注入故障。
-- [ ] 断言每个故障点均可 resume，且不会丢失回撤前 bytes/mode。
-- [ ] 运行 `node --test tests/unit/rollback-transaction.test.mjs`，确认红灯。
-- [ ] 实现事务、补偿与 doctor recovery。
-- [ ] 成功后将撤销 units 标记 `rolled_back`，首个撤销 unit 变回 pending。
-- [ ] 使 code review、verification、feature-check、logic-complete 与 finalize stale；basis 未变时保留 implementation approval。
+- [x] 在 prepare、backup、首个 rename、verification、state commit 前后注入故障。
+- [x] 断言每个故障点均可 resume，且不会丢失回撤前 bytes/mode。
+- [x] 运行 `node --test tests/unit/rollback-transaction.test.mjs`，确认红灯。
+- [x] 实现事务、补偿与 doctor recovery。
+- [x] 成功后将撤销 units 标记 `rolled_back`，首个撤销 unit 变回 pending。
+- [x] 使 code review、verification、feature-check、logic-complete 与 finalize stale；basis 未变时保留 implementation approval。
 - [ ] 提交：`feat(dev-flow): execute resumable checkpoint rollback`
 
 ### 任务 9：开放执行工具并完成端到端验收

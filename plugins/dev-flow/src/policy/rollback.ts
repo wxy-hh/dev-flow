@@ -14,6 +14,13 @@ export interface ImplementationUnitState {
   basisHash: string;
   startedFingerprint?: string;
   checkpointId?: string;
+  /**
+   * Per-begin incarnation discriminator (4A). A redo after rolled_back gets a
+   * fresh nonce, so a historical manifest of the same unit can never be
+   * mistaken for the in-flight attempt's orphaned manifest. Absent on units
+   * begun before 4A.
+   */
+  beginNonce?: string;
 }
 
 export type CheckpointFileChange = "added" | "modified" | "deleted" | "renamed" | "mode-changed";
@@ -65,20 +72,21 @@ export interface CheckpointManifest {
   approvalBasisHash: string;
   projectConfigSha256: string;
   verificationCommands: CheckpointVerificationCommand[];
+  /** Incarnation of the unit that produced this manifest; absent on pre-4A manifests. */
+  beginNonce?: string;
 }
 
 /**
- * The full lifecycle table, including the 4A-only rolled_back edge. Phase 3
- * registers no runtime path that performs checkpointed -> rolled_back, the
- * same way Review 2a defined the complete assurance enum without producing
- * the higher levels.
+ * The full lifecycle table. Phase 3 produced no runtime path into rolled_back;
+ * 4A adds the undo edge (checkpointed -> rolled_back) and the redo edge
+ * (rolled_back -> active via a fresh begin with a new beginNonce).
  */
 export const IMPLEMENTATION_UNIT_TRANSITIONS: Readonly<Record<ImplementationUnitStatus, readonly ImplementationUnitStatus[]>> = Object.freeze({
   pending: Object.freeze(["active"] as const),
   active: Object.freeze(["verified"] as const),
   verified: Object.freeze(["checkpointed", "active"] as const),
   checkpointed: Object.freeze(["rolled_back"] as const),
-  rolled_back: Object.freeze([] as const),
+  rolled_back: Object.freeze(["active"] as const),
 });
 
 const unitStatuses = ["pending", "active", "verified", "checkpointed", "rolled_back"] as const satisfies readonly ImplementationUnitStatus[];
@@ -198,20 +206,25 @@ export function implementationUnitForRollbackNode(node: RollbackNode, basisHash:
 
 export function parseImplementationUnitState(value: unknown): ImplementationUnitState {
   if (!isRecord(value)
-    || !hasOnlyKeys(value, ["unitId", "status", "basisHash", "startedFingerprint", "checkpointId"])
+    || !hasOnlyKeys(value, ["unitId", "status", "basisHash", "startedFingerprint", "checkpointId", "beginNonce"])
     || !isRollbackId(value.unitId)
     || typeof value.status !== "string"
     || !unitStatuses.includes(value.status as ImplementationUnitStatus)
     || !isSha256(value.basisHash)
     || (value.startedFingerprint !== undefined && !isSha256(value.startedFingerprint))
-    || (value.checkpointId !== undefined && !isNonEmptyString(value.checkpointId))) {
+    || (value.checkpointId !== undefined && !isNonEmptyString(value.checkpointId))
+    || (value.beginNonce !== undefined && !isNonEmptyString(value.beginNonce))) {
     invalid("implementation unit state has an invalid shape");
   }
   const status = value.status as ImplementationUnitStatus;
   const started = value.startedFingerprint !== undefined;
   const checkpointed = value.checkpointId !== undefined;
+  const hasNonce = value.beginNonce !== undefined;
+  // beginNonce is optional for pre-4A units that never began under the redo
+  // protocol. Once present it is only meaningful for statuses that have begun
+  // (active/verified/checkpointed/rolled_back); a pending unit must not carry one.
   const consistent =
-    (status === "pending" && !started && !checkpointed)
+    (status === "pending" && !started && !checkpointed && !hasNonce)
     || ((status === "active" || status === "verified") && started && !checkpointed)
     || ((status === "checkpointed" || status === "rolled_back") && started && checkpointed);
   if (!consistent) invalid(`implementation unit status ${status} is inconsistent with its fingerprint/checkpoint fields`);
@@ -221,6 +234,7 @@ export function parseImplementationUnitState(value: unknown): ImplementationUnit
     basisHash: value.basisHash,
     ...(started ? { startedFingerprint: value.startedFingerprint as string } : {}),
     ...(checkpointed ? { checkpointId: (value.checkpointId as string).trim() } : {}),
+    ...(hasNonce ? { beginNonce: (value.beginNonce as string).trim() } : {}),
   };
 }
 
@@ -298,7 +312,7 @@ function parseVerificationAttempt(value: unknown, index: number): CheckpointVeri
 
 export function parseCheckpointManifest(value: unknown): CheckpointManifest {
   if (!isRecord(value)
-    || !hasOnlyKeys(value, ["schemaVersion", "checkpointId", "unitId", "sequence", "basisHash", "startedFingerprint", "completedFingerprint", "startedAt", "completedAt", "files", "forwardPatchSha256", "reversePatchSha256", "verificationAttempts", "requirementsSha256", "planSha256", "traceabilitySha256", "approvalBasisHash", "projectConfigSha256", "verificationCommands"])
+    || !hasOnlyKeys(value, ["schemaVersion", "checkpointId", "unitId", "sequence", "basisHash", "startedFingerprint", "completedFingerprint", "startedAt", "completedAt", "files", "forwardPatchSha256", "reversePatchSha256", "verificationAttempts", "requirementsSha256", "planSha256", "traceabilitySha256", "approvalBasisHash", "projectConfigSha256", "verificationCommands", "beginNonce"])
     || value.schemaVersion !== 1
     || !isNonEmptyString(value.checkpointId)
     || !isRollbackId(value.unitId)
@@ -306,6 +320,7 @@ export function parseCheckpointManifest(value: unknown): CheckpointManifest {
     || !isSha256(value.basisHash)
     || !isSha256(value.startedFingerprint)
     || !isSha256(value.completedFingerprint)
+    || (value.beginNonce !== undefined && !isNonEmptyString(value.beginNonce))
     || !isTimestamp(value.startedAt)
     || !isTimestamp(value.completedAt)
     || !Array.isArray(value.files)
@@ -355,5 +370,6 @@ export function parseCheckpointManifest(value: unknown): CheckpointManifest {
     approvalBasisHash: value.approvalBasisHash,
     projectConfigSha256: value.projectConfigSha256,
     verificationCommands,
+    ...(typeof value.beginNonce === "string" ? { beginNonce: value.beginNonce } : {}),
   };
 }

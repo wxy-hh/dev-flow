@@ -107,3 +107,99 @@ test("doctor validates an enforced review pointer and preserves orphan snapshots
     assert.ok(report.diagnostics.some((item) => item.code === "REVIEW_POINTER_INVALID" && item.status === "error"));
   } finally { await fixture.dispose(); }
 });
+
+const rollbackJournal = (featureId, overrides = {}) => ({
+  schemaVersion: 1,
+  transactionId: "txn-doctor-1",
+  featureId,
+  phase: "verifying",
+  targetCheckpointId: "CP-001",
+  targetUnitId: "RU-001",
+  undoOrder: ["RU-002", "RU-001"],
+  previewBasisHash: "a".repeat(64),
+  stateRevision: 3,
+  backupDirectory: "checkpoints/recovery/txn-doctor-1",
+  nextFileIndex: 2,
+  filePlan: [],
+  verificationAttemptIds: ["attempt-v1"],
+  projectConfigSha256: "b".repeat(64),
+  startedAt: new Date().toISOString(),
+  ...overrides,
+});
+
+test("doctor reports an open rollback transaction with its resume input", async () => {
+  const fixture = await createTinyApp();
+  try {
+    await store.initProject(fixture.root, strictProjectConfig);
+    await store.startFeature(fixture.root, { featureId: "feature", host: "codex", level: "XS", topology: "local" });
+    let report = await collectDoctorReport(fixture.root, pluginRoot, "1.0.0", ["dev_flow_doctor"]);
+    assert.deepEqual(report.rollbackTransactions, []);
+    assert.ok(!report.diagnostics.some((item) => item.code.startsWith("ROLLBACK_")));
+
+    await store.writeRollbackTransaction(fixture.root, "feature", rollbackJournal("feature"));
+    report = await collectDoctorReport(fixture.root, pluginRoot, "1.0.0", ["dev_flow_doctor"]);
+    const diagnostic = report.diagnostics.find((item) => item.code === "ROLLBACK_TRANSACTION_OPEN");
+    assert.equal(diagnostic?.status, "error");
+    assert.match(diagnostic?.recoveryHint ?? "", /CP-001/);
+    assert.equal(report.rollbackTransactions.length, 1);
+    const entry = report.rollbackTransactions[0];
+    assert.equal(entry.featureId, "feature");
+    assert.equal(entry.phase, "verifying");
+    assert.equal(entry.blocked, false);
+    assert.deepEqual(entry.undoOrder, ["RU-002", "RU-001"]);
+  } finally { await fixture.dispose(); }
+});
+
+test("doctor reports a blocked rollback recovery with both attempt id groups", async () => {
+  const fixture = await createTinyApp();
+  try {
+    await store.initProject(fixture.root, strictProjectConfig);
+    const state = await store.startFeature(fixture.root, { featureId: "feature", host: "codex", level: "XS", topology: "local" });
+    await store.writeRollbackTransaction(fixture.root, "feature", rollbackJournal("feature", {
+      phase: "compensating",
+      error: "rollback backup bytes failed their digest check",
+      verificationAttemptIds: ["attempt-v1", "attempt-c1"],
+    }));
+    await store.appendFeatureEvent(fixture.root, "feature", state.revision, "rollback-verification-attempt", {
+      attemptId: "attempt-v1", transactionId: "txn-doctor-1", status: "failed",
+    });
+    await store.appendFeatureEvent(fixture.root, "feature", state.revision, "rollback-compensation-attempt", {
+      attemptId: "attempt-c1", transactionId: "txn-doctor-1", status: "failed", reason: "backup-corrupt",
+    });
+    // An attempt from another transaction never leaks into this one's groups.
+    await store.appendFeatureEvent(fixture.root, "feature", state.revision, "rollback-verification-attempt", {
+      attemptId: "attempt-old", transactionId: "txn-other", status: "passed",
+    });
+
+    const report = await collectDoctorReport(fixture.root, pluginRoot, "1.0.0", ["dev_flow_doctor"]);
+    const diagnostic = report.diagnostics.find((item) => item.code === "ROLLBACK_RECOVERY_BLOCKED");
+    assert.equal(diagnostic?.status, "error");
+    assert.match(diagnostic?.message ?? "", /digest check/);
+    assert.equal(report.rollbackTransactions.length, 1);
+    const entry = report.rollbackTransactions[0];
+    assert.equal(entry.blocked, true);
+    assert.equal(entry.error, "rollback backup bytes failed their digest check");
+    assert.deepEqual(entry.verificationAttemptIds, ["attempt-v1"]);
+    assert.deepEqual(entry.compensationAttemptIds, ["attempt-c1"]);
+  } finally { await fixture.dispose(); }
+});
+
+test("doctor reports a completed rollback transaction as audit and an unreadable journal as an error", async () => {
+  const fixture = await createTinyApp();
+  try {
+    await store.initProject(fixture.root, strictProjectConfig);
+    await store.startFeature(fixture.root, { featureId: "feature", host: "codex", level: "XS", topology: "local" });
+    await store.writeRollbackTransaction(fixture.root, "feature", rollbackJournal("feature", {
+      phase: "committed",
+      completedAt: new Date().toISOString(),
+    }));
+    let report = await collectDoctorReport(fixture.root, pluginRoot, "1.0.0", ["dev_flow_doctor"]);
+    assert.ok(report.diagnostics.some((item) => item.code === "ROLLBACK_TRANSACTION_COMPLETED" && item.status === "ok"));
+    assert.equal(report.rollbackTransactions[0].blocked, false);
+
+    await writeFile(path.join(fixture.root, ".dev-flow", "features", "feature", "rollback-transaction.json"), "not json");
+    report = await collectDoctorReport(fixture.root, pluginRoot, "1.0.0", ["dev_flow_doctor"]);
+    assert.ok(report.diagnostics.some((item) => item.code === "ROLLBACK_TRANSACTION_UNREADABLE" && item.status === "error"));
+    assert.deepEqual(report.rollbackTransactions, [], "an unreadable journal is only a diagnostic, never a parsed entry");
+  } finally { await fixture.dispose(); }
+});

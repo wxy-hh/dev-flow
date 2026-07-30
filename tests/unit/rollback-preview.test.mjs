@@ -147,12 +147,14 @@ test("preview of a legal suffix computes reverse order, the restored file plan, 
   });
 });
 
-test("previewing the chain tip is a legal no-op and unknown targets are rejected", async () => {
+test("previewing the chain tip is rejected and unknown targets are rejected", async () => {
   await withRoot(async (root) => {
     await checkpointAllUnits(root, await threeUnitFeature(root));
-    const tip = await rollback.previewRollback(root, "f", "CP-003");
-    assert.deepEqual(tip.undoOrder, []);
-    assert.deepEqual(tip.filePlan, []);
+    // The live chain tip has nothing to undo and can never be a target.
+    await assert.rejects(
+      () => rollback.previewRollback(root, "f", "CP-003"),
+      (error) => error.code === "ROLLBACK_TARGET_INVALID" && /tip/.test(error.message),
+    );
     await assert.rejects(() => rollback.previewRollback(root, "f", "CP-009"), /ROLLBACK_TARGET_INVALID/);
     await assert.rejects(() => rollback.previewRollback(root, "f", "RU-001"), /ROLLBACK_TARGET_INVALID/);
   });
@@ -268,6 +270,7 @@ test("recreating a path the chain deleted or renamed away conflicts as unregiste
     state = await units.beginImplementationUnit(root, "f", state.revision, "RU-001");
     await rm(path.join(root, "src/one/gone.txt"));
     state = (await checkpoints.checkpointImplementationUnit(root, "f", state.revision, "RU-001")).state;
+    state = await checkpointAllUnitsTail(root, state);
     await writeFile(path.join(root, "src/one/gone.txt"), "recreated after delete\n");
     await assert.rejects(
       () => rollback.previewRollback(root, "f", "CP-001"),
@@ -284,6 +287,7 @@ test("recreating a path the chain deleted or renamed away conflicts as unregiste
     state = await units.beginImplementationUnit(root, "f", state.revision, "RU-001");
     await rename(path.join(root, "src/one/gone.txt"), path.join(root, "src/one/renamed.txt"));
     state = (await checkpoints.checkpointImplementationUnit(root, "f", state.revision, "RU-001")).state;
+    state = await checkpointAllUnitsTail(root, state);
     await writeFile(path.join(root, "src/one/gone.txt"), "recreated after rename\n");
     await assert.rejects(
       () => rollback.previewRollback(root, "f", "CP-001"),
@@ -302,6 +306,7 @@ test("a dependency hole in the checkpoint chain fails closed", async () => {  aw
       unit.status = "pending";
       delete unit.checkpointId;
       delete unit.startedFingerprint;
+      delete unit.beginNonce;
     });
     await assert.rejects(() => rollback.previewRollback(root, "f", "CP-001"), /ROLLBACK_CHAIN_INVALID/);
   });
@@ -367,7 +372,7 @@ test("status exposes the checkpoint chain, legal targets, and a conflict digest"
       { checkpointId: "CP-002", unitId: "RU-002", sequence: 2 },
       { checkpointId: "CP-003", unitId: "RU-003", sequence: 3 },
     ]);
-    assert.deepEqual(view.rollback.validTargets, ["CP-001", "CP-002", "CP-003"]);
+    assert.deepEqual(view.rollback.validTargets, ["CP-001", "CP-002"], "the live chain tip is never a target");
     assert.deepEqual(view.rollback.conflicts, []);
 
     await writeFile(path.join(root, "src/three/c.txt"), "after the fact\n");

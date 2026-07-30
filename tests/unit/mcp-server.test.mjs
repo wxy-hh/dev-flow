@@ -580,9 +580,8 @@ test("MCP drives the phase-3 unit lifecycle and rejects checkpoints:0 features",
       { jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "dev_flow_preview_rollback", arguments: { featureId: "f", targetCheckpointId: "CP-001" } } },
       { jsonrpc: "2.0", id: 2, method: "tools/call", params: { name: "dev_flow_preview_rollback", arguments: { featureId: "f", targetCheckpointId: "CP-009" } } },
     ], root);
-    const preview = previewResponses[0].result.structuredContent;
-    assert.deepEqual(preview.undoOrder, []);
-    assert.match(preview.previewBasisHash, /^[a-f0-9]{64}$/);
+    // The lone checkpoint is the live chain tip: there is nothing to undo.
+    assert.equal(previewResponses[0].error.data.code, "ROLLBACK_TARGET_INVALID");
     assert.equal(previewResponses[1].error.data.code, "ROLLBACK_TARGET_INVALID");
 
     // A checkpoints:0 feature keeps the legacy recordStep contract.

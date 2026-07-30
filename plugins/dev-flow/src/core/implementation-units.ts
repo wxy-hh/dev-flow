@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { checkpointsEnforcementRequired, reviewEnforcementRequired } from "../policy/contract.js";
 import { canonicalReviewValueJson } from "./review-store.js";
 import type { RollbackNode, TraceabilityLedger } from "../policy/traceability.js";
@@ -134,13 +134,19 @@ export async function beginImplementationUnit(
       }
     }
     const target = merged.find((unit) => unit.unitId === unitId)!;
-    if (target.status !== "pending") {
+    if (target.status !== "pending" && target.status !== "rolled_back") {
       throw new DevFlowError("IMPLEMENTATION_UNIT_NOT_PENDING", "rollback unit cannot begin from its current status", { unitId, status: target.status });
     }
     const project = await readProjectConfig(root);
     // Preserve begin-time bytes: rollback needs them long after the unit's edits.
     const snapshot = await snapshotProtectedRoots(root, project.protectedRoots);
     await captureUnitBaseline(root, id, unitId, snapshot);
+    // A rolled_back unit re-begins as a new incarnation: the historical
+    // checkpoint reference and nonce are dropped so its old manifest can never
+    // be mistaken for this attempt's orphaned manifest.
+    delete target.checkpointId;
+    target.basisHash = basisHash;
+    target.beginNonce = randomUUID();
     target.status = "active";
     target.startedFingerprint = await fingerprintProtectedRoots(root, project.protectedRoots);
     state.implementationUnits = merged;

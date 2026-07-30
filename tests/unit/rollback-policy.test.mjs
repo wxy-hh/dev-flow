@@ -77,6 +77,8 @@ test("unit transition table permits the documented lifecycle and rejects skips",
     ["verified", "checkpointed"],
     ["verified", "active"],
     ["checkpointed", "rolled_back"],
+    // 4A redo edge: a rolled_back unit re-begins as a fresh incarnation.
+    ["rolled_back", "active"],
   ];
   for (const [from, to] of valid) {
     assert.equal(rollback.isValidUnitTransition(from, to), true, `${from} -> ${to} must be valid`);
@@ -95,7 +97,8 @@ test("unit transition table permits the documented lifecycle and rejects skips",
     ["checkpointed", "pending"],
     ["checkpointed", "verified"],
     ["rolled_back", "pending"],
-    ["rolled_back", "active"],
+    ["rolled_back", "verified"],
+    ["rolled_back", "checkpointed"],
   ];
   for (const [from, to] of invalid) {
     assert.equal(rollback.isValidUnitTransition(from, to), false, `${from} -> ${to} must be invalid`);
@@ -109,6 +112,7 @@ test("parseImplementationUnitState enforces closed shape and status-field consis
     status: "pending",
     basisHash,
   });
+  // Pre-4A checkpointed unit: no beginNonce, still accepted.
   assert.deepEqual(rollback.parseImplementationUnitState({
     unitId: "RU-001",
     status: "checkpointed",
@@ -122,6 +126,35 @@ test("parseImplementationUnitState enforces closed shape and status-field consis
     startedFingerprint: sha("e"),
     checkpointId: "CP-001",
   });
+  // 4A unit with beginNonce: preserved on round-trip.
+  assert.deepEqual(rollback.parseImplementationUnitState({
+    unitId: "RU-001",
+    status: "active",
+    basisHash,
+    startedFingerprint: sha("e"),
+    beginNonce: "nonce-1",
+  }), {
+    unitId: "RU-001",
+    status: "active",
+    basisHash,
+    startedFingerprint: sha("e"),
+    beginNonce: "nonce-1",
+  });
+  assert.deepEqual(rollback.parseImplementationUnitState({
+    unitId: "RU-001",
+    status: "checkpointed",
+    basisHash,
+    startedFingerprint: sha("e"),
+    checkpointId: "CP-001",
+    beginNonce: "nonce-2",
+  }), {
+    unitId: "RU-001",
+    status: "checkpointed",
+    basisHash,
+    startedFingerprint: sha("e"),
+    checkpointId: "CP-001",
+    beginNonce: "nonce-2",
+  });
 
   const invalid = [
     // extra caller-controlled fields
@@ -134,12 +167,16 @@ test("parseImplementationUnitState enforces closed shape and status-field consis
     // status-field consistency
     { unitId: "RU-001", status: "pending", basisHash, startedFingerprint: sha("e") },
     { unitId: "RU-001", status: "pending", basisHash, checkpointId: "CP-001" },
+    { unitId: "RU-001", status: "pending", basisHash, beginNonce: "nonce" },
     { unitId: "RU-001", status: "active", basisHash },
     { unitId: "RU-001", status: "active", basisHash, startedFingerprint: sha("e"), checkpointId: "CP-001" },
     { unitId: "RU-001", status: "verified", basisHash, checkpointId: "CP-001" },
     { unitId: "RU-001", status: "checkpointed", basisHash, startedFingerprint: sha("e") },
     { unitId: "RU-001", status: "checkpointed", basisHash, checkpointId: "CP-001" },
     { unitId: "RU-001", status: "rolled_back", basisHash, startedFingerprint: sha("e") },
+    // empty beginNonce is rejected
+    { unitId: "RU-001", status: "active", basisHash, startedFingerprint: sha("e"), beginNonce: "" },
+    { unitId: "RU-001", status: "active", basisHash, startedFingerprint: sha("e"), beginNonce: "   " },
   ];
   for (const state of invalid) {
     assert.throws(() => rollback.parseImplementationUnitState(state), /ROLLBACK_PROTOCOL_INVALID/);

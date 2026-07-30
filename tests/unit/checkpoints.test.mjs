@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { chmod, mkdir, mkdtemp, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -251,6 +251,37 @@ test("checkpoint rejects out-of-scope changes, verification failures, manifest i
         /CHECKPOINT_CONFLICT/,
       );
       assert.equal((await stateStore.readState(root, "f")).implementationUnits[0].status, "active");
+    });
+  });
+
+  await t.test("a corrupt checkpoint manifest fails closed instead of being skipped", async () => {
+    await withRoot(async (root) => {
+      let state = await beginReadyFeature(root);
+      await writeFile(path.join(root, "src/change.txt"), "change\n");
+      const first = checkpoints.checkpointImplementationUnit(root, "f", state.revision, "RU-001", {
+        fault: async (point) => {
+          if (point === "after-manifest-rename") {
+            const current = await stateStore.readState(root, "f");
+            await stateStore.mutate(root, "f", current.revision, "checkpoint-test-cas-conflict", () => {});
+          }
+        },
+      });
+      await assert.rejects(first, /STATE_REVISION_CONFLICT/);
+      state = await stateStore.readState(root, "f");
+      // Control evidence corruption (disk fault, truncation) must stop the
+      // checkpoint — silently skipping it would re-run verification and mint a
+      // new id, destroying the link to the orphaned evidence.
+      const manifestFile = path.join(root, ".dev-flow", "features", "f", "checkpoints", "manifests", "CP-001.json");
+      await writeFile(manifestFile, "not json\n");
+      await assert.rejects(
+        () => checkpoints.checkpointImplementationUnit(root, "f", state.revision, "RU-001"),
+        (error) => error.code === "ROLLBACK_CHECKPOINT_CORRUPT" && /CP-001\.json/.test(error.details?.checkpointFile ?? ""),
+      );
+      const after = await stateStore.readState(root, "f");
+      assert.equal(after.implementationUnits[0].status, "active");
+      assert.equal(after.implementationUnits[0].checkpointId, undefined);
+      const entries = await readdir(path.join(root, ".dev-flow", "features", "f", "checkpoints", "manifests"));
+      assert.deepEqual(entries, ["CP-001.json"], "no new checkpoint id was minted");
     });
   });
 

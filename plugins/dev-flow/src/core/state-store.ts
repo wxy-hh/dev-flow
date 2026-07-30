@@ -1,5 +1,5 @@
 import { randomUUID, createHash } from "node:crypto";
-import { access, mkdir, open, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { access, mkdir, open, readdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { hostname } from "node:os";
 import path from "node:path";
 import { normalizeWorkflowCapabilities, reviewEnforcementRequired, routeDefinition, routeDefinitionForFeature, traceEnforcementRequired } from "../policy/contract.js";
@@ -62,12 +62,16 @@ function validateImplementationUnits(units: unknown): asserts units is Implement
       || typeof unit.status !== "string" || !unitStatuses.has(unit.status)
       || typeof unit.basisHash !== "string" || !/^[a-f0-9]{64}$/.test(unit.basisHash)
       || (unit.startedFingerprint !== undefined && (typeof unit.startedFingerprint !== "string" || !/^[a-f0-9]{64}$/.test(unit.startedFingerprint)))
-      || (unit.checkpointId !== undefined && typeof unit.checkpointId !== "string")) {
+      || (unit.checkpointId !== undefined && typeof unit.checkpointId !== "string")
+      || (unit.beginNonce !== undefined && (typeof unit.beginNonce !== "string" || unit.beginNonce.trim().length === 0))) {
       throw new DevFlowError("INVALID_STATE_SCHEMA", "implementation unit state is invalid");
     }
     const started = unit.startedFingerprint !== undefined;
     const checkpointed = unit.checkpointId !== undefined;
-    const consistent = (unit.status === "pending" && !started && !checkpointed)
+    // Align with policy/parseImplementationUnitState: pending never carries a
+    // beginNonce; blank nonces are rejected above via trim.
+    const hasNonce = unit.beginNonce !== undefined;
+    const consistent = (unit.status === "pending" && !started && !checkpointed && !hasNonce)
       || ((unit.status === "active" || unit.status === "verified") && started && !checkpointed)
       || ((unit.status === "checkpointed" || unit.status === "rolled_back") && started && checkpointed);
     if (!consistent) throw new DevFlowError("INVALID_STATE_SCHEMA", "implementation unit status is inconsistent with its fields");
@@ -167,6 +171,7 @@ const eventPath = (root: string, id: string) => path.join(features(root), id, "e
 const activePath = (root: string) => path.join(devFlow(root), "active.json");
 const recoveryTxnPath = (root: string) => path.join(devFlow(root), "recovery-transaction.json");
 const recoveryEventsPath = (root: string) => path.join(devFlow(root), "recovery-events.jsonl");
+const rollbackTxnPath = (root: string, featureId: string) => path.join(features(root), featureId, "rollback-transaction.json");
 
 export async function readProjectConfig(root: string): Promise<ProjectConfig> {
   try { const value = JSON.parse(await readFile(path.join(devFlow(root), "project.json"), "utf8")); validateProjectConfig(value); return value; }
@@ -290,11 +295,13 @@ export async function startFeature(
 ): Promise<FeatureState> {
   await readProjectConfig(root);
   await assertNoOpenRecovery(root);
+  await assertNoOpenRollbackTransaction(root);
   const scope = validateScopeInput(input.scope);
   const id = input.featureId ?? randomUUID();
   const release = await lock(root, id, "start");
   try {
     await assertNoOpenRecovery(root);
+    await assertNoOpenRollbackTransaction(root);
     const active = await readActive(root);
     const lifecycle = input.activation ?? "active";
     if (lifecycle === "active" && active) throw new DevFlowError("ACTIVE_FEATURE_CONFLICT", "an active feature already exists");
@@ -380,6 +387,8 @@ export interface PreparedFeatureMutation {
 
 export interface PreparedMutationOptions {
   fault?: (point: "before-state-commit" | "after-state-commit") => void | Promise<void>;
+  /** The owning rollback transaction may commit through the open-transaction guard. */
+  allowRollbackTransaction?: string;
 }
 
 export async function mutatePrepared(
@@ -415,6 +424,7 @@ async function mutatePreparedLocked(
   options: PreparedMutationOptions = {},
 ): Promise<FeatureState> {
   const state = await readState(root, id);
+  await assertNoOpenRollbackTransaction(root, { featureId: id, transactionId: options.allowRollbackTransaction });
   if (state.revision !== expectedRevision) throw new DevFlowError("STATE_REVISION_CONFLICT", "state revision changed", { currentRevision: state.revision });
   const prepared = await prepare(state, state.revision + 1);
   if (prepared.unchanged) return state;
@@ -451,6 +461,7 @@ export async function switchActive(root: string, from: string, to: string, reaso
   if (!reason) throw new DevFlowError("SWITCH_REASON_REQUIRED", "switch requires a reason");
   const release = await lock(root, `${from}:${to}`, "switch-active");
   try {
+    await assertNoOpenRollbackTransaction(root);
     const active = await readActive(root);
     if (active?.featureId !== from) throw new DevFlowError("ACTIVE_FEATURE_CONFLICT", "source is not active");
     const source = await readState(root, from), target = await readState(root, to);
@@ -595,6 +606,403 @@ async function resumeRecovery(root: string, transaction: RecoveryTransaction): P
   return { recoveredTo: transaction.recoveredTo, featureId: transaction.featureId, stateSha256: transaction.stateSha256 };
 }
 
+// ─── Rollback transaction journal ────────────────────────────────────────────
+
+export type RollbackTransactionPhase = "prepared" | "backing-up" | "rolling-back" | "verifying" | "committed" | "compensating" | "compensated";
+const rollbackTransactionPhases = new Set<RollbackTransactionPhase>(["prepared", "backing-up", "rolling-back", "verifying", "committed", "compensating", "compensated"]);
+
+export interface RollbackTransactionFileAction {
+  action: "restore" | "delete";
+  path: string;
+  blobSha256?: string;
+  mode?: string;
+}
+
+/** Resumable journal for checkpoint rollback execution; mirrors policy/rollback-transaction.schema.json. */
+export interface RollbackTransaction {
+  schemaVersion: 1;
+  transactionId: string;
+  featureId: string;
+  phase: RollbackTransactionPhase;
+  targetCheckpointId: string;
+  targetUnitId: string;
+  undoOrder: string[];
+  undoCheckpoints?: string[];
+  previewBasisHash: string;
+  stateRevision: number;
+  backupDirectory: string;
+  nextFileIndex: number;
+  filePlan: RollbackTransactionFileAction[];
+  verificationAttemptIds: string[];
+  projectConfigSha256: string;
+  startedAt: string;
+  completedAt?: string;
+  error?: string;
+}
+
+function isSha256(value: unknown): value is string {
+  return typeof value === "string" && /^[a-f0-9]{64}$/.test(value);
+}
+
+function validateRollbackTransaction(value: unknown): asserts value is RollbackTransaction {
+  const transaction = value as Partial<RollbackTransaction>;
+  const validPlan = Array.isArray(transaction?.filePlan) && transaction.filePlan.every((action) => {
+    const candidate = action as Partial<RollbackTransactionFileAction> | undefined;
+    if (!candidate || (candidate.action !== "restore" && candidate.action !== "delete")
+      || typeof candidate.path !== "string" || !candidate.path) return false;
+    if (candidate.action === "restore" && (!isSha256(candidate.blobSha256) || typeof candidate.mode !== "string" || !/^[0-7]{3,4}$/.test(candidate.mode))) return false;
+    if (candidate.blobSha256 !== undefined && !isSha256(candidate.blobSha256)) return false;
+    if (candidate.mode !== undefined && (typeof candidate.mode !== "string" || !/^[0-7]{3,4}$/.test(candidate.mode))) return false;
+    return true;
+  });
+  if (transaction?.schemaVersion !== 1 || typeof transaction.transactionId !== "string" || !transaction.transactionId
+    || typeof transaction.featureId !== "string" || !transaction.featureId
+    || !rollbackTransactionPhases.has(transaction.phase as RollbackTransactionPhase)
+    || typeof transaction.targetCheckpointId !== "string" || !/^CP-[0-9]{3,}$/.test(transaction.targetCheckpointId)
+    || typeof transaction.targetUnitId !== "string" || !/^RU-[0-9]{3,}$/.test(transaction.targetUnitId)
+    || !Array.isArray(transaction.undoOrder) || transaction.undoOrder.length === 0 || !transaction.undoOrder.every((unitId) => typeof unitId === "string" && /^RU-[0-9]{3,}$/.test(unitId))
+    || (transaction.undoCheckpoints !== undefined && (!Array.isArray(transaction.undoCheckpoints) || !transaction.undoCheckpoints.every((id) => typeof id === "string" && /^CP-[0-9]{3,}$/.test(id))))
+    || !isSha256(transaction.previewBasisHash) || !isSha256(transaction.projectConfigSha256)
+    || !Number.isInteger(transaction.stateRevision) || (transaction.stateRevision ?? -1) < 0
+    || typeof transaction.backupDirectory !== "string" || !/^checkpoints\/recovery\/[^/]+$/.test(transaction.backupDirectory)
+    || !Number.isInteger(transaction.nextFileIndex) || (transaction.nextFileIndex ?? -1) < 0
+    || !validPlan
+    || !Array.isArray(transaction.verificationAttemptIds) || !transaction.verificationAttemptIds.every((id) => typeof id === "string" && id.length > 0)
+    || typeof transaction.startedAt !== "string"
+    || (transaction.completedAt !== undefined && typeof transaction.completedAt !== "string")
+    || (transaction.error !== undefined && typeof transaction.error !== "string")) {
+    throw new DevFlowError("ROLLBACK_TRANSACTION_UNREADABLE", "rollback transaction journal is invalid", {
+      recoveryHint: "Run dev_flow_doctor; the workspace may be mid-rollback — do not hand-edit .dev-flow",
+    });
+  }
+}
+
+/** A journal is fully finished only at a terminal phase with cleanup recorded. */
+export function rollbackTransactionFinished(transaction: RollbackTransaction): boolean {
+  return (transaction.phase === "committed" || transaction.phase === "compensated") && typeof transaction.completedAt === "string";
+}
+
+export async function readRollbackTransaction(root: string, featureId: string): Promise<RollbackTransaction | undefined> {
+  let raw: string;
+  try { raw = await readFile(rollbackTxnPath(root, featureId), "utf8"); }
+  catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+    throw new DevFlowError("ROLLBACK_TRANSACTION_UNREADABLE", "rollback transaction journal cannot be read", {
+      recoveryHint: "Run dev_flow_doctor; the workspace may be mid-rollback — do not hand-edit .dev-flow",
+    });
+  }
+  let parsed: unknown;
+  try { parsed = JSON.parse(raw); }
+  catch {
+    throw new DevFlowError("ROLLBACK_TRANSACTION_UNREADABLE", "rollback transaction journal is not valid JSON", {
+      recoveryHint: "Run dev_flow_doctor; the workspace may be mid-rollback — do not hand-edit .dev-flow",
+    });
+  }
+  validateRollbackTransaction(parsed);
+  if ((parsed as RollbackTransaction).featureId !== featureId) {
+    throw new DevFlowError("ROLLBACK_TRANSACTION_UNREADABLE", "rollback transaction journal feature id does not match its path", {
+      recoveryHint: "Run dev_flow_doctor; the workspace may be mid-rollback — do not hand-edit .dev-flow",
+    });
+  }
+  return parsed;
+}
+
+export async function writeRollbackTransaction(root: string, featureId: string, transaction: RollbackTransaction): Promise<void> {
+  validateRollbackTransaction(transaction);
+  if (transaction.featureId !== featureId) {
+    throw new DevFlowError("ROLLBACK_TRANSACTION_UNREADABLE", "rollback transaction journal feature id does not match its path");
+  }
+  await writeAtomic(rollbackTxnPath(root, featureId), transaction);
+}
+
+/**
+ * Fail-closed mutation guard: an open rollback journal on ANY feature blocks
+ * every feature mutation — the plan requires that any open transaction blocks
+ * other feature mutations, because the rollback rewrites the shared workspace.
+ * The owning transaction commits through via allowTransactionId on its own
+ * feature; unreadable journals propagate ROLLBACK_TRANSACTION_UNREADABLE.
+ * Reads stay available for status/doctor.
+ */
+async function assertNoOpenRollbackTransaction(root: string, allow?: { featureId?: string; transactionId?: string }): Promise<void> {
+  let entries;
+  try { entries = await readdir(features(root), { withFileTypes: true }); }
+  catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+    throw error;
+  }
+  for (const entry of entries) {
+    if (!entry.isDirectory()) continue;
+    const transaction = await readRollbackTransaction(root, entry.name);
+    if (!transaction || rollbackTransactionFinished(transaction)) continue;
+    if (allow?.featureId === entry.name && allow.transactionId !== undefined && allow.transactionId === transaction.transactionId) continue;
+    throw new DevFlowError("ROLLBACK_TRANSACTION_OPEN", "a rollback transaction is open", {
+      transactionId: transaction.transactionId,
+      featureId: entry.name,
+      phase: transaction.phase,
+      recoveryHint: `Resume the rollback transaction for feature ${entry.name} with the same input before mutating features`,
+    });
+  }
+}
+
+/**
+ * Atomically plant a prepared rollback journal under the project state lock:
+ * scan every open journal, re-check the feature revision, then write. This is
+ * the only entry that creates a fresh journal — concurrent hosts cannot both
+ * pass the open-transaction check and land different journals.
+ */
+export async function prepareRollbackTransaction(
+  root: string,
+  featureId: string,
+  expectedRevision: number,
+  transaction: RollbackTransaction,
+): Promise<RollbackTransaction> {
+  if (transaction.featureId !== featureId) {
+    throw new DevFlowError("ROLLBACK_TRANSACTION_UNREADABLE", "rollback transaction journal feature id does not match its path");
+  }
+  if (transaction.phase !== "prepared") {
+    throw new DevFlowError("ROLLBACK_TRANSACTION_UNREADABLE", "prepareRollbackTransaction only accepts phase prepared");
+  }
+  if (transaction.stateRevision !== expectedRevision) {
+    throw new DevFlowError("STATE_REVISION_CONFLICT", "state revision changed", { currentRevision: transaction.stateRevision });
+  }
+  const release = await lock(root, featureId, "prepare-rollback-transaction");
+  try {
+    await assertNoOpenRollbackTransaction(root);
+    const state = await readState(root, featureId);
+    if (state.revision !== expectedRevision) {
+      throw new DevFlowError("STATE_REVISION_CONFLICT", "state revision changed", { currentRevision: state.revision });
+    }
+    // Finished journals are replaced; an open journal for this feature would
+    // already have been rejected by the project-wide scan above.
+    await writeRollbackTransaction(root, featureId, transaction);
+    return transaction;
+  } finally {
+    await release();
+  }
+}
+
+/** A remote drive lease must renew within this window or it may be reclaimed. */
+const ROLLBACK_DRIVE_LEASE_STALE_MS = 30_000;
+const ROLLBACK_DRIVE_LEASE_HEARTBEAT_MS = 10_000;
+
+export interface RollbackDriveLease {
+  schemaVersion: 1;
+  transactionId: string;
+  featureId: string;
+  ownerId: string;
+  pid: number;
+  hostname: string;
+  acquiredAt: string;
+  /** Last owner-authenticated renewal. Older leases may only have acquiredAt. */
+  heartbeatAt?: string;
+}
+
+function driveLeasePath(root: string, featureId: string, transactionId: string): string {
+  return path.join(features(root), featureId, "checkpoints", "recovery", transactionId, "drive-lease.json");
+}
+
+function isProcessAlive(pid: number, ownerHostname: string): boolean {
+  if (ownerHostname !== hostname()) return true; // different host: assume live (fail closed until stale)
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function leaseHeartbeatAt(lease: RollbackDriveLease): number {
+  const timestamp = Date.parse(lease.heartbeatAt ?? lease.acquiredAt);
+  return Number.isFinite(timestamp) ? timestamp : Number.NaN;
+}
+
+/**
+ * Claim exclusive ownership of driving an open rollback journal. Held only for
+ * the duration of driveRollbackTransaction (not the whole verification wait
+ * via the project lock — the lease file is the mutex). Concurrent resumes get
+ * ROLLBACK_TRANSACTION_BUSY while the owner is live.
+ */
+export async function claimRollbackDriveLease(
+  root: string,
+  featureId: string,
+  transactionId: string,
+): Promise<RollbackDriveLease> {
+  const release = await lock(root, featureId, "claim-rollback-drive");
+  try {
+    const journal = await readRollbackTransaction(root, featureId);
+    if (!journal || rollbackTransactionFinished(journal)) {
+      throw new DevFlowError("ROLLBACK_TRANSACTION_MISMATCH", "no open rollback transaction to drive", {
+        featureId,
+        transactionId,
+      });
+    }
+    if (journal.transactionId !== transactionId) {
+      throw new DevFlowError("ROLLBACK_TRANSACTION_MISMATCH", "rollback transaction id does not match the open journal", {
+        openTransactionId: journal.transactionId,
+        transactionId,
+      });
+    }
+    const leaseFile = driveLeasePath(root, featureId, transactionId);
+    let existing: RollbackDriveLease | undefined;
+    try {
+      const raw = await readFile(leaseFile, "utf8");
+      existing = JSON.parse(raw) as RollbackDriveLease;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+        throw new DevFlowError("ROLLBACK_TRANSACTION_UNREADABLE", "rollback drive lease is unreadable", {
+          transactionId,
+          recoveryHint: "Run dev_flow_doctor; do not hand-edit the drive lease",
+        });
+      }
+    }
+    if (existing) {
+      const heartbeatAt = leaseHeartbeatAt(existing);
+      const live = Number.isFinite(heartbeatAt) && isProcessAlive(existing.pid, existing.hostname);
+      const stale = !Number.isFinite(heartbeatAt) || Date.now() - heartbeatAt > ROLLBACK_DRIVE_LEASE_STALE_MS;
+      // A driver renews heartbeatAt while long verification commands run. A
+      // fresh heartbeat proves ownership on every host; a stale heartbeat can
+      // be reclaimed even when a wedged local process still has a live pid.
+      if (live && !stale) {
+        throw new DevFlowError("ROLLBACK_TRANSACTION_BUSY", "another host is already driving this rollback transaction", {
+          transactionId,
+          featureId,
+          ownerId: existing.ownerId,
+          pid: existing.pid,
+          hostname: existing.hostname,
+          recoveryHint: "Wait for the other host to finish, or resume after its process exits and the lease ages out",
+        });
+      }
+      // Dead or stale owner: reclaim.
+    }
+    const lease: RollbackDriveLease = {
+      schemaVersion: 1,
+      transactionId,
+      featureId,
+      ownerId: randomUUID(),
+      pid: process.pid,
+      hostname: hostname(),
+      acquiredAt: new Date().toISOString(),
+      heartbeatAt: new Date().toISOString(),
+    };
+    await mkdir(path.dirname(leaseFile), { recursive: true });
+    await writeAtomic(leaseFile, lease);
+    return lease;
+  } finally {
+    await release();
+  }
+}
+
+/** Refreshes a lease only when the caller still owns its fencing token. */
+export async function renewRollbackDriveLease(
+  root: string,
+  featureId: string,
+  lease: RollbackDriveLease,
+): Promise<void> {
+  const release = await lock(root, featureId, "renew-rollback-drive");
+  try {
+    const leaseFile = driveLeasePath(root, featureId, lease.transactionId);
+    let existing: RollbackDriveLease;
+    try {
+      existing = JSON.parse(await readFile(leaseFile, "utf8")) as RollbackDriveLease;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+        throw new DevFlowError("ROLLBACK_TRANSACTION_MISMATCH", "rollback drive lease disappeared while being renewed", {
+          transactionId: lease.transactionId,
+        });
+      }
+      throw new DevFlowError("ROLLBACK_TRANSACTION_UNREADABLE", "rollback drive lease is unreadable", {
+        transactionId: lease.transactionId,
+        recoveryHint: "Run dev_flow_doctor; do not hand-edit the drive lease",
+      });
+    }
+    if (existing.ownerId !== lease.ownerId) {
+      throw new DevFlowError("ROLLBACK_TRANSACTION_BUSY", "rollback drive lease was claimed by another owner", {
+        transactionId: lease.transactionId,
+        ownerId: existing.ownerId,
+      });
+    }
+    const renewed: RollbackDriveLease = { ...existing, heartbeatAt: new Date().toISOString() };
+    await writeAtomic(leaseFile, renewed);
+  } finally {
+    await release();
+  }
+}
+
+export interface RollbackDriveLeaseHeartbeat {
+  assertOwned(): void;
+  stop(): Promise<void>;
+}
+
+/**
+ * Keeps a remote-visible lease fresh while long file operations or verification
+ * commands run. A renewal failure is surfaced to the driver before it performs
+ * a further transaction transition.
+ */
+export function maintainRollbackDriveLease(
+  root: string,
+  featureId: string,
+  lease: RollbackDriveLease,
+): RollbackDriveLeaseHeartbeat {
+  let stopped = false;
+  let inFlight: Promise<void> | undefined;
+  let failure: unknown;
+  const renew = (): Promise<void> => {
+    if (stopped || failure) return inFlight ?? Promise.resolve();
+    if (!inFlight) {
+      inFlight = renewRollbackDriveLease(root, featureId, lease)
+        .catch((error) => { failure = error; })
+        .finally(() => { inFlight = undefined; });
+    }
+    return inFlight;
+  };
+  const interval = setInterval(() => { void renew(); }, ROLLBACK_DRIVE_LEASE_HEARTBEAT_MS);
+  interval.unref();
+  return {
+    assertOwned(): void {
+      if (!failure) return;
+      if (failure instanceof DevFlowError && failure.code === "ROLLBACK_TRANSACTION_BUSY") throw failure;
+      throw new DevFlowError("ROLLBACK_TRANSACTION_BUSY", "rollback drive lease could not be renewed; refusing to continue this driver", {
+        transactionId: lease.transactionId,
+        cause: failure instanceof DevFlowError ? failure.code : String(failure),
+        recoveryHint: "Wait for the current driver to finish, then resume the open rollback transaction",
+      });
+    },
+    async stop(): Promise<void> {
+      stopped = true;
+      clearInterval(interval);
+      await inFlight;
+    },
+  };
+}
+
+/** Release the drive lease only if this owner still holds it. */
+export async function releaseRollbackDriveLease(
+  root: string,
+  featureId: string,
+  lease: RollbackDriveLease,
+): Promise<void> {
+  const release = await lock(root, featureId, "release-rollback-drive");
+  try {
+    const leaseFile = driveLeasePath(root, featureId, lease.transactionId);
+    let existing: RollbackDriveLease | undefined;
+    try {
+      existing = JSON.parse(await readFile(leaseFile, "utf8")) as RollbackDriveLease;
+    } catch {
+      return;
+    }
+    if (existing?.ownerId === lease.ownerId) {
+      await rm(leaseFile, { force: true });
+    }
+  } finally {
+    await release();
+  }
+}
+
+/** Append one audit record to the feature event ledger (rollback attempts, transaction milestones). */
+export async function appendFeatureEvent(root: string, id: string, revision: number, type: string, data: unknown): Promise<void> {
+  await appendEvent(root, id, revision, type, data);
+}
+
 export async function recoverCorruptFeature(root: string, input: {
   featureId: string; stateSha256: string; activeSha256?: string; action: "abandon"; reason: string; userEvidence: string; host: "claude" | "codex";
 }): Promise<{ recoveredTo: string; featureId: string; stateSha256: string }> {
@@ -603,6 +1011,9 @@ export async function recoverCorruptFeature(root: string, input: {
   if (path.basename(input.featureId) !== input.featureId || input.featureId === "." || input.featureId === "..") throw new DevFlowError("INVALID_FEATURE_ID", "recovery featureId must name one feature directory");
   const release = await lock(root, input.featureId, "recover-corrupt");
   try {
+    // Fail closed while any rollback journal is open: recovery moves the whole
+    // feature directory (journal + backup evidence). Resume the rollback first.
+    await assertNoOpenRollbackTransaction(root);
     const openTransaction = await readRecoveryTransaction(root);
     if (openTransaction) {
       if (openTransaction.featureId !== input.featureId || openTransaction.stateSha256 !== input.stateSha256

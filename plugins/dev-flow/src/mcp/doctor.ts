@@ -4,7 +4,7 @@ import { createHash } from "node:crypto";
 import { reviewEnforcementRequired, traceEnforcementRequired } from "../policy/contract.js";
 import { listOrphanTraceSnapshots, readTraceability } from "../core/traceability-store.js";
 import { listOrphanReviewSnapshots, readReviewLedger } from "../core/review-store.js";
-import { readProjectConfig, readState, readActive, readRecoveryTransaction, stateFileSha256, type FeatureState } from "../core/state-store.js";
+import { readProjectConfig, readState, readActive, readRecoveryTransaction, readRollbackTransaction, readFeatureEvents, rollbackTransactionFinished, stateFileSha256, type FeatureState, type RollbackTransaction } from "../core/state-store.js";
 
 type Status = "ok" | "error" | "warning";
 type Diagnostic = { code: string; status: Status; message: string; recoveryHint?: string };
@@ -134,6 +134,80 @@ export async function collectDoctorReport(root: string, pluginRoot: string, vers
     "Re-run dev_flow_recover_corrupt_feature with the same doctor-reported input to resume the next safe journal phase",
   );
 
+  // Rollback transaction journals (one slot per feature, kept as audit after
+  // completion). A non-terminal journal blocks every feature mutation, so the
+  // doctor always surfaces it — with the resume input and, when blocked, the
+  // two attempt groups (rollback verification vs compensation) from the event
+  // ledger.
+  const rollbackTransactions: Array<{
+    featureId: string;
+    transactionId: string;
+    phase: RollbackTransaction["phase"];
+    targetCheckpointId: string;
+    undoOrder: string[];
+    backupDirectory: string;
+    blocked: boolean;
+    error?: string;
+    verificationAttemptIds: string[];
+    compensationAttemptIds: string[];
+  }> = [];
+  try {
+    const featuresDirectory = path.join(root, ".dev-flow", "features");
+    const entries = await readdir(featuresDirectory, { withFileTypes: true });
+    for (const entry of entries.filter((candidate) => candidate.isDirectory())) {
+      let journal: RollbackTransaction | undefined;
+      try {
+        journal = await readRollbackTransaction(root, entry.name);
+      } catch (error) {
+        add(
+          "ROLLBACK_TRANSACTION_UNREADABLE",
+          "error",
+          error instanceof Error ? error.message : String(error),
+          "Do not hand-edit .dev-flow; the feature stays fail-closed while its rollback journal is unreadable",
+        );
+        continue;
+      }
+      if (!journal) continue;
+      const current = journal;
+      const finished = rollbackTransactionFinished(current);
+      const blocked = !finished && typeof current.error === "string";
+      const events = blocked ? await readFeatureEvents(root, entry.name).catch(() => []) : [];
+      const attemptIds = (type: string) => events
+        .filter((event) => event.type === type && (event.data as { transactionId?: string }).transactionId === current.transactionId)
+        .map((event) => (event.data as { attemptId?: string }).attemptId)
+        .filter((attemptId): attemptId is string => typeof attemptId === "string");
+      rollbackTransactions.push({
+        featureId: entry.name,
+        transactionId: current.transactionId,
+        phase: current.phase,
+        targetCheckpointId: current.targetCheckpointId,
+        undoOrder: [...current.undoOrder],
+        backupDirectory: current.backupDirectory,
+        blocked,
+        ...(current.error ? { error: current.error } : {}),
+        verificationAttemptIds: attemptIds("rollback-verification-attempt"),
+        compensationAttemptIds: attemptIds("rollback-compensation-attempt"),
+      });
+      if (finished) {
+        add("ROLLBACK_TRANSACTION_COMPLETED", "ok", `rollback transaction ${current.transactionId} finished phase=${current.phase} feature=${entry.name}`);
+      } else if (blocked) {
+        add(
+          "ROLLBACK_RECOVERY_BLOCKED",
+          "error",
+          `rollback recovery is blocked feature=${entry.name} transaction=${current.transactionId}: ${current.error ?? ""}`,
+          "Resolve the reported cause, then resume the rollback with the same target checkpoint; the backup scene is preserved",
+        );
+      } else {
+        add(
+          "ROLLBACK_TRANSACTION_OPEN",
+          "error",
+          `open rollback transaction phase=${current.phase} feature=${entry.name} target=${current.targetCheckpointId}`,
+          `Resume the rollback with the same target checkpoint ${current.targetCheckpointId} before mutating this feature`,
+        );
+      }
+    }
+  } catch { /* no features directory — nothing to scan */ }
+
   let trace: {
     enforced: boolean;
     pointerPresent: boolean;
@@ -230,6 +304,7 @@ export async function collectDoctorReport(root: string, pluginRoot: string, vers
   return {
     version, root, pluginRoot, tools, project, activeFeature, corruptFeature, corruptActivePointer,
     recoveryTransaction: recoveryTxn ?? null,
+    rollbackTransactions,
     trace: trace ?? null,
     review: review ?? null,
     mcp: { server: "running", configuration: !invalidJson },

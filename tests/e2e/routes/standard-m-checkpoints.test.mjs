@@ -157,7 +157,8 @@ test("standard M checkpoints:1 walks two rollback units and completes the full r
     assert.equal(view.implementation.activeUnitId, undefined);
     assert.equal(view.implementation.lastCheckpointId, "CP-001");
     assert.deepEqual(view.implementation.remainingUnitIds, ["RU-002"]);
-    assert.deepEqual(view.rollback.validTargets, ["CP-001"]);
+    // The lone checkpoint is the live chain tip: nothing to undo yet.
+    assert.deepEqual(view.rollback.validTargets, []);
 
     state = await units.beginImplementationUnit(root, "f", state.revision, "RU-002");
     action = await next.nextAction(root, "f");
@@ -171,7 +172,8 @@ test("standard M checkpoints:1 walks two rollback units and completes the full r
     assert.equal(view.implementation.activeUnitId, undefined);
     assert.equal(view.implementation.lastCheckpointId, "CP-002");
     assert.deepEqual(view.implementation.remainingUnitIds, []);
-    assert.deepEqual(view.rollback.validTargets, ["CP-001", "CP-002"]);
+    // The live chain tip (CP-002) is never a target.
+    assert.deepEqual(view.rollback.validTargets, ["CP-001"]);
     assert.deepEqual(view.rollback.chain, [
       { checkpointId: "CP-001", unitId: "RU-001", sequence: 1 },
       { checkpointId: "CP-002", unitId: "RU-002", sequence: 2 },

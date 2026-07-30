@@ -251,6 +251,23 @@ test("validateFeatureState rejects invalid unit shapes and checkpoints without t
       ...state,
       implementationUnits: [{ unitId: "RU-001", status: "pending", basisHash: "short" }],
     }), /INVALID_STATE_SCHEMA/);
+    // beginNonce must match the policy parser: pending cannot carry one; blank is invalid.
+    assert.throws(() => stateStore.validateFeatureState({
+      ...state,
+      implementationUnits: [{ unitId: "RU-001", status: "pending", basisHash: sha("a"), beginNonce: "nonce" }],
+    }), /INVALID_STATE_SCHEMA/);
+    assert.throws(() => stateStore.validateFeatureState({
+      ...state,
+      implementationUnits: [{
+        unitId: "RU-001", status: "active", basisHash: sha("a"), startedFingerprint: sha("b"), beginNonce: "   ",
+      }],
+    }), /INVALID_STATE_SCHEMA/);
+    assert.doesNotThrow(() => stateStore.validateFeatureState({
+      ...state,
+      implementationUnits: [{
+        unitId: "RU-001", status: "active", basisHash: sha("a"), startedFingerprint: sha("b"), beginNonce: "nonce-1",
+      }],
+    }));
     assert.throws(() => stateStore.validateFeatureState({
       ...state,
       implementationUnits: [

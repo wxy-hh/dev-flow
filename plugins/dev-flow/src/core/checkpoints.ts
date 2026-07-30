@@ -1,5 +1,5 @@
 import { randomUUID, createHash } from "node:crypto";
-import { access, mkdir, open, readFile, rename } from "node:fs/promises";
+import { access, mkdir, open, readFile, readdir, rename } from "node:fs/promises";
 import path from "node:path";
 import { checkpointsEnforcementRequired } from "../policy/contract.js";
 import {
@@ -246,6 +246,20 @@ function resolveVerificationCommands(config: ProjectConfig, node: RollbackNode):
   });
 }
 
+/** Next checkpoint id is max-on-disk + 1: manifests are immutable history
+ * (rollback keeps them as rolled_back audit), so a number is never reused. */
+async function nextCheckpointSequence(root: string, featureId: string): Promise<number> {
+  const directory = path.join(featureDirectory(root, featureId), "checkpoints", "manifests");
+  let entries: string[];
+  try { entries = await readdir(directory); } catch { return 1; }
+  let max = 0;
+  for (const entry of entries) {
+    const match = /^CP-(\d+)\.json$/.exec(entry);
+    if (match) max = Math.max(max, Number.parseInt(match[1], 10));
+  }
+  return max + 1;
+}
+
 export interface CheckpointOptions {
   /** Test-only fault injection. Production callers omit this. */
   fault?: (point: "before-manifest-rename" | "after-manifest-rename") => void | Promise<void>;
@@ -307,27 +321,59 @@ export async function checkpointImplementationUnit(
     }
   }
 
-  const chainLength = (initial.implementationUnits ?? []).filter((candidate) => candidate.checkpointId).length;
-  const sequence = chainLength + 1;
+  const sequence = await nextCheckpointSequence(root, id);
   const checkpointId = `CP-${String(sequence).padStart(3, "0")}`;
   const rollbackUnitId = unit.unitId;
   const featureDir = featureDirectory(root, id);
-  const manifestFile = path.join(featureDir, manifestPath(checkpointId));
 
-  // Idempotent retry is decided BEFORE running any verification: a manifest
-  // whose state CAS previously failed is reused verbatim only when it still
-  // describes this exact unit, basis, config, and workspace diff. Commands
-  // never re-run; anything else is a real conflict and stays blocked.
-  if (await pathExists(manifestFile)) {
-    const existing = await readCheckpoint(root, id, checkpointId);
-    const sameCheckpoint = existing.unitId === rollbackUnitId
-      && existing.sequence === sequence
-      && existing.basisHash === unit.basisHash
-      && existing.projectConfigSha256 === projectConfigSha256
-      && JSON.stringify(existing.files) === JSON.stringify(records);
+  // Idempotent retry is decided BEFORE running any verification. Only a
+  // manifest from THIS begin incarnation (same beginNonce) can be this
+  // attempt's orphan: it is reused verbatim — commands never re-run — when it
+  // still describes the same unit, basis, config, and workspace diff; a same
+  // nonce with any mismatch is a real conflict. A manifest whose nonce
+  // differs (or a pre-4A manifest on a re-begun unit) belongs to a previous
+  // incarnation — for example a redo after rollback — and never blocks or
+  // satisfies this attempt, so a fresh checkpoint id is minted.
+  //
+  // Control-evidence boundary: a well-formed manifest with a *different*
+  // beginNonce is indistinguishable from legitimate redo history (the Hook is
+  // the write barrier for manifests). Corrupted or unreadable CP-*.json is
+  // different — that is fail-closed: skip would re-run verification and mint a
+  // new id, breaking the link to the orphaned evidence.
+  const manifestsDir = path.join(featureDir, "checkpoints", "manifests");
+  let orphan: CheckpointManifest | undefined;
+  let entries: string[];
+  try {
+    entries = await readdir(manifestsDir);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") entries = [];
+    else throw error;
+  }
+  for (const entry of entries.sort().reverse()) {
+    if (!/^CP-\d+\.json$/.test(entry)) continue;
+    let candidate: CheckpointManifest;
+    try {
+      candidate = parseCheckpointManifest(JSON.parse(await readFile(path.join(manifestsDir, entry), "utf8")));
+    } catch (error) {
+      throw new DevFlowError("ROLLBACK_CHECKPOINT_CORRUPT", "checkpoint manifest is unreadable or invalid", {
+        checkpointFile: entry,
+        unitId: rollbackUnitId,
+        cause: error instanceof Error ? error.message : String(error),
+        recoveryHint: "Do not hand-edit checkpoint manifests; repair or remove the corrupt file before retrying the checkpoint",
+      });
+    }
+    if (candidate.unitId === rollbackUnitId && candidate.beginNonce === unit.beginNonce) {
+      orphan = candidate;
+      break;
+    }
+  }
+  if (orphan) {
+    const sameCheckpoint = orphan.basisHash === unit.basisHash
+      && orphan.projectConfigSha256 === projectConfigSha256
+      && JSON.stringify(orphan.files) === JSON.stringify(records);
     if (!sameCheckpoint) {
       throw new DevFlowError("CHECKPOINT_CONFLICT", "an existing checkpoint manifest no longer matches this unit", {
-        checkpointId,
+        checkpointId: orphan.checkpointId,
         unitId: rollbackUnitId,
       });
     }
@@ -337,10 +383,11 @@ export async function checkpointImplementationUnit(
         throw new DevFlowError("IMPLEMENTATION_UNIT_NOT_ACTIVE", "checkpoint requires an active rollback unit", { unitId, status: current?.status });
       }
       current.status = "checkpointed";
-      current.checkpointId = checkpointId;
-    }, { unitId, checkpointId, sequence });
-    return { state: reused, manifest: existing };
+      current.checkpointId = orphan.checkpointId;
+    }, { unitId, checkpointId: orphan.checkpointId, sequence: orphan.sequence });
+    return { state: reused, manifest: orphan };
   }
+  const manifestFile = path.join(featureDir, manifestPath(checkpointId));
 
   const attempts: CheckpointVerificationAttempt[] = [];
   for (const command of commands) {
@@ -403,6 +450,7 @@ export async function checkpointImplementationUnit(
     traceabilitySha256: initial.traceability?.sha256 ?? "",
     approvalBasisHash: unit.basisHash,
     projectConfigSha256,
+    ...(unit.beginNonce ? { beginNonce: unit.beginNonce } : {}),
     verificationCommands: commands.map((command) => ({ commandId: command.id, command: commandSummary(command) })),
   };
   const validated = parseCheckpointManifest(JSON.parse(JSON.stringify(manifest)));
