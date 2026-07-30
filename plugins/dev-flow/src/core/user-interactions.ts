@@ -2,7 +2,7 @@ import { randomBytes, randomUUID } from "node:crypto";
 import { DevFlowError } from "./errors.js";
 import type { FeatureState } from "./state-store.js";
 
-export type InteractionKind = "gate" | "grill" | "risk-acceptance";
+export type InteractionKind = "gate" | "grill" | "risk-acceptance" | "rollback-confirmation";
 export type InteractionSource = "elicitation" | "text-token";
 
 export interface InteractionOption {

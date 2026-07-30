@@ -30,7 +30,7 @@ export const SUPPORTED_WORKFLOW_CAPABILITIES: WorkflowCapabilities = Object.free
   trace: 1,
   review: 1,
   checkpoints: 1,
-  rollbackExecution: 0,
+  rollbackExecution: 1,
 });
 
 export interface ClassificationInput {

@@ -257,11 +257,11 @@ Blob 路径：
 
 **步骤：**
 
-- [ ] 写同消息自批、响应重放、basis 改变和 target 替换测试。
-- [ ] 写第 4A 发布后新 feature 固定 `rollbackExecution: 1`，既有 `rollbackExecution: 0` feature 仍不能展示 gate 的测试。
-- [ ] 定义 transaction phases 与恢复所需全部字段。
-- [ ] 实现 `presentRollbackGate`，仍不修改文件。
-- [ ] 提交：`feat(dev-flow): gate checkpoint rollback execution`
+- [x] 写同消息自批、响应重放、basis 改变和 target 替换测试。
+- [x] 写第 4A 发布后新 feature 固定 `rollbackExecution: 1`，既有 `rollbackExecution: 0` feature 仍不能展示 gate 的测试。
+- [x] 定义 transaction phases 与恢复所需全部字段。
+- [x] 实现 `presentRollbackGate`，仍不修改文件。
+- [x] 提交：`feat(dev-flow): gate checkpoint rollback execution`
 
 ### 任务 8：实现可续办的文件事务与补偿恢复
 

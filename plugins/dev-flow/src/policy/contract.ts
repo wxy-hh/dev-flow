@@ -148,3 +148,11 @@ export function checkpointsEnforcementRequired(
   return normalizeWorkflowCapabilities(capabilities).checkpoints === 1
     && traceEnforcementRequired(route, capabilities);
 }
+
+export function rollbackExecutionAllowed(
+  route: RouteId,
+  capabilities: WorkflowCapabilities | undefined,
+): boolean {
+  return normalizeWorkflowCapabilities(capabilities).rollbackExecution === 1
+    && checkpointsEnforcementRequired(route, capabilities);
+}

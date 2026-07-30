@@ -33,6 +33,17 @@ export interface FeatureState {
   review?: ReviewPointer;
   /** Runtime lifecycle of rollback units; absent until the first begin and on legacy features. */
   implementationUnits?: ImplementationUnitState[];
+  /** Rollback confirmation gate state; absent until presentRollbackGate is called. */
+  rollbackGate?: {
+    status: "pending" | "confirmed";
+    targetCheckpointId: string;
+    targetUnitId: string;
+    previewBasisHash: string;
+    interactionId: string;
+    stateRevision: number;
+    presentedAt: string;
+    confirmedAt?: string;
+  };
   featureCheck: { passed?: boolean; fingerprint?: string }; businessFingerprint?: string; startBusinessFingerprint?: string;
   deliveryBaseline?: DeliveryBaseline; deliverySnapshot?: DeliverySnapshot;
   blockingFindings: Array<{ blocking: boolean; message: string }>;
@@ -105,6 +116,19 @@ export function validateFeatureState(value: unknown): asserts value is FeatureSt
     throw new DevFlowError("INVALID_STATE_SCHEMA", "review-enabled standard feature requires a review pointer");
   }
   if (state.implementationUnits !== undefined) validateImplementationUnits(state.implementationUnits);
+  if (state.rollbackGate !== undefined) {
+    const gate = state.rollbackGate;
+    if (typeof gate !== "object" || gate === null
+      || (gate.status !== "pending" && gate.status !== "confirmed")
+      || typeof gate.targetCheckpointId !== "string" || typeof gate.targetUnitId !== "string"
+      || !/^[a-f0-9]{64}$/.test(gate.previewBasisHash)
+      || typeof gate.interactionId !== "string"
+      || typeof gate.stateRevision !== "number" || !Number.isInteger(gate.stateRevision) || gate.stateRevision < 0
+      || typeof gate.presentedAt !== "string"
+      || (gate.confirmedAt !== undefined && typeof gate.confirmedAt !== "string")) {
+      throw new DevFlowError("INVALID_STATE_SCHEMA", "rollbackGate is invalid");
+    }
+  }
 }
 
 export function validateScopeInput(scope: unknown): { inScope: string[]; outOfScope: string[] } {

@@ -12,7 +12,7 @@ import { nextAction } from "../core/next.js";
 import { readStatusView } from "../core/status.js";
 import { beginImplementationUnit } from "../core/implementation-units.js";
 import { checkpointImplementationUnit } from "../core/checkpoints.js";
-import { previewRollback } from "../core/rollback.js";
+import { previewRollback, resolveRollbackGateToken } from "../core/rollback.js";
 import { runVerification } from "../core/verification.js";
 import { allowedRiskLabels } from "../policy/contract.js";
 import { deriveRiskRequirements, selectRoute } from "../policy/route.js";
@@ -771,6 +771,15 @@ async function call(name: string, a: any, connection: McpConnection) {
     }
     case "dev_flow_confirm_gate": return confirmGate(root, a.featureId, a.expectedRevision, a.gate, a.userReply, { promptEventId: a.promptEventId, turnBoundaryEventId: a.turnBoundaryEventId }, a.host ?? "codex");
     case "dev_flow_respond_interaction": {
+      const interaction = getInteraction(await readState(root, a.featureId), a.interactionId);
+      if (interaction.kind === "rollback-confirmation") {
+        const state = await resolveRollbackGateToken(
+          root, a.featureId, a.expectedRevision, a.interactionId, a.userReply,
+          a.host ?? "codex", a.promptEventId,
+        );
+        const response = interactionResponse(state, a.interactionId);
+        return interactionEnvelope(state, toPublicInteraction(getInteraction(state, a.interactionId)), response?.action ?? "resolved", response);
+      }
       const state = await resolveGateToken(
         root, a.featureId, a.expectedRevision, a.interactionId, a.userReply,
         { promptEventId: a.promptEventId, turnBoundaryEventId: a.turnBoundaryEventId }, a.host ?? "codex",
