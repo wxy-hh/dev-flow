@@ -12,6 +12,7 @@ import { inspectCurrentTrace, type TraceBlocker } from "./traceability-gates.js"
 import { fallbackHint, findInteractionForTarget, toPublicInteraction, type PublicInteraction } from "./user-interactions.js";
 import { readVerificationFreshness, type VerificationFreshness } from "./verification.js";
 import { readReviewProjection, type ReviewProjection } from "./review-projection.js";
+import { rollbackChainView, type RollbackChainView } from "./rollback.js";
 
 export type ProgressWait =
   | { kind: "none" }
@@ -43,7 +44,12 @@ export interface ReviewStatus {
   projection?: ReviewProjection;
 }
 
-export type StatusView = FeatureState & { progress: Progress; trace: TraceStatus; reviewStatus: ReviewStatus };
+export type StatusView = FeatureState & {
+  progress: Progress;
+  trace: TraceStatus;
+  reviewStatus: ReviewStatus;
+  rollback: RollbackChainView;
+};
 
 async function traceStatus(root: string, state: FeatureState): Promise<TraceStatus> {
   const inspection = await inspectCurrentTrace(root, state);
@@ -161,5 +167,6 @@ export async function readStatusView(root: string, featureId: string): Promise<S
     progress,
     trace: await traceStatus(root, state),
     reviewStatus: await reviewStatus(root, state),
+    rollback: await rollbackChainView(root, state),
   };
 }

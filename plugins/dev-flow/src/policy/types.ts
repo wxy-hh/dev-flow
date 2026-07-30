@@ -184,6 +184,9 @@ export type NextAction =
       code: "TRACE_SLICE_INCOMPLETE" | "TRACE_SLICE_STALE";
       details: Record<string, unknown>;
     }
+  /** Phase-3 unit lifecycle: the next rollback unit to begin or checkpoint. */
+  | { kind: "begin-implementation-unit"; unitId: string }
+  | { kind: "checkpoint-implementation-unit"; unitId: string }
   | { kind: "run-step"; step: string; requiredEvidence?: RequiredEvidence }
   | { kind: "feature-check"; requiredEvidence?: RequiredEvidence }
   | { kind: "finalize" };

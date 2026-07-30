@@ -138,7 +138,7 @@ Blob 路径：
 - [x] 复用 verification command runner；失败时 unit 保持 active 且不产生 confirmed manifest。
 - [x] 使用临时文件、fsync 与 atomic rename 写 blob/manifest。
 - [x] 运行 checkpoint 与 verification 回归测试。
-- [ ] 提交：`feat(dev-flow): create content addressed checkpoints`
+- [x] 提交：`feat(dev-flow): create content addressed checkpoints`
 
 ### 任务 4：实现回撤预览与冲突检测
 
@@ -163,10 +163,10 @@ Blob 路径：
 
 **步骤：**
 
-- [ ] 写合法后缀、非法目标、依赖中洞、文件冲突和旧 basis 测试。
-- [ ] 运行 `node --test tests/unit/rollback-preview.test.mjs`，确认红灯。
-- [ ] 实现 `previewRollback`，只返回计划，不修改工作区或状态。
-- [ ] status 显示合法目标、冲突摘要和 checkpoint chain。
+- [x] 写合法后缀、非法目标、依赖中洞、文件冲突和旧 basis 测试。
+- [x] 运行 `node --test tests/unit/rollback-preview.test.mjs`，确认红灯。
+- [x] 实现 `previewRollback`，只返回计划，不修改工作区或状态。
+- [x] status 显示合法目标、冲突摘要和 checkpoint chain。
 - [ ] 提交：`feat(dev-flow): preview checkpoint rollback`
 
 ### 任务 5：只暴露第 3 阶段安全工具并更新技能

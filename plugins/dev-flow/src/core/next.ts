@@ -1,9 +1,11 @@
-import { reviewEnforcementRequired, routeDefinitionForFeature } from "../policy/contract.js";
+import { checkpointsEnforcementRequired, reviewEnforcementRequired, routeDefinitionForFeature } from "../policy/contract.js";
 import { deriveNext } from "../policy/derive-next.js";
 import { requiredEvidenceForStep, requiredEvidenceIsEmpty } from "../policy/evidence.js";
 import type { NextAction } from "../policy/types.js";
+import type { RollbackNode } from "../policy/traceability.js";
 import { readState, type FeatureState } from "./state-store.js";
 import { inspectTraceGate } from "./traceability-gates.js";
+import { readTraceability } from "./traceability-store.js";
 import { verificationIsStale } from "./verification.js";
 import { assertReviewComplete } from "./review-jobs.js";
 import { readReviewLedger } from "./review-store.js";
@@ -102,6 +104,28 @@ async function reviewPlanAction(root: string, state: FeatureState): Promise<Next
   }
 }
 
+/**
+ * During the implementation step of a checkpoints:1 feature, the next action
+ * is the unit lifecycle itself: checkpoint the active unit, or begin the
+ * first pending unit whose dependencies are all checkpointed. Only when every
+ * rollback unit is checkpointed may the route record implementation.
+ */
+async function unitLifecycleAction(root: string, state: FeatureState): Promise<NextAction | undefined> {
+  if (!checkpointsEnforcementRequired(state.route, state.workflowCapabilities)) return undefined;
+  const units = state.implementationUnits ?? [];
+  const active = units.find((unit) => unit.status === "active");
+  if (active) return { kind: "checkpoint-implementation-unit", unitId: active.unitId };
+  const ledger = await readTraceability(root, state);
+  const nodes = Object.values(ledger.nodes)
+    .filter((node): node is RollbackNode => node.kind === "rollback" && node.status === "current")
+    .sort((a, b) => a.id.localeCompare(b.id));
+  const statusByUnit = new Map(units.map((unit) => [unit.unitId, unit.status]));
+  const ready = nodes.find((node) =>
+    statusByUnit.get(node.id) !== "checkpointed"
+    && node.dependsOn.every((dependency) => statusByUnit.get(dependency) === "checkpointed"));
+  return ready ? { kind: "begin-implementation-unit", unitId: ready.id } : undefined;
+}
+
 export async function nextAction(root: string, id: string): Promise<NextAction> {
   const state = await readState(root, id);
   const action = deriveNext(toDerivedState(state, await verificationIsStale(root, state)));
@@ -122,6 +146,11 @@ export async function nextAction(root: string, id: string): Promise<NextAction> 
     ];
     const missing = requiredNow.find((artifact) => !state.artifacts[artifact]);
     if (missing) return { kind: "scaffold-artifact", step: missing };
+  }
+
+  if (action.kind === "run-step" && action.step === "implementation") {
+    const unitAction = await unitLifecycleAction(root, state);
+    if (unitAction) return unitAction;
   }
 
   const traceStep = traceStepForAction(action);
