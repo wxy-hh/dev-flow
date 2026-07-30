@@ -36,6 +36,30 @@ export function verificationInvocation(
   };
 }
 
+export interface CommandRunResult {
+  exitCode: number;
+  output: string;
+}
+
+/** Shared deterministic runner for one configured verification command. */
+export async function runVerificationCommand(root: string, command: VerificationCommand): Promise<CommandRunResult> {
+  try {
+    const invocation = verificationInvocation(command);
+    const result = await run(invocation.executable, invocation.args, {
+      cwd: path.resolve(root, command.cwd),
+      timeout: 120_000,
+      maxBuffer: 1024 * 1024,
+    });
+    return { exitCode: 0, output: `${result.stdout}${result.stderr}` };
+  } catch (error) {
+    const failure = error as { code?: number; stdout?: string; stderr?: string; message: string };
+    return {
+      exitCode: typeof failure.code === "number" ? failure.code : 1,
+      output: `${failure.stdout ?? ""}${failure.stderr ?? failure.message}`,
+    };
+  }
+}
+
 export interface ManualAcceptance {
   mode: "browser" | "user-signoff" | "code-path-audit";
   source: string;
@@ -205,18 +229,10 @@ export async function runVerification(
   let exitCode = 0;
   const output: string[] = [];
   for (const command of selected) {
-    try {
-      const invocation = verificationInvocation(command);
-      const result = await run(invocation.executable, invocation.args, {
-        cwd: path.resolve(root, command.cwd),
-        timeout: 120_000,
-        maxBuffer: 1024 * 1024,
-      });
-      output.push(`[${command.id}] ${result.stdout}${result.stderr}`);
-    } catch (error) {
-      const failure = error as { code?: number; stdout?: string; stderr?: string; message: string };
-      exitCode = typeof failure.code === "number" ? failure.code : 1;
-      output.push(`[${command.id}] ${failure.stdout ?? ""}${failure.stderr ?? failure.message}`);
+    const result = await runVerificationCommand(root, command);
+    output.push(`[${command.id}] ${result.output}`);
+    if (result.exitCode !== 0) {
+      exitCode = result.exitCode;
       break;
     }
   }

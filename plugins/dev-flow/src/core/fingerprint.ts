@@ -33,3 +33,27 @@ export async function fingerprintProtectedRoots(root: string, protectedRoots: st
   }
   return digest.digest("hex");
 }
+
+export interface ProtectedFileSnapshot {
+  path: string;
+  sha256: string;
+  /** Permission bits as an octal string, e.g. "644". */
+  mode: string;
+}
+
+/** Per-file snapshot used by implementation-unit baselines and checkpoint diffs. */
+export async function snapshotProtectedRoots(root: string, protectedRoots: string[]): Promise<ProtectedFileSnapshot[]> {
+  const files: string[] = [];
+  for (const item of [...protectedRoots].sort()) await collect(root, item, files);
+  const snapshots: ProtectedFileSnapshot[] = [];
+  for (const relative of files.sort()) {
+    const absolute = path.join(root, relative);
+    const metadata = await lstat(absolute);
+    snapshots.push({
+      path: relative,
+      sha256: createHash("sha256").update(await readFile(absolute)).digest("hex"),
+      mode: (metadata.mode & 0o777).toString(8).padStart(3, "0"),
+    });
+  }
+  return snapshots;
+}

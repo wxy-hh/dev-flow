@@ -5,7 +5,8 @@ import type { RollbackNode, TraceabilityLedger } from "../policy/traceability.js
 import { implementationUnitForRollbackNode, pathWithinFileScope, type ImplementationUnitState } from "../policy/rollback.js";
 import { DevFlowError } from "./errors.js";
 import { assertArtifactCurrent } from "./artifacts.js";
-import { fingerprintProtectedRoots } from "./fingerprint.js";
+import { captureUnitBaseline } from "./checkpoints.js";
+import { fingerprintProtectedRoots, snapshotProtectedRoots } from "./fingerprint.js";
 import { assertReviewComplete } from "./review-jobs.js";
 import { mutate, readProjectConfig, type FeatureState } from "./state-store.js";
 import { currentOpenStep } from "./step-order.js";
@@ -137,6 +138,9 @@ export async function beginImplementationUnit(
       throw new DevFlowError("IMPLEMENTATION_UNIT_NOT_PENDING", "rollback unit cannot begin from its current status", { unitId, status: target.status });
     }
     const project = await readProjectConfig(root);
+    // Preserve begin-time bytes: rollback needs them long after the unit's edits.
+    const snapshot = await snapshotProtectedRoots(root, project.protectedRoots);
+    await captureUnitBaseline(root, id, unitId, snapshot);
     target.status = "active";
     target.startedFingerprint = await fingerprintProtectedRoots(root, project.protectedRoots);
     state.implementationUnits = merged;

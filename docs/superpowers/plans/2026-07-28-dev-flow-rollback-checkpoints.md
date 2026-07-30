@@ -94,7 +94,7 @@ checkpointed → rolled_back（仅第 4A）
 - [x] 运行相关单元测试，确认红灯。
 - [x] 实现 `beginImplementationUnit`、状态转换与 Hook policy。
 - [x] 验证 legacy feature 与 approval 前写入规则不回归。
-- [ ] 提交：`feat(dev-flow): enforce implementation unit lifecycle`
+- [x] 提交：`feat(dev-flow): enforce implementation unit lifecycle`
 
 ### 任务 3：创建内容寻址检查点
 
@@ -131,13 +131,13 @@ Blob 路径：
 
 **步骤：**
 
-- [ ] 写文本、二进制、新增、删除、重命名、chmod 与相同 blob 去重测试。
-- [ ] 写 scope 外改动、验证失败、写 manifest 中断和 hash mismatch 测试。
-- [ ] 写未知 command ID、同 ID 命令定义变化和 project config digest 变化导致 checkpoint 拒绝的测试。
-- [ ] 运行 `node --test tests/unit/checkpoints.test.mjs`，确认红灯。
-- [ ] 复用 verification command runner；失败时 unit 保持 active 且不产生 confirmed manifest。
-- [ ] 使用临时文件、fsync 与 atomic rename 写 blob/manifest。
-- [ ] 运行 checkpoint 与 verification 回归测试。
+- [x] 写文本、二进制、新增、删除、重命名、chmod 与相同 blob 去重测试。
+- [x] 写 scope 外改动、验证失败、写 manifest 中断和 hash mismatch 测试。
+- [x] 写未知 command ID、同 ID 命令定义变化和 project config digest 变化导致 checkpoint 拒绝的测试。
+- [x] 运行 `node --test tests/unit/checkpoints.test.mjs`，确认红灯。
+- [x] 复用 verification command runner；失败时 unit 保持 active 且不产生 confirmed manifest。
+- [x] 使用临时文件、fsync 与 atomic rename 写 blob/manifest。
+- [x] 运行 checkpoint 与 verification 回归测试。
 - [ ] 提交：`feat(dev-flow): create content addressed checkpoints`
 
 ### 任务 4：实现回撤预览与冲突检测
