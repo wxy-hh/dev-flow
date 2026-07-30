@@ -293,7 +293,7 @@ Blob 路径：
 - [x] 实现事务、补偿与 doctor recovery。
 - [x] 成功后将撤销 units 标记 `rolled_back`，首个撤销 unit 变回 pending。
 - [x] 使 code review、verification、feature-check、logic-complete 与 finalize stale；basis 未变时保留 implementation approval。
-- [ ] 提交：`feat(dev-flow): execute resumable checkpoint rollback`
+- [x] 提交：`feat(dev-flow): execute resumable checkpoint rollback`
 
 ### 任务 9：开放执行工具并完成端到端验收
 
