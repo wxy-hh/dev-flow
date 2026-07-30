@@ -1,0 +1,140 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "dev-flow/checkpoint.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "implementationUnitState": { "$ref": "#/$defs/implementationUnitState" },
+    "implementationUnits": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/implementationUnitState" }
+    },
+    "checkpointManifest": { "$ref": "#/$defs/checkpointManifest" }
+  },
+  "$defs": {
+    "rollbackId": {
+      "type": "string",
+      "pattern": "^RU-[0-9]{3,}$"
+    },
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "fileMode": {
+      "type": "string",
+      "pattern": "^[0-7]{3,4}$"
+    },
+    "implementationUnitStatus": {
+      "enum": ["pending", "active", "verified", "checkpointed", "rolled_back"]
+    },
+    "implementationUnitState": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["unitId", "status", "basisHash"],
+      "properties": {
+        "unitId": { "$ref": "#/$defs/rollbackId" },
+        "status": { "$ref": "#/$defs/implementationUnitStatus" },
+        "basisHash": { "$ref": "#/$defs/sha256" },
+        "startedFingerprint": { "$ref": "#/$defs/sha256" },
+        "checkpointId": { "type": "string", "minLength": 1 }
+      }
+    },
+    "checkpointFileChange": {
+      "enum": ["added", "modified", "deleted", "renamed", "mode-changed"]
+    },
+    "checkpointFileRecord": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "change"],
+      "properties": {
+        "path": { "type": "string", "minLength": 1 },
+        "change": { "$ref": "#/$defs/checkpointFileChange" },
+        "renamedFrom": { "type": "string", "minLength": 1 },
+        "beforeSha256": { "$ref": "#/$defs/sha256" },
+        "afterSha256": { "$ref": "#/$defs/sha256" },
+        "beforeBlobSha256": { "$ref": "#/$defs/sha256" },
+        "afterBlobSha256": { "$ref": "#/$defs/sha256" },
+        "beforeMode": { "$ref": "#/$defs/fileMode" },
+        "afterMode": { "$ref": "#/$defs/fileMode" }
+      }
+    },
+    "checkpointVerificationAttempt": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["attemptId", "commandId", "command", "status", "startedAt", "completedAt"],
+      "properties": {
+        "attemptId": { "type": "string", "minLength": 1 },
+        "commandId": { "type": "string", "minLength": 1 },
+        "command": { "type": "string", "minLength": 1 },
+        "status": { "enum": ["passed", "failed"] },
+        "startedAt": { "type": "string", "format": "date-time" },
+        "completedAt": { "type": "string", "format": "date-time" }
+      }
+    },
+    "checkpointVerificationCommand": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["commandId", "command"],
+      "properties": {
+        "commandId": { "type": "string", "minLength": 1 },
+        "command": { "type": "string", "minLength": 1 }
+      }
+    },
+    "checkpointManifest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schemaVersion",
+        "checkpointId",
+        "unitId",
+        "sequence",
+        "basisHash",
+        "startedFingerprint",
+        "completedFingerprint",
+        "startedAt",
+        "completedAt",
+        "files",
+        "forwardPatchSha256",
+        "reversePatchSha256",
+        "verificationAttempts",
+        "requirementsSha256",
+        "planSha256",
+        "traceabilitySha256",
+        "approvalBasisHash",
+        "projectConfigSha256",
+        "verificationCommands"
+      ],
+      "properties": {
+        "schemaVersion": { "const": 1 },
+        "checkpointId": { "type": "string", "minLength": 1 },
+        "unitId": { "$ref": "#/$defs/rollbackId" },
+        "sequence": { "type": "integer", "minimum": 1 },
+        "basisHash": { "$ref": "#/$defs/sha256" },
+        "startedFingerprint": { "$ref": "#/$defs/sha256" },
+        "completedFingerprint": { "$ref": "#/$defs/sha256" },
+        "startedAt": { "type": "string", "format": "date-time" },
+        "completedAt": { "type": "string", "format": "date-time" },
+        "files": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/checkpointFileRecord" }
+        },
+        "forwardPatchSha256": { "$ref": "#/$defs/sha256" },
+        "reversePatchSha256": { "$ref": "#/$defs/sha256" },
+        "verificationAttempts": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/checkpointVerificationAttempt" }
+        },
+        "requirementsSha256": { "$ref": "#/$defs/sha256" },
+        "planSha256": { "$ref": "#/$defs/sha256" },
+        "traceabilitySha256": { "$ref": "#/$defs/sha256" },
+        "approvalBasisHash": { "$ref": "#/$defs/sha256" },
+        "projectConfigSha256": { "$ref": "#/$defs/sha256" },
+        "verificationCommands": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/checkpointVerificationCommand" }
+        }
+      }
+    }
+  }
+}

@@ -49,10 +49,10 @@ interface ImplementationUnitState {
 
 **步骤：**
 
-- [ ] 写缺失 RU 字段、无效状态转换、重复 checkpoint ID 和未知 unit 测试。
-- [ ] 写 standard M/L 的同构 `RollbackNode` 都能生成 `ImplementationUnitState` 的测试。
-- [ ] 运行 `node --test tests/unit/rollback-policy.test.mjs`，确认红灯。
-- [ ] 添加状态和 checkpoint Schema，不复制 RU interface。
+- [x] 写缺失 RU 字段、无效状态转换、重复 checkpoint ID 和未知 unit 测试。
+- [x] 写 standard M/L 的同构 `RollbackNode` 都能生成 `ImplementationUnitState` 的测试。
+- [x] 运行 `node --test tests/unit/rollback-policy.test.mjs`，确认红灯。
+- [x] 添加状态和 checkpoint Schema，不复制 RU interface。
 - [ ] 提交：`feat(dev-flow): define implementation checkpoint schema`
 
 ### 任务 2：实现单元生命周期，并在核心层和宿主钩子层限制写入
