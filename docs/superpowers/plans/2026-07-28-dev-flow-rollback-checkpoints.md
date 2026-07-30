@@ -167,7 +167,7 @@ Blob 路径：
 - [x] 运行 `node --test tests/unit/rollback-preview.test.mjs`，确认红灯。
 - [x] 实现 `previewRollback`，只返回计划，不修改工作区或状态。
 - [x] status 显示合法目标、冲突摘要和 checkpoint chain。
-- [ ] 提交：`feat(dev-flow): preview checkpoint rollback`
+- [x] 提交：`feat(dev-flow): preview checkpoint rollback`
 
 ### 任务 5：只暴露第 3 阶段安全工具并更新技能
 
@@ -197,10 +197,10 @@ Blob 路径：
 
 **步骤：**
 
-- [ ] 写工具发现、严格输入 Schema、状态输出和 execute 工具不存在的测试。
-- [ ] 更新 implement Skill：begin → 仅改 scope → checkpoint → 下一 RU → 全部完成后 record implementation。
-- [ ] 更新 status：显示 active RU、最近 checkpoint、剩余 units 与合法预览目标。
-- [ ] 运行 MCP、status 与 Skills 测试。
+- [x] 写工具发现、严格输入 Schema、状态输出和 execute 工具不存在的测试。
+- [x] 更新 implement Skill：begin → 仅改 scope → checkpoint → 下一 RU → 全部完成后 record implementation。
+- [x] 更新 status：显示 active RU、最近 checkpoint、剩余 units 与合法预览目标。
+- [x] 运行 MCP、status 与 Skills 测试。
 - [ ] 提交：`feat(dev-flow): expose rollback readiness workflow`
 
 ### 任务 6：保护控制文件并验收第 3 阶段

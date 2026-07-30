@@ -161,3 +161,126 @@ test("status surfaces incomplete in-progress grill metadata", async () => {
     await assert.rejects(() => status.readStatusView(root, "f"), (error) => error.code === "GRILL_STATUS_INVALID");
   } finally { await rm(root, { recursive: true, force: true }); }
 });
+
+test("status does not crash on corrupted trace snapshot during implementation with checkpoints", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "dev-flow-status-corrupt-trace-"));
+  try {
+    await mkdir(path.join(root, "src"));
+    await mkdir(path.join(root, "test"));
+    await writeFile(path.join(root, "src", "app.js"), "export const value = 1;\n");
+    await writeFile(path.join(root, "test", "app.test.js"), "const test = require('node:test');\ntest('fixture passes', () => {});\n");
+    await store.initProject(root, {
+      schemaVersion: 1,
+      verification: { commands: [{ id: "unit", command: "node", args: ["--test"], cwd: "." }], behaviorCommands: [] },
+      enforcement: { mode: "strict", gitWriteRequiresLogicComplete: true, oneActiveFeature: true, requireExplicitHumanReply: true },
+      protectedRoots: ["src", "test"],
+    });
+    const contract = await loadSource("plugins/dev-flow/src/policy/contract.ts");
+    const { registerTraceFixture } = await import("../helpers/trace-fixtures.mjs");
+    let state = await store.startFeature(root, {
+      featureId: "f", host: "codex", level: "M", topology: "local", execution: "standard", requirements: "provided-confirmed",
+    });
+    state = await store.mutate(root, "f", state.revision, "corrupt-trace-caps", (draft) => {
+      draft.workflowCapabilities = { trace: 1, review: 0, checkpoints: 1, rollbackExecution: 0 };
+    });
+    state = await registerTraceFixture({ root, featureId: "f", state, kind: "requirements" });
+    state = await store.mutate(root, "f", state.revision, "corrupt-trace-reqs", (draft) => {
+      draft.steps.requirements = { status: "satisfied" };
+      draft.steps.requirement_confirmation = { status: "satisfied" };
+    });
+    state = await registerTraceFixture({ root, featureId: "f", state, kind: "implementation-plan" });
+    state = await store.mutate(root, "f", state.revision, "corrupt-trace-plan", (draft) => {
+      draft.steps.implementation_plan = { status: "satisfied" };
+    });
+    state = await registerTraceFixture({ root, featureId: "f", state, kind: "coverage-matrix" });
+    state = await store.mutate(root, "f", state.revision, "corrupt-trace-approval", (draft) => {
+      const definition = contract.routeDefinitionForFeature(draft.route, draft.workflowCapabilities);
+      for (const step of definition.orderedSteps.slice(0, definition.orderedSteps.indexOf("implementation"))) {
+        draft.steps[step] = { status: "satisfied" };
+      }
+      draft.humanGates.implementation_approval = { status: "confirmed" };
+    });
+
+    // Corrupt the trace snapshot so readTraceability throws
+    const snapshotPath = path.join(root, ".dev-flow", "features", "f", state.traceability.path);
+    await writeFile(snapshotPath, "garbage data, not valid JSON\n");
+
+    // readStatusView must not crash; it should return a valid view with trace blockers
+    const view = await status.readStatusView(root, "f");
+    assert.equal(view.implementation.enforced, true);
+    assert.equal(view.implementation.activeUnitId, undefined);
+    assert.equal(view.implementation.lastCheckpointId, undefined);
+    assert.deepEqual(view.implementation.remainingUnitIds, []);
+    assert.equal(view.trace.enforced, true);
+    assert.equal(view.trace.blockers.length, 1);
+    assert.equal(view.trace.blockers[0].code, "TRACE_SLICE_INCOMPLETE");
+    assert.equal(view.trace.blockers[0].step, "implementation");
+    assert.equal(view.trace.blockers[0].details.cause, "TRACEABILITY_INTEGRITY_FAILED");
+    // nextAction should be repair-trace, not a crash
+    assert.equal(view.progress.nextAction.kind, "repair-trace");
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test("status exposes unit lifecycle progress and rollback preview targets", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "dev-flow-status-units-"));
+  try {
+    await mkdir(path.join(root, "src"));
+    await mkdir(path.join(root, "test"));
+    await writeFile(path.join(root, "src", "app.js"), "export const value = 1;\n");
+    await writeFile(path.join(root, "test", "app.test.js"), "const test = require('node:test');\ntest('fixture passes', () => {});\n");
+    await store.initProject(root, {
+      schemaVersion: 1,
+      verification: { commands: [{ id: "unit", command: "node", args: ["--test"], cwd: "." }], behaviorCommands: [] },
+      enforcement: { mode: "strict", gitWriteRequiresLogicComplete: true, oneActiveFeature: true, requireExplicitHumanReply: true },
+      protectedRoots: ["src", "test"],
+    });
+    const contract = await loadSource("plugins/dev-flow/src/policy/contract.ts");
+    const units = await loadSource("plugins/dev-flow/src/core/implementation-units.ts");
+    const checkpoints = await loadSource("plugins/dev-flow/src/core/checkpoints.ts");
+    const { registerTraceFixture } = await import("../helpers/trace-fixtures.mjs");
+    let state = await store.startFeature(root, {
+      featureId: "f", host: "codex", level: "M", topology: "local", execution: "standard", requirements: "provided-confirmed",
+    });
+    state = await store.mutate(root, "f", state.revision, "status-units-capabilities", (draft) => {
+      draft.workflowCapabilities = { trace: 1, review: 0, checkpoints: 1, rollbackExecution: 0 };
+    });
+    state = await registerTraceFixture({ root, featureId: "f", state, kind: "requirements" });
+    state = await store.mutate(root, "f", state.revision, "status-units-requirements", (draft) => {
+      draft.steps.requirements = { status: "satisfied" };
+      draft.steps.requirement_confirmation = { status: "satisfied" };
+    });
+    state = await registerTraceFixture({ root, featureId: "f", state, kind: "implementation-plan" });
+    state = await store.mutate(root, "f", state.revision, "status-units-plan", (draft) => {
+      draft.steps.implementation_plan = { status: "satisfied" };
+    });
+    state = await registerTraceFixture({ root, featureId: "f", state, kind: "coverage-matrix" });
+    state = await store.mutate(root, "f", state.revision, "status-units-approval", (draft) => {
+      const definition = contract.routeDefinitionForFeature(draft.route, draft.workflowCapabilities);
+      for (const step of definition.orderedSteps.slice(0, definition.orderedSteps.indexOf("implementation"))) {
+        draft.steps[step] = { status: "satisfied" };
+      }
+      draft.humanGates.implementation_approval = { status: "confirmed" };
+    });
+
+    let view = await status.readStatusView(root, "f");
+    assert.equal(view.implementation.enforced, true);
+    assert.equal(view.implementation.activeUnitId, undefined);
+    assert.equal(view.implementation.lastCheckpointId, undefined);
+    assert.deepEqual(view.implementation.remainingUnitIds, ["RU-001"]);
+    assert.deepEqual(view.rollback.validTargets, []);
+
+    state = await units.beginImplementationUnit(root, "f", state.revision, "RU-001");
+    view = await status.readStatusView(root, "f");
+    assert.equal(view.implementation.activeUnitId, "RU-001");
+    assert.deepEqual(view.implementation.remainingUnitIds, ["RU-001"]);
+
+    await writeFile(path.join(root, "src", "app.js"), "export const value = 2;\n");
+    state = (await checkpoints.checkpointImplementationUnit(root, "f", state.revision, "RU-001")).state;
+    view = await status.readStatusView(root, "f");
+    assert.equal(view.implementation.activeUnitId, undefined);
+    assert.equal(view.implementation.lastCheckpointId, "CP-001");
+    assert.deepEqual(view.implementation.remainingUnitIds, []);
+    assert.deepEqual(view.rollback.validTargets, ["CP-001"]);
+    assert.deepEqual(view.rollback.chain, [{ checkpointId: "CP-001", unitId: "RU-001", sequence: 1 }]);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});

@@ -148,15 +148,17 @@ export async function nextAction(root: string, id: string): Promise<NextAction> 
     if (missing) return { kind: "scaffold-artifact", step: missing };
   }
 
-  if (action.kind === "run-step" && action.step === "implementation") {
-    const unitAction = await unitLifecycleAction(root, state);
-    if (unitAction) return unitAction;
-  }
-
+  // Check trace gate before unit lifecycle derivation — corrupted or stale
+  // trace must return repair-trace, not crash or suggest stale units.
   const traceStep = traceStepForAction(action);
   if (traceStep) {
     const trace = await inspectTraceGate(root, state, traceStep);
     if (trace.blocker) return { kind: "repair-trace", ...trace.blocker };
+  }
+
+  if (action.kind === "run-step" && action.step === "implementation") {
+    const unitAction = await unitLifecycleAction(root, state);
+    if (unitAction) return unitAction;
   }
 
   if (action.kind === "run-step" && action.step === "feature_check") return enrichFeatureCheck(state);

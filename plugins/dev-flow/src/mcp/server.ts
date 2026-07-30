@@ -10,6 +10,9 @@ import {
 } from "../core/state-store.js";
 import { nextAction } from "../core/next.js";
 import { readStatusView } from "../core/status.js";
+import { beginImplementationUnit } from "../core/implementation-units.js";
+import { checkpointImplementationUnit } from "../core/checkpoints.js";
+import { previewRollback } from "../core/rollback.js";
 import { runVerification } from "../core/verification.js";
 import { allowedRiskLabels } from "../policy/contract.js";
 import { deriveRiskRequirements, selectRoute } from "../policy/route.js";
@@ -51,6 +54,7 @@ const tools = [
   "dev_flow_present_gate", "dev_flow_confirm_gate", "dev_flow_reclassify", "dev_flow_verify",
   "dev_flow_respond_interaction", "dev_flow_request_grill_decision", "dev_flow_resolve_grill_decision",
   "dev_flow_feature_check", "dev_flow_finalize", "dev_flow_abandon", "dev_flow_enable_windows_notifications", "dev_flow_doctor",
+  "dev_flow_begin_implementation_unit", "dev_flow_checkpoint_implementation_unit", "dev_flow_preview_rollback",
   "dev_flow_recover_corrupt_feature",
 ];
 
@@ -228,6 +232,19 @@ const toolSchemas: Record<string, { description: string; inputSchema: Record<str
     }),
   },
   dev_flow_record_step: { description: "Record the current non-gate route step.", inputSchema: featureMutation({ step: string, evidence: {} }) },
+  dev_flow_begin_implementation_unit: {
+    description: "Begin the next rollback unit of a checkpoints:1 feature; Core derives basis, scope, and dependency order.",
+    inputSchema: object(["featureId", "expectedRevision", "unitId"], { featureId: string, expectedRevision: integer, unitId: traceId("RU") }),
+  },
+  dev_flow_checkpoint_implementation_unit: {
+    description: "Confirm the active rollback unit: scope-checked diff, forward verification, content-addressed checkpoint.",
+    inputSchema: object(["featureId", "expectedRevision", "unitId"], { featureId: string, expectedRevision: integer, unitId: traceId("RU") }),
+  },
+  dev_flow_preview_rollback: {
+    description: "Read-only rollback plan for a confirmed checkpoint: undo order, restored files, verification commands. Phase 3 has no execution tool.",
+    inputSchema: object(["featureId", "targetCheckpointId"], { featureId: string, targetCheckpointId: string }),
+    annotations: { readOnlyHint: true },
+  },
   dev_flow_present_gate: { description: "Present a strict human gate.", inputSchema: featureMutation({ gate: { enum: ["requirement_confirmation", "implementation_approval"] } }) },
   dev_flow_confirm_gate: {
     description: "Confirm a presented gate with later user evidence.",
@@ -405,6 +422,25 @@ function assertReviewSamplingInput(value: unknown): asserts value is Record<stri
   featureId: string; expectedRevision: number; batchId: string; jobId: string;
 } {
   assertReviewMutationInput(value, "dev_flow_sample_review_job", ["batchId", "jobId"]);
+}
+
+const ROLLBACK_UNIT_ID = /^RU-[0-9]{3,}$/;
+
+function assertUnitMutationInput(value: unknown, tool: string): asserts value is Record<string, unknown> & {
+  featureId: string; expectedRevision: number; unitId: string;
+} {
+  assertReviewMutationInput(value, tool, ["unitId"]);
+  if (typeof value.unitId !== "string" || !ROLLBACK_UNIT_ID.test(value.unitId)) {
+    throw new DevFlowError("INVALID_TOOL_INPUT", `${tool} input does not match its schema`);
+  }
+}
+
+function assertPreviewRollbackInput(value: unknown): asserts value is { featureId: string; targetCheckpointId: string } {
+  assertExactToolInput(value, ["featureId", "targetCheckpointId"], "dev_flow_preview_rollback");
+  if (typeof value.featureId !== "string" || !value.featureId
+    || typeof value.targetCheckpointId !== "string" || !value.targetCheckpointId) {
+    throw new DevFlowError("INVALID_TOOL_INPUT", "dev_flow_preview_rollback input does not match its schema");
+  }
 }
 
 type ElicitationResult = { action: "accept" | "decline" | "cancel"; content?: Record<string, unknown> };
@@ -700,6 +736,18 @@ async function call(name: string, a: any, connection: McpConnection) {
       return interactionEnvelope(result.state, interaction, result.idempotent ? "accepted" : "resolved", interactionResponse(result.state, a.interactionId as string));
     }
     case "dev_flow_record_step": return recordStep(root, a.featureId, a.expectedRevision, a.step, a.evidence);
+    case "dev_flow_begin_implementation_unit": {
+      assertUnitMutationInput(a, "dev_flow_begin_implementation_unit");
+      return beginImplementationUnit(root, a.featureId, a.expectedRevision, a.unitId);
+    }
+    case "dev_flow_checkpoint_implementation_unit": {
+      assertUnitMutationInput(a, "dev_flow_checkpoint_implementation_unit");
+      return checkpointImplementationUnit(root, a.featureId, a.expectedRevision, a.unitId);
+    }
+    case "dev_flow_preview_rollback": {
+      assertPreviewRollbackInput(a);
+      return previewRollback(root, a.featureId, a.targetCheckpointId);
+    }
     case "dev_flow_present_gate": {
       const presentation = await presentGate(root, a.featureId, a.expectedRevision, a.gate);
       emitAttentionNotification({ kind: "decision-required", featureId: a.featureId, decision: a.gate });

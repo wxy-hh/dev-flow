@@ -484,3 +484,119 @@ test("MCP emits one advisory attention event after successful finalize", async (
     assert.equal(messages.find((message) => message.id === 2).result.structuredContent.logicComplete, true);
   } finally { await fixture.dispose(); }
 });
+
+const contract = await loadSource("plugins/dev-flow/src/policy/contract.ts");
+
+function satisfyPreImplementation(draft) {
+  const definition = contract.routeDefinitionForFeature(draft.route, draft.workflowCapabilities);
+  for (const step of definition.orderedSteps.slice(0, definition.orderedSteps.indexOf("implementation"))) {
+    draft.steps[step] = { status: "satisfied" };
+  }
+  draft.humanGates.implementation_approval = { status: "confirmed" };
+}
+
+/** standard-m feature with one RU scoped to src, approved and on the implementation step. */
+async function unitReadyMcpFeature(root, { checkpoints = 1 } = {}) {
+  await mkdir(path.join(root, "src"));
+  await writeFile(path.join(root, "src", "app.js"), "export const value = 1;\n");
+  await store.initProject(root, config);
+  let state = await store.startFeature(root, {
+    featureId: "f", host: "codex", level: "M", topology: "local", execution: "standard", requirements: "provided-confirmed",
+  });
+  state = await store.mutate(root, "f", state.revision, "unit-mcp-capabilities", (draft) => {
+    draft.workflowCapabilities = { trace: 1, review: 0, checkpoints, rollbackExecution: 0 };
+  });
+  state = await registerTraceFixture({ root, featureId: "f", state, kind: "requirements" });
+  state = await store.mutate(root, "f", state.revision, "unit-mcp-requirements", (draft) => {
+    draft.steps.requirements = { status: "satisfied" };
+    draft.steps.requirement_confirmation = { status: "satisfied" };
+  });
+  state = await registerTraceFixture({ root, featureId: "f", state, kind: "implementation-plan" });
+  state = await store.mutate(root, "f", state.revision, "unit-mcp-plan", (draft) => {
+    draft.steps.implementation_plan = { status: "satisfied" };
+  });
+  state = await registerTraceFixture({ root, featureId: "f", state, kind: "coverage-matrix" });
+  return store.mutate(root, "f", state.revision, "unit-mcp-approval", satisfyPreImplementation);
+}
+
+test("MCP exposes only phase-3 rollback tools with strict schemas and no execution entry", async () => {
+  const responses = await request([
+    { jsonrpc: "2.0", id: 1, method: "tools/list" },
+    { jsonrpc: "2.0", id: 2, method: "tools/call", params: { name: "dev_flow_present_rollback_gate", arguments: {} } },
+    { jsonrpc: "2.0", id: 3, method: "tools/call", params: { name: "dev_flow_execute_rollback", arguments: {} } },
+  ], process.cwd());
+  const names = responses[0].result.tools.map((tool) => tool.name);
+  for (const name of ["dev_flow_begin_implementation_unit", "dev_flow_checkpoint_implementation_unit", "dev_flow_preview_rollback"]) {
+    assert.ok(names.includes(name), `missing tool ${name}`);
+  }
+  for (const forbidden of ["dev_flow_present_rollback_gate", "dev_flow_execute_rollback"]) {
+    assert.equal(names.includes(forbidden), false, `${forbidden} must not exist in phase 3`);
+  }
+  assert.equal(responses[1].error.data.code, "UNKNOWN_TOOL");
+  assert.equal(responses[2].error.data.code, "UNKNOWN_TOOL");
+
+  const tools = responses[0].result.tools;
+  for (const name of ["dev_flow_begin_implementation_unit", "dev_flow_checkpoint_implementation_unit"]) {
+    const schema = tools.find((tool) => tool.name === name).inputSchema;
+    assert.deepEqual(schema.required, ["featureId", "expectedRevision", "unitId"], name);
+    assert.equal(schema.additionalProperties, false, name);
+    assert.equal(schema.properties.unitId.pattern, "^RU-[0-9]{3,}$", name);
+    for (const forbidden of ["fileScope", "basisHash", "status", "checkpointId", "files", "verificationAttempts"]) {
+      assert.equal(forbidden in schema.properties, false, `${name} must not accept Core-owned ${forbidden}`);
+    }
+  }
+  const preview = tools.find((tool) => tool.name === "dev_flow_preview_rollback").inputSchema;
+  assert.deepEqual(preview.required, ["featureId", "targetCheckpointId"]);
+  assert.equal(preview.additionalProperties, false);
+  assert.equal("expectedRevision" in preview.properties, false);
+  assert.equal(tools.find((tool) => tool.name === "dev_flow_preview_rollback").annotations.readOnlyHint, true);
+});
+
+test("MCP drives the phase-3 unit lifecycle and rejects checkpoints:0 features", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "dev-flow-mcp-units-"));
+  try {
+    const state = await unitReadyMcpFeature(root);
+    const responses = await request([
+      { jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "dev_flow_begin_implementation_unit", arguments: { featureId: "f", expectedRevision: state.revision, unitId: "RU-001", fileScope: ["src"] } } },
+      { jsonrpc: "2.0", id: 2, method: "tools/call", params: { name: "dev_flow_begin_implementation_unit", arguments: { featureId: "f", expectedRevision: state.revision, unitId: "RU-1" } } },
+      { jsonrpc: "2.0", id: 3, method: "tools/call", params: { name: "dev_flow_begin_implementation_unit", arguments: { featureId: "f", expectedRevision: state.revision, unitId: "RU-001" } } },
+    ], root);
+    assert.equal(responses[0].error.data.code, "INVALID_TOOL_INPUT");
+    assert.equal(responses[1].error.data.code, "INVALID_TOOL_INPUT");
+    const begun = responses[2].result.structuredContent;
+    const activeUnit = begun.implementationUnits.find((unit) => unit.unitId === "RU-001");
+    assert.equal(activeUnit.status, "active");
+
+    await writeFile(path.join(root, "src", "app.js"), "export const value = 2;\n");
+    const checkpointResponses = await request([
+      { jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "dev_flow_checkpoint_implementation_unit", arguments: { featureId: "f", expectedRevision: begun.revision, unitId: "RU-001" } } },
+    ], root);
+    const checkpointed = checkpointResponses[0].result.structuredContent;
+    assert.equal(checkpointed.state.implementationUnits[0].status, "checkpointed");
+    assert.equal(checkpointed.manifest.checkpointId, "CP-001");
+    assert.equal(checkpointed.manifest.files[0].path, "src/app.js");
+
+    const previewResponses = await request([
+      { jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "dev_flow_preview_rollback", arguments: { featureId: "f", targetCheckpointId: "CP-001" } } },
+      { jsonrpc: "2.0", id: 2, method: "tools/call", params: { name: "dev_flow_preview_rollback", arguments: { featureId: "f", targetCheckpointId: "CP-009" } } },
+    ], root);
+    const preview = previewResponses[0].result.structuredContent;
+    assert.deepEqual(preview.undoOrder, []);
+    assert.match(preview.previewBasisHash, /^[a-f0-9]{64}$/);
+    assert.equal(previewResponses[1].error.data.code, "ROLLBACK_TARGET_INVALID");
+
+    // A checkpoints:0 feature keeps the legacy recordStep contract.
+    const legacyRoot = await mkdtemp(path.join(os.tmpdir(), "dev-flow-mcp-units-legacy-"));
+    try {
+      const legacy = await unitReadyMcpFeature(legacyRoot, { checkpoints: 0 });
+      const legacyResponses = await request([
+        { jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "dev_flow_begin_implementation_unit", arguments: { featureId: "f", expectedRevision: legacy.revision, unitId: "RU-001" } } },
+        { jsonrpc: "2.0", id: 2, method: "tools/call", params: { name: "dev_flow_checkpoint_implementation_unit", arguments: { featureId: "f", expectedRevision: legacy.revision, unitId: "RU-001" } } },
+        { jsonrpc: "2.0", id: 3, method: "tools/call", params: { name: "dev_flow_record_step", arguments: { featureId: "f", expectedRevision: legacy.revision, step: "implementation", evidence: { files: ["src/app.js"] } } } },
+      ], legacyRoot);
+      assert.equal(legacyResponses[0].error.data.code, "IMPLEMENTATION_UNITS_NOT_ENFORCED");
+      assert.equal(legacyResponses[1].error.data.code, "IMPLEMENTATION_UNITS_NOT_ENFORCED");
+      assert.equal(legacyResponses[2].result.structuredContent.steps.implementation.status, "satisfied");
+    } finally { await rm(legacyRoot, { recursive: true, force: true }); }
+  } finally { await rm(root, { recursive: true, force: true }); }
+});

@@ -1,14 +1,15 @@
 import { readFile } from "node:fs/promises";
 import path from "node:path";
-import { routeDefinitionForFeature } from "../policy/contract.js";
+import { checkpointsEnforcementRequired, routeDefinitionForFeature } from "../policy/contract.js";
 import type { NextAction, RequiredEvidence } from "../policy/types.js";
-import type { TraceSummary, TraceabilityPointer } from "../policy/traceability.js";
+import type { RollbackNode, TraceSummary, TraceabilityPointer } from "../policy/traceability.js";
 import { DevFlowError } from "./errors.js";
 import { gateReplyHint, type GateId } from "./gate-approval.js";
 import { nextAction } from "./next.js";
 import { parseGrillFrontMatter } from "./requirements-grill.js";
 import { readState, type FeatureState } from "./state-store.js";
 import { inspectCurrentTrace, type TraceBlocker } from "./traceability-gates.js";
+import { readTraceability } from "./traceability-store.js";
 import { fallbackHint, findInteractionForTarget, toPublicInteraction, type PublicInteraction } from "./user-interactions.js";
 import { readVerificationFreshness, type VerificationFreshness } from "./verification.js";
 import { readReviewProjection, type ReviewProjection } from "./review-projection.js";
@@ -44,10 +45,19 @@ export interface ReviewStatus {
   projection?: ReviewProjection;
 }
 
+/** Unit lifecycle digest for the implementation step of a checkpoints:1 feature. */
+export interface ImplementationStatus {
+  enforced: boolean;
+  activeUnitId?: string;
+  lastCheckpointId?: string;
+  remainingUnitIds: string[];
+}
+
 export type StatusView = FeatureState & {
   progress: Progress;
   trace: TraceStatus;
   reviewStatus: ReviewStatus;
+  implementation: ImplementationStatus;
   rollback: RollbackChainView;
 };
 
@@ -158,15 +168,47 @@ export async function buildProgress(
   };
 }
 
+/**
+ * Unit lifecycle digest: remaining units come from the current trace ledger
+ * (units not yet begun count too); fail-soft when the ledger is unreadable,
+ * since view.trace.blockers already reports the corruption.
+ */
+async function implementationStatus(root: string, state: FeatureState, rollback: RollbackChainView): Promise<ImplementationStatus> {
+  if (!checkpointsEnforcementRequired(state.route, state.workflowCapabilities)) {
+    return { enforced: false, remainingUnitIds: [] };
+  }
+  let remainingUnitIds: string[] = [];
+  try {
+    const ledger = await readTraceability(root, state);
+    const byUnit = new Map((state.implementationUnits ?? []).map((unit) => [unit.unitId, unit.status]));
+    remainingUnitIds = Object.values(ledger.nodes)
+      .filter((node): node is RollbackNode => node.kind === "rollback" && node.status === "current")
+      .map((node) => node.id)
+      .filter((unitId) => byUnit.get(unitId) !== "checkpointed")
+      .sort();
+  } catch {
+    remainingUnitIds = [];
+  }
+  const active = (state.implementationUnits ?? []).find((unit) => unit.status === "active");
+  return {
+    enforced: true,
+    ...(active ? { activeUnitId: active.unitId } : {}),
+    ...(rollback.chain.length ? { lastCheckpointId: rollback.chain.at(-1)!.checkpointId } : {}),
+    remainingUnitIds,
+  };
+}
+
 export async function readStatusView(root: string, featureId: string): Promise<StatusView> {
   const state = await readState(root, featureId);
   const action = await nextAction(root, featureId);
   const progress = await buildProgress(root, state, action);
+  const rollback = await rollbackChainView(root, state);
   return {
     ...state,
     progress,
     trace: await traceStatus(root, state),
     reviewStatus: await reviewStatus(root, state),
-    rollback: await rollbackChainView(root, state),
+    implementation: await implementationStatus(root, state, rollback),
+    rollback,
   };
 }

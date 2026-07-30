@@ -14,6 +14,7 @@ description: 查看并接力 Dev Flow 状态。触发：查状态、继续任务
 5. `progress.acceptanceAssist.suggested=true` 时标注“可选建议，不影响流程”；它不会产生等待、门禁或 finalize 条件。仅在有实际浏览器工具且用户明确要求后才协助验收。
 6. wait 为 none 时再调用 `dev_flow_next`，只执行唯一动作。若 action 带 `requiredEvidence`，原样展示 fields/checks/verificationKinds。
 7. `reviewStatus.enforced=true` 且 `reviewStatus.projection.batch.visibility=coarse` 时，只复述 batch/job 状态；不得索取、推断或转述其他 reviewer 的 findings。visibility 为 `complete` 后才可复述完整 findings/dispositions。不得编辑或登记 `plan-review`。
+8. `implementation.enforced=true` 时复述实现单元进度：`implementation.activeUnitId`（进行中的 RU）、`implementation.lastCheckpointId`（最近 checkpoint）、`implementation.remainingUnitIds`（剩余单元）。`rollback.enforced=true` 时复述 `rollback.chain`、`rollback.validTargets`（合法预览目标）与 `rollback.conflicts`（未登记修改）；`validTargets` 为空表示当前没有可预览的回撤目标。
 
 ```text
 当前：<featureId> · <route>
