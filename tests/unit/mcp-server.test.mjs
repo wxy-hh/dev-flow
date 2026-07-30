@@ -66,6 +66,42 @@ function requestWithElicitation(message, cwd, elicitationResult) {
   });
 }
 
+function requestWithSampling(message, cwd, samplingResult) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, [bundles.pathFor("mcp-server")], { cwd, stdio: ["pipe", "pipe", "pipe"], env: { ...process.env, DEV_FLOW_DISABLE_ATTENTION: "1" } });
+    let stdout = "", stderr = "", settled = false;
+    const requests = [];
+    const finish = (value) => {
+      if (settled) return;
+      settled = true;
+      resolve(value);
+    };
+    child.stdout.on("data", (chunk) => {
+      stdout += chunk;
+      const lines = stdout.split("\n");
+      stdout = lines.pop();
+      for (const line of lines.filter(Boolean)) {
+        const response = JSON.parse(line);
+        if (response.method === "sampling/createMessage") {
+          requests.push(response);
+          child.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", id: response.id, result: samplingResult })}\n`);
+        } else if (response.id === 2) {
+          child.stdin.end();
+          finish({ response, requests });
+        }
+      }
+    });
+    child.stderr.on("data", (chunk) => { stderr += chunk; });
+    child.on("error", reject);
+    child.on("close", (code) => {
+      if (!settled && code === 0) finish(undefined);
+      else if (!settled) reject(new Error(stderr));
+    });
+    child.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2025-06-18", capabilities: { sampling: {} } } })}\n`);
+    child.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", id: 2, method: "tools/call", params: message })}\n`);
+  });
+}
+
 test("MCP server initializes, advertises the complete public interface, and maps errors", async () => {
   const responses = await request([
     { jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2024-11-05" } },
@@ -81,7 +117,7 @@ test("MCP server initializes, advertises the complete public interface, and maps
   assert.ok(Array.isArray(responses[1].result.tools));
   assert.equal(responses[1].result.content, undefined);
   const names = responses[1].result.tools.map((tool) => tool.name);
-  for (const name of ["dev_flow_init_project", "dev_flow_classify", "dev_flow_start", "dev_flow_next", "dev_flow_verify", "dev_flow_confirm_gate", "dev_flow_respond_interaction", "dev_flow_request_grill_decision", "dev_flow_resolve_grill_decision", "dev_flow_enable_windows_notifications", "dev_flow_finalize", "dev_flow_recover_corrupt_feature", "dev_flow_status", "dev_flow_record_artifact_with_trace", "dev_flow_get_traceability", "dev_flow_create_review_batch", "dev_flow_get_review_job", "dev_flow_claim_review_job", "dev_flow_submit_review_job", "dev_flow_present_review_risk_acceptance", "dev_flow_resolve_review_risk_acceptance"]) {
+  for (const name of ["dev_flow_init_project", "dev_flow_classify", "dev_flow_start", "dev_flow_next", "dev_flow_verify", "dev_flow_confirm_gate", "dev_flow_respond_interaction", "dev_flow_request_grill_decision", "dev_flow_resolve_grill_decision", "dev_flow_enable_windows_notifications", "dev_flow_finalize", "dev_flow_recover_corrupt_feature", "dev_flow_status", "dev_flow_record_artifact_with_trace", "dev_flow_get_traceability", "dev_flow_create_review_batch", "dev_flow_get_review_job", "dev_flow_claim_review_job", "dev_flow_submit_review_job", "dev_flow_sample_review_job", "dev_flow_present_review_risk_acceptance", "dev_flow_resolve_review_risk_acceptance"]) {
     assert.ok(names.includes(name), `missing tool ${name}`);
   }
   const contract = JSON.parse(await readFile(path.resolve("plugins/dev-flow/policy/contract.json"), "utf8"));
@@ -126,6 +162,11 @@ test("MCP server initializes, advertises the complete public interface, and maps
   assert.equal(reviewFinding.additionalProperties, false);
   assert.equal("basisHash" in reviewFinding.properties, false);
   assert.equal(reviewSubmit.inputSchema.properties.completion.properties.resolutions.items.additionalProperties, false);
+  const reviewSampling = responses[1].result.tools.find((tool) => tool.name === "dev_flow_sample_review_job");
+  assert.deepEqual(reviewSampling.inputSchema.required, ["featureId", "expectedRevision", "batchId", "jobId"]);
+  for (const forbidden of ["capability", "claimRequestId", "completion", "basisHash", "assuranceLevel", "roles"]) {
+    assert.equal(forbidden in reviewSampling.inputSchema.properties, false);
+  }
 
   // tools/call keeps CallToolResult content shape
   assert.equal(responses[2].error.data.code, "UNKNOWN_TOOL");
@@ -257,6 +298,55 @@ test("MCP review tools enforce Core-owned inputs, isolate capabilities, and pres
     assert.equal(secondSubmission.job.jobId, secondJob.jobId);
     assert.equal(secondSubmission.job.submission.coverageSummary, "Second review complete");
     assert.equal("submission" in secondSubmission.batch.jobs.find((job) => job.jobId === firstJob.jobId), false);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test("MCP sampling uses only one frozen target package, requires negotiated support, and burns malformed responses", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "dev-flow-mcp-sampling-"));
+  try {
+    const initial = await reviewReadyMcpFeature(root);
+    const [createdResponse] = await request([
+      { jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "dev_flow_create_review_batch", arguments: { featureId: "f", expectedRevision: initial.revision } } },
+    ], root);
+    const created = createdResponse.result.structuredContent;
+    const [firstJob, secondJob] = created.batch.jobs;
+
+    const forgedRequest = await request([
+      { jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2025-06-18", capabilities: { sampling: {} } } },
+      { jsonrpc: "2.0", id: 2, method: "tools/call", params: { name: "dev_flow_sample_review_job", arguments: { featureId: "f", expectedRevision: created.state.revision, batchId: created.batch.batchId, jobId: firstJob.jobId, requestId: "caller-controlled-request" } } },
+    ], root);
+    assert.equal(forgedRequest[1].error.data.code, "INVALID_TOOL_INPUT");
+    assert.equal((await store.readState(root, "f")).revision, created.state.revision);
+
+    const unsupported = await request([
+      { jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2025-06-18", capabilities: {} } },
+      { jsonrpc: "2.0", id: 2, method: "tools/call", params: { name: "dev_flow_sample_review_job", arguments: { featureId: "f", expectedRevision: created.state.revision, batchId: created.batch.batchId, jobId: firstJob.jobId } } },
+    ], root);
+    assert.equal(unsupported[1].error.data.code, "REVIEW_SAMPLING_UNSUPPORTED");
+    assert.equal((await store.readState(root, "f")).revision, created.state.revision);
+
+    const sampled = await requestWithSampling({
+      name: "dev_flow_sample_review_job",
+      arguments: { featureId: "f", expectedRevision: created.state.revision, batchId: created.batch.batchId, jobId: firstJob.jobId },
+    }, root, { content: [{ type: "text", text: JSON.stringify({ coverageSummary: "sampled requirements review", findings: [] }) }] });
+    assert.equal(sampled.requests.length, 1);
+    const requestContents = sampled.requests[0].params.messages[0].content;
+    assert.equal(requestContents.includes(firstJob.jobId), true);
+    assert.equal(requestContents.includes(secondJob.jobId), false, "sampling request must not include a sibling job or its output");
+    const successful = sampled.response.result.structuredContent;
+    assert.equal(successful.job.status, "submitted");
+    assert.equal(successful.batch.executionMode, "mcp-sampling");
+    assert.equal("submission" in successful.batch.jobs.find((job) => job.jobId === secondJob.jobId), false);
+
+    const malformed = await requestWithSampling({
+      name: "dev_flow_sample_review_job",
+      arguments: { featureId: "f", expectedRevision: successful.state.revision, batchId: created.batch.batchId, jobId: secondJob.jobId },
+    }, root, { content: [{ type: "text", text: "not-json" }] });
+    assert.equal(malformed.response.error.data.code, "REVIEW_SAMPLING_FAILED");
+    const ledger = await reviewStore.readReviewLedger(root, await store.readState(root, "f"));
+    const pending = ledger.batches.at(-1).jobs.find((job) => job.jobId === secondJob.jobId);
+    assert.equal(pending.status, "pending");
+    assert.equal(pending.samplingAttempts.at(-1).failureCode, "invalid-response");
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 

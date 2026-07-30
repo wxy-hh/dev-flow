@@ -52,9 +52,34 @@ export interface ReviewJob {
   role: ReviewRole;
   reviewDepth: ReviewDepth;
   packageSha256: string;
-  status: "pending" | "claimed" | "submitted";
+  status: "pending" | "claimed" | "sampling" | "submitted";
   claim?: { requestSha256: string; claimedAt: string; leaseExpiresAt: string };
-  submission?: { payloadSha256: string; coverageSummary: string; findings: ReviewFinding[]; resolutions: ReviewFindingResolutionInput[]; submittedAt: string };
+  samplingAttempts?: ReviewSamplingAttempt[];
+  submission?: {
+    payloadSha256: string;
+    coverageSummary: string;
+    findings: ReviewFinding[];
+    resolutions: ReviewFindingResolutionInput[];
+    submittedAt: string;
+    samplingProvenance?: ReviewSamplingProvenance;
+  };
+}
+
+/** Core records only request hashes; plaintext sampling IDs never enter snapshots. */
+export interface ReviewSamplingAttempt {
+  requestSha256: string;
+  issuedAt: string;
+  leaseExpiresAt: string;
+  status: "issued" | "failed" | "submitted";
+  completedAt?: string;
+  payloadSha256?: string;
+  failureCode?: "client-error" | "timeout" | "invalid-response" | "validation-failed";
+}
+
+export interface ReviewSamplingProvenance {
+  requestSha256: string;
+  issuedAt: string;
+  completedAt: string;
 }
 
 export type ReviewFindingDisposition =
@@ -89,6 +114,13 @@ export interface ReviewLedger {
   stateRevision: number;
   batches: ReviewBatch[];
   summary: ReviewSummary;
+}
+
+/** Only persisted, successful server-issued sampling provenance can raise assurance. */
+export function assuranceForReviewBatch(batch: Pick<ReviewBatch, "jobs">): ReviewAssurance {
+  const sampled = batch.jobs.filter((job) => job.status === "submitted" && job.submission?.samplingProvenance);
+  const hashes = new Set(sampled.map((job) => job.submission!.samplingProvenance!.requestSha256));
+  return sampled.length >= 2 && hashes.size >= 2 ? "independent-sampling" : "multi-perspective";
 }
 
 const reviewRoles = [

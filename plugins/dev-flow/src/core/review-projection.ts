@@ -15,7 +15,7 @@ export interface ReviewProjectionJob {
   jobId: string;
   role: string;
   reviewDepth: "standard" | "full";
-  status: "pending" | "claimed" | "submitted";
+  status: "pending" | "claimed" | "sampling" | "submitted";
 }
 
 export interface ReviewProjectionFinding {

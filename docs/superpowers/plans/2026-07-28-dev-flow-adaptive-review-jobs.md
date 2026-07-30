@@ -333,10 +333,10 @@ interface ReviewFinding {
 
 **步骤：**
 
-- [ ] 写 request ID 重放、伪造、跨 batch 复用和部分失败测试。
-- [ ] 写 caller-supplied request ID 不能升级 assurance 的测试。
-- [ ] 实现 sampling 请求、provenance 持久化与等级计算。
-- [ ] 提交：`feat(dev-flow): add independently sampled reviews`
+- [x] 写 request ID 重放、伪造、跨 batch 复用和部分失败测试。
+- [x] 写 caller-supplied request ID 不能升级 assurance 的测试。
+- [x] 实现 sampling 请求、provenance 持久化与等级计算。
+- [x] 提交：`feat(dev-flow): add independently sampled reviews`
 
 ### 任务 8：增加宿主证明，并为可信身份留接口
 

@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { mkdir, open, readFile, readdir, rename } from "node:fs/promises";
 import path from "node:path";
-import type { ReviewBatch, ReviewLedger, ReviewPointer, ReviewSummary } from "../policy/review.js";
+import { assuranceForReviewBatch, type ReviewBatch, type ReviewJob, type ReviewLedger, type ReviewPointer, type ReviewSamplingAttempt, type ReviewSummary } from "../policy/review.js";
 import type { FeatureState } from "./state-store.js";
 import { DevFlowError } from "./errors.js";
 
@@ -62,6 +62,45 @@ function validHash(value: unknown): value is string {
   return typeof value === "string" && /^[a-f0-9]{64}$/.test(value);
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function validSamplingAttempt(value: unknown): value is ReviewSamplingAttempt {
+  if (!isRecord(value) || !validHash(value.requestSha256)
+    || typeof value.issuedAt !== "string" || typeof value.leaseExpiresAt !== "string"
+    || (value.status !== "issued" && value.status !== "failed" && value.status !== "submitted")) return false;
+  if (value.status === "issued") {
+    return value.completedAt === undefined && value.payloadSha256 === undefined && value.failureCode === undefined;
+  }
+  if (typeof value.completedAt !== "string") return false;
+  if (value.status === "failed") {
+    return value.payloadSha256 === undefined
+      && (value.failureCode === "client-error" || value.failureCode === "timeout"
+        || value.failureCode === "invalid-response" || value.failureCode === "validation-failed");
+  }
+  return validHash(value.payloadSha256) && value.failureCode === undefined;
+}
+
+function validSamplingAttempts(value: unknown, status: ReviewJob["status"], submission: ReviewJob["submission"]): boolean {
+  if (value === undefined) return status !== "sampling" && !submission?.samplingProvenance;
+  if (!Array.isArray(value) || !value.length || !value.every(validSamplingAttempt)) return false;
+  const attempts = value as ReviewSamplingAttempt[];
+  const issued = attempts.filter((attempt) => attempt.status === "issued");
+  if (issued.length > 1 || (status === "sampling") !== (issued.length === 1)) return false;
+  if (status === "sampling" && submission) return false;
+  if (status === "sampling") return attempts.every((attempt) => attempt.status === "failed" || attempt.status === "issued");
+  if (status === "pending" || status === "claimed") return attempts.every((attempt) => attempt.status === "failed");
+  if (!submission?.samplingProvenance) return attempts.every((attempt) => attempt.status === "failed");
+  return attempts.every((attempt) => attempt.status === "failed" || attempt.status === "submitted")
+    && attempts.filter((attempt) => attempt.status === "submitted").length === 1
+    && attempts.some((attempt) => attempt.status === "submitted"
+      && attempt.requestSha256 === submission.samplingProvenance!.requestSha256
+      && attempt.issuedAt === submission.samplingProvenance!.issuedAt
+      && attempt.completedAt === submission.samplingProvenance!.completedAt
+      && attempt.payloadSha256 === submission.payloadSha256);
+}
+
 function validateBatch(value: unknown): value is ReviewBatch {
   if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
   const batch = value as Partial<ReviewBatch>;
@@ -76,11 +115,19 @@ function validateBatch(value: unknown): value is ReviewBatch {
   return batch.jobs.every((job) => {
     if (!job || typeof job !== "object" || typeof job.jobId !== "string" || !job.jobId || ids.has(job.jobId)
       || typeof job.role !== "string" || (job.reviewDepth !== "standard" && job.reviewDepth !== "full")
-      || !validHash(job.packageSha256) || (job.status !== "pending" && job.status !== "claimed" && job.status !== "submitted")) return false;
+      || !validHash(job.packageSha256) || (job.status !== "pending" && job.status !== "claimed" && job.status !== "sampling" && job.status !== "submitted")) return false;
     ids.add(job.jobId);
+    if (!validSamplingAttempts(job.samplingAttempts, job.status, job.submission)) return false;
     if (job.status === "pending") return !job.claim && !job.submission;
-    if (!job.claim || !validHash(job.claim.requestSha256) || typeof job.claim.claimedAt !== "string" || typeof job.claim.leaseExpiresAt !== "string") return false;
-    if (job.status === "claimed") return !job.submission;
+    if (job.status === "sampling") return !job.claim;
+    if (job.status === "claimed") {
+      return !job.submission && !!job.claim && validHash(job.claim.requestSha256)
+        && typeof job.claim.claimedAt === "string" && typeof job.claim.leaseExpiresAt === "string";
+    }
+    const sampled = Boolean(job.submission?.samplingProvenance);
+    if (!sampled && (!job.claim || !validHash(job.claim.requestSha256)
+      || typeof job.claim.claimedAt !== "string" || typeof job.claim.leaseExpiresAt !== "string")) return false;
+    if (sampled && job.claim) return false;
     return !!job.submission && validHash(job.submission.payloadSha256)
       && typeof job.submission.coverageSummary === "string" && Array.isArray(job.submission.findings)
       && typeof job.submission.submittedAt === "string";
@@ -103,6 +150,12 @@ function validateLedger(value: unknown): asserts value is ReviewLedger {
       || digest(canonicalReviewValueJson(batch.basis)) !== batch.basisHash
       || (batch.progress === "complete") !== batch.jobs.every((job) => job.status === "submitted")) {
       integrity("review snapshot batch is inconsistent");
+    }
+    if (batch.executionMode === "mcp-sampling" && batch.assuranceLevel !== assuranceForReviewBatch(batch)) {
+      integrity("MCP sampling batch assurance is not derived from persisted provenance", { batchId: batch.batchId });
+    }
+    if (batch.executionMode === "isolated-sequential" && batch.assuranceLevel !== "multi-perspective") {
+      integrity("isolated review batch assurance is not Core-derived", { batchId: batch.batchId });
     }
     batchIds.add(batch.batchId);
   }

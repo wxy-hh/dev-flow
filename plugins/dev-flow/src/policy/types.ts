@@ -176,7 +176,7 @@ export type NextAction =
       kind: "review-jobs-pending";
       step: "plan_review";
       batchId: string;
-      jobs: Array<{ jobId: string; role: ReviewRole; reviewDepth: ReviewDepth; status: "pending" | "claimed" | "submitted" }>;
+      jobs: Array<{ jobId: string; role: ReviewRole; reviewDepth: ReviewDepth; status: "pending" | "claimed" | "sampling" | "submitted" }>;
     }
   | {
       kind: "repair-trace";

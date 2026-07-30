@@ -1,9 +1,9 @@
 import { createHash, randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
-import type { ReviewBasis, ReviewBatch, ReviewJob, ReviewLedger } from "../policy/review.js";
-import type { ReviewFinding, ReviewFindingInput, ReviewFindingResolutionInput } from "../policy/types.js";
-import { assuranceForReview2a, deriveReviewJobRequirements, parseReviewJobCompletion } from "../policy/review.js";
+import type { ReviewBasis, ReviewBatch, ReviewJob, ReviewLedger, ReviewSamplingAttempt } from "../policy/review.js";
+import type { ReviewAssurance, ReviewFinding, ReviewFindingInput, ReviewFindingResolutionInput } from "../policy/types.js";
+import { assuranceForReview2a, assuranceForReviewBatch, deriveReviewJobRequirements, parseReviewJobCompletion } from "../policy/review.js";
 import { DevFlowError } from "./errors.js";
 import { fingerprintProtectedRoots } from "./fingerprint.js";
 import { mutatePrepared, readState, type FeatureState } from "./state-store.js";
@@ -29,6 +29,7 @@ import {
 
 const digest = (value: string) => createHash("sha256").update(value).digest("hex");
 const leaseMilliseconds = 60 * 60 * 1000;
+const samplingLeaseMilliseconds = 120 * 1000;
 const basisArtifactKinds = ["requirements", "implementation-plan", "coverage-matrix", "rollback-units"] as const;
 
 interface FrozenReviewArtifact {
@@ -58,6 +59,16 @@ export interface ClaimedReviewJob {
   capability: string;
   idempotent: boolean;
 }
+
+export interface StartedReviewSampling {
+  state: FeatureState;
+  batchId: string;
+  job: Omit<ReviewJob, "claim">;
+  requestId: string;
+  package: unknown;
+}
+
+type SamplingFailureCode = "client-error" | "timeout" | "invalid-response" | "validation-failed";
 
 export interface ReviewRiskAcceptancePresentation {
   state: FeatureState;
@@ -188,6 +199,32 @@ function recoverExpiredLease(job: ReviewJob, now: Date): ReviewJob {
   return job;
 }
 
+function activeSamplingAttempt(job: ReviewJob): ReviewSamplingAttempt | undefined {
+  return job.samplingAttempts?.find((attempt) => attempt.status === "issued");
+}
+
+/** A later mutation cleans up an abandoned server-held sampling lease. */
+function recoverExpiredSampling(job: ReviewJob, now: Date): ReviewJob {
+  const active = activeSamplingAttempt(job);
+  if (job.status !== "sampling" || !active || Date.parse(active.leaseExpiresAt) > now.getTime()) return job;
+  return {
+    ...job,
+    status: "pending",
+    samplingAttempts: job.samplingAttempts!.map((attempt) => attempt.requestSha256 !== active.requestSha256 ? attempt : {
+      ...attempt,
+      status: "failed" as const,
+      completedAt: now.toISOString(),
+      failureCode: "timeout" as const,
+    }),
+  };
+}
+
+function withDerivedSamplingAssurance(batch: ReviewBatch): ReviewBatch {
+  return batch.executionMode === "mcp-sampling"
+    ? { ...batch, assuranceLevel: assuranceForReviewBatch(batch) }
+    : batch;
+}
+
 function safePackagePath(value: string): boolean {
   return value.length > 0 && value === value.trim() && !path.posix.isAbsolute(value) && !value.includes("\\")
     && path.posix.normalize(value) === value && !value.split("/").includes("..");
@@ -199,6 +236,26 @@ function validScopeManifest(value: unknown): value is { protectedRoots: string[]
   return Array.isArray(manifest.protectedRoots) && Array.isArray(manifest.rollbackFileScopes)
     && manifest.protectedRoots.every((entry) => typeof entry === "string" && safePackagePath(entry))
     && manifest.rollbackFileScopes.every((entry) => typeof entry === "string" && safePackagePath(entry));
+}
+
+async function readBoundReviewPackage(
+  root: string,
+  featureId: string,
+  batch: ReviewBatch,
+  job: ReviewJob,
+): Promise<Record<string, unknown>> {
+  const reviewPackage = await readReviewPackage(root, featureId, job.packageSha256);
+  if (typeof reviewPackage !== "object" || reviewPackage === null || Array.isArray(reviewPackage)) {
+    invalid("REVIEW_INTEGRITY_FAILED", "review package does not belong to its job", { batchId: batch.batchId, jobId: job.jobId });
+  }
+  const packageRecord = reviewPackage as Record<string, unknown>;
+  if (packageRecord.featureId !== featureId
+    || packageRecord.batchId !== batch.batchId
+    || packageRecord.jobId !== job.jobId
+    || packageRecord.basisHash !== batch.basisHash) {
+    invalid("REVIEW_INTEGRITY_FAILED", "review package does not belong to its job", { batchId: batch.batchId, jobId: job.jobId });
+  }
+  return packageRecord;
 }
 
 function assertFindingScope(
@@ -319,14 +376,7 @@ export async function getReviewJob(
   const batch = currentBatch(await readReviewLedger(root, state), batchId);
   const job = findJob(batch, jobId);
   if (!job.claim || digest(capability) !== job.claim.requestSha256) invalid("REVIEW_JOB_CAPABILITY_INVALID", "review job capability is invalid");
-  const reviewPackage = await readReviewPackage(root, id, job.packageSha256);
-  if (typeof reviewPackage !== "object" || reviewPackage === null
-    || (reviewPackage as Record<string, unknown>).featureId !== id
-    || (reviewPackage as Record<string, unknown>).batchId !== batchId
-    || (reviewPackage as Record<string, unknown>).jobId !== jobId
-    || (reviewPackage as Record<string, unknown>).basisHash !== batch.basisHash) {
-    invalid("REVIEW_INTEGRITY_FAILED", "review package does not belong to its job", { batchId, jobId });
-  }
+  const reviewPackage = await readBoundReviewPackage(root, id, batch, job);
   return { job: visibleJob(job), package: reviewPackage };
 }
 
@@ -346,8 +396,9 @@ export async function claimReviewJob(
     const batch = currentBatch(ledger, batchId);
     const requestSha256 = digest(claimRequestId);
     const original = findJob(batch, jobId);
-    const job = recoverExpiredLease(original, now);
+    const job = recoverExpiredSampling(recoverExpiredLease(original, now), now);
     if (job.status === "submitted") invalid("REVIEW_JOB_ALREADY_SUBMITTED", "review job has already been submitted", { jobId });
+    if (job.status === "sampling") invalid("REVIEW_JOB_SAMPLING_IN_PROGRESS", "review job is held by server sampling", { jobId });
     if (job.status === "claimed" && job.claim!.requestSha256 !== requestSha256) {
       invalid("REVIEW_JOB_ALREADY_CLAIMED", "review job is claimed by another capability", { jobId });
     }
@@ -367,6 +418,101 @@ export async function claimReviewJob(
     return { mutate: (draft) => { draft.review = pointer; }, eventData: { batchId, jobId } };
   });
   return { ...result!, state };
+}
+
+interface SubmittedReviewJob {
+  batch: ReviewBatch;
+  payloadSha256: string;
+}
+
+async function submitParsedReviewJob(
+  root: string,
+  featureId: string,
+  ledger: ReviewLedger,
+  batch: ReviewBatch,
+  job: ReviewJob,
+  parsed: ReturnType<typeof parseReviewJobCompletion>,
+  now: Date,
+  samplingAttempt?: ReviewSamplingAttempt,
+): Promise<SubmittedReviewJob> {
+  if (parsed.findings.some((finding) => finding.category !== job.role)) {
+    invalid("REVIEW_FINDING_ROLE_MISMATCH", "a job may only submit findings for its assigned review role", { jobId: job.jobId, role: job.role });
+  }
+  const reviewPackage = await readBoundReviewPackage(root, featureId, batch, job);
+  if (!validScopeManifest(reviewPackage.scopeManifest)) {
+    invalid("REVIEW_INTEGRITY_FAILED", "review package scope manifest is invalid", { jobId: job.jobId });
+  }
+  const manifest = reviewPackage.scopeManifest;
+  assertFindingScope(manifest, parsed.findings, parsed.resolutions ?? []);
+  const dispositions = { ...batch.dispositions };
+  const resolvedIds = new Set<string>();
+  for (const resolution of parsed.resolutions ?? []) {
+    if (resolvedIds.has(resolution.findingId)) invalid("REVIEW_RESOLUTION_DUPLICATE", "a finding may be resolved only once per successor batch", { findingId: resolution.findingId });
+    const source = ledger.batches
+      .filter((candidate) => candidate.batchId !== batch.batchId)
+      .flatMap((candidate) => candidate.jobs.map((candidateJob) => ({ batch: candidate, job: candidateJob })))
+      .find(({ job: candidateJob }) => candidateJob.submission?.findings.some((finding) => finding.findingId === resolution.findingId));
+    const finding = source?.job.submission?.findings.find((candidate) => candidate.findingId === resolution.findingId);
+    if (!source || !finding) invalid("REVIEW_RESOLUTION_UNKNOWN_FINDING", "resolution references an unknown prior finding", { findingId: resolution.findingId });
+    if (finding.severity !== "blocking" || source.job.role !== job.role) {
+      invalid("REVIEW_RESOLUTION_ROLE_MISMATCH", "only the same role may resolve a prior blocking finding", { findingId: resolution.findingId });
+    }
+    if (dispositions[resolution.findingId]) {
+      invalid("REVIEW_RESOLUTION_ALREADY_DISPOSED", "a prior finding already has a disposition", { findingId: resolution.findingId });
+    }
+    dispositions[resolution.findingId] = {
+      kind: "resolved-in-successor",
+      successorBatchId: batch.batchId,
+      resolutionJobId: job.jobId,
+      resolvedAt: now.toISOString(),
+    };
+    resolvedIds.add(resolution.findingId);
+  }
+  const payloadSha256 = digest(canonicalReviewValueJson(parsed));
+  const findings: ReviewFinding[] = dedupeFindings(parsed.findings).map((finding) => ({
+    ...finding,
+    findingId: `F-${randomUUID()}`,
+    jobId: job.jobId,
+  }));
+  const completedAt = now.toISOString();
+  const samplingAttempts = samplingAttempt
+    ? job.samplingAttempts!.map((attempt) => attempt.requestSha256 !== samplingAttempt.requestSha256 ? attempt : {
+      ...attempt,
+      status: "submitted" as const,
+      completedAt,
+      payloadSha256,
+    })
+    : job.samplingAttempts;
+  const submitted: ReviewJob = {
+    ...job,
+    status: "submitted",
+    ...(samplingAttempt ? { claim: undefined } : {}),
+    ...(samplingAttempts ? { samplingAttempts } : {}),
+    submission: {
+      payloadSha256,
+      coverageSummary: parsed.coverageSummary,
+      findings,
+      resolutions: parsed.resolutions ?? [],
+      submittedAt: completedAt,
+      ...(samplingAttempt ? {
+        samplingProvenance: {
+          requestSha256: samplingAttempt.requestSha256,
+          issuedAt: samplingAttempt.issuedAt,
+          completedAt,
+        },
+      } : {}),
+    },
+  };
+  let updatedBatch: ReviewBatch = {
+    ...batch,
+    jobs: batch.jobs.map((candidate) => candidate.jobId === job.jobId ? submitted : candidate),
+    ...(Object.keys(dispositions).length ? { dispositions } : {}),
+  };
+  updatedBatch = {
+    ...updatedBatch,
+    progress: updatedBatch.jobs.every((candidate) => candidate.status === "submitted") ? "complete" : "open",
+  };
+  return { batch: withDerivedSamplingAssurance(updatedBatch), payloadSha256 };
 }
 
 export async function submitReviewJob(
@@ -391,56 +537,160 @@ export async function submitReviewJob(
       result = { batch, idempotent: true };
       return { mutate: () => undefined, unchanged: true, eventData: { batchId, jobId, idempotent: true } };
     }
+    if (job.status === "sampling") invalid("REVIEW_JOB_SAMPLING_IN_PROGRESS", "review job is held by server sampling", { jobId });
     if (!job.claim || digest(capability) !== job.claim.requestSha256) invalid("REVIEW_JOB_CAPABILITY_INVALID", "review job capability is invalid");
     if (Date.parse(job.claim.leaseExpiresAt) <= now.getTime()) invalid("REVIEW_JOB_LEASE_EXPIRED", "review job lease has expired", { jobId });
-    if (parsed.findings.some((finding) => finding.category !== job.role)) {
-      invalid("REVIEW_FINDING_ROLE_MISMATCH", "a job may only submit findings for its assigned review role", { jobId, role: job.role });
-    }
-    const reviewPackage = await readReviewPackage(root, id, job.packageSha256) as { scopeManifest?: unknown };
-    const manifest = reviewPackage.scopeManifest;
-    if (!validScopeManifest(manifest)) {
-      invalid("REVIEW_INTEGRITY_FAILED", "review package scope manifest is invalid", { jobId });
-    }
-    assertFindingScope(manifest, parsed.findings, parsed.resolutions ?? []);
-    const dispositions = { ...batch.dispositions };
-    const resolvedIds = new Set<string>();
-    for (const resolution of parsed.resolutions ?? []) {
-      if (resolvedIds.has(resolution.findingId)) invalid("REVIEW_RESOLUTION_DUPLICATE", "a finding may be resolved only once per successor batch", { findingId: resolution.findingId });
-      const source = ledger.batches
-        .filter((candidate) => candidate.batchId !== batchId)
-        .flatMap((candidate) => candidate.jobs.map((candidateJob) => ({ batch: candidate, job: candidateJob })))
-        .find(({ job: candidateJob }) => candidateJob.submission?.findings.some((finding) => finding.findingId === resolution.findingId));
-      const finding = source?.job.submission?.findings.find((candidate) => candidate.findingId === resolution.findingId);
-      if (!source || !finding) invalid("REVIEW_RESOLUTION_UNKNOWN_FINDING", "resolution references an unknown prior finding", { findingId: resolution.findingId });
-      if (finding!.severity !== "blocking" || source!.job.role !== job.role) {
-        invalid("REVIEW_RESOLUTION_ROLE_MISMATCH", "only the same role may resolve a prior blocking finding", { findingId: resolution.findingId });
-      }
-      if (dispositions[resolution.findingId]) {
-        invalid("REVIEW_RESOLUTION_ALREADY_DISPOSED", "a prior finding already has a disposition", { findingId: resolution.findingId });
-      }
-      dispositions[resolution.findingId] = { kind: "resolved-in-successor", successorBatchId: batchId, resolutionJobId: jobId, resolvedAt: now.toISOString() };
-      resolvedIds.add(resolution.findingId);
-    }
-    const findings: ReviewFinding[] = dedupeFindings(parsed.findings).map((finding) => ({
-      ...finding,
-      findingId: `F-${randomUUID()}`,
-      jobId,
-    }));
-    const submitted: ReviewJob = {
-      ...job,
-      status: "submitted",
-      submission: { payloadSha256, coverageSummary: parsed.coverageSummary, findings, resolutions: parsed.resolutions ?? [], submittedAt: now.toISOString() },
-    };
-    const updatedBatch: ReviewBatch = {
-      ...batch,
-      jobs: batch.jobs.map((candidate) => candidate.jobId === jobId ? submitted : candidate),
-      ...(Object.keys(dispositions).length ? { dispositions } : {}),
-    };
-    updatedBatch.progress = updatedBatch.jobs.every((candidate) => candidate.status === "submitted") ? "complete" : "open";
-    const batches = ledger.batches.map((candidate) => candidate.batchId === batchId ? updatedBatch : candidate);
+    const submitted = await submitParsedReviewJob(root, id, ledger, batch, job, parsed, now);
+    const batches = ledger.batches.map((candidate) => candidate.batchId === batchId ? submitted.batch : candidate);
     const pointer = await writeReviewSnapshot(root, cloneLedger(ledger, nextStateRevision, batches));
-    result = { batch: updatedBatch, idempotent: false };
-    return { mutate: (draft) => { draft.review = pointer; }, eventData: { batchId, jobId, payloadSha256 } };
+    result = { batch: submitted.batch, idempotent: false };
+    return { mutate: (draft) => { draft.review = pointer; }, eventData: { batchId, jobId, payloadSha256: submitted.payloadSha256 } };
+  });
+  return { ...result!, state };
+}
+
+function samplingCurrentBatch(ledger: ReviewLedger, batchId: string): ReviewBatch {
+  const batch = ledger.batches.find((candidate) => candidate.batchId === batchId);
+  if (!batch || batch.validity !== "current") {
+    invalid("REVIEW_SAMPLING_REQUEST_REPLAY", "sampling request is not valid for a current review batch", { batchId });
+  }
+  return batch;
+}
+
+function samplingAttemptForRequest(job: ReviewJob, requestId: string): ReviewSamplingAttempt {
+  const requestSha256 = digest(requestId);
+  const attempt = activeSamplingAttempt(job);
+  if (job.status !== "sampling" || !attempt || attempt.requestSha256 !== requestSha256) {
+    invalid("REVIEW_SAMPLING_REQUEST_REPLAY", "sampling request was already consumed or does not belong to this job", { jobId: job.jobId });
+  }
+  return attempt;
+}
+
+/** Reserve exactly one pending job for a short-lived server-side sampling request. */
+export async function beginReviewSampling(
+  root: string,
+  id: string,
+  expectedRevision: number,
+  batchId: string,
+  jobId: string,
+  now = new Date(),
+): Promise<StartedReviewSampling> {
+  let result: Omit<StartedReviewSampling, "state"> | undefined;
+  const state = await mutatePrepared(root, id, expectedRevision, "review-sampling-started", async (current, nextStateRevision) => {
+    const ledger = await readReviewLedger(root, current);
+    const batch = currentBatch(ledger, batchId);
+    const original = findJob(batch, jobId);
+    const job = recoverExpiredSampling(original, now);
+    if (job.status === "submitted") invalid("REVIEW_JOB_ALREADY_SUBMITTED", "review job has already been submitted", { jobId });
+    if (job.status === "claimed") invalid("REVIEW_JOB_ALREADY_CLAIMED", "review job is claimed by a human capability", { jobId });
+    if (job.status === "sampling") invalid("REVIEW_JOB_SAMPLING_IN_PROGRESS", "review job is already held by server sampling", { jobId });
+    const requestId = `${randomUUID()}-${randomUUID()}`;
+    const attempt: ReviewSamplingAttempt = {
+      requestSha256: digest(requestId),
+      issuedAt: now.toISOString(),
+      leaseExpiresAt: new Date(now.getTime() + samplingLeaseMilliseconds).toISOString(),
+      status: "issued",
+    };
+    const sampling: ReviewJob = {
+      ...job,
+      status: "sampling",
+      claim: undefined,
+      samplingAttempts: [...job.samplingAttempts ?? [], attempt],
+    };
+    const packageContents = await readBoundReviewPackage(root, id, batch, sampling);
+    const updatedBatch = withDerivedSamplingAssurance({
+      ...batch,
+      executionMode: "mcp-sampling",
+      jobs: batch.jobs.map((candidate) => candidate.jobId === jobId ? sampling : candidate),
+    });
+    const pointer = await writeReviewSnapshot(root, cloneLedger(
+      ledger,
+      nextStateRevision,
+      ledger.batches.map((candidate) => candidate.batchId === batchId ? updatedBatch : candidate),
+    ));
+    result = { batchId, job: visibleJob(sampling), requestId, package: packageContents };
+    return {
+      mutate: (draft) => { draft.review = pointer; },
+      eventData: { batchId, jobId, requestSha256: attempt.requestSha256 },
+    };
+  });
+  return { ...result!, state };
+}
+
+/** Burn an issued request and return the job to human-claimable pending state. */
+export async function failReviewSampling(
+  root: string,
+  id: string,
+  expectedRevision: number,
+  batchId: string,
+  jobId: string,
+  requestId: string,
+  failureCode: SamplingFailureCode,
+  now = new Date(),
+): Promise<FeatureState> {
+  return mutatePrepared(root, id, expectedRevision, "review-sampling-failed", async (current, nextStateRevision) => {
+    const ledger = await readReviewLedger(root, current);
+    const batch = samplingCurrentBatch(ledger, batchId);
+    const job = findJob(batch, jobId);
+    const attempt = samplingAttemptForRequest(job, requestId);
+    const failed: ReviewJob = {
+      ...job,
+      status: "pending",
+      samplingAttempts: job.samplingAttempts!.map((candidate) => candidate.requestSha256 !== attempt.requestSha256 ? candidate : {
+        ...candidate,
+        status: "failed" as const,
+        completedAt: now.toISOString(),
+        failureCode,
+      }),
+    };
+    const updatedBatch = withDerivedSamplingAssurance({
+      ...batch,
+      jobs: batch.jobs.map((candidate) => candidate.jobId === jobId ? failed : candidate),
+    });
+    const pointer = await writeReviewSnapshot(root, cloneLedger(
+      ledger,
+      nextStateRevision,
+      ledger.batches.map((candidate) => candidate.batchId === batchId ? updatedBatch : candidate),
+    ));
+    return {
+      mutate: (draft) => { draft.review = pointer; },
+      eventData: { batchId, jobId, requestSha256: attempt.requestSha256, failureCode },
+    };
+  });
+}
+
+/** Submit one valid server-sampled completion. The server-held request is consumed exactly once. */
+export async function completeReviewSampling(
+  root: string,
+  id: string,
+  expectedRevision: number,
+  batchId: string,
+  jobId: string,
+  requestId: string,
+  completion: unknown,
+  now = new Date(),
+): Promise<{ state: FeatureState; batch: ReviewBatch }> {
+  const parsed = parseReviewJobCompletion(completion);
+  let result: Omit<{ state: FeatureState; batch: ReviewBatch }, "state"> | undefined;
+  const state = await mutatePrepared(root, id, expectedRevision, "review-sampling-submitted", async (current, nextStateRevision) => {
+    const ledger = await readReviewLedger(root, current);
+    const batch = samplingCurrentBatch(ledger, batchId);
+    const job = findJob(batch, jobId);
+    const attempt = samplingAttemptForRequest(job, requestId);
+    if (Date.parse(attempt.leaseExpiresAt) <= now.getTime()) {
+      invalid("REVIEW_SAMPLING_REQUEST_EXPIRED", "sampling request lease has expired", { jobId });
+    }
+    const submitted = await submitParsedReviewJob(root, id, ledger, batch, job, parsed, now, attempt);
+    const pointer = await writeReviewSnapshot(root, cloneLedger(
+      ledger,
+      nextStateRevision,
+      ledger.batches.map((candidate) => candidate.batchId === batchId ? submitted.batch : candidate),
+    ));
+    result = { batch: submitted.batch };
+    return {
+      mutate: (draft) => { draft.review = pointer; },
+      eventData: { batchId, jobId, requestSha256: attempt.requestSha256, payloadSha256: submitted.payloadSha256 },
+    };
   });
   return { ...result!, state };
 }
@@ -678,7 +928,7 @@ export async function resolveReviewRiskAcceptanceToken(
 export async function assertReviewComplete(
   root: string,
   state: FeatureState,
-): Promise<{ batchId: string; basisHash: string; assuranceLevel: "multi-perspective" }> {
+): Promise<{ batchId: string; basisHash: string; assuranceLevel: ReviewAssurance }> {
   const { ledger, batch } = await currentBatchWithBasis(root, state);
   if (batch.progress !== "complete") invalid("REVIEW_BATCH_INCOMPLETE", "all required review jobs must be submitted", { batchId: batch.batchId });
   const jobs = ledger.batches.flatMap((candidate) => candidate.jobs);
@@ -721,5 +971,5 @@ export async function assertReviewComplete(
   // The ledger is the authority, but plan-review remains a required generated
   // artifact. Do not allow a complete batch to bypass a missing/corrupt view.
   await assertCurrentReviewProjection(root, state);
-  return { batchId: batch.batchId, basisHash: batch.basisHash, assuranceLevel: "multi-perspective" };
+  return { batchId: batch.batchId, basisHash: batch.basisHash, assuranceLevel: batch.assuranceLevel };
 }

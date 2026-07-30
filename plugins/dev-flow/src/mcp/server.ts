@@ -20,8 +20,11 @@ import { requestGrillDecision, resolveGrillElicitation, resolveGrillToken } from
 import { validateTraceDelta } from "../core/traceability.js";
 import { inspectCurrentTrace } from "../core/traceability-gates.js";
 import {
+  beginReviewSampling,
   claimReviewJob,
+  completeReviewSampling,
   createReviewBatch,
+  failReviewSampling,
   getReviewJob,
   presentReviewRiskAcceptance,
   resolveReviewRiskAcceptanceToken,
@@ -43,7 +46,7 @@ const tools = [
   "dev_flow_init_project", "dev_flow_classify", "dev_flow_start", "dev_flow_status", "dev_flow_next",
   "dev_flow_switch_active", "dev_flow_scaffold_artifact", "dev_flow_record_artifact", "dev_flow_record_step",
   "dev_flow_record_artifact_with_trace", "dev_flow_get_traceability",
-  "dev_flow_create_review_batch", "dev_flow_get_review_job", "dev_flow_claim_review_job", "dev_flow_submit_review_job",
+  "dev_flow_create_review_batch", "dev_flow_get_review_job", "dev_flow_claim_review_job", "dev_flow_submit_review_job", "dev_flow_sample_review_job",
   "dev_flow_present_review_risk_acceptance", "dev_flow_resolve_review_risk_acceptance",
   "dev_flow_present_gate", "dev_flow_confirm_gate", "dev_flow_reclassify", "dev_flow_verify",
   "dev_flow_respond_interaction", "dev_flow_request_grill_decision", "dev_flow_resolve_grill_decision",
@@ -189,6 +192,15 @@ const toolSchemas: Record<string, { description: string; inputSchema: Record<str
   dev_flow_submit_review_job: {
     description: "Submit one claimed job's structured completion. Assurance, role, depth, and basis are Core-derived.",
     inputSchema: featureMutation({ batchId: string, jobId: string, capability: string, completion: reviewCompletionSchema }),
+  },
+  dev_flow_sample_review_job: {
+    description: "Ask a sampling-capable MCP client to complete one pending review job. The server owns the one-use request and submits only a validated response.",
+    inputSchema: object(["featureId", "expectedRevision", "batchId", "jobId"], {
+      featureId: string,
+      expectedRevision: integer,
+      batchId: string,
+      jobId: string,
+    }),
   },
   dev_flow_present_review_risk_acceptance: {
     description: "Present a one-time user decision for an exact set of current blocking review findings.",
@@ -370,6 +382,12 @@ function assertReviewSubmitInput(value: unknown): asserts value is Record<string
   }
 }
 
+function assertReviewSamplingInput(value: unknown): asserts value is Record<string, unknown> & {
+  featureId: string; expectedRevision: number; batchId: string; jobId: string;
+} {
+  assertReviewMutationInput(value, "dev_flow_sample_review_job", ["batchId", "jobId"]);
+}
+
 type ElicitationResult = { action: "accept" | "decline" | "cancel"; content?: Record<string, unknown> };
 type ElicitationSelection = { action: string; comment?: string };
 
@@ -414,12 +432,20 @@ function reviewSubmissionEnvelope(
 
 class McpConnection {
   private supportsFormElicitation = false;
+  private supportsSampling = false;
   private nextClientRequestId = 0;
-  private readonly pending = new Map<string, { resolve(value: unknown): void; reject(error: Error): void }>();
+  private readonly pending = new Map<string, {
+    resolve(value: unknown): void;
+    reject(error: Error): void;
+    timeout?: ReturnType<typeof setTimeout>;
+  }>();
 
   configure(capabilities: unknown): void {
     this.supportsFormElicitation = false;
+    this.supportsSampling = false;
     if (!capabilities || typeof capabilities !== "object" || Array.isArray(capabilities)) return;
+    const sampling = (capabilities as { sampling?: unknown }).sampling;
+    this.supportsSampling = !!sampling && typeof sampling === "object" && !Array.isArray(sampling);
     const elicitation = (capabilities as { elicitation?: unknown }).elicitation;
     if (!elicitation || typeof elicitation !== "object" || Array.isArray(elicitation)) return;
     const modes = elicitation as Record<string, unknown>;
@@ -431,6 +457,7 @@ class McpConnection {
     const pending = this.pending.get(message.id);
     if (!pending) return false;
     this.pending.delete(message.id);
+    if (pending.timeout) clearTimeout(pending.timeout);
     if (message.error !== undefined) {
       pending.reject(new Error(`client request failed: ${JSON.stringify(message.error)}`));
     } else {
@@ -440,14 +467,59 @@ class McpConnection {
   }
 
   close(): void {
-    for (const { reject } of this.pending.values()) reject(new Error("MCP client stream closed while awaiting user interaction"));
+    for (const { reject, timeout } of this.pending.values()) {
+      if (timeout) clearTimeout(timeout);
+      reject(new Error("MCP client stream closed while awaiting a client request"));
+    }
     this.pending.clear();
   }
 
-  private request(method: string, params: unknown): Promise<unknown> {
+  assertSamplingSupported(): void {
+    if (!this.supportsSampling) {
+      throw new DevFlowError("REVIEW_SAMPLING_UNSUPPORTED", "MCP client did not advertise sampling/createMessage capability");
+    }
+  }
+
+  private request(method: string, params: unknown, timeoutMilliseconds?: number): Promise<unknown> {
     const id = `dev-flow-${++this.nextClientRequestId}`;
     process.stdout.write(`${JSON.stringify({ jsonrpc: "2.0", id, method, params })}\n`);
-    return new Promise((resolve, reject) => this.pending.set(id, { resolve, reject }));
+    return new Promise((resolve, reject) => {
+      const pending: { resolve(value: unknown): void; reject(error: Error): void; timeout?: ReturnType<typeof setTimeout> } = { resolve, reject };
+      if (timeoutMilliseconds !== undefined) {
+        pending.timeout = setTimeout(() => {
+          if (this.pending.delete(id)) {
+            reject(new DevFlowError("REVIEW_SAMPLING_TIMEOUT", "MCP sampling/createMessage did not return before its lease expired"));
+          }
+        }, timeoutMilliseconds);
+      }
+      this.pending.set(id, pending);
+    });
+  }
+
+  async sampleReview(job: { role: string; reviewDepth: string; package: unknown }): Promise<unknown> {
+    this.assertSamplingSupported();
+    const response = await this.request("sampling/createMessage", {
+      messages: [{
+        role: "user",
+        content: JSON.stringify({
+          instruction: "Return exactly one JSON review completion with coverageSummary, findings, and optional resolutions. Do not include prose outside the JSON object.",
+          role: job.role,
+          reviewDepth: job.reviewDepth,
+          package: job.package,
+        }),
+      }],
+    }, 120_000);
+    if (!response || typeof response !== "object" || Array.isArray(response)) {
+      throw new DevFlowError("REVIEW_SAMPLING_RESPONSE_INVALID", "sampling/createMessage returned an invalid response");
+    }
+    const content = (response as { content?: unknown }).content;
+    const items = Array.isArray(content) ? content : [content];
+    if (items.length !== 1 || !items[0] || typeof items[0] !== "object" || Array.isArray(items[0])
+      || (items[0] as { type?: unknown }).type !== "text" || typeof (items[0] as { text?: unknown }).text !== "string") {
+      throw new DevFlowError("REVIEW_SAMPLING_RESPONSE_INVALID", "sampling/createMessage must return one text JSON completion");
+    }
+    try { return JSON.parse((items[0] as { text: string }).text); }
+    catch { throw new DevFlowError("REVIEW_SAMPLING_RESPONSE_INVALID", "sampling/createMessage text must be valid JSON"); }
   }
 
   async elicit(interaction: PublicInteraction, message: string): Promise<ElicitationSelection | undefined> {
@@ -485,6 +557,17 @@ class McpConnection {
     const comment = typeof result.content.comment === "string" ? result.content.comment : undefined;
     return { action: result.content.action, ...(comment ? { comment } : {}) };
   }
+}
+
+function samplingFailureCode(error: unknown): "client-error" | "timeout" | "invalid-response" | "validation-failed" {
+  if (error instanceof DevFlowError) {
+    if (error.code === "REVIEW_SAMPLING_TIMEOUT" || error.code === "REVIEW_SAMPLING_REQUEST_EXPIRED") return "timeout";
+    if (error.code === "REVIEW_SAMPLING_RESPONSE_INVALID") return "invalid-response";
+  }
+  if (error instanceof Error && (/^client request failed:/.test(error.message) || /^MCP client stream closed/.test(error.message))) {
+    return "client-error";
+  }
+  return "validation-failed";
 }
 
 async function call(name: string, a: any, connection: McpConnection) {
@@ -535,6 +618,45 @@ async function call(name: string, a: any, connection: McpConnection) {
       assertReviewSubmitInput(a);
       const result = await submitReviewJob(root, a.featureId, a.expectedRevision, a.batchId, a.jobId, a.capability, a.completion);
       return reviewSubmissionEnvelope(result, a.jobId);
+    }
+    case "dev_flow_sample_review_job": {
+      assertReviewSamplingInput(a);
+      // Capability negotiation is intentionally before beginReviewSampling so an
+      // unsupported client cannot create a server-held job or mutate the pointer.
+      connection.assertSamplingSupported();
+      const started = await beginReviewSampling(root, a.featureId, a.expectedRevision, a.batchId, a.jobId);
+      try {
+        const completion = await connection.sampleReview({
+          role: started.job.role,
+          reviewDepth: started.job.reviewDepth,
+          package: started.package,
+        });
+        const completed = await completeReviewSampling(
+          root, a.featureId, started.state.revision, a.batchId, a.jobId, started.requestId, completion,
+        );
+        return reviewSubmissionEnvelope({ ...completed, idempotent: false }, a.jobId);
+      } catch (error) {
+        try {
+          await failReviewSampling(
+            root,
+            a.featureId,
+            started.state.revision,
+            a.batchId,
+            a.jobId,
+            started.requestId,
+            samplingFailureCode(error),
+          );
+        } catch {
+          // A CAS conflict or a concurrent recovery must not turn a sampling
+          // failure into a successful response. The original failure is safer.
+        }
+        const code = error instanceof DevFlowError ? error.code : "REVIEW_SAMPLING_FAILED";
+        throw new DevFlowError("REVIEW_SAMPLING_FAILED", "sampling review did not produce an accepted completion", {
+          batchId: a.batchId,
+          jobId: a.jobId,
+          causeCode: code,
+        });
+      }
     }
     case "dev_flow_present_review_risk_acceptance": {
       assertReviewMutationInput(a, "dev_flow_present_review_risk_acceptance", [], ["findingIds"]);
