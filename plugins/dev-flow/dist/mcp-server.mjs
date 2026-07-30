@@ -3,7 +3,7 @@
 // plugins/dev-flow/src/mcp/server.ts
 import readline from "node:readline";
 import { fileURLToPath } from "node:url";
-import path14 from "node:path";
+import path15 from "node:path";
 
 // plugins/dev-flow/src/core/artifacts.ts
 import { createHash as createHash8 } from "node:crypto";
@@ -84,7 +84,7 @@ var ZERO_WORKFLOW_CAPABILITIES = Object.freeze({
 var SUPPORTED_WORKFLOW_CAPABILITIES = Object.freeze({
   trace: 1,
   review: 1,
-  checkpoints: 0,
+  checkpoints: 1,
   rollbackExecution: 0
 });
 
@@ -168,6 +168,9 @@ function traceEnforcementRequired(route, capabilities) {
 }
 function reviewEnforcementRequired(route, capabilities) {
   return normalizeWorkflowCapabilities(capabilities).review === 1 && (route === "standard-m" || route === "standard-l");
+}
+function checkpointsEnforcementRequired(route, capabilities) {
+  return normalizeWorkflowCapabilities(capabilities).checkpoints === 1 && traceEnforcementRequired(route, capabilities);
 }
 
 // plugins/dev-flow/src/core/artifact-templates.ts
@@ -560,7 +563,7 @@ async function createDeliverySnapshot(root2, featureId, state, config) {
   const patchFilename = "\u4EA4\u4ED8\u5FEB\u7167.patch";
   const manifestFilename = "\u4EA4\u4ED8\u5FEB\u7167\u6587\u6863.md";
   const patchPath = path.posix.join(relativeDirectory2, patchFilename);
-  const manifestPath = path.posix.join(relativeDirectory2, manifestFilename);
+  const manifestPath2 = path.posix.join(relativeDirectory2, manifestFilename);
   const patch = patches.filter(Boolean).join("\n");
   const patchHash = digest(patch);
   await writeFile(path.join(root2, patchPath), patch, "utf8");
@@ -585,8 +588,8 @@ async function createDeliverySnapshot(root2, featureId, state, config) {
     ""
   ].join("\n");
   const manifestHash = digest(manifest);
-  await writeFile(path.join(root2, manifestPath), manifest, "utf8");
-  return { manifestPath, manifestSha256: manifestHash, patchPath, patchSha256: patchHash, baseHead: baseline.gitHead, files };
+  await writeFile(path.join(root2, manifestPath2), manifest, "utf8");
+  return { manifestPath: manifestPath2, manifestSha256: manifestHash, patchPath, patchSha256: patchHash, baseHead: baseline.gitHead, files };
 }
 
 // plugins/dev-flow/src/core/fingerprint.ts
@@ -616,14 +619,29 @@ async function collect(root2, relative, files) {
 async function fingerprintProtectedRoots(root2, protectedRoots) {
   const files = [];
   for (const item of [...protectedRoots].sort()) await collect(root2, item, files);
-  const digest7 = createHash2("sha256");
+  const digest10 = createHash2("sha256");
   for (const relative of files.sort()) {
-    digest7.update(relative);
-    digest7.update("\0");
-    digest7.update(await readFile2(path2.join(root2, relative)));
-    digest7.update("\0");
+    digest10.update(relative);
+    digest10.update("\0");
+    digest10.update(await readFile2(path2.join(root2, relative)));
+    digest10.update("\0");
   }
-  return digest7.digest("hex");
+  return digest10.digest("hex");
+}
+async function snapshotProtectedRoots(root2, protectedRoots) {
+  const files = [];
+  for (const item of [...protectedRoots].sort()) await collect(root2, item, files);
+  const snapshots = [];
+  for (const relative of files.sort()) {
+    const absolute = path2.join(root2, relative);
+    const metadata = await lstat2(absolute);
+    snapshots.push({
+      path: relative,
+      sha256: createHash2("sha256").update(await readFile2(absolute)).digest("hex"),
+      mode: (metadata.mode & 511).toString(8).padStart(3, "0")
+    });
+  }
+  return snapshots;
 }
 
 // plugins/dev-flow/src/core/project-config.ts
@@ -1909,6 +1927,26 @@ async function assertCurrentReviewProjection(root2, state) {
 
 // plugins/dev-flow/src/core/state-store.ts
 var lifecycles = /* @__PURE__ */ new Set(["active", "paused", "finalized", "abandoned"]);
+var unitStatuses = /* @__PURE__ */ new Set(["pending", "active", "verified", "checkpointed", "rolled_back"]);
+function validateImplementationUnits(units) {
+  if (!Array.isArray(units)) throw new DevFlowError("INVALID_STATE_SCHEMA", "implementationUnits must be an array");
+  const ids = /* @__PURE__ */ new Set();
+  const checkpoints = /* @__PURE__ */ new Set();
+  for (const value of units) {
+    const unit = value;
+    if (!unit || typeof unit !== "object" || Array.isArray(unit) || typeof unit.unitId !== "string" || !/^RU-[0-9]{3,}$/.test(unit.unitId) || typeof unit.status !== "string" || !unitStatuses.has(unit.status) || typeof unit.basisHash !== "string" || !/^[a-f0-9]{64}$/.test(unit.basisHash) || unit.startedFingerprint !== void 0 && (typeof unit.startedFingerprint !== "string" || !/^[a-f0-9]{64}$/.test(unit.startedFingerprint)) || unit.checkpointId !== void 0 && typeof unit.checkpointId !== "string") {
+      throw new DevFlowError("INVALID_STATE_SCHEMA", "implementation unit state is invalid");
+    }
+    const started = unit.startedFingerprint !== void 0;
+    const checkpointed = unit.checkpointId !== void 0;
+    const consistent = unit.status === "pending" && !started && !checkpointed || (unit.status === "active" || unit.status === "verified") && started && !checkpointed || (unit.status === "checkpointed" || unit.status === "rolled_back") && started && checkpointed;
+    if (!consistent) throw new DevFlowError("INVALID_STATE_SCHEMA", "implementation unit status is inconsistent with its fields");
+    if (ids.has(unit.unitId)) throw new DevFlowError("INVALID_STATE_SCHEMA", "implementation units duplicate a rollback unit");
+    if (checkpointed && checkpoints.has(unit.checkpointId)) throw new DevFlowError("INVALID_STATE_SCHEMA", "implementation units duplicate a checkpoint id");
+    ids.add(unit.unitId);
+    if (checkpointed) checkpoints.add(unit.checkpointId);
+  }
+}
 function validateFeatureState(value) {
   const state = value;
   if (state?.schemaVersion !== 1) throw new DevFlowError("UNSUPPORTED_STATE_SCHEMA", "only state schema v1 is supported");
@@ -1940,6 +1978,7 @@ function validateFeatureState(value) {
   if (reviewEnforcementRequired(state.route, state.workflowCapabilities) && !state.review) {
     throw new DevFlowError("INVALID_STATE_SCHEMA", "review-enabled standard feature requires a review pointer");
   }
+  if (state.implementationUnits !== void 0) validateImplementationUnits(state.implementationUnits);
 }
 function validateScopeInput(scope) {
   if (scope === void 0 || scope === null) return { inScope: [], outOfScope: [] };
@@ -2466,13 +2505,13 @@ async function recoverCorruptFeature(root2, input) {
       if (currentPointerDigest !== input.activeSha256) throw new DevFlowError("RECOVERY_POINTER_DIGEST_MISMATCH", "activeSha256 does not match active.json", { currentDigest: currentPointerDigest, recoveryHint: "Re-run dev_flow_doctor" });
       pointerRecovery = true;
     }
-    let digest7;
+    let digest10;
     try {
-      digest7 = await stateFileSha256(root2, input.featureId);
+      digest10 = await stateFileSha256(root2, input.featureId);
     } catch {
       throw new DevFlowError("RECOVERY_STATE_MISSING", "feature state file is missing", { recoveryHint: "Run dev_flow_doctor; recovery remains fail-closed" });
     }
-    if (digest7 !== input.stateSha256) throw new DevFlowError("RECOVERY_DIGEST_MISMATCH", "stateSha256 does not match current corrupt state", { currentDigest: digest7, recoveryHint: "Re-run dev_flow_doctor and use the reported stateSha256" });
+    if (digest10 !== input.stateSha256) throw new DevFlowError("RECOVERY_DIGEST_MISMATCH", "stateSha256 does not match current corrupt state", { currentDigest: digest10, recoveryHint: "Re-run dev_flow_doctor and use the reported stateSha256" });
     try {
       const state = await readState(root2, input.featureId);
       if (!pointerRecovery || state.lifecycle !== "active") throw new DevFlowError("RECOVERY_STATE_VALID", "feature state is readable; use abandon instead of recovery");
@@ -2487,7 +2526,7 @@ async function recoverCorruptFeature(root2, input) {
       transactionId: randomUUID4(),
       phase: "prepared",
       featureId: input.featureId,
-      stateSha256: digest7,
+      stateSha256: digest10,
       recoveredTo: recoveredDir,
       reason: input.reason,
       userEvidence: input.userEvidence,
@@ -3286,6 +3325,23 @@ function verificationInvocation(command2, platform = process.platform, commandPr
     args: ["/d", "/s", "/c", [command2.command, ...command2.args].map(quoteForWindowsCommandProcessor).join(" ")]
   };
 }
+async function runVerificationCommand(root2, command2) {
+  try {
+    const invocation = verificationInvocation(command2);
+    const result = await run2(invocation.executable, invocation.args, {
+      cwd: path9.resolve(root2, command2.cwd),
+      timeout: 12e4,
+      maxBuffer: 1024 * 1024
+    });
+    return { exitCode: 0, output: `${result.stdout}${result.stderr}` };
+  } catch (error) {
+    const failure2 = error;
+    return {
+      exitCode: typeof failure2.code === "number" ? failure2.code : 1,
+      output: `${failure2.stdout ?? ""}${failure2.stderr ?? failure2.message}`
+    };
+  }
+}
 var userSignoffPhrases = ["\u9A8C\u6536\u901A\u8FC7", "\u786E\u8BA4\u9A8C\u6536", "\u540C\u610F\u9A8C\u6536", "approved", "LGTM"];
 function normalizeReply(value) {
   return value.trim().toLocaleLowerCase("en-US");
@@ -3399,18 +3455,10 @@ async function runVerification(root2, id, expectedRevision, host, commandIds, ma
   let exitCode = 0;
   const output = [];
   for (const command2 of selected) {
-    try {
-      const invocation = verificationInvocation(command2);
-      const result = await run2(invocation.executable, invocation.args, {
-        cwd: path9.resolve(root2, command2.cwd),
-        timeout: 12e4,
-        maxBuffer: 1024 * 1024
-      });
-      output.push(`[${command2.id}] ${result.stdout}${result.stderr}`);
-    } catch (error) {
-      const failure2 = error;
-      exitCode = typeof failure2.code === "number" ? failure2.code : 1;
-      output.push(`[${command2.id}] ${failure2.stdout ?? ""}${failure2.stderr ?? failure2.message}`);
+    const result = await runVerificationCommand(root2, command2);
+    output.push(`[${command2.id}] ${result.output}`);
+    if (result.exitCode !== 0) {
+      exitCode = result.exitCode;
       break;
     }
   }
@@ -4277,6 +4325,9 @@ async function recordStep(root2, id, expectedRevision, step, evidence) {
     assertCurrentStep(state, step);
     await assertRequirementsGrillSatisfied(root2, id, state);
     await assertTraceGateCurrent(root2, state, step);
+    if (step === "implementation" && checkpointsEnforcementRequired(state.route, state.workflowCapabilities)) {
+      await assertImplementationUnitsComplete(root2, state);
+    }
     const required = requiredEvidenceForStep(
       state.route,
       state.classification.riskLabels,
@@ -4290,6 +4341,17 @@ async function recordStep(root2, id, expectedRevision, step, evidence) {
     }
     state.steps[step] = { status: "satisfied", evidence: normalizedEvidence };
   });
+}
+async function assertImplementationUnitsComplete(root2, state) {
+  const ledger = await readTraceability(root2, state);
+  const required = Object.values(ledger.nodes).filter((node) => node.kind === "rollback" && node.status === "current");
+  const units = new Map((state.implementationUnits ?? []).map((unit) => [unit.unitId, unit]));
+  const incomplete = required.map((node) => node.id).filter((nodeId) => units.get(nodeId)?.status !== "checkpointed");
+  if (incomplete.length) {
+    throw new DevFlowError("IMPLEMENTATION_UNITS_INCOMPLETE", "every rollback unit must be checkpointed before recording implementation", {
+      incomplete
+    });
+  }
 }
 async function invalidateBeforeFinalClaim(root2, id, expectedRevision) {
   const invalidated = await invalidateStaleVerification(root2, id, expectedRevision);
@@ -4742,6 +4804,17 @@ async function reviewPlanAction(root2, state) {
     throw error;
   }
 }
+async function unitLifecycleAction(root2, state) {
+  if (!checkpointsEnforcementRequired(state.route, state.workflowCapabilities)) return void 0;
+  const units = state.implementationUnits ?? [];
+  const active = units.find((unit) => unit.status === "active");
+  if (active) return { kind: "checkpoint-implementation-unit", unitId: active.unitId };
+  const ledger = await readTraceability(root2, state);
+  const nodes = Object.values(ledger.nodes).filter((node) => node.kind === "rollback" && node.status === "current").sort((a, b) => a.id.localeCompare(b.id));
+  const statusByUnit = new Map(units.map((unit) => [unit.unitId, unit.status]));
+  const ready = nodes.find((node) => statusByUnit.get(node.id) !== "checkpointed" && node.dependsOn.every((dependency) => statusByUnit.get(dependency) === "checkpointed"));
+  return ready ? { kind: "begin-implementation-unit", unitId: ready.id } : void 0;
+}
 async function nextAction(root2, id) {
   const state = await readState(root2, id);
   const action = deriveNext(toDerivedState(state, await verificationIsStale(root2, state)));
@@ -4764,6 +4837,10 @@ async function nextAction(root2, id) {
     const trace = await inspectTraceGate(root2, state, traceStep);
     if (trace.blocker) return { kind: "repair-trace", ...trace.blocker };
   }
+  if (action.kind === "run-step" && action.step === "implementation") {
+    const unitAction = await unitLifecycleAction(root2, state);
+    if (unitAction) return unitAction;
+  }
   if (action.kind === "run-step" && action.step === "feature_check") return enrichFeatureCheck(state);
   if (action.kind === "run-step" && action.step === "finalize") return { kind: "finalize" };
   if (action.kind === "run-step") return enrichRunStep(state, action.step);
@@ -4772,8 +4849,831 @@ async function nextAction(root2, id) {
 }
 
 // plugins/dev-flow/src/core/status.ts
-import { readFile as readFile9 } from "node:fs/promises";
+import { readFile as readFile10 } from "node:fs/promises";
+import path12 from "node:path";
+
+// plugins/dev-flow/src/core/rollback.ts
+import { createHash as createHash12 } from "node:crypto";
+
+// plugins/dev-flow/src/core/checkpoints.ts
+import { randomUUID as randomUUID7, createHash as createHash11 } from "node:crypto";
+import { access as access2, mkdir as mkdir5, open as open5, readFile as readFile9, rename as rename5 } from "node:fs/promises";
 import path11 from "node:path";
+
+// plugins/dev-flow/src/policy/rollback.ts
+var IMPLEMENTATION_UNIT_TRANSITIONS = Object.freeze({
+  pending: Object.freeze(["active"]),
+  active: Object.freeze(["verified"]),
+  verified: Object.freeze(["checkpointed", "active"]),
+  checkpointed: Object.freeze(["rolled_back"]),
+  rolled_back: Object.freeze([])
+});
+var fileChanges = ["added", "modified", "deleted", "renamed", "mode-changed"];
+var ROLLBACK_ID = /^RU-[0-9]{3,}$/;
+var SHA256 = /^[0-9a-f]{64}$/;
+var FILE_MODE = /^[0-7]{3,4}$/;
+function pathWithinFileScope(path16, fileScope) {
+  return fileScope.some((pattern) => scopePatternMatches(pattern, path16));
+}
+function scopePatternMatches(pattern, target) {
+  if (typeof pattern !== "string" || !pattern.trim() || typeof target !== "string" || !target.trim()) return false;
+  if (pattern.includes("\\") || target.includes("\\")) return false;
+  if (pattern.startsWith("/") || target.startsWith("/")) return false;
+  const segments = pattern.split("/");
+  if (segments.some((segment) => segment === "..")) return false;
+  const parts = target.split("/");
+  if (parts.some((part) => part === "..")) return false;
+  if (/[*?]/.test(pattern)) return globSegmentsMatch(segments, parts);
+  if (pattern === ".") return true;
+  return target === pattern || target.startsWith(`${pattern}/`);
+}
+function globSegmentsMatch(pattern, target) {
+  if (pattern.length === 0) return target.length === 0;
+  const [head, ...rest] = pattern;
+  if (head === "**") {
+    if (rest.length === 0) return true;
+    for (let skip = 0; skip <= target.length; skip += 1) {
+      if (globSegmentsMatch(rest, target.slice(skip))) return true;
+    }
+    return false;
+  }
+  if (target.length === 0 || !globSegmentMatches(head, target[0])) return false;
+  return globSegmentsMatch(rest, target.slice(1));
+}
+function globSegmentMatches(pattern, segment) {
+  if (pattern === "") return segment === "";
+  const [head, ...rest] = pattern;
+  if (head === "*") {
+    for (let take = 0; take <= segment.length; take += 1) {
+      if (globSegmentMatches(rest.join(""), segment.slice(take))) return true;
+    }
+    return false;
+  }
+  if (head === "?") return segment.length > 0 && globSegmentMatches(rest.join(""), segment.slice(1));
+  return segment.startsWith(head) && globSegmentMatches(rest.join(""), segment.slice(head.length));
+}
+function invalid3(message) {
+  throw new Error(`ROLLBACK_PROTOCOL_INVALID: ${message}`);
+}
+function isRecord4(value) {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+function isRollbackId(value) {
+  return typeof value === "string" && ROLLBACK_ID.test(value);
+}
+function isSha256(value) {
+  return typeof value === "string" && SHA256.test(value);
+}
+function isTimestamp(value) {
+  return typeof value === "string" && !Number.isNaN(Date.parse(value));
+}
+function isNonEmptyString(value) {
+  return typeof value === "string" && value.trim().length > 0;
+}
+function isNonEmptyStringArray(value) {
+  return Array.isArray(value) && value.length > 0 && value.every(isNonEmptyString);
+}
+function hasOnlyKeys(value, keys) {
+  return Object.keys(value).every((key) => keys.includes(key));
+}
+function implementationUnitForRollbackNode(node, basisHash2) {
+  if (!isRecord4(node) || node.kind !== "rollback" || !isRollbackId(node.id) || !isNonEmptyStringArray(node.tasks) || !isNonEmptyStringArray(node.fileScope) || !isNonEmptyStringArray(node.forwardVerification) || !isNonEmptyStringArray(node.rollbackVerification) || node.status !== "current") {
+    invalid3("rollback node is missing fields required to open an implementation unit");
+  }
+  if (!isSha256(basisHash2)) invalid3("implementation unit basis hash must be a SHA-256 hex digest");
+  return { unitId: node.id, status: "pending", basisHash: basisHash2 };
+}
+function parseFileRecord(value, index) {
+  if (!isRecord4(value) || !hasOnlyKeys(value, ["path", "change", "renamedFrom", "beforeSha256", "afterSha256", "beforeBlobSha256", "afterBlobSha256", "beforeMode", "afterMode"]) || !isNonEmptyString(value.path) || typeof value.change !== "string" || !fileChanges.includes(value.change)) {
+    invalid3(`checkpoint file record ${index} has an invalid shape`);
+  }
+  const label = `checkpoint file record ${index}`;
+  const change = value.change;
+  const beforeOk = change !== "added" ? isSha256(value.beforeSha256) && isSha256(value.beforeBlobSha256) && typeof value.beforeMode === "string" && FILE_MODE.test(value.beforeMode) : value.beforeSha256 === void 0 && value.beforeBlobSha256 === void 0 && value.beforeMode === void 0;
+  const afterOk = change !== "deleted" ? isSha256(value.afterSha256) && isSha256(value.afterBlobSha256) && typeof value.afterMode === "string" && FILE_MODE.test(value.afterMode) : value.afterSha256 === void 0 && value.afterBlobSha256 === void 0 && value.afterMode === void 0;
+  if (!beforeOk) invalid3(`${label} has invalid before fields for change ${change}`);
+  if (!afterOk) invalid3(`${label} has invalid after fields for change ${change}`);
+  if (change === "renamed" && !isNonEmptyString(value.renamedFrom)) invalid3(`${label} renamed record requires renamedFrom`);
+  if (change !== "renamed" && value.renamedFrom !== void 0) invalid3(`${label} only renamed records may carry renamedFrom`);
+  return {
+    path: value.path,
+    change,
+    ...value.renamedFrom !== void 0 ? { renamedFrom: value.renamedFrom } : {},
+    ...change !== "added" ? { beforeSha256: value.beforeSha256, beforeBlobSha256: value.beforeBlobSha256, beforeMode: value.beforeMode } : {},
+    ...change !== "deleted" ? { afterSha256: value.afterSha256, afterBlobSha256: value.afterBlobSha256, afterMode: value.afterMode } : {}
+  };
+}
+function parseVerificationAttempt(value, index) {
+  if (!isRecord4(value) || !hasOnlyKeys(value, ["attemptId", "commandId", "command", "status", "startedAt", "completedAt"]) || !isNonEmptyString(value.attemptId) || !isNonEmptyString(value.commandId) || !isNonEmptyString(value.command) || value.status !== "passed" && value.status !== "failed" || !isTimestamp(value.startedAt) || !isTimestamp(value.completedAt)) {
+    invalid3(`checkpoint verification attempt ${index} has an invalid shape`);
+  }
+  return {
+    attemptId: value.attemptId,
+    commandId: value.commandId,
+    command: value.command,
+    status: value.status,
+    startedAt: value.startedAt,
+    completedAt: value.completedAt
+  };
+}
+function parseCheckpointManifest(value) {
+  if (!isRecord4(value) || !hasOnlyKeys(value, ["schemaVersion", "checkpointId", "unitId", "sequence", "basisHash", "startedFingerprint", "completedFingerprint", "startedAt", "completedAt", "files", "forwardPatchSha256", "reversePatchSha256", "verificationAttempts", "requirementsSha256", "planSha256", "traceabilitySha256", "approvalBasisHash", "projectConfigSha256", "verificationCommands"]) || value.schemaVersion !== 1 || !isNonEmptyString(value.checkpointId) || !isRollbackId(value.unitId) || typeof value.sequence !== "number" || !Number.isInteger(value.sequence) || value.sequence < 1 || !isSha256(value.basisHash) || !isSha256(value.startedFingerprint) || !isSha256(value.completedFingerprint) || !isTimestamp(value.startedAt) || !isTimestamp(value.completedAt) || !Array.isArray(value.files) || !isSha256(value.forwardPatchSha256) || !isSha256(value.reversePatchSha256) || !Array.isArray(value.verificationAttempts) || !isSha256(value.requirementsSha256) || !isSha256(value.planSha256) || !isSha256(value.traceabilitySha256) || !isSha256(value.approvalBasisHash) || !isSha256(value.projectConfigSha256) || !Array.isArray(value.verificationCommands) || value.verificationCommands.length === 0) {
+    invalid3("checkpoint manifest has an invalid shape");
+  }
+  const files = value.files.map((file, index) => parseFileRecord(file, index));
+  const verificationAttempts = value.verificationAttempts.map((attempt, index) => parseVerificationAttempt(attempt, index));
+  const verificationCommands = value.verificationCommands.map((command2, index) => {
+    if (!isRecord4(command2) || !hasOnlyKeys(command2, ["commandId", "command"]) || !isNonEmptyString(command2.commandId) || !isNonEmptyString(command2.command)) {
+      invalid3(`checkpoint verification command ${index} has an invalid shape`);
+    }
+    return { commandId: command2.commandId, command: command2.command };
+  });
+  const declaredCommandIds = new Set(verificationCommands.map((command2) => command2.commandId));
+  for (const attempt of verificationAttempts) {
+    if (!declaredCommandIds.has(attempt.commandId)) {
+      invalid3(`checkpoint verification attempt ${attempt.attemptId} references undeclared command ${attempt.commandId}`);
+    }
+  }
+  return {
+    schemaVersion: 1,
+    checkpointId: value.checkpointId,
+    unitId: value.unitId,
+    sequence: value.sequence,
+    basisHash: value.basisHash,
+    startedFingerprint: value.startedFingerprint,
+    completedFingerprint: value.completedFingerprint,
+    startedAt: value.startedAt,
+    completedAt: value.completedAt,
+    files,
+    forwardPatchSha256: value.forwardPatchSha256,
+    reversePatchSha256: value.reversePatchSha256,
+    verificationAttempts,
+    requirementsSha256: value.requirementsSha256,
+    planSha256: value.planSha256,
+    traceabilitySha256: value.traceabilitySha256,
+    approvalBasisHash: value.approvalBasisHash,
+    projectConfigSha256: value.projectConfigSha256,
+    verificationCommands
+  };
+}
+
+// plugins/dev-flow/src/core/checkpoints.ts
+var digest7 = (value) => createHash11("sha256").update(value).digest("hex");
+var featureDirectory2 = (root2, featureId) => path11.join(root2, ".dev-flow", "features", featureId);
+function blobPath(sha256) {
+  return `checkpoints/blobs/${sha256}`;
+}
+function manifestPath(checkpointId) {
+  return `checkpoints/manifests/${checkpointId}.json`;
+}
+function baselinePath(unitId) {
+  return `checkpoints/baselines/${unitId}.json`;
+}
+async function writeAtomic2(file, contents) {
+  const temp = `${file}.${randomUUID7()}.tmp`;
+  const handle = await open5(temp, "w");
+  try {
+    await handle.writeFile(contents);
+    await handle.sync();
+  } finally {
+    await handle.close();
+  }
+  await rename5(temp, file);
+  const directory = await open5(path11.dirname(file), "r");
+  try {
+    await directory.sync();
+  } finally {
+    await directory.close();
+  }
+}
+async function pathExists2(file) {
+  try {
+    await access2(file);
+    return true;
+  } catch {
+    return false;
+  }
+}
+async function writeBlobIfAbsent(root2, featureId, bytes) {
+  const sha256 = digest7(bytes);
+  const file = path11.join(featureDirectory2(root2, featureId), blobPath(sha256));
+  if (await pathExists2(file)) return sha256;
+  await mkdir5(path11.dirname(file), { recursive: true });
+  await writeAtomic2(file, bytes);
+  return sha256;
+}
+function validateBaseline(value, unitId) {
+  const baseline = value;
+  const files = baseline?.files;
+  if (!baseline || baseline.schemaVersion !== 1 || baseline.unitId !== unitId || typeof baseline.featureId !== "string" || typeof baseline.capturedAt !== "string" || !Array.isArray(files) || !files.every((file) => file && typeof file.path === "string" && /^[a-f0-9]{64}$/.test(file.sha256) && /^[0-7]{3,4}$/.test(file.mode))) {
+    throw new DevFlowError("CHECKPOINT_BASELINE_INVALID", "implementation unit baseline is unreadable", { unitId });
+  }
+  return baseline;
+}
+async function captureUnitBaseline(root2, featureId, unitId, snapshot) {
+  for (const file2 of snapshot) {
+    const bytes = await readFile9(path11.join(root2, file2.path));
+    if (digest7(bytes) !== file2.sha256) {
+      throw new DevFlowError("CHECKPOINT_HASH_MISMATCH", "protected files changed while capturing the unit baseline", { path: file2.path });
+    }
+    await writeBlobIfAbsent(root2, featureId, bytes);
+  }
+  const baseline = {
+    schemaVersion: 1,
+    featureId,
+    unitId,
+    capturedAt: (/* @__PURE__ */ new Date()).toISOString(),
+    files: snapshot
+  };
+  const file = path11.join(featureDirectory2(root2, featureId), baselinePath(unitId));
+  await mkdir5(path11.dirname(file), { recursive: true });
+  await writeAtomic2(file, `${JSON.stringify(baseline, null, 2)}
+`);
+}
+async function readCheckpointBaseline(root2, featureId, unitId) {
+  const file = path11.join(featureDirectory2(root2, featureId), baselinePath(unitId));
+  let raw;
+  try {
+    raw = await readFile9(file, "utf8");
+  } catch {
+    throw new DevFlowError("CHECKPOINT_BASELINE_INVALID", "implementation unit baseline is missing", { unitId });
+  }
+  try {
+    return validateBaseline(JSON.parse(raw), unitId);
+  } catch (error) {
+    if (error instanceof DevFlowError) throw error;
+    throw new DevFlowError("CHECKPOINT_BASELINE_INVALID", "implementation unit baseline is unreadable", { unitId });
+  }
+}
+function diffSnapshots(before, after) {
+  const beforeMap = new Map(before.map((file) => [file.path, file]));
+  const afterMap = new Map(after.map((file) => [file.path, file]));
+  const records = [];
+  const deleted = [];
+  const added = [];
+  for (const [filePath, beforeFile] of beforeMap) {
+    const afterFile = afterMap.get(filePath);
+    if (!afterFile) {
+      deleted.push(beforeFile);
+      continue;
+    }
+    if (afterFile.sha256 !== beforeFile.sha256) {
+      records.push({
+        path: filePath,
+        change: "modified",
+        beforeSha256: beforeFile.sha256,
+        afterSha256: afterFile.sha256,
+        beforeBlobSha256: beforeFile.sha256,
+        afterBlobSha256: afterFile.sha256,
+        beforeMode: beforeFile.mode,
+        afterMode: afterFile.mode
+      });
+    } else if (afterFile.mode !== beforeFile.mode) {
+      records.push({
+        path: filePath,
+        change: "mode-changed",
+        beforeSha256: beforeFile.sha256,
+        afterSha256: afterFile.sha256,
+        beforeBlobSha256: beforeFile.sha256,
+        afterBlobSha256: afterFile.sha256,
+        beforeMode: beforeFile.mode,
+        afterMode: afterFile.mode
+      });
+    }
+  }
+  for (const [filePath, afterFile] of afterMap) {
+    if (!beforeMap.has(filePath)) added.push(afterFile);
+  }
+  const byHash = (files) => {
+    const groups = /* @__PURE__ */ new Map();
+    for (const file of files) groups.set(file.sha256, [...groups.get(file.sha256) ?? [], file]);
+    return groups;
+  };
+  const deletedByHash = byHash(deleted);
+  const addedByHash = byHash(added);
+  const pairedDeleted = /* @__PURE__ */ new Set();
+  const pairedAdded = /* @__PURE__ */ new Set();
+  for (const [hash2, deletedFiles] of deletedByHash) {
+    const addedFiles = addedByHash.get(hash2) ?? [];
+    if (deletedFiles.length === 1 && addedFiles.length === 1) {
+      const from = deletedFiles[0];
+      const to = addedFiles[0];
+      records.push({
+        path: to.path,
+        change: "renamed",
+        renamedFrom: from.path,
+        beforeSha256: hash2,
+        afterSha256: hash2,
+        beforeBlobSha256: hash2,
+        afterBlobSha256: hash2,
+        beforeMode: from.mode,
+        afterMode: to.mode
+      });
+      pairedDeleted.add(from.path);
+      pairedAdded.add(to.path);
+    }
+  }
+  for (const file of deleted) {
+    if (pairedDeleted.has(file.path)) continue;
+    records.push({ path: file.path, change: "deleted", beforeSha256: file.sha256, beforeBlobSha256: file.sha256, beforeMode: file.mode });
+  }
+  for (const file of added) {
+    if (pairedAdded.has(file.path)) continue;
+    records.push({ path: file.path, change: "added", afterSha256: file.sha256, afterBlobSha256: file.sha256, afterMode: file.mode });
+  }
+  return records.sort((a, b) => a.path.localeCompare(b.path));
+}
+function snapshotsEqual(a, b) {
+  return a.length === b.length && a.every((file, index) => file.path === b[index]?.path && file.sha256 === b[index]?.sha256 && file.mode === b[index]?.mode);
+}
+function reverseRecords(records) {
+  return records.map((record) => {
+    switch (record.change) {
+      case "added":
+        return { path: record.path, change: "deleted", beforeSha256: record.afterSha256, beforeBlobSha256: record.afterBlobSha256, beforeMode: record.afterMode };
+      case "deleted":
+        return { path: record.path, change: "added", afterSha256: record.beforeSha256, afterBlobSha256: record.beforeBlobSha256, afterMode: record.beforeMode };
+      case "renamed":
+        return {
+          path: record.renamedFrom,
+          change: "renamed",
+          renamedFrom: record.path,
+          beforeSha256: record.afterSha256,
+          afterSha256: record.beforeSha256,
+          beforeBlobSha256: record.afterBlobSha256,
+          afterBlobSha256: record.beforeBlobSha256,
+          beforeMode: record.afterMode,
+          afterMode: record.beforeMode
+        };
+      default:
+        return {
+          path: record.path,
+          change: record.change,
+          beforeSha256: record.afterSha256,
+          afterSha256: record.beforeSha256,
+          beforeBlobSha256: record.afterBlobSha256,
+          afterBlobSha256: record.beforeBlobSha256,
+          beforeMode: record.afterMode,
+          afterMode: record.beforeMode
+        };
+    }
+  });
+}
+function commandSummary(command2) {
+  return [command2.command, ...command2.args].join(" ");
+}
+function currentRollbackNode(state, nodes, unitId) {
+  const node = nodes.find((candidate) => candidate.id === unitId);
+  if (!node) {
+    throw new DevFlowError("IMPLEMENTATION_UNIT_UNKNOWN", "rollback unit is not part of the current trace graph", { unitId });
+  }
+  return node;
+}
+function resolveVerificationCommands(config, node) {
+  return node.forwardVerification.map((commandId) => {
+    const command2 = config.verification.commands.find((candidate) => candidate.id === commandId);
+    if (!command2) {
+      throw new DevFlowError("TRACE_VERIFICATION_COMMAND_UNKNOWN", "rollback unit references an unknown verification command", {
+        unitId: node.id,
+        commandId
+      });
+    }
+    return command2;
+  });
+}
+async function checkpointImplementationUnit(root2, id, expectedRevision, unitId, options = {}) {
+  const initial = await readState(root2, id);
+  if (initial.revision !== expectedRevision) {
+    throw new DevFlowError("STATE_REVISION_CONFLICT", "state revision changed", { currentRevision: initial.revision });
+  }
+  if (!checkpointsEnforcementRequired(initial.route, initial.workflowCapabilities)) {
+    throw new DevFlowError("IMPLEMENTATION_UNITS_NOT_ENFORCED", "checkpoints require a checkpoints:1 standard feature");
+  }
+  if (currentOpenStep(initial) !== "implementation") {
+    throw new DevFlowError("STEP_OUT_OF_ORDER", "checkpoint requires the implementation step", { expected: currentOpenStep(initial) });
+  }
+  const unit = (initial.implementationUnits ?? []).find((candidate) => candidate.unitId === unitId);
+  if (!unit) throw new DevFlowError("IMPLEMENTATION_UNIT_UNKNOWN", "rollback unit has no implementation state", { unitId });
+  if (unit.status !== "active") {
+    throw new DevFlowError("IMPLEMENTATION_UNIT_NOT_ACTIVE", "checkpoint requires an active rollback unit", { unitId, status: unit.status });
+  }
+  const ledger = await readTraceability(root2, initial);
+  const node = currentRollbackNode(
+    initial,
+    Object.values(ledger.nodes).filter((candidate) => candidate.kind === "rollback" && candidate.status === "current"),
+    unitId
+  );
+  const { config, sha256: projectConfigSha256 } = await readProjectConfigSnapshot(root2);
+  if (node.verificationConfigSha256 !== projectConfigSha256) {
+    throw new DevFlowError("TRACE_SLICE_STALE", "rollback verification configuration is stale", { unitId });
+  }
+  const commands = resolveVerificationCommands(config, node);
+  const baseline = await readCheckpointBaseline(root2, id, unitId);
+  const after = await snapshotProtectedRoots(root2, config.protectedRoots);
+  const records = diffSnapshots(baseline.files, after);
+  for (const record of records) {
+    for (const changedPath of [record.path, ...record.renamedFrom ? [record.renamedFrom] : []]) {
+      if (!pathWithinFileScope(changedPath, node.fileScope)) {
+        throw new DevFlowError("IMPLEMENTATION_UNIT_OUT_OF_SCOPE", "checkpoint found changes outside the rollback unit fileScope", {
+          unitId,
+          path: changedPath,
+          fileScope: [...node.fileScope]
+        });
+      }
+    }
+  }
+  const chainLength = (initial.implementationUnits ?? []).filter((candidate) => candidate.checkpointId).length;
+  const sequence = chainLength + 1;
+  const checkpointId = `CP-${String(sequence).padStart(3, "0")}`;
+  const rollbackUnitId = unit.unitId;
+  const featureDir = featureDirectory2(root2, id);
+  const manifestFile = path11.join(featureDir, manifestPath(checkpointId));
+  if (await pathExists2(manifestFile)) {
+    const existing = await readCheckpoint(root2, id, checkpointId);
+    const sameCheckpoint = existing.unitId === rollbackUnitId && existing.sequence === sequence && existing.basisHash === unit.basisHash && existing.projectConfigSha256 === projectConfigSha256 && JSON.stringify(existing.files) === JSON.stringify(records);
+    if (!sameCheckpoint) {
+      throw new DevFlowError("CHECKPOINT_CONFLICT", "an existing checkpoint manifest no longer matches this unit", {
+        checkpointId,
+        unitId: rollbackUnitId
+      });
+    }
+    const reused = await mutate(root2, id, expectedRevision, "implementation-unit-checkpointed", (draft) => {
+      const current = (draft.implementationUnits ?? []).find((candidate) => candidate.unitId === unitId);
+      if (!current || current.status !== "active") {
+        throw new DevFlowError("IMPLEMENTATION_UNIT_NOT_ACTIVE", "checkpoint requires an active rollback unit", { unitId, status: current?.status });
+      }
+      current.status = "checkpointed";
+      current.checkpointId = checkpointId;
+    }, { unitId, checkpointId, sequence });
+    return { state: reused, manifest: existing };
+  }
+  const attempts = [];
+  for (const command2 of commands) {
+    const startedAt = (/* @__PURE__ */ new Date()).toISOString();
+    const result = await runVerificationCommand(root2, command2);
+    const attempt = {
+      attemptId: randomUUID7(),
+      commandId: command2.id,
+      command: commandSummary(command2),
+      status: result.exitCode === 0 ? "passed" : "failed",
+      startedAt,
+      completedAt: (/* @__PURE__ */ new Date()).toISOString()
+    };
+    attempts.push(attempt);
+    if (result.exitCode !== 0) {
+      throw new DevFlowError("CHECKPOINT_VERIFICATION_FAILED", "forward verification failed; the unit stays active and no checkpoint is recorded", {
+        unitId,
+        attemptId: attempt.attemptId,
+        commandId: attempt.commandId,
+        exitCode: result.exitCode,
+        output: result.output.slice(-4e3)
+      });
+    }
+  }
+  const afterVerification = await snapshotProtectedRoots(root2, config.protectedRoots);
+  if (!snapshotsEqual(after, afterVerification)) {
+    throw new DevFlowError("CHECKPOINT_HASH_MISMATCH", "protected files changed while verification ran", { unitId });
+  }
+  const completedFingerprint = await fingerprintProtectedRoots(root2, config.protectedRoots);
+  for (const record of records) {
+    if (record.change === "deleted" || record.change === "renamed") continue;
+    const bytes = await readFile9(path11.join(root2, record.path));
+    if (digest7(bytes) !== record.afterSha256) {
+      throw new DevFlowError("CHECKPOINT_HASH_MISMATCH", "protected files changed while capturing checkpoint blobs", { path: record.path });
+    }
+    await writeBlobIfAbsent(root2, id, bytes);
+  }
+  const forwardPatch = canonicalReviewValueJson({ direction: "forward", checkpointId, unitId: rollbackUnitId, files: records });
+  const reversePatch = canonicalReviewValueJson({ direction: "reverse", checkpointId, unitId: rollbackUnitId, files: reverseRecords(records) });
+  const manifest = {
+    schemaVersion: 1,
+    checkpointId,
+    unitId: rollbackUnitId,
+    sequence,
+    basisHash: unit.basisHash,
+    startedFingerprint: unit.startedFingerprint,
+    completedFingerprint,
+    startedAt: attempts[0]?.startedAt ?? (/* @__PURE__ */ new Date()).toISOString(),
+    completedAt: (/* @__PURE__ */ new Date()).toISOString(),
+    files: records,
+    forwardPatchSha256: digest7(forwardPatch),
+    reversePatchSha256: digest7(reversePatch),
+    verificationAttempts: attempts,
+    requirementsSha256: initial.artifacts.requirements?.sha256 ?? "",
+    planSha256: initial.artifacts["implementation-plan"]?.sha256 ?? "",
+    traceabilitySha256: initial.traceability?.sha256 ?? "",
+    approvalBasisHash: unit.basisHash,
+    projectConfigSha256,
+    verificationCommands: commands.map((command2) => ({ commandId: command2.id, command: commandSummary(command2) }))
+  };
+  const validated = parseCheckpointManifest(JSON.parse(JSON.stringify(manifest)));
+  await mkdir5(path11.join(featureDir, "checkpoints", "patches"), { recursive: true });
+  await mkdir5(path11.dirname(manifestFile), { recursive: true });
+  await writeAtomic2(path11.join(featureDir, "checkpoints", "patches", `${manifest.forwardPatchSha256}.json`), forwardPatch);
+  await writeAtomic2(path11.join(featureDir, "checkpoints", "patches", `${manifest.reversePatchSha256}.json`), reversePatch);
+  const manifestContents = `${JSON.stringify(validated, null, 2)}
+`;
+  const temp = `${manifestFile}.${randomUUID7()}.tmp`;
+  const handle = await open5(temp, "w");
+  try {
+    await handle.writeFile(manifestContents);
+    await handle.sync();
+  } finally {
+    await handle.close();
+  }
+  await options.fault?.("before-manifest-rename");
+  await rename5(temp, manifestFile);
+  const manifestDir = await open5(path11.dirname(manifestFile), "r");
+  try {
+    await manifestDir.sync();
+  } finally {
+    await manifestDir.close();
+  }
+  await options.fault?.("after-manifest-rename");
+  const state = await mutate(root2, id, expectedRevision, "implementation-unit-checkpointed", (draft) => {
+    const current = (draft.implementationUnits ?? []).find((candidate) => candidate.unitId === unitId);
+    if (!current || current.status !== "active") {
+      throw new DevFlowError("IMPLEMENTATION_UNIT_NOT_ACTIVE", "checkpoint requires an active rollback unit", { unitId, status: current?.status });
+    }
+    current.status = "checkpointed";
+    current.checkpointId = checkpointId;
+  }, { unitId, checkpointId, sequence });
+  return { state, manifest: validated };
+}
+async function readCheckpoint(root2, featureId, checkpointId) {
+  const file = path11.join(featureDirectory2(root2, featureId), manifestPath(checkpointId));
+  let raw;
+  try {
+    raw = await readFile9(file, "utf8");
+  } catch {
+    throw new DevFlowError("CHECKPOINT_NOT_FOUND", "checkpoint manifest does not exist", { checkpointId });
+  }
+  try {
+    const manifest = parseCheckpointManifest(JSON.parse(raw));
+    if (manifest.checkpointId !== checkpointId) {
+      throw new DevFlowError("CHECKPOINT_INTEGRITY_FAILED", "checkpoint manifest id does not match its path", { checkpointId });
+    }
+    return manifest;
+  } catch (error) {
+    if (error instanceof DevFlowError) throw error;
+    throw new DevFlowError("CHECKPOINT_INTEGRITY_FAILED", "checkpoint manifest is unreadable", { checkpointId });
+  }
+}
+async function checkpointChain(root2, featureId, state) {
+  const ids = (state.implementationUnits ?? []).filter((unit) => unit.checkpointId && (unit.status === "checkpointed" || unit.status === "rolled_back")).map((unit) => unit.checkpointId);
+  const manifests = [];
+  for (const checkpointId of ids) manifests.push(await readCheckpoint(root2, featureId, checkpointId));
+  return manifests.sort((a, b) => a.sequence - b.sequence);
+}
+
+// plugins/dev-flow/src/core/rollback.ts
+var digest8 = (value) => createHash12("sha256").update(value).digest("hex");
+function rollbackNodes(nodes) {
+  return Object.values(nodes).filter((node) => node.kind === "rollback" && node.status === "current");
+}
+function expectedTipState(chain) {
+  const present = /* @__PURE__ */ new Map();
+  const absent = /* @__PURE__ */ new Set();
+  for (const manifest of chain) {
+    for (const record of manifest.files) {
+      if (record.change === "deleted") {
+        present.delete(record.path);
+        absent.add(record.path);
+        continue;
+      }
+      if (record.change === "renamed") {
+        present.delete(record.renamedFrom);
+        absent.add(record.renamedFrom);
+      }
+      present.set(record.path, { sha256: record.afterSha256, mode: record.afterMode });
+      absent.delete(record.path);
+    }
+  }
+  return { present, absent };
+}
+function detectChainConflicts(chain, snapshot, fileScopes, baselineFiles = []) {
+  const conflicts = [];
+  const { present: expected, absent } = expectedTipState(chain);
+  const baseline = new Map(baselineFiles.map((file) => [file.path, file]));
+  const current = new Map(snapshot.map((file) => [file.path, file]));
+  for (const [filePath, tip] of expected) {
+    const present = current.get(filePath);
+    if (!present) {
+      conflicts.push({ path: filePath, expected: "checkpointed", actual: "missing" });
+    } else if (present.sha256 !== tip.sha256 || present.mode !== tip.mode) {
+      conflicts.push({ path: filePath, expected: "checkpointed", actual: "modified" });
+    }
+  }
+  for (const filePath of absent) {
+    if (current.has(filePath)) {
+      conflicts.push({ path: filePath, expected: "absent", actual: "unregistered" });
+    }
+  }
+  for (const file of snapshot) {
+    if (expected.has(file.path) || absent.has(file.path)) continue;
+    const base = baseline.get(file.path);
+    if (base) {
+      if (file.sha256 !== base.sha256 || file.mode !== base.mode) {
+        conflicts.push({ path: file.path, expected: "checkpointed", actual: "modified" });
+      }
+      continue;
+    }
+    if (pathWithinFileScope(file.path, fileScopes)) {
+      conflicts.push({ path: file.path, expected: "absent", actual: "unregistered" });
+    }
+  }
+  for (const file of baselineFiles) {
+    if (expected.has(file.path) || absent.has(file.path)) continue;
+    if (!current.has(file.path)) {
+      conflicts.push({ path: file.path, expected: "checkpointed", actual: "missing" });
+    }
+  }
+  return conflicts.sort((a, b) => a.path.localeCompare(b.path));
+}
+function assertChainIntegrity(chain, nodes) {
+  const checkpointedUnits = new Set(chain.map((manifest) => manifest.unitId));
+  for (const [index, manifest] of chain.entries()) {
+    const node = nodes.find((candidate) => candidate.id === manifest.unitId);
+    if (!node) {
+      throw new DevFlowError("ROLLBACK_CHAIN_INVALID", "checkpoint chain references a unit that is not current in the trace graph", {
+        unitId: manifest.unitId
+      });
+    }
+    for (const dependency of node.dependsOn) {
+      const dependencyIndex = chain.findIndex((candidate) => candidate.unitId === dependency);
+      if (dependencyIndex === -1 && !checkpointedUnits.has(dependency)) {
+        throw new DevFlowError("ROLLBACK_CHAIN_INVALID", "checkpoint chain has a dependency hole", {
+          unitId: manifest.unitId,
+          missingDependency: dependency
+        });
+      }
+      if (dependencyIndex > index) {
+        throw new DevFlowError("ROLLBACK_CHAIN_INVALID", "checkpoint chain order violates the rollback DAG", {
+          unitId: manifest.unitId,
+          dependency
+        });
+      }
+    }
+  }
+}
+async function previewContext(root2, featureId) {
+  const state = await readState(root2, featureId);
+  if (!checkpointsEnforcementRequired(state.route, state.workflowCapabilities)) {
+    throw new DevFlowError("IMPLEMENTATION_UNITS_NOT_ENFORCED", "rollback preview requires a checkpoints:1 standard feature");
+  }
+  const ledger = await readTraceability(root2, state);
+  const nodes = rollbackNodes(ledger.nodes);
+  const chain = await checkpointChain(root2, featureId, state);
+  assertChainIntegrity(chain, nodes);
+  const { config, sha256: projectConfigSha256 } = await readProjectConfigSnapshot(root2);
+  return { state, chain, nodes, config, projectConfigSha256 };
+}
+function commandSummary2(command2) {
+  return [command2.command, ...command2.args].join(" ");
+}
+async function previewRollback(root2, featureId, targetCheckpointId) {
+  const { state, chain, nodes, config, projectConfigSha256 } = await previewContext(root2, featureId);
+  const target = chain.find((manifest) => manifest.checkpointId === targetCheckpointId);
+  if (!target) {
+    throw new DevFlowError("ROLLBACK_TARGET_INVALID", "rollback target is not a confirmed checkpoint in the chain", {
+      targetCheckpointId,
+      validTargets: chain.map((manifest) => manifest.checkpointId)
+    });
+  }
+  const snapshot = await snapshotProtectedRoots(root2, config.protectedRoots);
+  const fileScopes = [...new Set(nodes.flatMap((node) => node.fileScope))];
+  const baselineFiles = (await readCheckpointBaseline(root2, featureId, chain[0].unitId)).files;
+  const conflicts = detectChainConflicts(chain, snapshot, fileScopes, baselineFiles);
+  if (conflicts.length) {
+    throw new DevFlowError("ROLLBACK_CONFLICT", "workspace has unregistered modifications; rollback would overwrite them", {
+      conflicts
+    });
+  }
+  const suffix = chain.filter((manifest) => manifest.sequence > target.sequence);
+  const stale = suffix.filter((manifest) => manifest.projectConfigSha256 !== projectConfigSha256);
+  if (stale.length) {
+    throw new DevFlowError("ROLLBACK_BASIS_STALE", "project verification config changed after these checkpoints", {
+      checkpointIds: stale.map((manifest) => manifest.checkpointId)
+    });
+  }
+  const undoManifests = [...suffix].reverse();
+  const verificationCommands = [];
+  for (const manifest of undoManifests) {
+    const node = nodes.find((candidate) => candidate.id === manifest.unitId);
+    for (const commandId of node?.rollbackVerification ?? []) {
+      const command2 = config.verification.commands.find((candidate) => candidate.id === commandId);
+      if (!command2) {
+        throw new DevFlowError("TRACE_VERIFICATION_COMMAND_UNKNOWN", "rollback verification command is not configured", {
+          unitId: manifest.unitId,
+          commandId
+        });
+      }
+      verificationCommands.push({ commandId: command2.id, command: commandSummary2(command2) });
+    }
+  }
+  const filePlan = /* @__PURE__ */ new Map();
+  const planAction = (path16, action) => {
+    filePlan.set(path16, action);
+  };
+  for (const manifest of undoManifests) {
+    for (const record of manifest.files) {
+      switch (record.change) {
+        case "added":
+          planAction(record.path, { action: "delete", path: record.path });
+          break;
+        case "renamed":
+          planAction(record.path, { action: "delete", path: record.path });
+          planAction(record.renamedFrom, {
+            action: "restore",
+            path: record.renamedFrom,
+            blobSha256: record.beforeBlobSha256,
+            mode: record.beforeMode
+          });
+          break;
+        case "deleted":
+        case "modified":
+        case "mode-changed":
+          planAction(record.path, {
+            action: "restore",
+            path: record.path,
+            blobSha256: record.beforeBlobSha256,
+            mode: record.beforeMode
+          });
+          break;
+      }
+    }
+  }
+  const plan = [...filePlan.values()].sort((a, b) => a.path.localeCompare(b.path));
+  const previewBasisHash = digest8(canonicalReviewValueJson({
+    targetCheckpointId,
+    targetUnitId: target.unitId,
+    undoOrder: undoManifests.map((manifest) => manifest.unitId),
+    filePlan: plan,
+    verificationCommands,
+    projectConfigSha256,
+    traceabilitySha256: state.traceability?.sha256 ?? null,
+    stateRevision: state.revision
+  }));
+  return {
+    targetCheckpointId,
+    targetUnitId: target.unitId,
+    undoOrder: undoManifests.map((manifest) => manifest.unitId),
+    undoCheckpoints: undoManifests.map((manifest) => manifest.checkpointId),
+    filePlan: plan,
+    verificationCommands,
+    projectConfigSha256,
+    previewBasisHash
+  };
+}
+async function rollbackChainView(root2, state) {
+  if (!checkpointsEnforcementRequired(state.route, state.workflowCapabilities)) {
+    return { enforced: false, chain: [], validTargets: [], conflicts: [] };
+  }
+  let nodes;
+  try {
+    nodes = rollbackNodes((await readTraceability(root2, state)).nodes);
+  } catch {
+    return { enforced: true, chain: [], validTargets: [], conflicts: [] };
+  }
+  const chain = await checkpointChain(root2, state.featureId, state);
+  try {
+    assertChainIntegrity(chain, nodes);
+  } catch {
+    return {
+      enforced: true,
+      chain: chain.map((manifest) => ({
+        checkpointId: manifest.checkpointId,
+        unitId: manifest.unitId,
+        sequence: manifest.sequence
+      })),
+      validTargets: [],
+      conflicts: []
+    };
+  }
+  const { config } = await readProjectConfigSnapshot(root2);
+  const snapshot = await snapshotProtectedRoots(root2, config.protectedRoots);
+  const fileScopes = [...new Set(nodes.flatMap((node) => node.fileScope))];
+  let baselineFiles = [];
+  if (chain.length) {
+    try {
+      baselineFiles = (await readCheckpointBaseline(root2, state.featureId, chain[0].unitId)).files;
+    } catch {
+      return { enforced: true, chain: [], validTargets: [], conflicts: [] };
+    }
+  }
+  return {
+    enforced: true,
+    chain: chain.map((manifest) => ({
+      checkpointId: manifest.checkpointId,
+      unitId: manifest.unitId,
+      sequence: manifest.sequence
+    })),
+    validTargets: chain.map((manifest) => manifest.checkpointId),
+    conflicts: detectChainConflicts(chain, snapshot, fileScopes, baselineFiles)
+  };
+}
+
+// plugins/dev-flow/src/core/status.ts
 async function traceStatus(root2, state) {
   const inspection = await inspectCurrentTrace(root2, state);
   return {
@@ -4796,7 +5696,7 @@ async function grillWait(root2, state, action) {
   if (!artifact) return { kind: "none" };
   let contents;
   try {
-    contents = await readFile9(path11.join(root2, ".dev-flow", "features", state.featureId, artifact.path), "utf8");
+    contents = await readFile10(path12.join(root2, ".dev-flow", "features", state.featureId, artifact.path), "utf8");
   } catch {
     throw new DevFlowError("GRILL_STATUS_INVALID", "registered requirements artifact cannot be read", {
       recoveryHint: "Restore or re-scaffold the requirements artifact through MCP, then record it before continuing"
@@ -4863,22 +5763,119 @@ async function buildProgress(root2, state, action) {
     }
   };
 }
+async function implementationStatus(root2, state, rollback) {
+  if (!checkpointsEnforcementRequired(state.route, state.workflowCapabilities)) {
+    return { enforced: false, remainingUnitIds: [] };
+  }
+  let remainingUnitIds = [];
+  try {
+    const ledger = await readTraceability(root2, state);
+    const byUnit = new Map((state.implementationUnits ?? []).map((unit) => [unit.unitId, unit.status]));
+    remainingUnitIds = Object.values(ledger.nodes).filter((node) => node.kind === "rollback" && node.status === "current").map((node) => node.id).filter((unitId) => byUnit.get(unitId) !== "checkpointed").sort();
+  } catch {
+    remainingUnitIds = [];
+  }
+  const active = (state.implementationUnits ?? []).find((unit) => unit.status === "active");
+  return {
+    enforced: true,
+    ...active ? { activeUnitId: active.unitId } : {},
+    ...rollback.chain.length ? { lastCheckpointId: rollback.chain.at(-1).checkpointId } : {},
+    remainingUnitIds
+  };
+}
 async function readStatusView(root2, featureId) {
   const state = await readState(root2, featureId);
   const action = await nextAction(root2, featureId);
   const progress = await buildProgress(root2, state, action);
+  const rollback = await rollbackChainView(root2, state);
   return {
     ...state,
     progress,
     trace: await traceStatus(root2, state),
-    reviewStatus: await reviewStatus(root2, state)
+    reviewStatus: await reviewStatus(root2, state),
+    implementation: await implementationStatus(root2, state, rollback),
+    rollback
   };
 }
 
+// plugins/dev-flow/src/core/implementation-units.ts
+import { createHash as createHash13 } from "node:crypto";
+var digest9 = (value) => createHash13("sha256").update(value).digest("hex");
+function currentRollbackNodes(ledger) {
+  return Object.values(ledger?.nodes ?? {}).filter((node) => node.kind === "rollback" && node.status === "current");
+}
+function implementationUnitBasisHash(state) {
+  return digest9(canonicalReviewValueJson({
+    traceability: state.traceability,
+    approval: state.humanGates.implementation_approval ?? null
+  }));
+}
+async function beginImplementationUnit(root2, id, expectedRevision, unitId) {
+  return mutate(root2, id, expectedRevision, "implementation-unit-begun", async (state) => {
+    if (!checkpointsEnforcementRequired(state.route, state.workflowCapabilities)) {
+      throw new DevFlowError("IMPLEMENTATION_UNITS_NOT_ENFORCED", "implementation units require a checkpoints:1 standard feature");
+    }
+    if (currentOpenStep(state) !== "implementation") {
+      throw new DevFlowError("STEP_OUT_OF_ORDER", "begin requires the implementation step", { expected: currentOpenStep(state) });
+    }
+    const approval = state.humanGates.implementation_approval;
+    if (approval?.status !== "confirmed") {
+      throw new DevFlowError("DEV_FLOW_IMPLEMENTATION_APPROVAL_REQUIRED", "implementation approval must be confirmed before beginning a unit");
+    }
+    const ledger = await assertTraceGateCurrent(root2, state, "implementation");
+    for (const kind of ["requirements", "implementation-plan", "coverage-matrix", ...state.route === "standard-l" ? ["rollback-units"] : []]) {
+      await assertArtifactCurrent(root2, id, state, kind);
+    }
+    if (reviewEnforcementRequired(state.route, state.workflowCapabilities)) {
+      await assertReviewComplete(root2, state);
+    }
+    const nodes = currentRollbackNodes(ledger);
+    const node = nodes.find((candidate) => candidate.id === unitId);
+    if (!node) {
+      throw new DevFlowError("IMPLEMENTATION_UNIT_UNKNOWN", "rollback unit is not part of the current trace graph", { unitId });
+    }
+    if ((state.implementationUnits ?? []).some((unit) => unit.status === "active")) {
+      const active = state.implementationUnits.find((unit) => unit.status === "active");
+      throw new DevFlowError("IMPLEMENTATION_UNIT_ALREADY_ACTIVE", "another rollback unit is already active", { activeUnitId: active.unitId });
+    }
+    const basisHash2 = implementationUnitBasisHash(state);
+    const byId = new Map((state.implementationUnits ?? []).map((unit) => [unit.unitId, unit]));
+    const merged = [];
+    for (const candidate of nodes) {
+      const existing = byId.get(candidate.id);
+      if (existing && existing.status !== "pending") {
+        merged.push(existing);
+      } else {
+        merged.push(implementationUnitForRollbackNode(candidate, basisHash2));
+      }
+    }
+    for (const dependency of node.dependsOn) {
+      const unit = merged.find((candidate) => candidate.unitId === dependency);
+      if (unit?.status !== "checkpointed") {
+        throw new DevFlowError("IMPLEMENTATION_UNIT_DEPENDENCY_INCOMPLETE", "rollback unit dependencies must be checkpointed first", {
+          unitId,
+          dependency,
+          status: unit?.status ?? "unknown"
+        });
+      }
+    }
+    const target = merged.find((unit) => unit.unitId === unitId);
+    if (target.status !== "pending") {
+      throw new DevFlowError("IMPLEMENTATION_UNIT_NOT_PENDING", "rollback unit cannot begin from its current status", { unitId, status: target.status });
+    }
+    const project = await readProjectConfig(root2);
+    const snapshot = await snapshotProtectedRoots(root2, project.protectedRoots);
+    await captureUnitBaseline(root2, id, unitId, snapshot);
+    target.status = "active";
+    target.startedFingerprint = await fingerprintProtectedRoots(root2, project.protectedRoots);
+    state.implementationUnits = merged;
+  }, { unitId });
+}
+
 // plugins/dev-flow/src/mcp/doctor.ts
-import { lstat as lstat3, readdir as readdir4, readFile as readFile10 } from "node:fs/promises";
-import path12 from "node:path";
-import { createHash as createHash11 } from "node:crypto";
+import { lstat as lstat3, readdir as readdir4, readFile as readFile11 } from "node:fs/promises";
+import path13 from "node:path";
+import { createHash as createHash14 } from "node:crypto";
 async function readable(file) {
   try {
     await lstat3(file);
@@ -4889,7 +5886,7 @@ async function readable(file) {
 }
 async function validJson(file) {
   try {
-    JSON.parse(await readFile10(file, "utf8"));
+    JSON.parse(await readFile11(file, "utf8"));
     return true;
   } catch {
     return false;
@@ -4897,7 +5894,7 @@ async function validJson(file) {
 }
 async function pointerRecoveryCandidates(root2) {
   try {
-    const directory = path12.join(root2, ".dev-flow", "features");
+    const directory = path13.join(root2, ".dev-flow", "features");
     const entries = await readdir4(directory, { withFileTypes: true });
     return await Promise.all(entries.filter((entry) => entry.isDirectory()).map(async (entry) => {
       let stateSha256;
@@ -4914,7 +5911,7 @@ async function pointerRecoveryCandidates(root2) {
 async function collectDoctorReport(root2, pluginRoot2, version, tools2) {
   const diagnostics = [];
   const add = (code, status, message, recoveryHint) => diagnostics.push({ code, status, message, ...recoveryHint ? { recoveryHint } : {} });
-  const projectFile = path12.join(root2, ".dev-flow", "project.json");
+  const projectFile = path13.join(root2, ".dev-flow", "project.json");
   let project = { initialized: await readable(projectFile), valid: false };
   if (!project.initialized) add("PROJECT_NOT_INITIALIZED", "warning", "run dev_flow_init_project before starting a feature");
   else {
@@ -4926,7 +5923,7 @@ async function collectDoctorReport(root2, pluginRoot2, version, tools2) {
       add("PROJECT_CONFIG_INVALID", "error", error instanceof Error ? error.message : String(error));
     }
   }
-  const activeFile = path12.join(root2, ".dev-flow", "active.json");
+  const activeFile = path13.join(root2, ".dev-flow", "active.json");
   let activeFeature = { present: await readable(activeFile), valid: false };
   let corruptFeature;
   let corruptActivePointer;
@@ -4945,17 +5942,17 @@ async function collectDoctorReport(root2, pluginRoot2, version, tools2) {
           activeFeature.valid ? `active feature ${state.featureId} is valid` : `active feature ${state.featureId} is not active`
         );
       } catch (error) {
-        let digest7;
+        let digest10;
         try {
-          digest7 = await stateFileSha256(root2, active.featureId);
+          digest10 = await stateFileSha256(root2, active.featureId);
         } catch {
         }
-        if (!digest7) {
+        if (!digest10) {
           try {
-            const raw = await readFile10(path12.join(root2, ".dev-flow", "features", active.featureId, "state.json"));
-            digest7 = createHash11("sha256").update(raw).digest("hex");
+            const raw = await readFile11(path13.join(root2, ".dev-flow", "features", active.featureId, "state.json"));
+            digest10 = createHash14("sha256").update(raw).digest("hex");
           } catch {
-            digest7 = void 0;
+            digest10 = void 0;
           }
         }
         activeFeature = {
@@ -4963,15 +5960,15 @@ async function collectDoctorReport(root2, pluginRoot2, version, tools2) {
           featureId: active.featureId,
           valid: false,
           corrupt: true,
-          stateSha256: digest7,
+          stateSha256: digest10,
           recoveryAction: "abandon"
         };
         const message = error instanceof Error ? error.message : String(error);
         add("ACTIVE_FEATURE_CORRUPT", "error", message, "Call dev_flow_recover_corrupt_feature with stateSha256, reason, and userEvidence");
-        if (digest7) {
+        if (digest10) {
           corruptFeature = {
             featureId: active.featureId,
-            stateSha256: digest7,
+            stateSha256: digest10,
             recommendedAction: "abandon",
             recoveryHint: "User must explicitly agree to abandon; then start a new feature. Do not hand-edit state.json."
           };
@@ -4982,7 +5979,7 @@ async function collectDoctorReport(root2, pluginRoot2, version, tools2) {
       if (error.code === "ACTIVE_POINTER_UNREADABLE") {
         let activeSha256;
         try {
-          activeSha256 = createHash11("sha256").update(await readFile10(activeFile)).digest("hex");
+          activeSha256 = createHash14("sha256").update(await readFile11(activeFile)).digest("hex");
         } catch {
         }
         activeFeature = { present: true, valid: false, corrupt: true, recoveryAction: "abandon" };
@@ -5076,14 +6073,14 @@ async function collectDoctorReport(root2, pluginRoot2, version, tools2) {
     }
   }
   const paths = {
-    claudeManifest: path12.join(pluginRoot2, ".claude-plugin", "plugin.json"),
-    codexManifest: path12.join(pluginRoot2, ".codex-plugin", "plugin.json"),
-    mcp: path12.join(pluginRoot2, ".mcp.json"),
-    claudeHooks: path12.join(pluginRoot2, "hosts", "claude", "hooks.json"),
-    codexHooks: path12.join(pluginRoot2, "hosts", "codex", "hooks.json"),
-    mcpBundle: path12.join(pluginRoot2, "dist", "mcp-server.mjs"),
-    claudeBundle: path12.join(pluginRoot2, "dist", "claude-hook.mjs"),
-    codexBundle: path12.join(pluginRoot2, "dist", "codex-hook.mjs")
+    claudeManifest: path13.join(pluginRoot2, ".claude-plugin", "plugin.json"),
+    codexManifest: path13.join(pluginRoot2, ".codex-plugin", "plugin.json"),
+    mcp: path13.join(pluginRoot2, ".mcp.json"),
+    claudeHooks: path13.join(pluginRoot2, "hosts", "claude", "hooks.json"),
+    codexHooks: path13.join(pluginRoot2, "hosts", "codex", "hooks.json"),
+    mcpBundle: path13.join(pluginRoot2, "dist", "mcp-server.mjs"),
+    claudeBundle: path13.join(pluginRoot2, "dist", "claude-hook.mjs"),
+    codexBundle: path13.join(pluginRoot2, "dist", "codex-hook.mjs")
   };
   const files = await Promise.all(Object.entries(paths).map(async ([name, file]) => [name, await readable(file)]));
   const missing = files.filter(([, exists]) => !exists).map(([name]) => name);
@@ -5114,8 +6111,8 @@ import { promisify as promisify4 } from "node:util";
 
 // plugins/dev-flow/src/mcp/windows-notifications.ts
 import { execFile as execFile3 } from "node:child_process";
-import { access as access2 } from "node:fs/promises";
-import path13 from "node:path";
+import { access as access3 } from "node:fs/promises";
+import path14 from "node:path";
 import { promisify as promisify3 } from "node:util";
 var run3 = promisify3(execFile3);
 var WINDOWS_NOTIFICATION_APP_ID = "io.github.wxy_hh.dev_flow";
@@ -5128,14 +6125,14 @@ function environmentOf(options) {
 }
 function shortcutPathOf(environment) {
   const appData = environment.APPDATA;
-  return appData ? path13.win32.join(appData, "Microsoft", "Windows", "Start Menu", "Programs", shortcutName) : void 0;
+  return appData ? path14.win32.join(appData, "Microsoft", "Windows", "Start Menu", "Programs", shortcutName) : void 0;
 }
 async function command(file, args) {
   return run3(file, args);
 }
-async function pathExists2(file) {
+async function pathExists3(file) {
   try {
-    await access2(file);
+    await access3(file);
     return true;
   } catch {
     return false;
@@ -5156,7 +6153,7 @@ $ErrorActionPreference = 'Stop'
 $shortcutPath = ${powerShellLiteral(shortcutPath)}
 $nodeExecutable = ${powerShellLiteral(nodeExecutable)}
 $nodeArguments = '-e "process.exit(0)"'
-$workingDirectory = ${powerShellLiteral(path13.win32.dirname(shortcutPath))}
+$workingDirectory = ${powerShellLiteral(path14.win32.dirname(shortcutPath))}
 $appId = ${powerShellLiteral(WINDOWS_NOTIFICATION_APP_ID)}
 $source = @'
 using System;
@@ -5305,7 +6302,7 @@ async function emitWindowsToast(title, body, options = {}) {
   const shortcutPath = shortcutPathOf(environmentOf(options));
   if (!shortcutPath) return;
   try {
-    if (!await (options.exists ?? pathExists2)(shortcutPath)) return;
+    if (!await (options.exists ?? pathExists3)(shortcutPath)) return;
     await (options.execute ?? command)("powershell.exe", encodedPowerShell(toastScript(title, body)));
   } catch {
   }
@@ -5352,8 +6349,8 @@ async function emitAttention(event, options = {}) {
 
 // plugins/dev-flow/src/mcp/server.ts
 var root = process.cwd();
-var moduleDirectory = path14.dirname(fileURLToPath(import.meta.url));
-var pluginRoot = path14.basename(moduleDirectory) === "dist" ? path14.resolve(moduleDirectory, "..") : path14.resolve(moduleDirectory, "../..");
+var moduleDirectory = path15.dirname(fileURLToPath(import.meta.url));
+var pluginRoot = path15.basename(moduleDirectory) === "dist" ? path15.resolve(moduleDirectory, "..") : path15.resolve(moduleDirectory, "../..");
 var tools = [
   "dev_flow_init_project",
   "dev_flow_classify",
@@ -5385,6 +6382,9 @@ var tools = [
   "dev_flow_abandon",
   "dev_flow_enable_windows_notifications",
   "dev_flow_doctor",
+  "dev_flow_begin_implementation_unit",
+  "dev_flow_checkpoint_implementation_unit",
+  "dev_flow_preview_rollback",
   "dev_flow_recover_corrupt_feature"
 ];
 var object = (required, properties = {}) => ({
@@ -5564,6 +6564,19 @@ var toolSchemas = {
     })
   },
   dev_flow_record_step: { description: "Record the current non-gate route step.", inputSchema: featureMutation({ step: string, evidence: {} }) },
+  dev_flow_begin_implementation_unit: {
+    description: "Begin the next rollback unit of a checkpoints:1 feature; Core derives basis, scope, and dependency order.",
+    inputSchema: object(["featureId", "expectedRevision", "unitId"], { featureId: string, expectedRevision: integer, unitId: traceId("RU") })
+  },
+  dev_flow_checkpoint_implementation_unit: {
+    description: "Confirm the active rollback unit: scope-checked diff, forward verification, content-addressed checkpoint.",
+    inputSchema: object(["featureId", "expectedRevision", "unitId"], { featureId: string, expectedRevision: integer, unitId: traceId("RU") })
+  },
+  dev_flow_preview_rollback: {
+    description: "Read-only rollback plan for a confirmed checkpoint: undo order, restored files, verification commands. Phase 3 has no execution tool.",
+    inputSchema: object(["featureId", "targetCheckpointId"], { featureId: string, targetCheckpointId: string }),
+    annotations: { readOnlyHint: true }
+  },
   dev_flow_present_gate: { description: "Present a strict human gate.", inputSchema: featureMutation({ gate: { enum: ["requirement_confirmation", "implementation_approval"] } }) },
   dev_flow_confirm_gate: {
     description: "Confirm a presented gate with later user evidence.",
@@ -5714,6 +6727,19 @@ function assertReviewSubmitInput(value) {
 }
 function assertReviewSamplingInput(value) {
   assertReviewMutationInput(value, "dev_flow_sample_review_job", ["batchId", "jobId"]);
+}
+var ROLLBACK_UNIT_ID = /^RU-[0-9]{3,}$/;
+function assertUnitMutationInput(value, tool) {
+  assertReviewMutationInput(value, tool, ["unitId"]);
+  if (typeof value.unitId !== "string" || !ROLLBACK_UNIT_ID.test(value.unitId)) {
+    throw new DevFlowError("INVALID_TOOL_INPUT", `${tool} input does not match its schema`);
+  }
+}
+function assertPreviewRollbackInput(value) {
+  assertExactToolInput(value, ["featureId", "targetCheckpointId"], "dev_flow_preview_rollback");
+  if (typeof value.featureId !== "string" || !value.featureId || typeof value.targetCheckpointId !== "string" || !value.targetCheckpointId) {
+    throw new DevFlowError("INVALID_TOOL_INPUT", "dev_flow_preview_rollback input does not match its schema");
+  }
 }
 function interactionEnvelope(state, interaction, interactionOutcome, response) {
   return {
@@ -6005,6 +7031,18 @@ async function call(name, a, connection2) {
     }
     case "dev_flow_record_step":
       return recordStep(root, a.featureId, a.expectedRevision, a.step, a.evidence);
+    case "dev_flow_begin_implementation_unit": {
+      assertUnitMutationInput(a, "dev_flow_begin_implementation_unit");
+      return beginImplementationUnit(root, a.featureId, a.expectedRevision, a.unitId);
+    }
+    case "dev_flow_checkpoint_implementation_unit": {
+      assertUnitMutationInput(a, "dev_flow_checkpoint_implementation_unit");
+      return checkpointImplementationUnit(root, a.featureId, a.expectedRevision, a.unitId);
+    }
+    case "dev_flow_preview_rollback": {
+      assertPreviewRollbackInput(a);
+      return previewRollback(root, a.featureId, a.targetCheckpointId);
+    }
     case "dev_flow_present_gate": {
       const presentation = await presentGate(root, a.featureId, a.expectedRevision, a.gate);
       emitAttentionNotification({ kind: "decision-required", featureId: a.featureId, decision: a.gate });

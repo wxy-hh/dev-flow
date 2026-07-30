@@ -38,7 +38,18 @@ Dev Flow 以**一个预构建插件包**同时服务 Claude Code 与 Codex CLI�
 - `dev_flow_get_traceability` 只读返回 pointer、ledger、有效摘要及当前步骤 blocker。任何人不得直接编辑 snapshot、pointer 或 state。
 - generated `status` 由 Core scaffold/refresh，禁止人工 record；standard L 不生成 status 文件，应以 `StatusView` 为准。
 - Host Hook 将 `features/<id>/traceability/**` 视为 MCP 控制路径；当前 pointer 损坏时，`.dev-flow` 与 protected roots 均 fail closed。
-- rollback unit 只验证已登记的 Trace 关系；可执行 rollback / checkpoint 仍未发布。
+- rollback unit 只验证已登记的 Trace 关系；checkpoint 由 `checkpoints: 1` 能力门控发布。当前仅提供只读回撤预览（`dev_flow_preview_rollback`）；可执行回撤与确认门禁属于后续阶段（`rollbackExecution` 为 0）。
+
+## Checkpoints 实现单元生命周期（1.7.0+，`checkpoints: 1`）
+
+standard M/L 启用了 `checkpoints: 1` 后，implementation 步骤通过 **rollback unit** 管理文件写入：
+
+- **写入权限**：`implementationUnitWriteBlock` 纯函数判断。非 implementation 阶段、approval 未确认、或无 active unit 时返回 `IMPLEMENTATION_UNIT_REQUIRED`；文件超出 unit 的 `fileScope` 时返回 `IMPLEMENTATION_UNIT_OUT_OF_SCOPE`。Host Hook 在 PreToolUse 中调用该函数拦截 protected 路径写操作。
+- **开始单元**：`beginImplementationUnit` 校验 trace gate 当前、所有 trace artifact 最新、review complete（若 `review: 1`）、rollback node 存在、依赖已 checkpointed。成功后捕获 protected roots 基线指纹与内容快照。
+- **检查点**：`checkpointImplementationUnit` 快照当前 protected roots 内容到 `.dev-flow/features/<id>/checkpoints/` 目录，创建内容寻址不可变检查点（SHA-256 命名），标记 unit 为 `checkpointed`。顺序编号 `CP-001`、`CP-002` ...
+- **回撤预览**：`dev_flow_status` 的 StatusView 包含 `rollback.validTargets`（可回撤目标列表）、`rollback.chain`（CP 顺序记录）和 `implementation.remainingUnitIds`（待完成单元）。无 `rollback_confirmation` 等人为门禁，回撤仍为 future 功能。
+- **状态投影**：`deriveNext` 在 implementation 步骤且 checkpoints 强制时，无 active unit → `begin-implementation-unit`，有 active 未 checkpointed → `checkpoint-implementation-unit`，所有 unit 已完成 → `run-step(implementation)`。
+- **跨宿主安全**：checkpoints 目录受 adapter policy `isControlPath` 保护，禁止技能直接写。Host Hook 将 `features/<id>/checkpoints/**` 视为控制路径。
 
 ## Review 2a 多视角审查（`review: 1`）
 

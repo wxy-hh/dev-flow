@@ -83,7 +83,7 @@ var ZERO_WORKFLOW_CAPABILITIES = Object.freeze({
 var SUPPORTED_WORKFLOW_CAPABILITIES = Object.freeze({
   trace: 1,
   review: 1,
-  checkpoints: 0,
+  checkpoints: 1,
   rollbackExecution: 0
 });
 
@@ -96,6 +96,51 @@ var allowedRiskLabels = Object.freeze(Object.keys(contract.riskEnhancements));
 function routeDefinition(route) {
   return contract.routes[route];
 }
+function cloneArtifactSteps(steps) {
+  if (!steps) return void 0;
+  return Object.fromEntries(Object.entries(steps).map(([step, artifacts]) => [step, [...artifacts]]));
+}
+function cloneRouteDefinition(definition) {
+  return {
+    ...definition,
+    orderedSteps: [...definition.orderedSteps],
+    requiredArtifacts: [...definition.requiredArtifacts],
+    ...definition.generatedArtifacts ? { generatedArtifacts: [...definition.generatedArtifacts] } : {},
+    ...definition.artifactSteps ? { artifactSteps: cloneArtifactSteps(definition.artifactSteps) } : {},
+    ...definition.generatedArtifactSteps ? { generatedArtifactSteps: cloneArtifactSteps(definition.generatedArtifactSteps) } : {},
+    ...definition.artifactTransitions ? {
+      artifactTransitions: definition.artifactTransitions.map((transition) => ({ ...transition, steps: [...transition.steps] }))
+    } : {}
+  };
+}
+function ensureGeneratedArtifact(definition, artifact) {
+  if (!definition.generatedArtifacts) definition.generatedArtifacts = [];
+  if (!definition.generatedArtifacts.includes(artifact)) definition.generatedArtifacts.push(artifact);
+}
+function moveArtifactSteps(definition, artifact, steps) {
+  if (!definition.generatedArtifactSteps) definition.generatedArtifactSteps = {};
+  const sourceSteps = steps ?? Object.entries(definition.artifactSteps ?? {}).filter(([, artifacts]) => artifacts.includes(artifact)).map(([step]) => step);
+  for (const step of sourceSteps) {
+    const source = definition.artifactSteps?.[step] ?? [];
+    if (source.includes(artifact)) {
+      const remaining = source.filter((kind) => kind !== artifact);
+      if (remaining.length === 0) delete definition.artifactSteps?.[step];
+      else if (definition.artifactSteps) definition.artifactSteps[step] = remaining;
+    }
+    const generated = definition.generatedArtifactSteps[step] ?? [];
+    if (!generated.includes(artifact)) definition.generatedArtifactSteps[step] = [...generated, artifact];
+  }
+}
+function moveArtifactToGenerated(definition, artifact, steps) {
+  definition.requiredArtifacts = definition.requiredArtifacts.filter((kind) => kind !== artifact);
+  ensureGeneratedArtifact(definition, artifact);
+  moveArtifactSteps(definition, artifact, steps);
+}
+function validateArtifactModes(definition) {
+  const generated = definition.generatedArtifacts ?? [];
+  const overlap = definition.requiredArtifacts.find((artifact) => generated.includes(artifact));
+  if (overlap) throw new Error(`route contract artifact ${overlap} cannot be both editable and generated`);
+}
 function normalizeWorkflowCapabilities(value) {
   const candidate = value ?? ZERO_WORKFLOW_CAPABILITIES;
   if (candidate.trace !== 0 && candidate.trace !== 1 || candidate.review !== 0 && candidate.review !== 1 || candidate.checkpoints !== 0 && candidate.checkpoints !== 1 || candidate.rollbackExecution !== 0 && candidate.rollbackExecution !== 1) {
@@ -103,11 +148,28 @@ function normalizeWorkflowCapabilities(value) {
   }
   return Object.freeze({ ...candidate });
 }
+function routeDefinitionForFeature(route, capabilities) {
+  const definition = cloneRouteDefinition(routeDefinition(route));
+  const normalized = normalizeWorkflowCapabilities(capabilities);
+  if (route === "risk-minimal" || route === "standard-m") {
+    moveArtifactToGenerated(definition, "status");
+  }
+  for (const transition of definition.artifactTransitions ?? []) {
+    if (normalized[transition.capability] === 1) {
+      moveArtifactToGenerated(definition, transition.artifact, transition.steps);
+    }
+  }
+  validateArtifactModes(definition);
+  return definition;
+}
 function traceEnforcementRequired(route, capabilities) {
   return normalizeWorkflowCapabilities(capabilities).trace === 1 && (route === "standard-m" || route === "standard-l");
 }
 function reviewEnforcementRequired(route, capabilities) {
   return normalizeWorkflowCapabilities(capabilities).review === 1 && (route === "standard-m" || route === "standard-l");
+}
+function checkpointsEnforcementRequired(route, capabilities) {
+  return normalizeWorkflowCapabilities(capabilities).checkpoints === 1 && traceEnforcementRequired(route, capabilities);
 }
 
 // plugins/dev-flow/src/core/errors.ts
@@ -337,6 +399,11 @@ function validateTraceGraph(ledger, route, mode) {
       }
     }
   }
+}
+
+// plugins/dev-flow/src/core/step-order.ts
+function currentOpenStep(state) {
+  return routeDefinitionForFeature(state.route, state.workflowCapabilities).orderedSteps.find((step) => state.steps[step]?.status !== "satisfied");
 }
 
 // plugins/dev-flow/src/core/traceability-store.ts
@@ -577,6 +644,26 @@ async function readReviewLedger(root, state) {
 
 // plugins/dev-flow/src/core/state-store.ts
 var lifecycles = /* @__PURE__ */ new Set(["active", "paused", "finalized", "abandoned"]);
+var unitStatuses = /* @__PURE__ */ new Set(["pending", "active", "verified", "checkpointed", "rolled_back"]);
+function validateImplementationUnits(units) {
+  if (!Array.isArray(units)) throw new DevFlowError("INVALID_STATE_SCHEMA", "implementationUnits must be an array");
+  const ids = /* @__PURE__ */ new Set();
+  const checkpoints = /* @__PURE__ */ new Set();
+  for (const value of units) {
+    const unit = value;
+    if (!unit || typeof unit !== "object" || Array.isArray(unit) || typeof unit.unitId !== "string" || !/^RU-[0-9]{3,}$/.test(unit.unitId) || typeof unit.status !== "string" || !unitStatuses.has(unit.status) || typeof unit.basisHash !== "string" || !/^[a-f0-9]{64}$/.test(unit.basisHash) || unit.startedFingerprint !== void 0 && (typeof unit.startedFingerprint !== "string" || !/^[a-f0-9]{64}$/.test(unit.startedFingerprint)) || unit.checkpointId !== void 0 && typeof unit.checkpointId !== "string") {
+      throw new DevFlowError("INVALID_STATE_SCHEMA", "implementation unit state is invalid");
+    }
+    const started = unit.startedFingerprint !== void 0;
+    const checkpointed = unit.checkpointId !== void 0;
+    const consistent = unit.status === "pending" && !started && !checkpointed || (unit.status === "active" || unit.status === "verified") && started && !checkpointed || (unit.status === "checkpointed" || unit.status === "rolled_back") && started && checkpointed;
+    if (!consistent) throw new DevFlowError("INVALID_STATE_SCHEMA", "implementation unit status is inconsistent with its fields");
+    if (ids.has(unit.unitId)) throw new DevFlowError("INVALID_STATE_SCHEMA", "implementation units duplicate a rollback unit");
+    if (checkpointed && checkpoints.has(unit.checkpointId)) throw new DevFlowError("INVALID_STATE_SCHEMA", "implementation units duplicate a checkpoint id");
+    ids.add(unit.unitId);
+    if (checkpointed) checkpoints.add(unit.checkpointId);
+  }
+}
 function validateFeatureState(value) {
   const state = value;
   if (state?.schemaVersion !== 1) throw new DevFlowError("UNSUPPORTED_STATE_SCHEMA", "only state schema v1 is supported");
@@ -608,6 +695,7 @@ function validateFeatureState(value) {
   if (reviewEnforcementRequired(state.route, state.workflowCapabilities) && !state.review) {
     throw new DevFlowError("INVALID_STATE_SCHEMA", "review-enabled standard feature requires a review pointer");
   }
+  if (state.implementationUnits !== void 0) validateImplementationUnits(state.implementationUnits);
 }
 var delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 var devFlow = (root) => path4.join(root, ".dev-flow");
@@ -796,6 +884,96 @@ function classifyGitCommand(command) {
   return "read";
 }
 var gitReadOnlyCommands = [...readOnly].sort();
+
+// plugins/dev-flow/src/policy/rollback.ts
+var IMPLEMENTATION_UNIT_TRANSITIONS = Object.freeze({
+  pending: Object.freeze(["active"]),
+  active: Object.freeze(["verified"]),
+  verified: Object.freeze(["checkpointed", "active"]),
+  checkpointed: Object.freeze(["rolled_back"]),
+  rolled_back: Object.freeze([])
+});
+function pathWithinFileScope(path7, fileScope) {
+  return fileScope.some((pattern) => scopePatternMatches(pattern, path7));
+}
+function scopePatternMatches(pattern, target) {
+  if (typeof pattern !== "string" || !pattern.trim() || typeof target !== "string" || !target.trim()) return false;
+  if (pattern.includes("\\") || target.includes("\\")) return false;
+  if (pattern.startsWith("/") || target.startsWith("/")) return false;
+  const segments = pattern.split("/");
+  if (segments.some((segment) => segment === "..")) return false;
+  const parts = target.split("/");
+  if (parts.some((part) => part === "..")) return false;
+  if (/[*?]/.test(pattern)) return globSegmentsMatch(segments, parts);
+  if (pattern === ".") return true;
+  return target === pattern || target.startsWith(`${pattern}/`);
+}
+function globSegmentsMatch(pattern, target) {
+  if (pattern.length === 0) return target.length === 0;
+  const [head, ...rest] = pattern;
+  if (head === "**") {
+    if (rest.length === 0) return true;
+    for (let skip = 0; skip <= target.length; skip += 1) {
+      if (globSegmentsMatch(rest, target.slice(skip))) return true;
+    }
+    return false;
+  }
+  if (target.length === 0 || !globSegmentMatches(head, target[0])) return false;
+  return globSegmentsMatch(rest, target.slice(1));
+}
+function globSegmentMatches(pattern, segment) {
+  if (pattern === "") return segment === "";
+  const [head, ...rest] = pattern;
+  if (head === "*") {
+    for (let take = 0; take <= segment.length; take += 1) {
+      if (globSegmentMatches(rest.join(""), segment.slice(take))) return true;
+    }
+    return false;
+  }
+  if (head === "?") return segment.length > 0 && globSegmentMatches(rest.join(""), segment.slice(1));
+  return segment.startsWith(head) && globSegmentMatches(rest.join(""), segment.slice(head.length));
+}
+
+// plugins/dev-flow/src/core/verification.ts
+import { execFile as execFile2 } from "node:child_process";
+import { promisify as promisify2 } from "node:util";
+var run2 = promisify2(execFile2);
+
+// plugins/dev-flow/src/core/review-jobs.ts
+var leaseMilliseconds = 60 * 60 * 1e3;
+var samplingLeaseMilliseconds = 120 * 1e3;
+
+// plugins/dev-flow/src/core/implementation-units.ts
+function currentRollbackNodes(ledger) {
+  return Object.values(ledger?.nodes ?? {}).filter((node) => node.kind === "rollback" && node.status === "current");
+}
+function implementationUnitWriteBlock(state, ledger, relativePath) {
+  if (!checkpointsEnforcementRequired(state.route, state.workflowCapabilities)) return void 0;
+  if (currentOpenStep(state) !== "implementation") return void 0;
+  const approval = state.humanGates.implementation_approval;
+  if (approval?.status !== "confirmed") return void 0;
+  const active = (state.implementationUnits ?? []).find((unit) => unit.status === "active");
+  if (!active) {
+    return {
+      code: "IMPLEMENTATION_UNIT_REQUIRED",
+      details: { recoveryHint: "Begin the next rollback unit via dev_flow_begin_implementation_unit before writing protected files" }
+    };
+  }
+  const node = currentRollbackNodes(ledger).find((candidate) => candidate.id === active.unitId);
+  if (!node) {
+    return {
+      code: "IMPLEMENTATION_UNIT_OUT_OF_SCOPE",
+      details: { unitId: active.unitId, fileScope: [], path: relativePath }
+    };
+  }
+  if (!pathWithinFileScope(relativePath, node.fileScope)) {
+    return {
+      code: "IMPLEMENTATION_UNIT_OUT_OF_SCOPE",
+      details: { unitId: active.unitId, fileScope: [...node.fileScope], path: relativePath }
+    };
+  }
+  return void 0;
+}
 
 // plugins/dev-flow/src/hosts/adapter-policy.ts
 function formatPreToolBlock(block) {
@@ -1009,10 +1187,11 @@ async function loadActiveWorkflow(root) {
     return { kind: "unreadable", reason: "project.json invalid", blockAllWrites: true };
   }
   let state;
+  let ledger;
   try {
     state = await readState(root, active.featureId);
     if (state.lifecycle !== "active" || active.revision !== state.revision) return { kind: "unreadable", reason: "active pointer does not match active state", protectedRoots: project.protectedRoots, blockAllWrites: false };
-    if (state.traceability) await readTraceability(root, state);
+    if (state.traceability) ledger = await readTraceability(root, state);
     if (state.review) await readReviewLedger(root, state);
   } catch {
     return { kind: "unreadable", reason: "state invalid", protectedRoots: project.protectedRoots, blockAllWrites: false };
@@ -1027,15 +1206,18 @@ async function loadActiveWorkflow(root) {
     const relative = `.dev-flow/features/${active.featureId}/${artifact.path}`.split(path5.sep).join("/");
     allowedArtifacts.add(relative);
   }
+  const approvalConfirmed = state.humanGates.implementation_approval?.status === "confirmed";
   return {
     kind: "ready",
     workflow: {
       featureId: active.featureId,
       route: state.route,
       logicComplete: state.logicComplete,
-      approvalConfirmed: state.humanGates.implementation_approval?.status === "confirmed",
+      approvalConfirmed,
       allowedArtifacts,
-      protectedRoots: project.protectedRoots
+      protectedRoots: project.protectedRoots,
+      state,
+      ledger
     }
   };
 }
@@ -1069,6 +1251,23 @@ function classifyTarget(root, target, workflow) {
       code: "DEV_FLOW_IMPLEMENTATION_APPROVAL_REQUIRED",
       recoveryHint: "Target is under a protected root; finish the route and wait for implementation approval"
     };
+  }
+  if (workflow.state && isProtected(root, target, workflow.protectedRoots)) {
+    const relative2 = projectRelative(root, target);
+    const block = implementationUnitWriteBlock(workflow.state, workflow.ledger, relative2);
+    if (block?.code === "IMPLEMENTATION_UNIT_REQUIRED") {
+      return {
+        code: "DEV_FLOW_IMPLEMENTATION_UNIT_REQUIRED",
+        recoveryHint: "Begin the next rollback unit via dev_flow_begin_implementation_unit before writing protected files"
+      };
+    }
+    if (block?.code === "IMPLEMENTATION_UNIT_OUT_OF_SCOPE") {
+      const scope = block.details.fileScope ?? [];
+      return {
+        code: "DEV_FLOW_IMPLEMENTATION_UNIT_OUT_OF_SCOPE",
+        recoveryHint: `Active rollback unit ${block.details.unitId} covers only: ${scope.join(", ") || "(no current scope)"}`
+      };
+    }
   }
   return void 0;
 }
