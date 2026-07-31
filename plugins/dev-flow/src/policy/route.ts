@@ -18,25 +18,33 @@ export function assertTopologyLevel(classification: Classification): void {
   }
 }
 
-export function selectRoute(input: ClassificationInput): { classification: Classification; route: RouteId } {
+export function selectRoute(input: ClassificationInput): { classification: Classification; route: RouteId; warning?: string } {
   const classification = normalizeClassification(input);
   assertTopologyLevel(classification);
   const { level, execution, requirements, riskLabels } = classification;
 
+  let route: RouteId;
   if (level === "XS" || level === "S") {
     if (execution) throw new PolicyError("EXECUTION_NOT_ALLOWED", "XS/S do not accept execution");
-    return { classification, route: riskLabels.length ? "risk-minimal" : level.toLowerCase() as RouteId };
+    route = riskLabels.length ? "risk-minimal" : (level.toLowerCase() as RouteId);
+  } else {
+    if (!execution) throw new PolicyError("EXECUTION_REQUIRED", "M/L require execution");
+    if (level === "M" && execution === "light") {
+      route = riskLabels.length ? "risk-minimal" : "light-m";
+    } else if (level === "L" && execution === "light") {
+      route = "light-l";
+    } else {
+      if (!requirements) throw new PolicyError("REQUIREMENTS_REQUIRED", "standard M/L require requirements state");
+      route = level === "M" ? "standard-m" : "standard-l";
+    }
   }
 
-  if (!execution) throw new PolicyError("EXECUTION_REQUIRED", "M/L require execution");
-  if (level === "M" && execution === "light") {
-    return { classification, route: riskLabels.length ? "risk-minimal" : "light-m" };
-  }
-  if (level === "L" && execution === "light") {
-    return { classification, route: "light-l" };
-  }
-  if (!requirements) throw new PolicyError("REQUIREMENTS_REQUIRED", "standard M/L require requirements state");
-  return { classification, route: level === "M" ? "standard-m" : "standard-l" };
+  // 无需求澄清环节的路线（非 standard M/L）收到不清晰需求时，提示分类可能失误；仅提示，不强制升级。
+  const warning =
+    requirements && requirements !== "provided-confirmed" && route !== "standard-m" && route !== "standard-l"
+      ? `需求状态为 ${requirements}，但 ${route} 路线无需求澄清环节；建议升级 M + standard 或先向用户澄清后重新分类`
+      : undefined;
+  return { classification, route, ...(warning ? { warning } : {}) };
 }
 
 export function deriveRiskRequirements(riskLabels: Classification["riskLabels"]): DerivedRiskRequirements {

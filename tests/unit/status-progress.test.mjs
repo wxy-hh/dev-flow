@@ -64,7 +64,7 @@ test("status progress reports grill wait without changing revision", async () =>
       root, featureId: "f", state, kind: "requirements",
       edit: (markdown) => markdown.replace(
         /^  grill_status: pending$/m,
-        "  grill_status: in_progress\n  grill_question_id: Q-002\n  grill_response_hint: \"回复 A / B / C\"\n  grill_question_limit: 3",
+        "  grill_status: in_progress\n  grill_question_id: Q-002\n  grill_response_hint: \"回复 A / B / C\"",
       ),
     });
     const before = state.revision;
@@ -74,6 +74,7 @@ test("status progress reports grill wait without changing revision", async () =>
     assert.equal(view.reviewStatus.projection.batch.visibility, "coarse");
     assert.equal(view.progress.wait.kind, "grill");
     assert.equal(view.progress.wait.questionId, "Q-002");
+    assert.equal("questionLimit" in view.progress.wait, false);
     assert.match(view.progress.wait.responseHint, /A \/ B \/ C/);
     const decision = await grill.requestGrillDecision(root, "f", state.revision, {
       questionId: "Q-002",

@@ -498,7 +498,7 @@ test("MCP nests native grill choices and returns a free-text other response", as
     const requirements = path.join(root, ".dev-flow", "features", "f", "需求文档.md");
     await writeFile(requirements, (await readFile(requirements, "utf8")).replace(
       /^  grill_status: pending$/m,
-      "  grill_status: in_progress\n  grill_question_id: Q-001\n  grill_response_hint: \"请选择一个方案\"\n  grill_question_limit: 3",
+      "  grill_status: in_progress\n  grill_question_id: Q-001\n  grill_response_hint: \"请选择一个方案\"",
     ));
     state = await registerTraceFixture({ root, featureId: "f", state, kind: "requirements" });
 

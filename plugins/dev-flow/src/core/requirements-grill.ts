@@ -20,7 +20,6 @@ export interface GrillFrontMatter {
   status: GrillStatus;
   questionId?: string;
   responseHint?: string;
-  questionLimit?: number;
 }
 
 export interface GrillDecisionInput {
@@ -83,15 +82,6 @@ export function parseGrillFrontMatter(contents: string): GrillFrontMatter {
   const result: GrillFrontMatter = { status };
   if (fields.grill_question_id) result.questionId = fields.grill_question_id;
   if (fields.grill_response_hint) result.responseHint = fields.grill_response_hint;
-  if (fields.grill_question_limit) {
-    const limit = Number(fields.grill_question_limit);
-    if (!Number.isInteger(limit) || limit < 1 || limit > 8) {
-      throw new DevFlowError("GRILL_STATUS_INVALID", "grill_question_limit must be an integer 1-8", {
-        recoveryHint: "Set grill_question_limit to 3 (visual) or up to 5 with Decision Log reason",
-      });
-    }
-    result.questionLimit = limit;
-  }
   if (status === "in_progress" && (!result.questionId || !result.responseHint)) {
     throw new DevFlowError("GRILL_STATUS_INVALID", "in_progress grill requires grill_question_id and grill_response_hint", {
       recoveryHint: "Set the current Q-id and response hint, record the requirements artifact, then ask the user",

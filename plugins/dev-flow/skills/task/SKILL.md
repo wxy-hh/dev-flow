@@ -16,7 +16,7 @@ description: 开任务并分级 start。触发：开任务、开始功能、task
 1. **topology → 最低 level**：`local`、`shared-contract`、`multi-chain`、`coordinated-rollback`；最低 level 只升不降。
 2. **具体失败后果 → riskLabels**：每个标签都必须能说出 security/data/money/external/availability/critical correctness/irreversible consequence 的具体后果。禁止因“相关”堆标签，禁止发明 `product-ux` 等领域标签。
 3. **未决策程度 → execution**：M/L 分类输入使用 `execution: light | standard`。范围、接口、回滚、验收已锁定且无关键分叉时优先 `execution: light`；multi-chain 仍是 L，但可走 light-L。只有真实需求分叉、优先级或跨模块行为尚未决策时才用 `execution: standard`。
-4. **仅 standard M/L → requirements/grill**：再从输入质量选择 `missing-or-unclear`、`documented-unconfirmed`、`provided-confirmed`。
+4. **仅 standard M/L → requirements/grill**：再从输入质量选择 `missing-or-unclear`、`documented-unconfirmed`、`provided-confirmed`。需求不清晰（`missing-or-unclear` / `documented-unconfirmed`）不得选 XS/S：先向用户澄清，或升级 M + standard；classify 会对这类组合返回 warning。
 5. **验收协助建议 → acceptanceAssistSuggested**：需求明确包含 UI、浏览器、交互或视觉验收时传 `true`，否则传 `false`。它只决定 verify 阶段是否友好地建议可协助浏览器验收，绝不阻塞自动化验证、feature-check 或 finalize；money 风险仍由机器验证规则处理。
 
 | 输入质量 | requirements | grill |
@@ -34,7 +34,7 @@ description: 开任务并分级 start。触发：开任务、开始功能、task
    - route 与原因（1 句）；
    - 压缩 steps；
    - riskRequirements 派生的 checks 与 verification kinds；
-   - 预计最多用户交互次数（grill 上限 + gate 数）；
+   - 预计最多用户交互次数（grill 清单题数 + gate 数）；
    - 若偏重：说明可在安全边界内请求同 level standard→light。
 3. 禁止在 Skill 内复制或重新实现 risk → evidence 映射。
 4. 调用 `dev_flow_next`，只执行返回的唯一动作。

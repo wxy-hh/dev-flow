@@ -18,7 +18,7 @@ import { rollbackChainView, type RollbackChainView } from "./rollback.js";
 export type ProgressWait =
   | { kind: "none" }
   | { kind: "human-gate"; gate: GateId; replyHint: string; interaction?: PublicInteraction; feedback?: string }
-  | { kind: "grill"; questionId: string; responseHint: string; questionLimit: number; interaction?: PublicInteraction };
+  | { kind: "grill"; questionId: string; responseHint: string; interaction?: PublicInteraction };
 
 export interface Progress {
   stepIndex: number;
@@ -98,7 +98,6 @@ async function grillWait(root: string, state: FeatureState, action: NextAction):
     kind: "grill",
     questionId: grill.questionId!,
     responseHint: interaction ? fallbackHint(interaction) : grill.responseHint!,
-    questionLimit: grill.questionLimit ?? 5,
     ...(interaction ? { interaction: toPublicInteraction(interaction) } : {}),
   };
 }

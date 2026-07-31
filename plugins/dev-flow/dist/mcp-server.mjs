@@ -384,19 +384,23 @@ function selectRoute(input) {
   const classification = normalizeClassification(input);
   assertTopologyLevel(classification);
   const { level, execution, requirements, riskLabels } = classification;
+  let route;
   if (level === "XS" || level === "S") {
     if (execution) throw new PolicyError("EXECUTION_NOT_ALLOWED", "XS/S do not accept execution");
-    return { classification, route: riskLabels.length ? "risk-minimal" : level.toLowerCase() };
+    route = riskLabels.length ? "risk-minimal" : level.toLowerCase();
+  } else {
+    if (!execution) throw new PolicyError("EXECUTION_REQUIRED", "M/L require execution");
+    if (level === "M" && execution === "light") {
+      route = riskLabels.length ? "risk-minimal" : "light-m";
+    } else if (level === "L" && execution === "light") {
+      route = "light-l";
+    } else {
+      if (!requirements) throw new PolicyError("REQUIREMENTS_REQUIRED", "standard M/L require requirements state");
+      route = level === "M" ? "standard-m" : "standard-l";
+    }
   }
-  if (!execution) throw new PolicyError("EXECUTION_REQUIRED", "M/L require execution");
-  if (level === "M" && execution === "light") {
-    return { classification, route: riskLabels.length ? "risk-minimal" : "light-m" };
-  }
-  if (level === "L" && execution === "light") {
-    return { classification, route: "light-l" };
-  }
-  if (!requirements) throw new PolicyError("REQUIREMENTS_REQUIRED", "standard M/L require requirements state");
-  return { classification, route: level === "M" ? "standard-m" : "standard-l" };
+  const warning = requirements && requirements !== "provided-confirmed" && route !== "standard-m" && route !== "standard-l" ? `\u9700\u6C42\u72B6\u6001\u4E3A ${requirements}\uFF0C\u4F46 ${route} \u8DEF\u7EBF\u65E0\u9700\u6C42\u6F84\u6E05\u73AF\u8282\uFF1B\u5EFA\u8BAE\u5347\u7EA7 M + standard \u6216\u5148\u5411\u7528\u6237\u6F84\u6E05\u540E\u91CD\u65B0\u5206\u7C7B` : void 0;
+  return { classification, route, ...warning ? { warning } : {} };
 }
 function deriveRiskRequirements(riskLabels) {
   const checks = /* @__PURE__ */ new Set();
@@ -3668,15 +3672,6 @@ function parseGrillFrontMatter(contents) {
   const result = { status };
   if (fields.grill_question_id) result.questionId = fields.grill_question_id;
   if (fields.grill_response_hint) result.responseHint = fields.grill_response_hint;
-  if (fields.grill_question_limit) {
-    const limit = Number(fields.grill_question_limit);
-    if (!Number.isInteger(limit) || limit < 1 || limit > 8) {
-      throw new DevFlowError("GRILL_STATUS_INVALID", "grill_question_limit must be an integer 1-8", {
-        recoveryHint: "Set grill_question_limit to 3 (visual) or up to 5 with Decision Log reason"
-      });
-    }
-    result.questionLimit = limit;
-  }
   if (status === "in_progress" && (!result.questionId || !result.responseHint)) {
     throw new DevFlowError("GRILL_STATUS_INVALID", "in_progress grill requires grill_question_id and grill_response_hint", {
       recoveryHint: "Set the current Q-id and response hint, record the requirements artifact, then ask the user"
@@ -7073,7 +7068,6 @@ async function grillWait(root2, state, action) {
     kind: "grill",
     questionId: grill.questionId,
     responseHint: interaction ? fallbackHint(interaction) : grill.responseHint,
-    questionLimit: grill.questionLimit ?? 5,
     ...interaction ? { interaction: toPublicInteraction(interaction) } : {}
   };
 }

@@ -14,6 +14,8 @@ description: 采集、压测并确认需求。触发：写需求、需求不清�
 1. 仅在 MCP 请求时脚手架 requirements artifact，并从 MCP 返回的已登记路径读取文件名。
 2. `missing-or-unclear` 或 `documented-unconfirmed` 委托 `grillme`（兼容 `df-grillme` / `dev-flow-grillme`）；后续回合续写已有 Decision Log 与首个未决 `Q-...`，不要重开访谈。
 3. 每轮 grill 文件更新后立即以 `kind: "requirements"` 调用 `dev_flow_record_artifact_with_trace`，提交当前文件中的每个 `REQ-...` 和 `AC-...`（AC 必须声明 `parentRequirement`）。若仍有 `in_progress` 的当前题，使用 grillme 交接的题干与稳定选项 ID 调用 `dev_flow_request_grill_decision`；该工具会优先展示原生选择控件。
+   - 清单预批轮（`grill_status: pending`、无当前题字段）：登记后纯文本等待用户批准/合并/裁剪清单，不调用 `dev_flow_request_grill_decision`、不 `dev_flow_record_step`（会被 `GRILL_INCOMPLETE` 拒绝）；此阶段 `dev_flow_status` 显示无等待属预期。
+   - 用户回复「合并剩余」：不调用 `dev_flow_resolve_grill_decision`（自由文本不匹配交互 token 会报错）；作为超驰指令交回 grillme，把剩余清单逐行写入 Decision Log（决策=推荐答案，来源=用户合并确认）并置 `complete`、清除当前题字段，重新登记后继续。
    - 返回 `interactionOutcome: pending`：输出返回值 `interaction.fallback` 的一次性回复并停止。先说明“已打开选择卡片；如未看到，请直接说明‘没有看到选择卡片’，我会展示文字回复。”；不要新建 interaction。
    - 返回已选 `response`：把选项和补充说明交还 grillme，当回合写入 Decision Log 后继续本流程；不要把结果当成用户的自由文本重新猜测。
    - 用户在无控件回退中提交一次性回复后，先读 status，再用 `dev_flow_resolve_grill_decision`；只把其返回的结构化 `response` 交还 grillme。

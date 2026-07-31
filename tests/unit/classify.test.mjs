@@ -16,6 +16,17 @@ test("classifies each required route", () => {
   assert.equal(selectRoute({ level: "L", topology: "coordinated-rollback", execution: "standard", requirements: "provided-confirmed" }).route, "standard-l");
 });
 
+test("unclear requirements warn when the route has no clarification step", () => {
+  assert.equal(
+    selectRoute({ level: "XS", topology: "local", requirements: "missing-or-unclear" }).warning,
+    "需求状态为 missing-or-unclear，但 xs 路线无需求澄清环节；建议升级 M + standard 或先向用户澄清后重新分类",
+  );
+  assert.match(selectRoute({ level: "S", topology: "local", requirements: "documented-unconfirmed" }).warning ?? "", /documented-unconfirmed/);
+  assert.equal(selectRoute({ level: "XS", topology: "local", requirements: "provided-confirmed" }).warning, undefined);
+  assert.equal(selectRoute({ level: "M", topology: "local", execution: "standard", requirements: "missing-or-unclear" }).warning, undefined);
+  assert.equal(selectRoute({ level: "XS", topology: "local" }).warning, undefined);
+});
+
 test("rejects invalid topology and execution combinations", () => {
   assert.throws(
     () => selectRoute({ level: "S", topology: "multi-chain" }),

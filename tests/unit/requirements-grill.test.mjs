@@ -155,6 +155,34 @@ test("legacy standard features without grill_status fail closed after requiremen
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 
+test("grill front matter tolerates legacy limit fields and bare pending checklist rounds", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "dev-flow-grill-lenient-"));
+  try {
+    let state = await start(root, "missing-or-unclear");
+    const file = fileFor(root);
+    // 存量 front matter 残留 grill_question_limit（含越界值）被宽容忽略，不再校验
+    await writeFile(file, (await readFile(file, "utf8")).replace(
+      /^  grill_status: pending$/m,
+      "  grill_status: in_progress\n  grill_question_id: Q-001\n  grill_response_hint: \"请选择一个方案\"\n  grill_question_limit: 999",
+    ));
+    let parsed = grill.parseGrillFrontMatter(await readFile(file, "utf8"));
+    assert.equal(parsed.status, "in_progress");
+    assert.equal(parsed.questionId, "Q-001");
+    assert.equal("questionLimit" in parsed, false);
+
+    // 清单预批轮：pending 允许不带当前题字段
+    await writeFile(file, (await readFile(file, "utf8"))
+      .replace(/^  grill_status: in_progress$/m, "  grill_status: pending")
+      .replace(/^  grill_question_id: Q-001\r?\n/m, "")
+      .replace(/^  grill_response_hint: "请选择一个方案"\r?\n/m, "")
+      .replace(/^  grill_question_limit: 999\r?\n/m, ""));
+    parsed = grill.parseGrillFrontMatter(await readFile(file, "utf8"));
+    assert.equal(parsed.status, "pending");
+    assert.equal(parsed.questionId, undefined);
+    assert.equal(parsed.responseHint, undefined);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
 test("grill decisions use native structured choices or one-time replies and preserve other feedback", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "dev-flow-grill-interaction-"));
   try {
@@ -162,7 +190,7 @@ test("grill decisions use native structured choices or one-time replies and pres
     const file = fileFor(root);
     await writeFile(file, (await readFile(file, "utf8")).replace(
       /^  grill_status: pending$/m,
-      "  grill_status: in_progress\n  grill_question_id: Q-001\n  grill_response_hint: \"请选择一个方案\"\n  grill_question_limit: 3",
+      "  grill_status: in_progress\n  grill_question_id: Q-001\n  grill_response_hint: \"请选择一个方案\"",
     ));
     state = await registerTraceFixture({ root, featureId: "f", state, kind: "requirements" });
     const input = {

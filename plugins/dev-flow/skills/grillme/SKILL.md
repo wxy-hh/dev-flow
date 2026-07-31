@@ -33,11 +33,20 @@ grillme 更新 requirements front matter 与 Open Questions / Decision Log
 
 同一主题子决策合为 2–3 个互斥组合包。每轮只问一个阻塞问题；须给出推荐答案、选项与影响。交接 requirements 时同时给出稳定小写 action ID（如 `hosted`、`self-hosted`），并总是加入 `other`（标签“其他 / 补充”，`requiresComment: true`）；供 `dev_flow_request_grill_decision` 直接渲染。
 
+回答含糊或偏离时：先复述理解并重申推荐答案，请用户确认或纠正；不新增题号。
+
+### 清单预批
+
+接手时先 Read 已登记 requirements，一次性产出完整决策树清单 `Q-001..Q-00N`（一行一题：主题 + 一句话推荐答案，按依赖排序；题数不限）。本轮保持 `grill_status: pending`、不写当前题字段、不交回 requirements 登记——纯对话等待。
+
+用户可批准 / 合并 / 裁剪 / 补充清单；无异议后写 `Q-001` 并转 `in_progress`，交回 requirements 走登记 + `dev_flow_request_grill_decision` 链路。后续回合续写已有清单与 Decision Log，不要重开访谈。
+
 ### 题数
 
-- 默认最多五个。
-- 「截图 + 参考实现 + 明确视觉目标」：`grill_question_limit` 固定为 **3**。
-- 仅当出现新架构分支、不可逆风险或预算/配额选择时可扩至 5，并在 Decision Log 记录扩展原因。
+- 无固定上限：跟随清单走到用户确认为止，不做题数自限。
+- 每轮仍只问一个阻塞问题；用户可随时回复「合并剩余」一次确认剩余清单。
+- 「截图 + 参考实现 + 明确视觉目标」：默认 3 题，超出即回到清单核对，不强求压到 3。
+- 收敛裁判是用户：由用户显式确认「剩余清单无需再问」或「合并剩余」结束，不由模型自判 complete。
 
 ### front matter（机器源）
 
@@ -47,26 +56,37 @@ grillme 更新 requirements front matter 与 Open Questions / Decision Log
 grill_status: in_progress   # pending | in_progress | complete | not_required
 grill_question_id: Q-002
 grill_response_hint: "等待结构化选项；无控件时由 requirements 提供一次性回复"
-grill_question_limit: 3
 ```
 
-- 第一个未决问题前：`pending` → `in_progress`，并写入当前题字段。
+- 清单预批轮保持 `pending` 且无当前题字段；清单批准后 `pending` → `in_progress`，写入 `grill_question_id` 与 `grill_response_hint`。
 - `complete` / `not_required` 时必须清除 `grill_question_id` 与 `grill_response_hint`。
 - 只维护 `## Decision Log` 与 `## Open Questions`；使用稳定 `Q-001...` / `D-001...`。
 
 ### 停步话术（登记后、等人前）
 
+逐题轮：
+
 ```text
 当前：<featureId> · <route>
-阶段：grill <Q-id>/≤<limit>
+阶段：grill Q-00N（已完成 x/N，剩余 Q-00M..）
 为何等待：<不可由仓库推出的决策>
-继续：选择结构化选项；无控件时使用 requirements 返回的一次性回复
+继续：选择结构化选项；无控件时使用 requirements 返回的一次性回复；回复「合并剩余」可一次确认剩余问题
+后续：<压缩剩余 route steps>
+```
+
+清单预批轮：
+
+```text
+当前：<featureId> · <route>
+阶段：grill 清单预批（Q-001..Q-00N）
+为何等待：等待批准 / 合并 / 裁剪决策清单
+继续：确认清单或提出裁剪；批准后从 Q-001 开始逐题确认
 后续：<压缩剩余 route steps>
 ```
 
 这是合法等待，不是失败/中断。
 
-无阻塞问题后：`grill_status: complete`，`## Open Questions` 为 `- None`，清除当前题字段，交接 `requirements`（兼容 `df-requirements` / `dev-flow-requirements`）。不要写范围/验收，不做 MCP 状态迁移。
+剩余清单清空后：出示空剩余清单与 Decision Log 摘要，请用户确认「无剩余问题」；用户确认后才 `grill_status: complete`、`## Open Questions` 为 `- None`、清除当前题字段，交接 `requirements`（兼容 `df-requirements` / `dev-flow-requirements`）。用户未确认不得 complete。不要写范围/验收，不做 MCP 状态迁移。
 
 ## 显式咨询模式
 

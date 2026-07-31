@@ -90,10 +90,12 @@ standard M/L 启用了 `checkpoints: 1` 后，implementation 步骤通过 **roll
 | `grillme`（斜杠 `/dev-flow:grillme`；兼容 `df-grillme` / `dev-flow-grillme`） | 唯一逐题压测：可改 `requirements.md` 的 Decision Log、Open Questions 与 front matter 中的 `grill_status`；**禁止**任何 MCP mutation / gate |
 
 - 机器字段（front matter）：`grill_status: not_required | pending | in_progress | complete`。  
+- 收敛机制：grill **无固定题数上限**（已废弃 `grill_question_limit`，存量残留被宽容忽略）。grillme 接手先产出完整决策树清单 `Q-001..Q-00N` 供用户批准 / 合并 / 裁剪——清单轮保持 `pending`、纯对话、不登记；逐题轮每轮报告「已完成 x/N，剩余 Q-00M..」；`complete` 须用户显式确认「剩余清单无需再问」或「合并剩余」裁决，**不由模型自判**。「合并剩余」为 skill 层机制（剩余清单一次写入 Decision Log），不新增 MCP 工具/字段。清单轮期间 `dev_flow_status` 显示无等待属预期。  
 - `missing-or-unclear` / `documented-unconfirmed`：脚手架 `pending`，须达到 `complete` 且已登记 artifact 后，core 才允许 `recordStep(requirements)` 与 `presentGate(requirement_confirmation)`。  
 - `provided-confirmed`：脚手架 `not_required`，默认可不拷问；显式 grillme 压测后须为 `complete` 并重新登记。  
 - 校验失败返回 `GRILL_INCOMPLETE` / `GRILL_STATUS_INVALID` 等，不写 step、不建 gate、不递增 revision。  
-- 非 requirements 阶段的显式 grillme 为**咨询模式**：不写文件、不改 MCP 状态。
+- 非 requirements 阶段的显式 grillme 为**咨询模式**：不写文件、不改 MCP 状态。  
+- 需求不清晰（`missing-or-unclear` / `documented-unconfirmed`）选到无需求澄清环节的路线（XS/S / light / risk-minimal）时，`dev_flow_classify` 返回 `warning` 建议升级 M + standard 或先澄清——仅提示，不强制、不改路线。
 
 ## Hooks 与诊断
 
