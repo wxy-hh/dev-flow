@@ -34,7 +34,7 @@ const ROUTE_HIT_TOKENS = {
   verify: [/verification/, /dev_flow_verify/, /requiredEvidence\.verificationKinds/, /manualAcceptance/, /user-signoff/, /acceptanceAssist/, /明确要求协助/, /交付后检查/],
   "feature-check": [/feature-check/, /dev_flow_feature_check/, /不得编造/, /人工\/UI 验收/, /Core/],
   finish: [/finalize/, /dev_flow_finalize/, /logic-complete/, /可选审计信息/, /不得假装浏览器验收/],
-  requirements: [/requirements/, /requirement_confirmation/, /dev_flow_record_artifact/, /scaffold_artifact/, /dev_flow_present_gate/, /禁止同回合/],
+  requirements: [/requirements/, /requirement_confirmation/, /dev_flow_record_artifact/, /scaffold_artifact/, /dev_flow_present_gate/, /禁止同回合/, /merge-remaining/],
   grillme: [/grill me/, /requirements/, /每轮只问一个阻塞问题/, /禁止调用任何 MCP mutation/, /grill_question_id/, /dev_flow_record_artifact/, /Source: codebase/, /清单预批/, /合并剩余/],
   "coverage-review": [/coverage/],
   "rollback-safety": [/rollback/, /requiredEvidence\.checks/, /full-rollback/, /dev_flow_preview_rollback/, /dev_flow_execute_rollback/, /禁止.*自行恢复/],

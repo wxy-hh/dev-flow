@@ -31,7 +31,7 @@ Dev Flow 以**一个预构建插件包**同时服务 Claude Code 与 Codex CLI�
 - 验证只对配置的 protected roots 做业务指纹；指纹变化会使 verification、feature-check、logic-complete 失效。  
 - 即使绕过 Skills 直接调 MCP，core 仍拒绝乱序步骤与「抢先」创建未来资产。
 
-## Traceability 事实层（1.8.0+）
+## Traceability 事实层（1.9.0+）
 
 - Markdown artifact 是人类可读的**叙述层**；Trace snapshot 才是需求、任务、测试与回撤关系的 Core 事实层。
 - snapshot 按内容寻址、不可变；`state.traceability` pointer 是唯一提交点。通过 `dev_flow_record_artifact_with_trace` 同一 CAS 更新 artifact hash 与 pointer。
@@ -90,7 +90,7 @@ standard M/L 启用了 `checkpoints: 1` 后，implementation 步骤通过 **roll
 | `grillme`（斜杠 `/dev-flow:grillme`；兼容 `df-grillme` / `dev-flow-grillme`） | 唯一逐题压测：可改 `requirements.md` 的 Decision Log、Open Questions 与 front matter 中的 `grill_status`；**禁止**任何 MCP mutation / gate |
 
 - 机器字段（front matter）：`grill_status: not_required | pending | in_progress | complete`。  
-- 收敛机制：grill **无固定题数上限**（已废弃 `grill_question_limit`，存量残留被宽容忽略）。grillme 接手先产出完整决策树清单 `Q-001..Q-00N` 供用户批准 / 合并 / 裁剪——清单轮保持 `pending`、纯对话、不登记；逐题轮每轮报告「已完成 x/N，剩余 Q-00M..」；`complete` 须用户显式确认「剩余清单无需再问」或「合并剩余」裁决，**不由模型自判**。「合并剩余」为 skill 层机制（剩余清单一次写入 Decision Log），不新增 MCP 工具/字段。清单轮期间 `dev_flow_status` 显示无等待属预期。  
+- 收敛机制：grill **无固定题数上限**（已废弃 `grill_question_limit`，存量残留被宽容忽略）。grillme 接手先产出完整决策树清单 `Q-001..Q-00N` 供用户批准 / 合并 / 裁剪——清单轮保持 `pending`、纯对话、不登记；逐题轮每轮报告「已完成 x/N，剩余 Q-00M..」；`complete` 须用户显式确认「剩余清单无需再问」或「合并剩余」裁决，**不由模型自判**。「合并剩余」由 core 自动注入为每轮选项（`merge-remaining`，原生选择或 fallback token），resolve 后由 requirements/grillme 把当前题与剩余清单一次写入 Decision Log 并置 `complete`；不新增 MCP 工具。清单轮期间 `dev_flow_status` 显示无等待属预期。  
 - `missing-or-unclear` / `documented-unconfirmed`：脚手架 `pending`，须达到 `complete` 且已登记 artifact 后，core 才允许 `recordStep(requirements)` 与 `presentGate(requirement_confirmation)`。  
 - `provided-confirmed`：脚手架 `not_required`，默认可不拷问；显式 grillme 压测后须为 `complete` 并重新登记。  
 - 校验失败返回 `GRILL_INCOMPLETE` / `GRILL_STATUS_INVALID` 等，不写 step、不建 gate、不递增 revision。  

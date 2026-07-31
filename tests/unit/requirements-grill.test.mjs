@@ -183,6 +183,41 @@ test("grill front matter tolerates legacy limit fields and bare pending checklis
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 
+test("grill decisions auto-inject the merge-remaining option and resolve it", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "dev-flow-grill-merge-"));
+  try {
+    let state = await start(root, "missing-or-unclear");
+    const file = fileFor(root);
+    await writeFile(file, (await readFile(file, "utf8")).replace(
+      /^  grill_status: pending$/m,
+      "  grill_status: in_progress\n  grill_question_id: Q-001\n  grill_response_hint: \"请选择一个方案\"",
+    ));
+    state = await registerTraceFixture({ root, featureId: "f", state, kind: "requirements" });
+    const input = {
+      questionId: "Q-001",
+      question: "选择同步方案",
+      options: [{ id: "hosted", label: "托管同步" }],
+      host: "claude",
+    };
+    const decision = await grill.requestGrillDecision(root, "f", state.revision, input);
+    const injected = decision.interaction.options.filter((option) => option.id === "merge-remaining");
+    assert.equal(injected.length, 1, "options must include exactly one merge-remaining");
+    assert.equal(injected[0].label, "合并剩余（剩余问题按推荐答案一次确认）");
+    assert.ok(
+      decision.interaction.fallback.replies.some((candidate) => candidate.action === "merge-remaining"),
+      "fallback replies must include merge-remaining token",
+    );
+    // 重复请求不重复注入
+    const again = await grill.requestGrillDecision(root, "f", decision.state.revision, input);
+    assert.equal(again.interaction.options.filter((option) => option.id === "merge-remaining").length, 1);
+    // resolve merge-remaining 返回对应 action（text-token 路径）
+    const reply = again.interaction.fallback.replies.find((candidate) => candidate.action === "merge-remaining").reply;
+    await store.recordHostEvent(root, { eventId: "merge-token", type: "user-prompt", host: "claude", text: reply });
+    const resolved = await grill.resolveGrillToken(root, "f", again.state.revision, again.interaction.id, reply, undefined, "claude");
+    assert.equal(resolved.response.action, "merge-remaining");
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
 test("grill decisions use native structured choices or one-time replies and preserve other feedback", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "dev-flow-grill-interaction-"));
   try {

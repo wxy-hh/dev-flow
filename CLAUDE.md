@@ -10,7 +10,7 @@ Dev Flow 是面向 **Claude Code** 与 **Codex CLI** 的预构建双宿主开发
 - 流程状态 **只能** 经本地 MCP 变更；Skills **禁止** 手改状态文件
 - 不提供：复制安装、升级脚本、旧版迁移、CLAUDE.md 注入、OpenSpec 集成
 
-版本权威：根目录 `package.json#version`（当前 1.8.0）。Node **≥ 20**。
+版本权威：根目录 `package.json#version`（当前 1.9.0）。Node **≥ 20**。
 
 ## 常用命令
 

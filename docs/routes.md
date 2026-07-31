@@ -31,7 +31,7 @@ verification 命令 attempt 与人类可读 narrative 分轨：protected-root �
 - standard M/L **必须** feature-check；XS/S 与 light M **不**强制。
 - v1 **不**集成 OpenSpec；相关文件仅可当作普通需求输入。
 - **grill 子流程（1.1.0+）**：不增加独立 route step。技能 `grillme`（`/dev-flow:grillme`）做逐题拷问；`requirements`（`/dev-flow:requirements`）负责登记与需求确认门禁。机器字段 `grill_status`（`not_required|pending|in_progress|complete`）及可选 `grill_question_id` / `grill_response_hint` 由 core 校验；grill **无固定题数上限**，收敛由用户显式确认/合并裁决；`dev_flow_status` 的 `progress` 在 `in_progress` 时报告当前题。详见 [architecture.md](./architecture.md)。
-- **Trace source（1.8.0+）**：standard M/L 的 requirements、implementation plan、coverage matrix、rollback units 必须用 `dev_flow_record_artifact_with_trace` 登记；调用方只提供 REQ/AC、TASK/RU、TEST→AC 等业务关系，不能提交 edges、status、hash 或 pointer。
+- **Trace source（1.9.0+）**：standard M/L 的 requirements、implementation plan、coverage matrix、rollback units 必须用 `dev_flow_record_artifact_with_trace` 登记；调用方只提供 REQ/AC、TASK/RU、TEST→AC 等业务关系，不能提交 edges、status、hash 或 pointer。
 - standard M 的 RU 来自 implementation plan；standard L 的 RU 来自 rollback-units。两条路线都由 Core 在 implementation / approval 前检查完整图，不需要 checkpoint。
 - generated status 只能由 Core scaffold/refresh，不能人工登记；standard L 没有 status Markdown，请读取 `dev_flow_status`。
 - **Review 2a（`review: 1`）**：standard M/L 的 `plan_review` 走不可变 review batch。Core 按路线与 risk labels 派生角色（M：`requirements-coverage` + `architecture-testability`；L 另加 `rollback-operability`；`security` / data-money 类 risk 再追加对应角色）。`plan-review` 为 generated 投影；`recordStep(plan_review)` 的 evidence 由 Core 派生为 `{ batchId, basisHash, assuranceLevel }`，2a 默认 `assuranceLevel: "multi-perspective"`。

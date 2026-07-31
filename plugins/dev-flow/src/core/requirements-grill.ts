@@ -29,6 +29,17 @@ export interface GrillDecisionInput {
   host: "claude" | "codex";
 }
 
+/** Core-injected option: confirm the current question plus all remaining ones at recommended answers. */
+export const MERGE_REMAINING_OPTION: InteractionOption = {
+  id: "merge-remaining",
+  label: "合并剩余（剩余问题按推荐答案一次确认）",
+  description: "当前题与剩余问题全部按各题推荐答案确认，一次性完成 grill。",
+};
+
+function withMergeRemaining(options: InteractionOption[]): InteractionOption[] {
+  return options.some((option) => option.id === MERGE_REMAINING_OPTION.id) ? options : [...options, MERGE_REMAINING_OPTION];
+}
+
 export interface GrillDecisionResult {
   state: FeatureState;
   interaction: PublicInteraction;
@@ -131,7 +142,7 @@ export async function requestGrillDecision(
       target,
       basisHash: draft.artifacts.requirements.sha256,
       question: input.question,
-      options: input.options,
+      options: withMergeRemaining(input.options),
     });
     draft.lastUpdatedBy = { host: input.host, pluginVersion: __DEV_FLOW_VERSION__ };
   }, () => ({ questionId: input.questionId, interactionId: interaction?.id, options: input.options }));

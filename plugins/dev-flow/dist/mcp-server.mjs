@@ -1,4 +1,4 @@
-/* dev-flow 1.8.0; built from source, deterministic build */
+/* dev-flow 1.9.0; built from source, deterministic build */
 
 // plugins/dev-flow/src/mcp/server.ts
 import readline from "node:readline";
@@ -2419,7 +2419,7 @@ async function startFeature(root2, input, options = {}) {
         deliveryBaseline,
         blockingFindings: [],
         logicComplete: false,
-        lastUpdatedBy: { host: input.host, pluginVersion: "1.8.0" }
+        lastUpdatedBy: { host: input.host, pluginVersion: "1.9.0" }
       };
       if (traceEnforcementRequired(route, workflowCapabilities)) {
         const configSnapshot = await readProjectConfigSnapshot(root2);
@@ -3630,6 +3630,14 @@ function missingRequiredEvidence(required, evidence) {
 
 // plugins/dev-flow/src/core/requirements-grill.ts
 var statuses = ["not_required", "pending", "in_progress", "complete"];
+var MERGE_REMAINING_OPTION = {
+  id: "merge-remaining",
+  label: "\u5408\u5E76\u5269\u4F59\uFF08\u5269\u4F59\u95EE\u9898\u6309\u63A8\u8350\u7B54\u6848\u4E00\u6B21\u786E\u8BA4\uFF09",
+  description: "\u5F53\u524D\u9898\u4E0E\u5269\u4F59\u95EE\u9898\u5168\u90E8\u6309\u5404\u9898\u63A8\u8350\u7B54\u6848\u786E\u8BA4\uFF0C\u4E00\u6B21\u6027\u5B8C\u6210 grill\u3002"
+};
+function withMergeRemaining(options) {
+  return options.some((option) => option.id === MERGE_REMAINING_OPTION.id) ? options : [...options, MERGE_REMAINING_OPTION];
+}
 function allowedStatuses(state) {
   return state.classification.requirements === "provided-confirmed" ? ["not_required", "complete"] : ["complete"];
 }
@@ -3714,9 +3722,9 @@ async function requestGrillDecision(root2, id, expectedRevision, input) {
       target,
       basisHash: draft.artifacts.requirements.sha256,
       question: input.question,
-      options: input.options
+      options: withMergeRemaining(input.options)
     });
-    draft.lastUpdatedBy = { host: input.host, pluginVersion: "1.8.0" };
+    draft.lastUpdatedBy = { host: input.host, pluginVersion: "1.9.0" };
   }, () => ({ questionId: input.questionId, interactionId: interaction?.id, options: input.options }));
   if (!interaction) throw new DevFlowError("INTERACTION_NOT_CREATED", target);
   return { state, interaction: toPublicInteraction(interaction) };
@@ -3760,7 +3768,7 @@ async function resolveGrillDecision(root2, id, expectedRevision, interactionId, 
   let response;
   const state = await mutate(root2, id, expectedRevision, "grill-decision-resolved", (draft) => {
     response = input.source === "elicitation" ? resolveNativeInteraction(draft, interactionId, input.action, input.comment, host) : resolveTokenInteraction(draft, interactionId, input.userReply, host, promptEventId);
-    draft.lastUpdatedBy = { host, pluginVersion: "1.8.0" };
+    draft.lastUpdatedBy = { host, pluginVersion: "1.9.0" };
   }, () => ({ interactionId, response }));
   if (!response) throw new DevFlowError("INTERACTION_NOT_RESOLVED", interactionId);
   return { state, interaction: toPublicInteraction(getInteraction(state, interactionId)), response };
@@ -3986,7 +3994,7 @@ async function runVerification(root2, id, expectedRevision, host, commandIds, ma
         }
       };
     }
-    state.lastUpdatedBy = { host, pluginVersion: "1.8.0" };
+    state.lastUpdatedBy = { host, pluginVersion: "1.9.0" };
   });
 }
 async function readVerificationFreshness(root2, state) {
@@ -5107,7 +5115,7 @@ async function resolveGateResponse(root2, id, expectedRevision, interactionId, h
     } else {
       throw new DevFlowError("INTERACTION_ACTION_INVALID", response.action);
     }
-    state.lastUpdatedBy = { host, pluginVersion: "1.8.0" };
+    state.lastUpdatedBy = { host, pluginVersion: "1.9.0" };
   }, () => ({ gate, interactionId, response }));
 }
 async function resolveGateElicitation(root2, id, expectedRevision, interactionId, action, comment, host) {
@@ -5186,7 +5194,7 @@ async function confirmGate(root2, id, expectedRevision, gate, userReply, provena
     };
     clearInteractionsForTarget(state, `gate:${selectedGate}`);
     state.steps[selectedGate] = { status: "satisfied" };
-    state.lastUpdatedBy = { host, pluginVersion: "1.8.0" };
+    state.lastUpdatedBy = { host, pluginVersion: "1.9.0" };
   }, { gate: selectedGate });
 }
 
@@ -6313,7 +6321,7 @@ async function resolveRollbackGateResponse(root2, featureId, expectedRevision, i
     } else {
       throw new DevFlowError("INTERACTION_ACTION_INVALID", response.action);
     }
-    state.lastUpdatedBy = { host, pluginVersion: "1.8.0" };
+    state.lastUpdatedBy = { host, pluginVersion: "1.9.0" };
   }, () => ({ gate: "rollback-confirmation", interactionId, response }));
 }
 async function resolveRollbackGateElicitation(root2, featureId, expectedRevision, interactionId, action, comment, host) {
@@ -8557,7 +8565,7 @@ async function call(name, a, connection2) {
     case "dev_flow_enable_windows_notifications":
       return enableWindowsNotifications({ nodeExecutable: process.execPath });
     case "dev_flow_doctor":
-      return collectDoctorReport(root, pluginRoot, "1.8.0", tools);
+      return collectDoctorReport(root, pluginRoot, "1.9.0", tools);
     case "dev_flow_recover_corrupt_feature":
       return recoverCorruptFeature(root, {
         featureId: a.featureId,
@@ -8581,7 +8589,7 @@ async function dispatchRequest(message) {
       connection.configure(message.params?.capabilities);
       protocolResult(message.id, {
         protocolVersion: message.params?.protocolVersion || "2024-11-05",
-        serverInfo: { name: "dev-flow", version: "1.8.0" },
+        serverInfo: { name: "dev-flow", version: "1.9.0" },
         capabilities: { tools: {} },
         instructions: "Classify before starting. Call dev_flow_next and execute exactly one returned action. A presented human gate may open a native structured confirmation control; otherwise use the returned one-time reply. Use dev_flow_init_project before start."
       });

@@ -1,4 +1,4 @@
-/* dev-flow 1.8.0; built from source, deterministic build */
+/* dev-flow 1.9.0; built from source, deterministic build */
 
 // plugins/dev-flow/src/hosts/claude-adapter.ts
 import { lstat } from "node:fs/promises";
