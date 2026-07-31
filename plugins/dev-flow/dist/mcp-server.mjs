@@ -686,6 +686,168 @@ function validateProjectConfig(value) {
   }
 }
 
+// plugins/dev-flow/src/policy/rollback.ts
+var IMPLEMENTATION_UNIT_TRANSITIONS = Object.freeze({
+  pending: Object.freeze(["active"]),
+  active: Object.freeze(["verified"]),
+  verified: Object.freeze(["checkpointed", "active"]),
+  checkpointed: Object.freeze(["rolled_back"]),
+  rolled_back: Object.freeze(["active"])
+});
+var fileChanges = ["added", "modified", "deleted", "renamed", "mode-changed"];
+var ROLLBACK_ID = /^RU-[0-9]{3,}$/;
+var SHA256 = /^[0-9a-f]{64}$/;
+var FILE_MODE = /^[0-7]{3,4}$/;
+function pathWithinFileScope(path17, fileScope) {
+  return fileScope.some((pattern) => scopePatternMatches(pattern, path17));
+}
+function isSafeFileScopePattern(value) {
+  if (typeof value !== "string" || !value || value.trim() !== value) return false;
+  if (value.includes("\\") || value.startsWith("/") || /^[A-Za-z]:/.test(value)) return false;
+  if (value === ".") return true;
+  return value.split("/").every((segment) => segment.length > 0 && segment !== "." && segment !== "..");
+}
+function scopePatternMatches(pattern, target) {
+  if (!isSafeFileScopePattern(pattern) || typeof target !== "string" || !target.trim()) return false;
+  if (target.includes("\\") || target.startsWith("/")) return false;
+  const segments = pattern.split("/");
+  const parts = target.split("/");
+  if (parts.some((part) => part === "..")) return false;
+  if (/[*?]/.test(pattern)) return globSegmentsMatch(segments, parts);
+  if (pattern === ".") return true;
+  return target === pattern || target.startsWith(`${pattern}/`);
+}
+function globSegmentsMatch(pattern, target) {
+  if (pattern.length === 0) return target.length === 0;
+  const [head, ...rest] = pattern;
+  if (head === "**") {
+    if (rest.length === 0) return true;
+    for (let skip = 0; skip <= target.length; skip += 1) {
+      if (globSegmentsMatch(rest, target.slice(skip))) return true;
+    }
+    return false;
+  }
+  if (target.length === 0 || !globSegmentMatches(head, target[0])) return false;
+  return globSegmentsMatch(rest, target.slice(1));
+}
+function globSegmentMatches(pattern, segment) {
+  if (pattern === "") return segment === "";
+  const [head, ...rest] = pattern;
+  if (head === "*") {
+    for (let take = 0; take <= segment.length; take += 1) {
+      if (globSegmentMatches(rest.join(""), segment.slice(take))) return true;
+    }
+    return false;
+  }
+  if (head === "?") return segment.length > 0 && globSegmentMatches(rest.join(""), segment.slice(1));
+  return segment.startsWith(head) && globSegmentMatches(rest.join(""), segment.slice(head.length));
+}
+function invalid(message) {
+  throw new Error(`ROLLBACK_PROTOCOL_INVALID: ${message}`);
+}
+function isRecord(value) {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+function isRollbackId(value) {
+  return typeof value === "string" && ROLLBACK_ID.test(value);
+}
+function isSha256(value) {
+  return typeof value === "string" && SHA256.test(value);
+}
+function isTimestamp(value) {
+  return typeof value === "string" && !Number.isNaN(Date.parse(value));
+}
+function isNonEmptyString(value) {
+  return typeof value === "string" && value.trim().length > 0;
+}
+function isNonEmptyStringArray(value) {
+  return Array.isArray(value) && value.length > 0 && value.every(isNonEmptyString);
+}
+function hasOnlyKeys(value, keys) {
+  return Object.keys(value).every((key) => keys.includes(key));
+}
+function implementationUnitForRollbackNode(node, basisHash2) {
+  if (!isRecord(node) || node.kind !== "rollback" || !isRollbackId(node.id) || !isNonEmptyStringArray(node.tasks) || !isNonEmptyStringArray(node.fileScope) || !isNonEmptyStringArray(node.forwardVerification) || !isNonEmptyStringArray(node.rollbackVerification) || node.status !== "current") {
+    invalid("rollback node is missing fields required to open an implementation unit");
+  }
+  if (!isSha256(basisHash2)) invalid("implementation unit basis hash must be a SHA-256 hex digest");
+  return { unitId: node.id, status: "pending", basisHash: basisHash2 };
+}
+function parseFileRecord(value, index) {
+  if (!isRecord(value) || !hasOnlyKeys(value, ["path", "change", "renamedFrom", "beforeSha256", "afterSha256", "beforeBlobSha256", "afterBlobSha256", "beforeMode", "afterMode"]) || !isNonEmptyString(value.path) || typeof value.change !== "string" || !fileChanges.includes(value.change)) {
+    invalid(`checkpoint file record ${index} has an invalid shape`);
+  }
+  const label = `checkpoint file record ${index}`;
+  const change = value.change;
+  const beforeOk = change !== "added" ? isSha256(value.beforeSha256) && isSha256(value.beforeBlobSha256) && typeof value.beforeMode === "string" && FILE_MODE.test(value.beforeMode) : value.beforeSha256 === void 0 && value.beforeBlobSha256 === void 0 && value.beforeMode === void 0;
+  const afterOk = change !== "deleted" ? isSha256(value.afterSha256) && isSha256(value.afterBlobSha256) && typeof value.afterMode === "string" && FILE_MODE.test(value.afterMode) : value.afterSha256 === void 0 && value.afterBlobSha256 === void 0 && value.afterMode === void 0;
+  if (!beforeOk) invalid(`${label} has invalid before fields for change ${change}`);
+  if (!afterOk) invalid(`${label} has invalid after fields for change ${change}`);
+  if (change === "renamed" && !isNonEmptyString(value.renamedFrom)) invalid(`${label} renamed record requires renamedFrom`);
+  if (change !== "renamed" && value.renamedFrom !== void 0) invalid(`${label} only renamed records may carry renamedFrom`);
+  return {
+    path: value.path,
+    change,
+    ...value.renamedFrom !== void 0 ? { renamedFrom: value.renamedFrom } : {},
+    ...change !== "added" ? { beforeSha256: value.beforeSha256, beforeBlobSha256: value.beforeBlobSha256, beforeMode: value.beforeMode } : {},
+    ...change !== "deleted" ? { afterSha256: value.afterSha256, afterBlobSha256: value.afterBlobSha256, afterMode: value.afterMode } : {}
+  };
+}
+function parseVerificationAttempt(value, index) {
+  if (!isRecord(value) || !hasOnlyKeys(value, ["attemptId", "commandId", "command", "status", "startedAt", "completedAt"]) || !isNonEmptyString(value.attemptId) || !isNonEmptyString(value.commandId) || !isNonEmptyString(value.command) || value.status !== "passed" && value.status !== "failed" || !isTimestamp(value.startedAt) || !isTimestamp(value.completedAt)) {
+    invalid(`checkpoint verification attempt ${index} has an invalid shape`);
+  }
+  return {
+    attemptId: value.attemptId,
+    commandId: value.commandId,
+    command: value.command,
+    status: value.status,
+    startedAt: value.startedAt,
+    completedAt: value.completedAt
+  };
+}
+function parseCheckpointManifest(value) {
+  if (!isRecord(value) || !hasOnlyKeys(value, ["schemaVersion", "checkpointId", "unitId", "sequence", "basisHash", "startedFingerprint", "completedFingerprint", "startedAt", "completedAt", "files", "forwardPatchSha256", "reversePatchSha256", "verificationAttempts", "requirementsSha256", "planSha256", "traceabilitySha256", "approvalBasisHash", "projectConfigSha256", "verificationCommands", "beginNonce"]) || value.schemaVersion !== 1 || !isNonEmptyString(value.checkpointId) || !isRollbackId(value.unitId) || typeof value.sequence !== "number" || !Number.isInteger(value.sequence) || value.sequence < 1 || !isSha256(value.basisHash) || !isSha256(value.startedFingerprint) || !isSha256(value.completedFingerprint) || value.beginNonce !== void 0 && !isNonEmptyString(value.beginNonce) || !isTimestamp(value.startedAt) || !isTimestamp(value.completedAt) || !Array.isArray(value.files) || !isSha256(value.forwardPatchSha256) || !isSha256(value.reversePatchSha256) || !Array.isArray(value.verificationAttempts) || !isSha256(value.requirementsSha256) || !isSha256(value.planSha256) || !isSha256(value.traceabilitySha256) || !isSha256(value.approvalBasisHash) || !isSha256(value.projectConfigSha256) || !Array.isArray(value.verificationCommands) || value.verificationCommands.length === 0) {
+    invalid("checkpoint manifest has an invalid shape");
+  }
+  const files = value.files.map((file, index) => parseFileRecord(file, index));
+  const verificationAttempts = value.verificationAttempts.map((attempt, index) => parseVerificationAttempt(attempt, index));
+  const verificationCommands = value.verificationCommands.map((command2, index) => {
+    if (!isRecord(command2) || !hasOnlyKeys(command2, ["commandId", "command"]) || !isNonEmptyString(command2.commandId) || !isNonEmptyString(command2.command)) {
+      invalid(`checkpoint verification command ${index} has an invalid shape`);
+    }
+    return { commandId: command2.commandId, command: command2.command };
+  });
+  const declaredCommandIds = new Set(verificationCommands.map((command2) => command2.commandId));
+  for (const attempt of verificationAttempts) {
+    if (!declaredCommandIds.has(attempt.commandId)) {
+      invalid(`checkpoint verification attempt ${attempt.attemptId} references undeclared command ${attempt.commandId}`);
+    }
+  }
+  return {
+    schemaVersion: 1,
+    checkpointId: value.checkpointId,
+    unitId: value.unitId,
+    sequence: value.sequence,
+    basisHash: value.basisHash,
+    startedFingerprint: value.startedFingerprint,
+    completedFingerprint: value.completedFingerprint,
+    startedAt: value.startedAt,
+    completedAt: value.completedAt,
+    files,
+    forwardPatchSha256: value.forwardPatchSha256,
+    reversePatchSha256: value.reversePatchSha256,
+    verificationAttempts,
+    requirementsSha256: value.requirementsSha256,
+    planSha256: value.planSha256,
+    traceabilitySha256: value.traceabilitySha256,
+    approvalBasisHash: value.approvalBasisHash,
+    projectConfigSha256: value.projectConfigSha256,
+    verificationCommands,
+    ...typeof value.beginNonce === "string" ? { beginNonce: value.beginNonce } : {}
+  };
+}
+
 // plugins/dev-flow/src/core/traceability.ts
 var ALLOWED_TRACE_KINDS = {
   requirements: ["requirement", "acceptance-criterion"],
@@ -707,13 +869,13 @@ var idPrefix = {
   test: "TEST",
   rollback: "RU"
 };
-function invalid(message, details = {}) {
+function invalid2(message, details = {}) {
   throw new DevFlowError("TRACE_GRAPH_INVALID", message, details);
 }
 function sliceError(code, message, details = {}) {
   throw new DevFlowError(code, message, details);
 }
-function isRecord(value) {
+function isRecord2(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 function isStringArray(value, allowEmpty = false) {
@@ -721,45 +883,53 @@ function isStringArray(value, allowEmpty = false) {
 }
 function assertId(kind, id) {
   if (typeof id !== "string" || !new RegExp(`^${idPrefix[kind]}-[0-9]{3,}$`).test(id)) {
-    invalid("node ID does not match its kind", { kind, id });
+    invalid2("node ID does not match its kind", { kind, id });
   }
 }
 function assertNoDuplicate(values, field, id) {
-  if (new Set(values).size !== values.length) invalid("node relationship contains duplicates", { field, id });
+  if (new Set(values).size !== values.length) invalid2("node relationship contains duplicates", { field, id });
+}
+function assertSafeFileScope(fileScope, id, persisted = false) {
+  for (const pattern of fileScope) {
+    if (!isSafeFileScopePattern(pattern)) {
+      invalid2(persisted ? "persisted rollback fileScope is unsafe" : "rollback fileScope is unsafe", { id, field: "fileScope", pattern });
+    }
+  }
 }
 function validateNodeInput(value) {
-  if (!isRecord(value) || typeof value.kind !== "string" || !(value.kind in inputKeys)) invalid("node input has an unknown kind");
+  if (!isRecord2(value) || typeof value.kind !== "string" || !(value.kind in inputKeys)) invalid2("node input has an unknown kind");
   const kind = value.kind;
   const keys = Object.keys(value);
-  if (keys.some((key) => !inputKeys[kind].includes(key))) invalid("node input contains Core-owned or unknown fields", { kind, keys });
+  if (keys.some((key) => !inputKeys[kind].includes(key))) invalid2("node input contains Core-owned or unknown fields", { kind, keys });
   assertId(kind, value.id);
   if (kind === "acceptance-criterion") assertId("requirement", value.parentRequirement);
   if (kind === "task") {
-    if (!isStringArray(value.covers)) invalid("task covers must be a non-empty string array", { id: value.id });
+    if (!isStringArray(value.covers)) invalid2("task covers must be a non-empty string array", { id: value.id });
     assertNoDuplicate(value.covers, "covers", value.id);
     assertId("rollback", value.rollbackUnit);
   }
   if (kind === "test") {
-    if (!isStringArray(value.verifies)) invalid("test verifies must be a non-empty string array", { id: value.id });
+    if (!isStringArray(value.verifies)) invalid2("test verifies must be a non-empty string array", { id: value.id });
     assertNoDuplicate(value.verifies, "verifies", value.id);
     for (const id of value.verifies) assertId("acceptance-criterion", id);
   }
   if (kind === "rollback") {
     const rollback = value;
     for (const [field, allowEmpty] of [["tasks", false], ["dependsOn", true], ["fileScope", false], ["covers", false], ["forwardVerification", false], ["rollbackVerification", false]]) {
-      if (!isStringArray(value[field], allowEmpty)) invalid("rollback relationship must be a string array", { field, id: value.id });
+      if (!isStringArray(value[field], allowEmpty)) invalid2("rollback relationship must be a string array", { field, id: value.id });
       assertNoDuplicate(value[field], field, value.id);
     }
     for (const id of rollback.tasks) assertId("task", id);
     for (const id of rollback.dependsOn) assertId("rollback", id);
+    assertSafeFileScope(rollback.fileScope, value.id);
   }
 }
 function validateTraceDelta(value) {
-  if (!isRecord(value) || Object.keys(value).length !== 1 || !Array.isArray(value.nodes)) invalid("Trace delta must contain only nodes");
+  if (!isRecord2(value) || Object.keys(value).length !== 1 || !Array.isArray(value.nodes)) invalid2("Trace delta must contain only nodes");
   const ids = /* @__PURE__ */ new Set();
   for (const node of value.nodes) {
     validateNodeInput(node);
-    if (ids.has(node.id)) invalid("Trace delta declares an ID more than once", { id: node.id });
+    if (ids.has(node.id)) invalid2("Trace delta declares an ID more than once", { id: node.id });
     ids.add(node.id);
   }
 }
@@ -823,36 +993,36 @@ function nodeMeaning(node) {
 function assertSourceBlocks(input) {
   const sourceBlocks = /* @__PURE__ */ new Map();
   for (const block of input.sourceBlocks) {
-    if (!isRecord(block) || typeof block.id !== "string" || typeof block.kind !== "string" || typeof block.sourceAnchor !== "string" || typeof block.sourceBlockSha256 !== "string") {
-      invalid("source block is invalid");
+    if (!isRecord2(block) || typeof block.id !== "string" || typeof block.kind !== "string" || typeof block.sourceAnchor !== "string" || typeof block.sourceBlockSha256 !== "string") {
+      invalid2("source block is invalid");
     }
-    if (sourceBlocks.has(block.id)) invalid("source block ID is declared more than once", { id: block.id });
+    if (sourceBlocks.has(block.id)) invalid2("source block ID is declared more than once", { id: block.id });
     sourceBlocks.set(block.id, block);
   }
   const ids = new Set(input.delta.nodes.map((node) => node.id));
-  if (ids.size !== sourceBlocks.size || [...ids].some((id) => !sourceBlocks.has(id))) invalid("source blocks must exactly match delta nodes");
+  if (ids.size !== sourceBlocks.size || [...ids].some((id) => !sourceBlocks.has(id))) invalid2("source blocks must exactly match delta nodes");
   for (const node of input.delta.nodes) {
     const source = sourceBlocks.get(node.id);
-    if (source.kind !== node.kind) invalid("source anchor kind does not match delta node", { id: node.id });
+    if (source.kind !== node.kind) invalid2("source anchor kind does not match delta node", { id: node.id });
   }
   return sourceBlocks;
 }
 function assertArtifactDeltaContract(input) {
   const allowed = ALLOWED_TRACE_KINDS[input.artifactKind];
-  if (input.delta.nodes.some((node) => !allowed.includes(node.kind))) invalid("delta kind is not allowed for its artifact", { artifactKind: input.artifactKind });
+  if (input.delta.nodes.some((node) => !allowed.includes(node.kind))) invalid2("delta kind is not allowed for its artifact", { artifactKind: input.artifactKind });
   const has = (kind) => input.delta.nodes.some((node) => node.kind === kind);
   if (input.artifactKind === "implementation-plan" && input.route === "standard-m" && (!has("task") || !has("rollback"))) {
-    invalid("standard M implementation plans require both tasks and rollback units");
+    invalid2("standard M implementation plans require both tasks and rollback units");
   }
   if (input.artifactKind === "implementation-plan" && input.route === "standard-l" && has("rollback")) {
-    invalid("standard L implementation plans cannot declare rollback units");
+    invalid2("standard L implementation plans cannot declare rollback units");
   }
-  if (input.artifactKind === "rollback-units" && input.route !== "standard-l") invalid("rollback-units are only valid for standard L");
+  if (input.artifactKind === "rollback-units" && input.route !== "standard-l") invalid2("rollback-units are only valid for standard L");
   for (const node of input.delta.nodes) {
     if (node.kind !== "rollback") continue;
-    if (!["implementation-plan", "rollback-units"].includes(input.artifactKind)) invalid("rollback node has an invalid source artifact");
+    if (!["implementation-plan", "rollback-units"].includes(input.artifactKind)) invalid2("rollback node has an invalid source artifact");
     if (node.forwardVerification.some((id) => !input.verificationCommandIds.includes(id)) || node.rollbackVerification.some((id) => !input.verificationCommandIds.includes(id))) {
-      invalid("rollback verification references an unknown command ID", { id: node.id });
+      invalid2("rollback verification references an unknown command ID", { id: node.id });
     }
   }
 }
@@ -884,7 +1054,7 @@ function traceSummary(nodes) {
 }
 function assertReference(nodes, id, kinds, details) {
   const node = nodeById(nodes, id);
-  if (!node || !kinds.includes(node.kind)) invalid("graph reference is missing or has the wrong kind", { id, ...details });
+  if (!node || !kinds.includes(node.kind)) invalid2("graph reference is missing or has the wrong kind", { id, ...details });
   return node;
 }
 function assertRollbackDag(nodes) {
@@ -892,7 +1062,7 @@ function assertRollbackDag(nodes) {
   const visited = /* @__PURE__ */ new Set();
   const visit = (id) => {
     if (visited.has(id)) return;
-    if (visiting.has(id)) invalid("rollback dependency graph contains a cycle", { id });
+    if (visiting.has(id)) invalid2("rollback dependency graph contains a cycle", { id });
     visiting.add(id);
     const node = nodeById(nodes, id);
     if (node?.kind === "rollback") for (const dependency of node.dependsOn) visit(dependency);
@@ -913,75 +1083,79 @@ function sameSummary(left, right) {
 var statusValues = /* @__PURE__ */ new Set(["current", "stale", "tombstoned"]);
 var sourceArtifacts = /* @__PURE__ */ new Set(["requirements", "implementation-plan", "coverage-matrix", "rollback-units"]);
 var hex64 = /^[a-f0-9]{64}$/;
-function assertPersistedNode(recordId, value) {
-  if (!isRecord(value)) invalid("persisted node is not an object", { id: recordId });
+function assertPersistedNode(recordId, value, options) {
+  if (!isRecord2(value)) invalid2("persisted node is not an object", { id: recordId });
   const kind = value.kind;
-  if (typeof kind !== "string" || !(kind in idPrefix)) invalid("persisted node has an unknown kind", { id: recordId, kind });
+  if (typeof kind !== "string" || !(kind in idPrefix)) invalid2("persisted node has an unknown kind", { id: recordId, kind });
   assertId(kind, value.id);
-  if (value.id !== recordId) invalid("persisted node id does not match its record key", { id: recordId, nodeId: value.id });
-  if (!statusValues.has(value.status)) invalid("persisted node has an invalid status", { id: recordId, status: value.status });
+  if (value.id !== recordId) invalid2("persisted node id does not match its record key", { id: recordId, nodeId: value.id });
+  if (!statusValues.has(value.status)) invalid2("persisted node has an invalid status", { id: recordId, status: value.status });
   if (typeof value.sourceArtifact !== "string" || !sourceArtifacts.has(value.sourceArtifact)) {
-    invalid("persisted node has an invalid sourceArtifact", { id: recordId, sourceArtifact: value.sourceArtifact });
+    invalid2("persisted node has an invalid sourceArtifact", { id: recordId, sourceArtifact: value.sourceArtifact });
   }
   if (typeof value.sourceSha256 !== "string" || !hex64.test(value.sourceSha256)) {
-    invalid("persisted node has an invalid sourceSha256", { id: recordId });
+    invalid2("persisted node has an invalid sourceSha256", { id: recordId });
   }
   if (typeof value.sourceAnchor !== "string" || !value.sourceAnchor.includes(`id=${value.id}`)) {
-    invalid("persisted node has an invalid sourceAnchor", { id: recordId });
+    invalid2("persisted node has an invalid sourceAnchor", { id: recordId });
   }
   if (typeof value.sourceBlockSha256 !== "string" || !hex64.test(value.sourceBlockSha256)) {
-    invalid("persisted node has an invalid sourceBlockSha256", { id: recordId });
+    invalid2("persisted node has an invalid sourceBlockSha256", { id: recordId });
   }
   if (kind === "acceptance-criterion") assertId("requirement", value.parentRequirement);
   if (kind === "task") {
-    if (!isStringArray(value.covers)) invalid("persisted task covers is invalid", { id: recordId });
+    if (!isStringArray(value.covers)) invalid2("persisted task covers is invalid", { id: recordId });
     assertId("rollback", value.rollbackUnit);
   }
   if (kind === "test") {
-    if (!isStringArray(value.verifies)) invalid("persisted test verifies is invalid", { id: recordId });
+    if (!isStringArray(value.verifies)) invalid2("persisted test verifies is invalid", { id: recordId });
   }
   if (kind === "rollback") {
     for (const [field, allowEmpty] of [["tasks", false], ["dependsOn", true], ["fileScope", false], ["covers", false], ["forwardVerification", false], ["rollbackVerification", false]]) {
-      if (!isStringArray(value[field], allowEmpty)) invalid("persisted rollback field is invalid", { id: recordId, field });
+      if (!isStringArray(value[field], allowEmpty)) invalid2("persisted rollback field is invalid", { id: recordId, field });
     }
     if (value.sourceArtifact !== "implementation-plan" && value.sourceArtifact !== "rollback-units") {
-      invalid("persisted rollback has an invalid sourceArtifact", { id: recordId });
+      invalid2("persisted rollback has an invalid sourceArtifact", { id: recordId });
     }
     if (typeof value.verificationConfigSha256 !== "string" || !hex64.test(value.verificationConfigSha256)) {
-      invalid("persisted rollback has an invalid verificationConfigSha256", { id: recordId });
+      invalid2("persisted rollback has an invalid verificationConfigSha256", { id: recordId });
+    }
+    const allowLegacyRepair = value.status !== "tombstoned" && value.sourceArtifact === options.allowUnsafeFileScopeSourceArtifact;
+    if (value.status !== "tombstoned" && !allowLegacyRepair) {
+      assertSafeFileScope(value.fileScope, recordId, true);
     }
   }
 }
-function assertPersistedLedgerShape(ledger) {
-  if (typeof ledger.featureId !== "string" || !ledger.featureId) invalid("ledger featureId is invalid");
-  if (!Number.isInteger(ledger.revision) || ledger.revision < 0) invalid("ledger revision is invalid");
-  if (!Number.isInteger(ledger.stateRevision) || ledger.stateRevision < 0) invalid("ledger stateRevision is invalid");
+function assertPersistedLedgerShape(ledger, options) {
+  if (typeof ledger.featureId !== "string" || !ledger.featureId) invalid2("ledger featureId is invalid");
+  if (!Number.isInteger(ledger.revision) || ledger.revision < 0) invalid2("ledger revision is invalid");
+  if (!Number.isInteger(ledger.stateRevision) || ledger.stateRevision < 0) invalid2("ledger stateRevision is invalid");
   if (typeof ledger.projectConfigSha256 !== "string" || !hex64.test(ledger.projectConfigSha256)) {
-    invalid("ledger projectConfigSha256 is invalid");
+    invalid2("ledger projectConfigSha256 is invalid");
   }
-  for (const [id, node] of Object.entries(ledger.nodes)) assertPersistedNode(id, node);
+  for (const [id, node] of Object.entries(ledger.nodes)) assertPersistedNode(id, node, options);
 }
-function validateTraceGraph(ledger, route, mode) {
-  if (!isRecord(ledger) || ledger.schemaVersion !== 1 || !isRecord(ledger.nodes) || !Array.isArray(ledger.edges)) invalid("traceability ledger has an invalid shape");
-  assertPersistedLedgerShape(ledger);
+function validateTraceGraph(ledger, route, mode, options = {}) {
+  if (!isRecord2(ledger) || ledger.schemaVersion !== 1 || !isRecord2(ledger.nodes) || !Array.isArray(ledger.edges)) invalid2("traceability ledger has an invalid shape");
+  assertPersistedLedgerShape(ledger, options);
   const nodes = ledger.nodes;
   for (const node of currentNodes(nodes)) {
     if (node.kind === "acceptance-criterion") assertReference(nodes, node.parentRequirement, ["requirement"], { from: node.id });
     if (node.kind === "task") {
-      if (node.covers.length === 0) invalid("task cannot be orphaned", { id: node.id });
+      if (node.covers.length === 0) invalid2("task cannot be orphaned", { id: node.id });
       for (const covered of node.covers) assertReference(nodes, covered, ["requirement", "acceptance-criterion"], { from: node.id });
       const rollback = nodeById(nodes, node.rollbackUnit);
-      if (!rollback && !(route === "standard-l" && mode === "partial")) invalid("task references a missing rollback unit", { id: node.id, rollbackUnit: node.rollbackUnit });
-      if (rollback && rollback.kind !== "rollback") invalid("task rollback unit has the wrong kind", { id: node.id });
+      if (!rollback && !(route === "standard-l" && mode === "partial")) invalid2("task references a missing rollback unit", { id: node.id, rollbackUnit: node.rollbackUnit });
+      if (rollback && rollback.kind !== "rollback") invalid2("task rollback unit has the wrong kind", { id: node.id });
       if (rollback?.kind === "rollback" && !rollback.tasks.includes(node.id)) {
-        invalid("task rollback unit must list the task", { id: node.id, rollbackUnit: node.rollbackUnit });
+        invalid2("task rollback unit must list the task", { id: node.id, rollbackUnit: node.rollbackUnit });
       }
     }
     if (node.kind === "test") for (const verified of node.verifies) assertReference(nodes, verified, ["acceptance-criterion"], { from: node.id });
     if (node.kind === "rollback") {
       for (const taskId of node.tasks) {
         const task = assertReference(nodes, taskId, ["task"], { from: node.id });
-        if (task.kind !== "task" || task.rollbackUnit !== node.id) invalid("rollback unit tasks must be symmetric with task rollbackUnit", { id: node.id, taskId });
+        if (task.kind !== "task" || task.rollbackUnit !== node.id) invalid2("rollback unit tasks must be symmetric with task rollbackUnit", { id: node.id, taskId });
       }
       for (const dependency of node.dependsOn) assertReference(nodes, dependency, ["rollback"], { from: node.id });
       for (const covered of node.covers) assertReference(nodes, covered, ["requirement", "acceptance-criterion"], { from: node.id });
@@ -989,15 +1163,15 @@ function validateTraceGraph(ledger, route, mode) {
   }
   assertRollbackDag(nodes);
   const edges = deriveTraceEdges(nodes);
-  if (!sameEdges(ledger.edges, edges)) invalid("ledger edges do not match nodes");
-  if (!sameSummary(ledger.summary, traceSummary(nodes))) invalid("ledger summary does not match nodes");
+  if (!sameEdges(ledger.edges, edges)) invalid2("ledger edges do not match nodes");
+  if (!sameSummary(ledger.summary, traceSummary(nodes))) invalid2("ledger summary does not match nodes");
   if (mode === "complete") {
     const kinds = new Set(currentNodes(nodes).map((node) => node.kind));
-    for (const kind of ["requirement", "acceptance-criterion", "task", "test", "rollback"]) if (!kinds.has(kind)) invalid("complete graph is missing a required node kind", { kind });
-    if (currentNodes(nodes).some((node) => node.status !== "current")) invalid("complete graph cannot contain stale nodes");
+    for (const kind of ["requirement", "acceptance-criterion", "task", "test", "rollback"]) if (!kinds.has(kind)) invalid2("complete graph is missing a required node kind", { kind });
+    if (currentNodes(nodes).some((node) => node.status !== "current")) invalid2("complete graph cannot contain stale nodes");
     for (const node of currentNodes(nodes)) {
       if (node.kind === "acceptance-criterion" && !currentNodes(nodes).some((candidate) => candidate.kind === "test" && candidate.verifies.includes(node.id))) {
-        invalid("every acceptance criterion requires a test", { id: node.id });
+        invalid2("every acceptance criterion requires a test", { id: node.id });
       }
     }
   }
@@ -1034,9 +1208,9 @@ function applyTraceDelta(input) {
   const changed = /* @__PURE__ */ new Set();
   for (const node of input.delta.nodes) {
     const previous = nodes[node.id];
-    if (previous?.status === "tombstoned") invalid("tombstoned IDs cannot be reused", { id: node.id });
+    if (previous?.status === "tombstoned") invalid2("tombstoned IDs cannot be reused", { id: node.id });
     const next = sourceFor(input, node, sourceBlocks.get(node.id));
-    if (previous && previous.sourceArtifact !== input.artifactKind) invalid("node ID already belongs to a different source artifact", { id: node.id });
+    if (previous && previous.sourceArtifact !== input.artifactKind) invalid2("node ID already belongs to a different source artifact", { id: node.id });
     if (previous && (previous.sourceBlockSha256 !== next.sourceBlockSha256 || nodeMeaning(previous) !== inputMeaning(node))) changed.add(node.id);
     nodes[node.id] = next;
   }
@@ -1216,7 +1390,7 @@ function sameEdges2(left, right) {
     return edge.from === candidate?.from && edge.type === candidate.type && edge.to === candidate.to;
   });
 }
-async function readTraceability(root2, state) {
+async function readTraceabilityWithOptions(root2, state, options = {}) {
   if (!state.traceability) integrity("Trace pointer is missing", { featureId: state.featureId });
   const pointer = state.traceability;
   const relative = safeSnapshotPath(pointer);
@@ -1235,7 +1409,7 @@ async function readTraceability(root2, state) {
     integrity("Trace snapshot is not valid JSON", { featureId: state.featureId });
   }
   try {
-    validateTraceGraph(ledger, state.route, "partial");
+    validateTraceGraph(ledger, state.route, "partial", options);
   } catch (error) {
     integrity("Trace snapshot graph is invalid", { cause: error instanceof Error ? error.message : String(error) });
   }
@@ -1246,6 +1420,13 @@ async function readTraceability(root2, state) {
     integrity("Trace pointer summary or ledger edges do not match", { featureId: state.featureId });
   }
   return ledger;
+}
+async function readTraceability(root2, state) {
+  return readTraceabilityWithOptions(root2, state);
+}
+async function readTraceabilityForArtifactReplacement(root2, state, artifactKind) {
+  const allowUnsafeFileScopeSourceArtifact = artifactKind === "implementation-plan" || artifactKind === "rollback-units" ? artifactKind : void 0;
+  return readTraceabilityWithOptions(root2, state, { allowUnsafeFileScopeSourceArtifact });
 }
 async function listOrphanTraceSnapshots(root2, state) {
   const directory = snapshotDirectory(root2, state.featureId);
@@ -1363,7 +1544,7 @@ function evidenceSourcesForReviewBatch(batch) {
   return sources;
 }
 function parseHostAttestation(value) {
-  if (!isRecord2(value) || Object.keys(value).some((key) => !["host", "agentId", "issuedAt", "raw"].includes(key)) || value.host !== "claude" && value.host !== "codex" || typeof value.agentId !== "string" || !value.agentId.trim() || typeof value.issuedAt !== "string" || !value.issuedAt.trim() || Number.isNaN(Date.parse(value.issuedAt)) || typeof value.raw !== "string" || !value.raw.trim()) {
+  if (!isRecord3(value) || Object.keys(value).some((key) => !["host", "agentId", "issuedAt", "raw"].includes(key)) || value.host !== "claude" && value.host !== "codex" || typeof value.agentId !== "string" || !value.agentId.trim() || typeof value.issuedAt !== "string" || !value.issuedAt.trim() || Number.isNaN(Date.parse(value.issuedAt)) || typeof value.raw !== "string" || !value.raw.trim()) {
     protocolInvalid("host attestation has an invalid shape");
   }
   return {
@@ -1383,14 +1564,14 @@ var reviewRoles = [
 function protocolInvalid(message) {
   throw new Error(`REVIEW_PROTOCOL_INVALID: ${message}`);
 }
-function isRecord2(value) {
+function isRecord3(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 function isReviewRole(value) {
   return typeof value === "string" && reviewRoles.includes(value);
 }
 function parseReviewJobCompletion(value) {
-  if (!isRecord2(value) || Object.keys(value).some((key) => key !== "coverageSummary" && key !== "findings" && key !== "resolutions") || typeof value.coverageSummary !== "string" || !value.coverageSummary.trim() || !Array.isArray(value.findings)) {
+  if (!isRecord3(value) || Object.keys(value).some((key) => key !== "coverageSummary" && key !== "findings" && key !== "resolutions") || typeof value.coverageSummary !== "string" || !value.coverageSummary.trim() || !Array.isArray(value.findings)) {
     protocolInvalid("review job completion has an invalid shape");
   }
   const findings = value.findings.map((finding, index) => parseFinding(finding, index));
@@ -1403,21 +1584,21 @@ function nonEmptyStrings(value) {
 function parseEvidence(value, label) {
   if (!Array.isArray(value) || !value.length) protocolInvalid(`${label} evidence must be a non-empty array`);
   return value.map((item, index) => {
-    const line = isRecord2(item) ? item.line : void 0;
-    if (!isRecord2(item) || Object.keys(item).some((key) => key !== "path" && key !== "line") || typeof item.path !== "string" || !item.path.trim() || line !== void 0 && (typeof line !== "number" || !Number.isInteger(line) || line < 1)) {
+    const line = isRecord3(item) ? item.line : void 0;
+    if (!isRecord3(item) || Object.keys(item).some((key) => key !== "path" && key !== "line") || typeof item.path !== "string" || !item.path.trim() || line !== void 0 && (typeof line !== "number" || !Number.isInteger(line) || line < 1)) {
       protocolInvalid(`${label} evidence ${index} has an invalid shape`);
     }
     return { path: item.path, ...line === void 0 ? {} : { line } };
   });
 }
 function parseFinding(value, index) {
-  if (!isRecord2(value) || Object.keys(value).some((key) => !["severity", "category", "targets", "evidence", "claim", "recommendation"].includes(key)) || value.severity !== "blocking" && value.severity !== "warning" && value.severity !== "note" || !isReviewRole(value.category) || !nonEmptyStrings(value.targets) || typeof value.claim !== "string" || !value.claim.trim() || typeof value.recommendation !== "string" || !value.recommendation.trim()) {
+  if (!isRecord3(value) || Object.keys(value).some((key) => !["severity", "category", "targets", "evidence", "claim", "recommendation"].includes(key)) || value.severity !== "blocking" && value.severity !== "warning" && value.severity !== "note" || !isReviewRole(value.category) || !nonEmptyStrings(value.targets) || typeof value.claim !== "string" || !value.claim.trim() || typeof value.recommendation !== "string" || !value.recommendation.trim()) {
     protocolInvalid(`review finding ${index} has an invalid shape`);
   }
   return { severity: value.severity, category: value.category, targets: [...value.targets], evidence: parseEvidence(value.evidence, `review finding ${index}`), claim: value.claim, recommendation: value.recommendation };
 }
 function parseResolution(value, index) {
-  if (!isRecord2(value) || Object.keys(value).some((key) => key !== "findingId" && key !== "evidence" && key !== "note") || typeof value.findingId !== "string" || !value.findingId || typeof value.note !== "string" || !value.note.trim()) {
+  if (!isRecord3(value) || Object.keys(value).some((key) => key !== "findingId" && key !== "evidence" && key !== "note") || typeof value.findingId !== "string" || !value.findingId || typeof value.note !== "string" || !value.note.trim()) {
     protocolInvalid(`review resolution ${index} has an invalid shape`);
   }
   return { findingId: value.findingId, evidence: parseEvidence(value.evidence, `review resolution ${index}`), note: value.note };
@@ -1479,11 +1660,11 @@ function sameSummary2(left, right) {
 function validHash(value) {
   return typeof value === "string" && /^[a-f0-9]{64}$/.test(value);
 }
-function isRecord3(value) {
+function isRecord4(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 function validSamplingAttempt(value) {
-  if (!isRecord3(value) || !validHash(value.requestSha256) || typeof value.issuedAt !== "string" || typeof value.leaseExpiresAt !== "string" || value.status !== "issued" && value.status !== "failed" && value.status !== "submitted") return false;
+  if (!isRecord4(value) || !validHash(value.requestSha256) || typeof value.issuedAt !== "string" || typeof value.leaseExpiresAt !== "string" || value.status !== "issued" && value.status !== "failed" && value.status !== "submitted") return false;
   if (value.status === "issued") {
     return value.completedAt === void 0 && value.payloadSha256 === void 0 && value.failureCode === void 0;
   }
@@ -1506,7 +1687,7 @@ function validSamplingAttempts(value, status, submission) {
   return attempts.every((attempt) => attempt.status === "failed" || attempt.status === "submitted") && attempts.filter((attempt) => attempt.status === "submitted").length === 1 && attempts.some((attempt) => attempt.status === "submitted" && attempt.requestSha256 === submission.samplingProvenance.requestSha256 && attempt.issuedAt === submission.samplingProvenance.issuedAt && attempt.completedAt === submission.samplingProvenance.completedAt && attempt.payloadSha256 === submission.payloadSha256);
 }
 function validAttestation(value) {
-  return isRecord3(value) && (value.host === "claude" || value.host === "codex") && typeof value.agentId === "string" && value.agentId.trim().length > 0 && typeof value.issuedAt === "string" && !Number.isNaN(Date.parse(value.issuedAt)) && typeof value.raw === "string" && value.raw.trim().length > 0 && validHash(value.rawSha256) && typeof value.acceptedAt === "string" && digest3(value.raw) === value.rawSha256;
+  return isRecord4(value) && (value.host === "claude" || value.host === "codex") && typeof value.agentId === "string" && value.agentId.trim().length > 0 && typeof value.issuedAt === "string" && !Number.isNaN(Date.parse(value.issuedAt)) && typeof value.raw === "string" && value.raw.trim().length > 0 && validHash(value.rawSha256) && typeof value.acceptedAt === "string" && digest3(value.raw) === value.rawSha256;
 }
 function validateBatch(value) {
   if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
@@ -2497,7 +2678,7 @@ async function resumeRecovery(root2, transaction) {
   return { recoveredTo: transaction.recoveredTo, featureId: transaction.featureId, stateSha256: transaction.stateSha256 };
 }
 var rollbackTransactionPhases = /* @__PURE__ */ new Set(["prepared", "backing-up", "rolling-back", "verifying", "committed", "compensating", "compensated"]);
-function isSha256(value) {
+function isSha2562(value) {
   return typeof value === "string" && /^[a-f0-9]{64}$/.test(value);
 }
 function validateRollbackTransaction(value) {
@@ -2505,12 +2686,12 @@ function validateRollbackTransaction(value) {
   const validPlan = Array.isArray(transaction?.filePlan) && transaction.filePlan.every((action) => {
     const candidate = action;
     if (!candidate || candidate.action !== "restore" && candidate.action !== "delete" || typeof candidate.path !== "string" || !candidate.path) return false;
-    if (candidate.action === "restore" && (!isSha256(candidate.blobSha256) || typeof candidate.mode !== "string" || !/^[0-7]{3,4}$/.test(candidate.mode))) return false;
-    if (candidate.blobSha256 !== void 0 && !isSha256(candidate.blobSha256)) return false;
+    if (candidate.action === "restore" && (!isSha2562(candidate.blobSha256) || typeof candidate.mode !== "string" || !/^[0-7]{3,4}$/.test(candidate.mode))) return false;
+    if (candidate.blobSha256 !== void 0 && !isSha2562(candidate.blobSha256)) return false;
     if (candidate.mode !== void 0 && (typeof candidate.mode !== "string" || !/^[0-7]{3,4}$/.test(candidate.mode))) return false;
     return true;
   });
-  if (transaction?.schemaVersion !== 1 || typeof transaction.transactionId !== "string" || !transaction.transactionId || typeof transaction.featureId !== "string" || !transaction.featureId || !rollbackTransactionPhases.has(transaction.phase) || typeof transaction.targetCheckpointId !== "string" || !/^CP-[0-9]{3,}$/.test(transaction.targetCheckpointId) || typeof transaction.targetUnitId !== "string" || !/^RU-[0-9]{3,}$/.test(transaction.targetUnitId) || !Array.isArray(transaction.undoOrder) || transaction.undoOrder.length === 0 || !transaction.undoOrder.every((unitId) => typeof unitId === "string" && /^RU-[0-9]{3,}$/.test(unitId)) || transaction.undoCheckpoints !== void 0 && (!Array.isArray(transaction.undoCheckpoints) || !transaction.undoCheckpoints.every((id) => typeof id === "string" && /^CP-[0-9]{3,}$/.test(id))) || !isSha256(transaction.previewBasisHash) || !isSha256(transaction.projectConfigSha256) || !Number.isInteger(transaction.stateRevision) || (transaction.stateRevision ?? -1) < 0 || typeof transaction.backupDirectory !== "string" || !/^checkpoints\/recovery\/[^/]+$/.test(transaction.backupDirectory) || !Number.isInteger(transaction.nextFileIndex) || (transaction.nextFileIndex ?? -1) < 0 || !validPlan || !Array.isArray(transaction.verificationAttemptIds) || !transaction.verificationAttemptIds.every((id) => typeof id === "string" && id.length > 0) || typeof transaction.startedAt !== "string" || transaction.completedAt !== void 0 && typeof transaction.completedAt !== "string" || transaction.error !== void 0 && typeof transaction.error !== "string") {
+  if (transaction?.schemaVersion !== 1 || typeof transaction.transactionId !== "string" || !transaction.transactionId || typeof transaction.featureId !== "string" || !transaction.featureId || !rollbackTransactionPhases.has(transaction.phase) || typeof transaction.targetCheckpointId !== "string" || !/^CP-[0-9]{3,}$/.test(transaction.targetCheckpointId) || typeof transaction.targetUnitId !== "string" || !/^RU-[0-9]{3,}$/.test(transaction.targetUnitId) || !Array.isArray(transaction.undoOrder) || transaction.undoOrder.length === 0 || !transaction.undoOrder.every((unitId) => typeof unitId === "string" && /^RU-[0-9]{3,}$/.test(unitId)) || transaction.undoCheckpoints !== void 0 && (!Array.isArray(transaction.undoCheckpoints) || !transaction.undoCheckpoints.every((id) => typeof id === "string" && /^CP-[0-9]{3,}$/.test(id))) || !isSha2562(transaction.previewBasisHash) || !isSha2562(transaction.projectConfigSha256) || !Number.isInteger(transaction.stateRevision) || (transaction.stateRevision ?? -1) < 0 || typeof transaction.backupDirectory !== "string" || !/^checkpoints\/recovery\/[^/]+$/.test(transaction.backupDirectory) || !Number.isInteger(transaction.nextFileIndex) || (transaction.nextFileIndex ?? -1) < 0 || !validPlan || !Array.isArray(transaction.verificationAttemptIds) || !transaction.verificationAttemptIds.every((id) => typeof id === "string" && id.length > 0) || typeof transaction.startedAt !== "string" || transaction.completedAt !== void 0 && typeof transaction.completedAt !== "string" || transaction.error !== void 0 && typeof transaction.error !== "string") {
     throw new DevFlowError("ROLLBACK_TRANSACTION_UNREADABLE", "rollback transaction journal is invalid", {
       recoveryHint: "Run dev_flow_doctor; the workspace may be mid-rollback \u2014 do not hand-edit .dev-flow"
     });
@@ -3344,7 +3525,7 @@ async function recordArtifactWithTrace(root2, id, expectedRevision, artifactKind
     const artifactSha256 = hash(contents);
     const sourceBlocks = parseTraceSourceBlocks(contents);
     const { config, sha256: projectConfigSha256 } = await readProjectConfigSnapshot(root2);
-    const currentLedger = await readTraceability(root2, current);
+    const currentLedger = await readTraceabilityForArtifactReplacement(root2, current, artifactKind);
     const ledger = applyTraceDelta({
       current: currentLedger,
       route: current.route,
@@ -3856,13 +4037,13 @@ var digest5 = (value) => createHash9("sha256").update(value).digest("hex");
 var leaseMilliseconds = 60 * 60 * 1e3;
 var samplingLeaseMilliseconds = 120 * 1e3;
 var basisArtifactKinds = ["requirements", "implementation-plan", "coverage-matrix", "rollback-units"];
-function invalid2(code, message, details = {}) {
+function invalid3(code, message, details = {}) {
   throw new DevFlowError(code, message, details);
 }
 function currentBatch2(ledger, batchId) {
   const batch = ledger.batches.find((candidate) => candidate.batchId === batchId);
-  if (!batch) invalid2("REVIEW_BATCH_NOT_FOUND", "review batch does not exist", { batchId });
-  if (batch.validity !== "current") invalid2("REVIEW_BATCH_STALE", "review batch is stale", { batchId });
+  if (!batch) invalid3("REVIEW_BATCH_NOT_FOUND", "review batch does not exist", { batchId });
+  if (batch.validity !== "current") invalid3("REVIEW_BATCH_STALE", "review batch is stale", { batchId });
   return batch;
 }
 function cloneLedger(ledger, stateRevision, batches) {
@@ -3878,26 +4059,26 @@ function reviewArtifactKinds(state) {
   return basisArtifactKinds.filter((kind) => kind !== "rollback-units" || state.route === "standard-l");
 }
 async function deriveReviewInput(root2, state) {
-  if (!state.traceability) invalid2("REVIEW_BASIS_UNAVAILABLE", "review basis requires a current Trace pointer");
+  if (!state.traceability) invalid3("REVIEW_BASIS_UNAVAILABLE", "review basis requires a current Trace pointer");
   const trace = await readTraceability(root2, state);
   const { config, sha256: projectConfigSha256 } = await readProjectConfigSnapshot(root2);
   const frozenArtifacts = await Promise.all(reviewArtifactKinds(state).map(async (kind) => {
     const artifact = state.artifacts[kind];
-    if (!artifact) invalid2("REVIEW_BASIS_ARTIFACT_MISSING", `review basis artifact is missing: ${kind}`, { kind });
+    if (!artifact) invalid3("REVIEW_BASIS_ARTIFACT_MISSING", `review basis artifact is missing: ${kind}`, { kind });
     let contents;
     try {
       contents = await readFile8(path10.join(root2, ".dev-flow", "features", state.featureId, artifact.path), "utf8");
     } catch {
-      invalid2("REVIEW_BASIS_ARTIFACT_MISSING", `review basis artifact cannot be read: ${kind}`, { kind });
+      invalid3("REVIEW_BASIS_ARTIFACT_MISSING", `review basis artifact cannot be read: ${kind}`, { kind });
     }
     if (digest5(contents) !== artifact.sha256) {
-      invalid2("ARTIFACT_INTEGRITY_FAILED", `review basis artifact was edited without registration: ${kind}`, { kind });
+      invalid3("ARTIFACT_INTEGRITY_FAILED", `review basis artifact was edited without registration: ${kind}`, { kind });
     }
     return { kind, path: artifact.path, sha256: artifact.sha256, contents };
   }));
   const projectContents = await readFile8(path10.join(root2, ".dev-flow", "project.json"), "utf8");
   if (digest5(projectContents) !== projectConfigSha256) {
-    invalid2("REVIEW_BASIS_UNAVAILABLE", "project configuration changed while review basis was being captured");
+    invalid3("REVIEW_BASIS_UNAVAILABLE", "project configuration changed while review basis was being captured");
   }
   const scopeManifest = {
     inScope: [...state.scope.inScope].sort(),
@@ -3943,12 +4124,12 @@ function basisHash(basis) {
 }
 function requireClaimRequestId(value) {
   if (typeof value !== "string" || value.length < 24 || !/[A-Za-z]/.test(value) || !/[0-9]/.test(value)) {
-    invalid2("REVIEW_CLAIM_REQUEST_INVALID", "claimRequestId must be an unguessable high-entropy value");
+    invalid3("REVIEW_CLAIM_REQUEST_INVALID", "claimRequestId must be an unguessable high-entropy value");
   }
 }
 function findJob(batch, jobId) {
   const job = batch.jobs.find((candidate) => candidate.jobId === jobId);
-  if (!job) invalid2("REVIEW_JOB_NOT_FOUND", "review job does not exist", { batchId: batch.batchId, jobId });
+  if (!job) invalid3("REVIEW_JOB_NOT_FOUND", "review job does not exist", { batchId: batch.batchId, jobId });
   return job;
 }
 function visibleJob(job) {
@@ -3995,7 +4176,7 @@ function assertAttestationUnique(ledger, batchId, jobId, attestation) {
       if (batch.batchId === batchId && job.jobId === jobId) continue;
       if (job.status !== "submitted" || !job.submission?.attestation) continue;
       if (job.submission.attestation.rawSha256 === attestation.rawSha256) {
-        invalid2("REVIEW_ATTESTATION_REUSED", "the same host attestation cannot be reused across review jobs or successor batches", {
+        invalid3("REVIEW_ATTESTATION_REUSED", "the same host attestation cannot be reused across review jobs or successor batches", {
           jobId,
           priorJobId: job.jobId,
           priorBatchId: batch.batchId
@@ -4015,11 +4196,11 @@ function validScopeManifest(value) {
 async function readBoundReviewPackage(root2, featureId, batch, job) {
   const reviewPackage = await readReviewPackage(root2, featureId, job.packageSha256);
   if (typeof reviewPackage !== "object" || reviewPackage === null || Array.isArray(reviewPackage)) {
-    invalid2("REVIEW_INTEGRITY_FAILED", "review package does not belong to its job", { batchId: batch.batchId, jobId: job.jobId });
+    invalid3("REVIEW_INTEGRITY_FAILED", "review package does not belong to its job", { batchId: batch.batchId, jobId: job.jobId });
   }
   const packageRecord = reviewPackage;
   if (packageRecord.featureId !== featureId || packageRecord.batchId !== batch.batchId || packageRecord.jobId !== job.jobId || packageRecord.basisHash !== batch.basisHash) {
-    invalid2("REVIEW_INTEGRITY_FAILED", "review package does not belong to its job", { batchId: batch.batchId, jobId: job.jobId });
+    invalid3("REVIEW_INTEGRITY_FAILED", "review package does not belong to its job", { batchId: batch.batchId, jobId: job.jobId });
   }
   return packageRecord;
 }
@@ -4027,13 +4208,13 @@ function assertFindingScope(manifest, findings, resolutions) {
   const allowed = [.../* @__PURE__ */ new Set([...manifest.protectedRoots, ...manifest.rollbackFileScopes])];
   const inManifest = (value) => safePackagePath(value) && allowed.some((scope) => scope === "." || value === scope || value.startsWith(`${scope}/`));
   for (const finding of findings) {
-    if (finding.severity === "blocking" && !finding.evidence.length) invalid2("REVIEW_FINDING_EVIDENCE_REQUIRED", "blocking finding requires evidence");
+    if (finding.severity === "blocking" && !finding.evidence.length) invalid3("REVIEW_FINDING_EVIDENCE_REQUIRED", "blocking finding requires evidence");
     if (finding.targets.some((target) => !inManifest(target)) || finding.evidence.some((evidence) => !inManifest(evidence.path))) {
-      invalid2("REVIEW_FINDING_SCOPE_INVALID", "finding targets and evidence must be package-relative paths inside the scope manifest");
+      invalid3("REVIEW_FINDING_SCOPE_INVALID", "finding targets and evidence must be package-relative paths inside the scope manifest");
     }
   }
   if (resolutions.some((resolution) => resolution.evidence.some((evidence) => !inManifest(evidence.path)))) {
-    invalid2("REVIEW_FINDING_SCOPE_INVALID", "resolution evidence must be package-relative paths inside the scope manifest");
+    invalid3("REVIEW_FINDING_SCOPE_INVALID", "resolution evidence must be package-relative paths inside the scope manifest");
   }
 }
 var severityRank = { note: 0, warning: 1, blocking: 2 };
@@ -4057,7 +4238,7 @@ function dedupeFindings(findings) {
 async function createReviewBatch(root2, id, expectedRevision) {
   let result;
   const state = await mutatePrepared(root2, id, expectedRevision, "review-batch-created", async (current, nextStateRevision) => {
-    if (current.lifecycle !== "active") invalid2("INVALID_LIFECYCLE", "only active features can create review batches");
+    if (current.lifecycle !== "active") invalid3("INVALID_LIFECYCLE", "only active features can create review batches");
     const ledger = await readReviewLedger(root2, current);
     const reviewInput = await deriveReviewInput(root2, current);
     const { basis } = reviewInput;
@@ -4068,7 +4249,7 @@ async function createReviewBatch(root2, id, expectedRevision) {
       return { mutate: () => void 0, unchanged: true, eventData: { batchId: existing.batchId, basisHash: currentBasisHash, idempotent: true } };
     }
     const requirements = deriveReviewJobRequirements(current.route, current.classification.riskLabels);
-    if (!requirements.length) invalid2("REVIEW_ROUTE_UNSUPPORTED", "review jobs require a standard M or L route");
+    if (!requirements.length) invalid3("REVIEW_ROUTE_UNSUPPORTED", "review jobs require a standard M or L route");
     const batchId = randomUUID6();
     const jobs = [];
     for (const requirement of requirements) {
@@ -4117,7 +4298,7 @@ async function getReviewJob(root2, id, batchId, jobId, capability) {
   const state = await readState(root2, id);
   const batch = currentBatch2(await readReviewLedger(root2, state), batchId);
   const job = findJob(batch, jobId);
-  if (!job.claim || digest5(capability) !== job.claim.requestSha256) invalid2("REVIEW_JOB_CAPABILITY_INVALID", "review job capability is invalid");
+  if (!job.claim || digest5(capability) !== job.claim.requestSha256) invalid3("REVIEW_JOB_CAPABILITY_INVALID", "review job capability is invalid");
   const reviewPackage = await readBoundReviewPackage(root2, id, batch, job);
   return { job: visibleJob(job), package: reviewPackage };
 }
@@ -4130,10 +4311,10 @@ async function claimReviewJob(root2, id, expectedRevision, batchId, jobId, claim
     const requestSha256 = digest5(claimRequestId);
     const original = findJob(batch, jobId);
     const job = recoverExpiredSampling(recoverExpiredLease(original, now), now);
-    if (job.status === "submitted") invalid2("REVIEW_JOB_ALREADY_SUBMITTED", "review job has already been submitted", { jobId });
-    if (job.status === "sampling") invalid2("REVIEW_JOB_SAMPLING_IN_PROGRESS", "review job is held by server sampling", { jobId });
+    if (job.status === "submitted") invalid3("REVIEW_JOB_ALREADY_SUBMITTED", "review job has already been submitted", { jobId });
+    if (job.status === "sampling") invalid3("REVIEW_JOB_SAMPLING_IN_PROGRESS", "review job is held by server sampling", { jobId });
     if (job.status === "claimed" && job.claim.requestSha256 !== requestSha256) {
-      invalid2("REVIEW_JOB_ALREADY_CLAIMED", "review job is claimed by another capability", { jobId });
+      invalid3("REVIEW_JOB_ALREADY_CLAIMED", "review job is claimed by another capability", { jobId });
     }
     const idempotent = job.status === "claimed";
     const claimed = idempotent ? job : {
@@ -4156,30 +4337,30 @@ async function claimReviewJob(root2, id, expectedRevision, batchId, jobId, claim
 }
 async function submitParsedReviewJob(root2, featureId, ledger, batch, job, parsed, now, samplingAttempt, hostAttestation) {
   if (parsed.findings.some((finding) => finding.category !== job.role)) {
-    invalid2("REVIEW_FINDING_ROLE_MISMATCH", "a job may only submit findings for its assigned review role", { jobId: job.jobId, role: job.role });
+    invalid3("REVIEW_FINDING_ROLE_MISMATCH", "a job may only submit findings for its assigned review role", { jobId: job.jobId, role: job.role });
   }
   if (samplingAttempt && hostAttestation) {
-    invalid2("REVIEW_ATTESTATION_INVALID", "server sampling submissions cannot carry host attestation");
+    invalid3("REVIEW_ATTESTATION_INVALID", "server sampling submissions cannot carry host attestation");
   }
   if (hostAttestation) assertAttestationUnique(ledger, batch.batchId, job.jobId, hostAttestation);
   const reviewPackage = await readBoundReviewPackage(root2, featureId, batch, job);
   if (!validScopeManifest(reviewPackage.scopeManifest)) {
-    invalid2("REVIEW_INTEGRITY_FAILED", "review package scope manifest is invalid", { jobId: job.jobId });
+    invalid3("REVIEW_INTEGRITY_FAILED", "review package scope manifest is invalid", { jobId: job.jobId });
   }
   const manifest = reviewPackage.scopeManifest;
   assertFindingScope(manifest, parsed.findings, parsed.resolutions ?? []);
   const dispositions = { ...batch.dispositions };
   const resolvedIds = /* @__PURE__ */ new Set();
   for (const resolution of parsed.resolutions ?? []) {
-    if (resolvedIds.has(resolution.findingId)) invalid2("REVIEW_RESOLUTION_DUPLICATE", "a finding may be resolved only once per successor batch", { findingId: resolution.findingId });
+    if (resolvedIds.has(resolution.findingId)) invalid3("REVIEW_RESOLUTION_DUPLICATE", "a finding may be resolved only once per successor batch", { findingId: resolution.findingId });
     const source = ledger.batches.filter((candidate) => candidate.batchId !== batch.batchId).flatMap((candidate) => candidate.jobs.map((candidateJob) => ({ batch: candidate, job: candidateJob }))).find(({ job: candidateJob }) => candidateJob.submission?.findings.some((finding2) => finding2.findingId === resolution.findingId));
     const finding = source?.job.submission?.findings.find((candidate) => candidate.findingId === resolution.findingId);
-    if (!source || !finding) invalid2("REVIEW_RESOLUTION_UNKNOWN_FINDING", "resolution references an unknown prior finding", { findingId: resolution.findingId });
+    if (!source || !finding) invalid3("REVIEW_RESOLUTION_UNKNOWN_FINDING", "resolution references an unknown prior finding", { findingId: resolution.findingId });
     if (finding.severity !== "blocking" || source.job.role !== job.role) {
-      invalid2("REVIEW_RESOLUTION_ROLE_MISMATCH", "only the same role may resolve a prior blocking finding", { findingId: resolution.findingId });
+      invalid3("REVIEW_RESOLUTION_ROLE_MISMATCH", "only the same role may resolve a prior blocking finding", { findingId: resolution.findingId });
     }
     if (dispositions[resolution.findingId]) {
-      invalid2("REVIEW_RESOLUTION_ALREADY_DISPOSED", "a prior finding already has a disposition", { findingId: resolution.findingId });
+      invalid3("REVIEW_RESOLUTION_ALREADY_DISPOSED", "a prior finding already has a disposition", { findingId: resolution.findingId });
     }
     dispositions[resolution.findingId] = {
       kind: "resolved-in-successor",
@@ -4249,21 +4430,21 @@ async function submitReviewJob(root2, id, expectedRevision, batchId, jobId, capa
     const job = findJob(batch, jobId);
     const payloadSha256 = digest5(canonicalReviewValueJson(parsed));
     if (job.status === "submitted") {
-      if (job.submission?.payloadSha256 !== payloadSha256) invalid2("REVIEW_SUBMISSION_CONFLICT", "review job was submitted with a different payload", { jobId });
+      if (job.submission?.payloadSha256 !== payloadSha256) invalid3("REVIEW_SUBMISSION_CONFLICT", "review job was submitted with a different payload", { jobId });
       if (hostAttestation) {
         const existing = job.submission?.attestation;
         if (!existing || existing.rawSha256 !== hostAttestation.rawSha256 || existing.agentId !== hostAttestation.agentId || existing.host !== hostAttestation.host) {
-          invalid2("REVIEW_SUBMISSION_CONFLICT", "review job was submitted with a different host attestation", { jobId });
+          invalid3("REVIEW_SUBMISSION_CONFLICT", "review job was submitted with a different host attestation", { jobId });
         }
       } else if (job.submission?.attestation) {
-        invalid2("REVIEW_SUBMISSION_CONFLICT", "review job was submitted with a different host attestation", { jobId });
+        invalid3("REVIEW_SUBMISSION_CONFLICT", "review job was submitted with a different host attestation", { jobId });
       }
       result = { batch, idempotent: true };
       return { mutate: () => void 0, unchanged: true, eventData: { batchId, jobId, idempotent: true } };
     }
-    if (job.status === "sampling") invalid2("REVIEW_JOB_SAMPLING_IN_PROGRESS", "review job is held by server sampling", { jobId });
-    if (!job.claim || digest5(capability) !== job.claim.requestSha256) invalid2("REVIEW_JOB_CAPABILITY_INVALID", "review job capability is invalid");
-    if (Date.parse(job.claim.leaseExpiresAt) <= now.getTime()) invalid2("REVIEW_JOB_LEASE_EXPIRED", "review job lease has expired", { jobId });
+    if (job.status === "sampling") invalid3("REVIEW_JOB_SAMPLING_IN_PROGRESS", "review job is held by server sampling", { jobId });
+    if (!job.claim || digest5(capability) !== job.claim.requestSha256) invalid3("REVIEW_JOB_CAPABILITY_INVALID", "review job capability is invalid");
+    if (Date.parse(job.claim.leaseExpiresAt) <= now.getTime()) invalid3("REVIEW_JOB_LEASE_EXPIRED", "review job lease has expired", { jobId });
     const submitted = await submitParsedReviewJob(root2, id, ledger, batch, job, parsed, now, void 0, hostAttestation);
     const batches = ledger.batches.map((candidate) => candidate.batchId === batchId ? submitted.batch : candidate);
     const pointer = await writeReviewSnapshot(root2, cloneLedger(ledger, nextStateRevision, batches));
@@ -4285,7 +4466,7 @@ async function submitReviewJob(root2, id, expectedRevision, batchId, jobId, capa
 function samplingCurrentBatch(ledger, batchId) {
   const batch = ledger.batches.find((candidate) => candidate.batchId === batchId);
   if (!batch || batch.validity !== "current") {
-    invalid2("REVIEW_SAMPLING_REQUEST_REPLAY", "sampling request is not valid for a current review batch", { batchId });
+    invalid3("REVIEW_SAMPLING_REQUEST_REPLAY", "sampling request is not valid for a current review batch", { batchId });
   }
   return batch;
 }
@@ -4293,7 +4474,7 @@ function samplingAttemptForRequest(job, requestId) {
   const requestSha256 = digest5(requestId);
   const attempt = activeSamplingAttempt(job);
   if (job.status !== "sampling" || !attempt || attempt.requestSha256 !== requestSha256) {
-    invalid2("REVIEW_SAMPLING_REQUEST_REPLAY", "sampling request was already consumed or does not belong to this job", { jobId: job.jobId });
+    invalid3("REVIEW_SAMPLING_REQUEST_REPLAY", "sampling request was already consumed or does not belong to this job", { jobId: job.jobId });
   }
   return attempt;
 }
@@ -4304,9 +4485,9 @@ async function beginReviewSampling(root2, id, expectedRevision, batchId, jobId, 
     const batch = currentBatch2(ledger, batchId);
     const original = findJob(batch, jobId);
     const job = recoverExpiredSampling(original, now);
-    if (job.status === "submitted") invalid2("REVIEW_JOB_ALREADY_SUBMITTED", "review job has already been submitted", { jobId });
-    if (job.status === "claimed") invalid2("REVIEW_JOB_ALREADY_CLAIMED", "review job is claimed by a human capability", { jobId });
-    if (job.status === "sampling") invalid2("REVIEW_JOB_SAMPLING_IN_PROGRESS", "review job is already held by server sampling", { jobId });
+    if (job.status === "submitted") invalid3("REVIEW_JOB_ALREADY_SUBMITTED", "review job has already been submitted", { jobId });
+    if (job.status === "claimed") invalid3("REVIEW_JOB_ALREADY_CLAIMED", "review job is claimed by a human capability", { jobId });
+    if (job.status === "sampling") invalid3("REVIEW_JOB_SAMPLING_IN_PROGRESS", "review job is already held by server sampling", { jobId });
     const requestId = `${randomUUID6()}-${randomUUID6()}`;
     const attempt = {
       requestSha256: digest5(requestId),
@@ -4383,7 +4564,7 @@ async function completeReviewSampling(root2, id, expectedRevision, batchId, jobI
     const job = findJob(batch, jobId);
     const attempt = samplingAttemptForRequest(job, requestId);
     if (Date.parse(attempt.leaseExpiresAt) <= now.getTime()) {
-      invalid2("REVIEW_SAMPLING_REQUEST_EXPIRED", "sampling request lease has expired", { jobId });
+      invalid3("REVIEW_SAMPLING_REQUEST_EXPIRED", "sampling request lease has expired", { jobId });
     }
     const submitted = await submitParsedReviewJob(root2, id, ledger, batch, job, parsed, now, attempt);
     const pointer = await writeReviewSnapshot(root2, cloneLedger(
@@ -4406,11 +4587,11 @@ function submittedFindings(ledger) {
 }
 function sortedFindingIds(findingIds) {
   if (!Array.isArray(findingIds) || !findingIds.length || findingIds.some((id) => typeof id !== "string" || !id)) {
-    invalid2("REVIEW_RISK_ACCEPTANCE_INVALID", "risk acceptance requires one or more finding ids");
+    invalid3("REVIEW_RISK_ACCEPTANCE_INVALID", "risk acceptance requires one or more finding ids");
   }
   const sorted = [...findingIds].sort();
   if (new Set(sorted).size !== sorted.length) {
-    invalid2("REVIEW_RISK_ACCEPTANCE_INVALID", "risk acceptance finding ids must be unique");
+    invalid3("REVIEW_RISK_ACCEPTANCE_INVALID", "risk acceptance finding ids must be unique");
   }
   return sorted;
 }
@@ -4421,7 +4602,7 @@ function findingSetHash(batch, findings) {
 function riskBinding(interaction) {
   const binding = interaction.binding;
   if (interaction.kind !== "risk-acceptance" || !binding || typeof binding.batchId !== "string" || typeof binding.findingSetHash !== "string" || !Array.isArray(binding.findingIds)) {
-    invalid2("REVIEW_RISK_ACCEPTANCE_INVALID", "interaction is not a valid review risk-acceptance decision", { interactionId: interaction.id });
+    invalid3("REVIEW_RISK_ACCEPTANCE_INVALID", "interaction is not a valid review risk-acceptance decision", { interactionId: interaction.id });
   }
   return { batchId: binding.batchId, findingIds: sortedFindingIds(binding.findingIds), findingSetHash: binding.findingSetHash };
 }
@@ -4432,12 +4613,12 @@ function planReviewBoundToBatch(state, batch) {
 async function currentBatchWithBasis(root2, state, options = {}) {
   const ledger = await readReviewLedger(root2, state);
   const batch = ledger.batches.find((candidate) => candidate.validity === "current");
-  if (!batch) invalid2("REVIEW_BATCH_REQUIRED", "a current review batch is required");
+  if (!batch) invalid3("REVIEW_BATCH_REQUIRED", "a current review batch is required");
   const requireLiveBasis = options.requireLiveBasis ?? !planReviewBoundToBatch(state, batch);
   if (requireLiveBasis) {
     const reviewInput = await deriveReviewInput(root2, state);
     if (basisHash(reviewInput.basis) !== batch.basisHash) {
-      invalid2("REVIEW_BASIS_STALE", "review batch basis no longer matches current feature state", { batchId: batch.batchId });
+      invalid3("REVIEW_BASIS_STALE", "review batch basis no longer matches current feature state", { batchId: batch.batchId });
     }
   }
   return { ledger, batch };
@@ -4449,7 +4630,7 @@ function selectCurrentBlockingFindings(ledger, batch, findingIds, unresolvedOnly
   const byId = new Map(submittedFindings(ledger).filter(({ batch: source, finding }) => source.batchId === batch.batchId && finding.severity === "blocking" && (!unresolvedOnly || !batch.dispositions?.[finding.findingId])).map(({ finding }) => [finding.findingId, finding]));
   const selected = sortedFindingIds(findingIds).map((findingId) => byId.get(findingId));
   if (selected.some((finding) => !finding)) {
-    invalid2("REVIEW_RISK_ACCEPTANCE_INVALID", "risk acceptance can cover only current unresolved blocking findings", {
+    invalid3("REVIEW_RISK_ACCEPTANCE_INVALID", "risk acceptance can cover only current unresolved blocking findings", {
       batchId: batch.batchId,
       findingIds
     });
@@ -4460,7 +4641,7 @@ async function presentReviewRiskAcceptance(root2, id, expectedRevision, findingI
   let result;
   const state = await mutatePrepared(root2, id, expectedRevision, "review-risk-acceptance-presented", async (current) => {
     const { ledger, batch } = await currentBatchWithBasis(root2, current);
-    if (batch.progress !== "complete") invalid2("REVIEW_BATCH_INCOMPLETE", "all required review jobs must be submitted", { batchId: batch.batchId });
+    if (batch.progress !== "complete") invalid3("REVIEW_BATCH_INCOMPLETE", "all required review jobs must be submitted", { batchId: batch.batchId });
     const findings = acceptanceFindings(ledger, batch, findingIds);
     const ids = findings.map((finding) => finding.findingId).sort();
     const setHash = findingSetHash(batch, findings);
@@ -4495,10 +4676,10 @@ function assertResolvedAcceptance(state, interaction, batch, findings) {
   const expectedIds = findings.map((finding) => finding.findingId).sort();
   const expectedSetHash = findingSetHash(batch, findings);
   if (interaction.basisHash !== batch.basisHash || binding.batchId !== batch.batchId || binding.findingSetHash !== expectedSetHash || binding.findingIds.join("\n") !== expectedIds.join("\n")) {
-    invalid2("REVIEW_RISK_ACCEPTANCE_STALE", "risk acceptance no longer matches the current batch and finding set", { interactionId: interaction.id });
+    invalid3("REVIEW_RISK_ACCEPTANCE_STALE", "risk acceptance no longer matches the current batch and finding set", { interactionId: interaction.id });
   }
   if (state.interactions?.[interaction.id] !== interaction) {
-    invalid2("REVIEW_RISK_ACCEPTANCE_INVALID", "risk acceptance interaction is not part of feature state", { interactionId: interaction.id });
+    invalid3("REVIEW_RISK_ACCEPTANCE_INVALID", "risk acceptance interaction is not part of feature state", { interactionId: interaction.id });
   }
 }
 async function resolveReviewRiskAcceptanceToken(root2, id, expectedRevision, interactionId, userReply, promptEventId, host) {
@@ -4519,7 +4700,7 @@ async function resolveReviewRiskAcceptanceToken(root2, id, expectedRevision, int
         result = { acceptedFindingIds: binding.findingIds, idempotent: true };
         return { mutate: () => void 0, unchanged: true, eventData: { interactionId, idempotent: true } };
       }
-      invalid2("INTERACTION_ALREADY_RESOLVED", interactionId);
+      invalid3("INTERACTION_ALREADY_RESOLVED", interactionId);
     }
     const findings = acceptanceFindings(ledger, batch, binding.findingIds);
     assertResolvedAcceptance(current, interaction, batch, findings);
@@ -4565,7 +4746,7 @@ async function resolveReviewRiskAcceptanceToken(root2, id, expectedRevision, int
 }
 async function assertReviewComplete(root2, state) {
   const { ledger, batch } = await currentBatchWithBasis(root2, state);
-  if (batch.progress !== "complete") invalid2("REVIEW_BATCH_INCOMPLETE", "all required review jobs must be submitted", { batchId: batch.batchId });
+  if (batch.progress !== "complete") invalid3("REVIEW_BATCH_INCOMPLETE", "all required review jobs must be submitted", { batchId: batch.batchId });
   const jobs = ledger.batches.flatMap((candidate) => candidate.jobs);
   const dispositions = Object.assign({}, ...ledger.batches.map((candidate) => candidate.dispositions ?? {}));
   const blocking = jobs.flatMap((job) => job.submission?.findings ?? []).filter((finding) => {
@@ -4592,7 +4773,7 @@ async function assertReviewComplete(root2, state) {
     const sourceJob = jobs.find((candidate) => candidate.jobId === finding.jobId);
     return !successor || !resolutionJob || !sourceJob || resolutionJob.role !== sourceJob.role || !resolutionJob.submission?.resolutions.some((resolution) => resolution.findingId === finding.findingId);
   });
-  if (blocking.length) invalid2("REVIEW_BLOCKING_FINDINGS", "review batch has unresolved blocking findings", {
+  if (blocking.length) invalid3("REVIEW_BLOCKING_FINDINGS", "review batch has unresolved blocking findings", {
     batchId: batch.batchId,
     findingIds: blocking.map((finding) => finding.findingId)
   });
@@ -5168,166 +5349,6 @@ import path12 from "node:path";
 import { randomUUID as randomUUID7, createHash as createHash11 } from "node:crypto";
 import { access as access2, mkdir as mkdir5, open as open5, readFile as readFile9, readdir as readdir5, rename as rename5 } from "node:fs/promises";
 import path11 from "node:path";
-
-// plugins/dev-flow/src/policy/rollback.ts
-var IMPLEMENTATION_UNIT_TRANSITIONS = Object.freeze({
-  pending: Object.freeze(["active"]),
-  active: Object.freeze(["verified"]),
-  verified: Object.freeze(["checkpointed", "active"]),
-  checkpointed: Object.freeze(["rolled_back"]),
-  rolled_back: Object.freeze(["active"])
-});
-var fileChanges = ["added", "modified", "deleted", "renamed", "mode-changed"];
-var ROLLBACK_ID = /^RU-[0-9]{3,}$/;
-var SHA256 = /^[0-9a-f]{64}$/;
-var FILE_MODE = /^[0-7]{3,4}$/;
-function pathWithinFileScope(path17, fileScope) {
-  return fileScope.some((pattern) => scopePatternMatches(pattern, path17));
-}
-function scopePatternMatches(pattern, target) {
-  if (typeof pattern !== "string" || !pattern.trim() || typeof target !== "string" || !target.trim()) return false;
-  if (pattern.includes("\\") || target.includes("\\")) return false;
-  if (pattern.startsWith("/") || target.startsWith("/")) return false;
-  const segments = pattern.split("/");
-  if (segments.some((segment) => segment === "..")) return false;
-  const parts = target.split("/");
-  if (parts.some((part) => part === "..")) return false;
-  if (/[*?]/.test(pattern)) return globSegmentsMatch(segments, parts);
-  if (pattern === ".") return true;
-  return target === pattern || target.startsWith(`${pattern}/`);
-}
-function globSegmentsMatch(pattern, target) {
-  if (pattern.length === 0) return target.length === 0;
-  const [head, ...rest] = pattern;
-  if (head === "**") {
-    if (rest.length === 0) return true;
-    for (let skip = 0; skip <= target.length; skip += 1) {
-      if (globSegmentsMatch(rest, target.slice(skip))) return true;
-    }
-    return false;
-  }
-  if (target.length === 0 || !globSegmentMatches(head, target[0])) return false;
-  return globSegmentsMatch(rest, target.slice(1));
-}
-function globSegmentMatches(pattern, segment) {
-  if (pattern === "") return segment === "";
-  const [head, ...rest] = pattern;
-  if (head === "*") {
-    for (let take = 0; take <= segment.length; take += 1) {
-      if (globSegmentMatches(rest.join(""), segment.slice(take))) return true;
-    }
-    return false;
-  }
-  if (head === "?") return segment.length > 0 && globSegmentMatches(rest.join(""), segment.slice(1));
-  return segment.startsWith(head) && globSegmentMatches(rest.join(""), segment.slice(head.length));
-}
-function invalid3(message) {
-  throw new Error(`ROLLBACK_PROTOCOL_INVALID: ${message}`);
-}
-function isRecord4(value) {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-function isRollbackId(value) {
-  return typeof value === "string" && ROLLBACK_ID.test(value);
-}
-function isSha2562(value) {
-  return typeof value === "string" && SHA256.test(value);
-}
-function isTimestamp(value) {
-  return typeof value === "string" && !Number.isNaN(Date.parse(value));
-}
-function isNonEmptyString(value) {
-  return typeof value === "string" && value.trim().length > 0;
-}
-function isNonEmptyStringArray(value) {
-  return Array.isArray(value) && value.length > 0 && value.every(isNonEmptyString);
-}
-function hasOnlyKeys(value, keys) {
-  return Object.keys(value).every((key) => keys.includes(key));
-}
-function implementationUnitForRollbackNode(node, basisHash2) {
-  if (!isRecord4(node) || node.kind !== "rollback" || !isRollbackId(node.id) || !isNonEmptyStringArray(node.tasks) || !isNonEmptyStringArray(node.fileScope) || !isNonEmptyStringArray(node.forwardVerification) || !isNonEmptyStringArray(node.rollbackVerification) || node.status !== "current") {
-    invalid3("rollback node is missing fields required to open an implementation unit");
-  }
-  if (!isSha2562(basisHash2)) invalid3("implementation unit basis hash must be a SHA-256 hex digest");
-  return { unitId: node.id, status: "pending", basisHash: basisHash2 };
-}
-function parseFileRecord(value, index) {
-  if (!isRecord4(value) || !hasOnlyKeys(value, ["path", "change", "renamedFrom", "beforeSha256", "afterSha256", "beforeBlobSha256", "afterBlobSha256", "beforeMode", "afterMode"]) || !isNonEmptyString(value.path) || typeof value.change !== "string" || !fileChanges.includes(value.change)) {
-    invalid3(`checkpoint file record ${index} has an invalid shape`);
-  }
-  const label = `checkpoint file record ${index}`;
-  const change = value.change;
-  const beforeOk = change !== "added" ? isSha2562(value.beforeSha256) && isSha2562(value.beforeBlobSha256) && typeof value.beforeMode === "string" && FILE_MODE.test(value.beforeMode) : value.beforeSha256 === void 0 && value.beforeBlobSha256 === void 0 && value.beforeMode === void 0;
-  const afterOk = change !== "deleted" ? isSha2562(value.afterSha256) && isSha2562(value.afterBlobSha256) && typeof value.afterMode === "string" && FILE_MODE.test(value.afterMode) : value.afterSha256 === void 0 && value.afterBlobSha256 === void 0 && value.afterMode === void 0;
-  if (!beforeOk) invalid3(`${label} has invalid before fields for change ${change}`);
-  if (!afterOk) invalid3(`${label} has invalid after fields for change ${change}`);
-  if (change === "renamed" && !isNonEmptyString(value.renamedFrom)) invalid3(`${label} renamed record requires renamedFrom`);
-  if (change !== "renamed" && value.renamedFrom !== void 0) invalid3(`${label} only renamed records may carry renamedFrom`);
-  return {
-    path: value.path,
-    change,
-    ...value.renamedFrom !== void 0 ? { renamedFrom: value.renamedFrom } : {},
-    ...change !== "added" ? { beforeSha256: value.beforeSha256, beforeBlobSha256: value.beforeBlobSha256, beforeMode: value.beforeMode } : {},
-    ...change !== "deleted" ? { afterSha256: value.afterSha256, afterBlobSha256: value.afterBlobSha256, afterMode: value.afterMode } : {}
-  };
-}
-function parseVerificationAttempt(value, index) {
-  if (!isRecord4(value) || !hasOnlyKeys(value, ["attemptId", "commandId", "command", "status", "startedAt", "completedAt"]) || !isNonEmptyString(value.attemptId) || !isNonEmptyString(value.commandId) || !isNonEmptyString(value.command) || value.status !== "passed" && value.status !== "failed" || !isTimestamp(value.startedAt) || !isTimestamp(value.completedAt)) {
-    invalid3(`checkpoint verification attempt ${index} has an invalid shape`);
-  }
-  return {
-    attemptId: value.attemptId,
-    commandId: value.commandId,
-    command: value.command,
-    status: value.status,
-    startedAt: value.startedAt,
-    completedAt: value.completedAt
-  };
-}
-function parseCheckpointManifest(value) {
-  if (!isRecord4(value) || !hasOnlyKeys(value, ["schemaVersion", "checkpointId", "unitId", "sequence", "basisHash", "startedFingerprint", "completedFingerprint", "startedAt", "completedAt", "files", "forwardPatchSha256", "reversePatchSha256", "verificationAttempts", "requirementsSha256", "planSha256", "traceabilitySha256", "approvalBasisHash", "projectConfigSha256", "verificationCommands", "beginNonce"]) || value.schemaVersion !== 1 || !isNonEmptyString(value.checkpointId) || !isRollbackId(value.unitId) || typeof value.sequence !== "number" || !Number.isInteger(value.sequence) || value.sequence < 1 || !isSha2562(value.basisHash) || !isSha2562(value.startedFingerprint) || !isSha2562(value.completedFingerprint) || value.beginNonce !== void 0 && !isNonEmptyString(value.beginNonce) || !isTimestamp(value.startedAt) || !isTimestamp(value.completedAt) || !Array.isArray(value.files) || !isSha2562(value.forwardPatchSha256) || !isSha2562(value.reversePatchSha256) || !Array.isArray(value.verificationAttempts) || !isSha2562(value.requirementsSha256) || !isSha2562(value.planSha256) || !isSha2562(value.traceabilitySha256) || !isSha2562(value.approvalBasisHash) || !isSha2562(value.projectConfigSha256) || !Array.isArray(value.verificationCommands) || value.verificationCommands.length === 0) {
-    invalid3("checkpoint manifest has an invalid shape");
-  }
-  const files = value.files.map((file, index) => parseFileRecord(file, index));
-  const verificationAttempts = value.verificationAttempts.map((attempt, index) => parseVerificationAttempt(attempt, index));
-  const verificationCommands = value.verificationCommands.map((command2, index) => {
-    if (!isRecord4(command2) || !hasOnlyKeys(command2, ["commandId", "command"]) || !isNonEmptyString(command2.commandId) || !isNonEmptyString(command2.command)) {
-      invalid3(`checkpoint verification command ${index} has an invalid shape`);
-    }
-    return { commandId: command2.commandId, command: command2.command };
-  });
-  const declaredCommandIds = new Set(verificationCommands.map((command2) => command2.commandId));
-  for (const attempt of verificationAttempts) {
-    if (!declaredCommandIds.has(attempt.commandId)) {
-      invalid3(`checkpoint verification attempt ${attempt.attemptId} references undeclared command ${attempt.commandId}`);
-    }
-  }
-  return {
-    schemaVersion: 1,
-    checkpointId: value.checkpointId,
-    unitId: value.unitId,
-    sequence: value.sequence,
-    basisHash: value.basisHash,
-    startedFingerprint: value.startedFingerprint,
-    completedFingerprint: value.completedFingerprint,
-    startedAt: value.startedAt,
-    completedAt: value.completedAt,
-    files,
-    forwardPatchSha256: value.forwardPatchSha256,
-    reversePatchSha256: value.reversePatchSha256,
-    verificationAttempts,
-    requirementsSha256: value.requirementsSha256,
-    planSha256: value.planSha256,
-    traceabilitySha256: value.traceabilitySha256,
-    approvalBasisHash: value.approvalBasisHash,
-    projectConfigSha256: value.projectConfigSha256,
-    verificationCommands,
-    ...typeof value.beginNonce === "string" ? { beginNonce: value.beginNonce } : {}
-  };
-}
-
-// plugins/dev-flow/src/core/checkpoints.ts
 var digest7 = (value) => createHash11("sha256").update(value).digest("hex");
 var featureDirectory2 = (root2, featureId) => path11.join(root2, ".dev-flow", "features", featureId);
 function blobPath(sha256) {

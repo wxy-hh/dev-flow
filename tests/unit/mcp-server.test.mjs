@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { after, test } from "node:test";
@@ -208,6 +208,12 @@ test("MCP Trace tools reject Core-owned fields, preserve CAS errors, and keep ge
       { jsonrpc: "2.0", id: 3, method: "tools/call", params: { name: "dev_flow_record_artifact_with_trace", arguments: registration } },
       { jsonrpc: "2.0", id: 4, method: "tools/call", params: { name: "dev_flow_record_artifact_with_trace", arguments: registration } },
       { jsonrpc: "2.0", id: 5, method: "tools/call", params: { name: "dev_flow_get_traceability", arguments: { featureId: "f" } } },
+      { jsonrpc: "2.0", id: 6, method: "tools/call", params: { name: "dev_flow_record_artifact_with_trace", arguments: {
+        featureId: "f", expectedRevision: state.revision, kind: "implementation-plan", traceDelta: { nodes: [
+          { kind: "task", id: "TASK-001", covers: ["REQ-001"], rollbackUnit: "RU-001" },
+          { kind: "rollback", id: "RU-001", tasks: ["TASK-001"], dependsOn: [], fileScope: ["../x"], covers: ["REQ-001"], forwardVerification: ["unit"], rollbackVerification: ["unit"] },
+        ] },
+      } } },
     ], root);
     assert.equal(responses[0].error.data.code, "TRACE_GRAPH_INVALID");
     assert.equal(responses[1].error.data.code, "TRACE_GRAPH_INVALID");
@@ -220,6 +226,70 @@ test("MCP Trace tools reject Core-owned fields, preserve CAS errors, and keep ge
     assert.deepEqual(trace.effectiveSummary, winner.traceability.summary);
     assert.deepEqual(trace.blockers, []);
     assert.equal((await store.readState(root, "f")).revision, winner.revision);
+    // Pre-CAS input validation rejects unsafe fileScope without needing a current plan artifact.
+    assert.equal(responses[5].error.data.code, "TRACE_GRAPH_INVALID");
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test("MCP rejects unsafe fileScope patterns without mutating revision, pointer, or snapshot set", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "dev-flow-mcp-file-scope-"));
+  try {
+    await mkdir(path.join(root, "src"));
+    await writeFile(path.join(root, "src", "app.js"), "export const value = 1;\n");
+    await store.initProject(root, config);
+    let state = await store.startFeature(root, {
+      featureId: "f", host: "codex", level: "M", topology: "local", execution: "standard", requirements: "provided-confirmed",
+    });
+    state = await registerTraceFixture({ root, featureId: "f", state, kind: "requirements" });
+    state = await store.mutate(root, "f", state.revision, "ready-for-plan", (draft) => {
+      draft.steps.requirements = { status: "satisfied" };
+      draft.steps.requirement_confirmation = { status: "satisfied" };
+    });
+    state = await artifacts.scaffoldArtifact(root, "f", state.revision, "implementation-plan");
+
+    const before = await store.readState(root, "f");
+    const snapDir = path.join(root, ".dev-flow", "features", "f", "traceability", "snapshots");
+    const snapshotsBefore = new Set(await readdir(snapDir));
+    const artifactBefore = before.artifacts["implementation-plan"];
+    const planPath = path.join(root, ".dev-flow", "features", "f", artifactBefore.path);
+    const planBytesBefore = await readFile(planPath);
+
+    const legalNodes = [
+      { kind: "task", id: "TASK-001", covers: ["REQ-001", "AC-001"], rollbackUnit: "RU-001" },
+      {
+        kind: "rollback", id: "RU-001", tasks: ["TASK-001"], dependsOn: [], fileScope: ["src"], covers: ["REQ-001", "AC-001"],
+        forwardVerification: ["unit"], rollbackVerification: ["unit"],
+      },
+    ];
+    const unsafeScopes = [["../x"], ["/abs"], ["C:/abs"], ["src\\x"], ["src/../../x"], ["src", "../x"]];
+    for (const [index, fileScope] of unsafeScopes.entries()) {
+      const nodes = structuredClone(legalNodes);
+      nodes.find((node) => node.kind === "rollback").fileScope = fileScope;
+      const [response] = await request([{
+        jsonrpc: "2.0",
+        id: index + 1,
+        method: "tools/call",
+        params: {
+          name: "dev_flow_record_artifact_with_trace",
+          arguments: {
+            featureId: "f",
+            expectedRevision: before.revision,
+            kind: "implementation-plan",
+            traceDelta: { nodes },
+          },
+        },
+      }], root);
+      assert.equal(response.error?.data?.code, "TRACE_GRAPH_INVALID", JSON.stringify(fileScope));
+    }
+
+    const after = await store.readState(root, "f");
+    assert.deepEqual(after, before);
+    assert.deepEqual(after.traceability, before.traceability);
+    assert.equal(after.artifacts["implementation-plan"].sha256, artifactBefore.sha256);
+    assert.deepEqual(await readFile(planPath), planBytesBefore);
+    assert.deepEqual(new Set(await readdir(snapDir)), snapshotsBefore);
+    // Referenced snapshot file set is unchanged; orphans are not required to appear.
+    assert.ok(snapshotsBefore.has(`${before.traceability.sha256}.json`));
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 

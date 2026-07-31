@@ -225,6 +225,59 @@ function validateProjectConfig(value) {
   }
 }
 
+// plugins/dev-flow/src/policy/rollback.ts
+var IMPLEMENTATION_UNIT_TRANSITIONS = Object.freeze({
+  pending: Object.freeze(["active"]),
+  active: Object.freeze(["verified"]),
+  verified: Object.freeze(["checkpointed", "active"]),
+  checkpointed: Object.freeze(["rolled_back"]),
+  rolled_back: Object.freeze(["active"])
+});
+function pathWithinFileScope(path7, fileScope) {
+  return fileScope.some((pattern) => scopePatternMatches(pattern, path7));
+}
+function isSafeFileScopePattern(value) {
+  if (typeof value !== "string" || !value || value.trim() !== value) return false;
+  if (value.includes("\\") || value.startsWith("/") || /^[A-Za-z]:/.test(value)) return false;
+  if (value === ".") return true;
+  return value.split("/").every((segment) => segment.length > 0 && segment !== "." && segment !== "..");
+}
+function scopePatternMatches(pattern, target) {
+  if (!isSafeFileScopePattern(pattern) || typeof target !== "string" || !target.trim()) return false;
+  if (target.includes("\\") || target.startsWith("/")) return false;
+  const segments = pattern.split("/");
+  const parts = target.split("/");
+  if (parts.some((part) => part === "..")) return false;
+  if (/[*?]/.test(pattern)) return globSegmentsMatch(segments, parts);
+  if (pattern === ".") return true;
+  return target === pattern || target.startsWith(`${pattern}/`);
+}
+function globSegmentsMatch(pattern, target) {
+  if (pattern.length === 0) return target.length === 0;
+  const [head, ...rest] = pattern;
+  if (head === "**") {
+    if (rest.length === 0) return true;
+    for (let skip = 0; skip <= target.length; skip += 1) {
+      if (globSegmentsMatch(rest, target.slice(skip))) return true;
+    }
+    return false;
+  }
+  if (target.length === 0 || !globSegmentMatches(head, target[0])) return false;
+  return globSegmentsMatch(rest, target.slice(1));
+}
+function globSegmentMatches(pattern, segment) {
+  if (pattern === "") return segment === "";
+  const [head, ...rest] = pattern;
+  if (head === "*") {
+    for (let take = 0; take <= segment.length; take += 1) {
+      if (globSegmentMatches(rest.join(""), segment.slice(take))) return true;
+    }
+    return false;
+  }
+  if (head === "?") return segment.length > 0 && globSegmentMatches(rest.join(""), segment.slice(1));
+  return segment.startsWith(head) && globSegmentMatches(rest.join(""), segment.slice(head.length));
+}
+
 // plugins/dev-flow/src/core/traceability.ts
 var idPrefix = {
   requirement: "REQ",
@@ -245,6 +298,13 @@ function isStringArray(value, allowEmpty = false) {
 function assertId(kind, id) {
   if (typeof id !== "string" || !new RegExp(`^${idPrefix[kind]}-[0-9]{3,}$`).test(id)) {
     invalid("node ID does not match its kind", { kind, id });
+  }
+}
+function assertSafeFileScope(fileScope, id, persisted = false) {
+  for (const pattern of fileScope) {
+    if (!isSafeFileScopePattern(pattern)) {
+      invalid(persisted ? "persisted rollback fileScope is unsafe" : "rollback fileScope is unsafe", { id, field: "fileScope", pattern });
+    }
   }
 }
 function currentNodes(nodes) {
@@ -311,7 +371,7 @@ function sameSummary(left, right) {
 var statusValues = /* @__PURE__ */ new Set(["current", "stale", "tombstoned"]);
 var sourceArtifacts = /* @__PURE__ */ new Set(["requirements", "implementation-plan", "coverage-matrix", "rollback-units"]);
 var hex64 = /^[a-f0-9]{64}$/;
-function assertPersistedNode(recordId, value) {
+function assertPersistedNode(recordId, value, options) {
   if (!isRecord(value)) invalid("persisted node is not an object", { id: recordId });
   const kind = value.kind;
   if (typeof kind !== "string" || !(kind in idPrefix)) invalid("persisted node has an unknown kind", { id: recordId, kind });
@@ -348,20 +408,24 @@ function assertPersistedNode(recordId, value) {
     if (typeof value.verificationConfigSha256 !== "string" || !hex64.test(value.verificationConfigSha256)) {
       invalid("persisted rollback has an invalid verificationConfigSha256", { id: recordId });
     }
+    const allowLegacyRepair = value.status !== "tombstoned" && value.sourceArtifact === options.allowUnsafeFileScopeSourceArtifact;
+    if (value.status !== "tombstoned" && !allowLegacyRepair) {
+      assertSafeFileScope(value.fileScope, recordId, true);
+    }
   }
 }
-function assertPersistedLedgerShape(ledger) {
+function assertPersistedLedgerShape(ledger, options) {
   if (typeof ledger.featureId !== "string" || !ledger.featureId) invalid("ledger featureId is invalid");
   if (!Number.isInteger(ledger.revision) || ledger.revision < 0) invalid("ledger revision is invalid");
   if (!Number.isInteger(ledger.stateRevision) || ledger.stateRevision < 0) invalid("ledger stateRevision is invalid");
   if (typeof ledger.projectConfigSha256 !== "string" || !hex64.test(ledger.projectConfigSha256)) {
     invalid("ledger projectConfigSha256 is invalid");
   }
-  for (const [id, node] of Object.entries(ledger.nodes)) assertPersistedNode(id, node);
+  for (const [id, node] of Object.entries(ledger.nodes)) assertPersistedNode(id, node, options);
 }
-function validateTraceGraph(ledger, route, mode) {
+function validateTraceGraph(ledger, route, mode, options = {}) {
   if (!isRecord(ledger) || ledger.schemaVersion !== 1 || !isRecord(ledger.nodes) || !Array.isArray(ledger.edges)) invalid("traceability ledger has an invalid shape");
-  assertPersistedLedgerShape(ledger);
+  assertPersistedLedgerShape(ledger, options);
   const nodes = ledger.nodes;
   for (const node of currentNodes(nodes)) {
     if (node.kind === "acceptance-criterion") assertReference(nodes, node.parentRequirement, ["requirement"], { from: node.id });
@@ -428,7 +492,7 @@ function sameEdges2(left, right) {
     return edge.from === candidate?.from && edge.type === candidate.type && edge.to === candidate.to;
   });
 }
-async function readTraceability(root, state) {
+async function readTraceabilityWithOptions(root, state, options = {}) {
   if (!state.traceability) integrity("Trace pointer is missing", { featureId: state.featureId });
   const pointer = state.traceability;
   const relative = safeSnapshotPath(pointer);
@@ -447,7 +511,7 @@ async function readTraceability(root, state) {
     integrity("Trace snapshot is not valid JSON", { featureId: state.featureId });
   }
   try {
-    validateTraceGraph(ledger, state.route, "partial");
+    validateTraceGraph(ledger, state.route, "partial", options);
   } catch (error) {
     integrity("Trace snapshot graph is invalid", { cause: error instanceof Error ? error.message : String(error) });
   }
@@ -458,6 +522,9 @@ async function readTraceability(root, state) {
     integrity("Trace pointer summary or ledger edges do not match", { featureId: state.featureId });
   }
   return ledger;
+}
+async function readTraceability(root, state) {
+  return readTraceabilityWithOptions(root, state);
 }
 
 // plugins/dev-flow/src/core/review-store.ts
@@ -891,55 +958,6 @@ function classifyGitCommand(command) {
   return "read";
 }
 var gitReadOnlyCommands = [...readOnly].sort();
-
-// plugins/dev-flow/src/policy/rollback.ts
-var IMPLEMENTATION_UNIT_TRANSITIONS = Object.freeze({
-  pending: Object.freeze(["active"]),
-  active: Object.freeze(["verified"]),
-  verified: Object.freeze(["checkpointed", "active"]),
-  checkpointed: Object.freeze(["rolled_back"]),
-  rolled_back: Object.freeze(["active"])
-});
-function pathWithinFileScope(path7, fileScope) {
-  return fileScope.some((pattern) => scopePatternMatches(pattern, path7));
-}
-function scopePatternMatches(pattern, target) {
-  if (typeof pattern !== "string" || !pattern.trim() || typeof target !== "string" || !target.trim()) return false;
-  if (pattern.includes("\\") || target.includes("\\")) return false;
-  if (pattern.startsWith("/") || target.startsWith("/")) return false;
-  const segments = pattern.split("/");
-  if (segments.some((segment) => segment === "..")) return false;
-  const parts = target.split("/");
-  if (parts.some((part) => part === "..")) return false;
-  if (/[*?]/.test(pattern)) return globSegmentsMatch(segments, parts);
-  if (pattern === ".") return true;
-  return target === pattern || target.startsWith(`${pattern}/`);
-}
-function globSegmentsMatch(pattern, target) {
-  if (pattern.length === 0) return target.length === 0;
-  const [head, ...rest] = pattern;
-  if (head === "**") {
-    if (rest.length === 0) return true;
-    for (let skip = 0; skip <= target.length; skip += 1) {
-      if (globSegmentsMatch(rest, target.slice(skip))) return true;
-    }
-    return false;
-  }
-  if (target.length === 0 || !globSegmentMatches(head, target[0])) return false;
-  return globSegmentsMatch(rest, target.slice(1));
-}
-function globSegmentMatches(pattern, segment) {
-  if (pattern === "") return segment === "";
-  const [head, ...rest] = pattern;
-  if (head === "*") {
-    for (let take = 0; take <= segment.length; take += 1) {
-      if (globSegmentMatches(rest.join(""), segment.slice(take))) return true;
-    }
-    return false;
-  }
-  if (head === "?") return segment.length > 0 && globSegmentMatches(rest.join(""), segment.slice(1));
-  return segment.startsWith(head) && globSegmentMatches(rest.join(""), segment.slice(head.length));
-}
 
 // plugins/dev-flow/src/core/verification.ts
 import { execFile as execFile2 } from "node:child_process";

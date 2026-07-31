@@ -10,7 +10,7 @@ import { mutate, mutatePrepared, readState, type FeatureState, type PreparedMuta
 import { currentOpenStep } from "./step-order.js";
 import { parseTraceSourceBlocks } from "./traceability-anchors.js";
 import { applyTraceDelta } from "./traceability.js";
-import { readProjectConfigSnapshot, readTraceability, type TraceStoreOptions, writeTraceSnapshot } from "./traceability-store.js";
+import { readProjectConfigSnapshot, readTraceabilityForArtifactReplacement, type TraceStoreOptions, writeTraceSnapshot } from "./traceability-store.js";
 import { clearInteractionsByKind, clearInteractionsForTarget } from "./user-interactions.js";
 import { prepareReviewInvalidation } from "./review-store.js";
 
@@ -166,7 +166,7 @@ export async function recordArtifactWithTrace(
     const artifactSha256 = hash(contents);
     const sourceBlocks = parseTraceSourceBlocks(contents);
     const { config, sha256: projectConfigSha256 } = await readProjectConfigSnapshot(root);
-    const currentLedger = await readTraceability(root, current);
+    const currentLedger = await readTraceabilityForArtifactReplacement(root, current, artifactKind);
     const ledger = applyTraceDelta({
       current: currentLedger,
       route: current.route,

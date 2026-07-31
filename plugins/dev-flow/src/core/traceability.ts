@@ -17,6 +17,7 @@ import type {
 } from "../policy/traceability.js";
 import type { TraceSourceBlock } from "./traceability-anchors.js";
 import { DevFlowError } from "./errors.js";
+import { isSafeFileScopePattern } from "../policy/rollback.js";
 
 export const ALLOWED_TRACE_KINDS = {
   requirements: ["requirement", "acceptance-criterion"],
@@ -35,6 +36,14 @@ export interface ApplyTraceDeltaInput {
   projectConfigSha256: string;
   verificationCommandIds: string[];
   nextStateRevision: number;
+}
+
+export interface TraceGraphValidationOptions {
+  /**
+   * Reserved for a same-source replacement of a legacy snapshot produced
+   * before fileScope admission was enforced. Normal readers never set it.
+   */
+  allowUnsafeFileScopeSourceArtifact?: "implementation-plan" | "rollback-units";
 }
 
 const inputKeys: Record<TraceNodeInput["kind"], readonly string[]> = {
@@ -80,6 +89,14 @@ function assertNoDuplicate(values: string[], field: string, id: string): void {
   if (new Set(values).size !== values.length) invalid("node relationship contains duplicates", { field, id });
 }
 
+function assertSafeFileScope(fileScope: string[], id: string, persisted = false): void {
+  for (const pattern of fileScope) {
+    if (!isSafeFileScopePattern(pattern)) {
+      invalid(persisted ? "persisted rollback fileScope is unsafe" : "rollback fileScope is unsafe", { id, field: "fileScope", pattern });
+    }
+  }
+}
+
 function validateNodeInput(value: unknown): asserts value is TraceNodeInput {
   if (!isRecord(value) || typeof value.kind !== "string" || !(value.kind in inputKeys)) invalid("node input has an unknown kind");
   const kind = value.kind as TraceNodeInput["kind"];
@@ -105,6 +122,7 @@ function validateNodeInput(value: unknown): asserts value is TraceNodeInput {
     }
     for (const id of rollback.tasks) assertId("task", id);
     for (const id of rollback.dependsOn) assertId("rollback", id);
+    assertSafeFileScope(rollback.fileScope, value.id as string);
   }
 }
 
@@ -275,7 +293,11 @@ const statusValues = new Set(["current", "stale", "tombstoned"]);
 const sourceArtifacts = new Set(["requirements", "implementation-plan", "coverage-matrix", "rollback-units"]);
 const hex64 = /^[a-f0-9]{64}$/;
 
-function assertPersistedNode(recordId: string, value: unknown): asserts value is TraceNode {
+function assertPersistedNode(
+  recordId: string,
+  value: unknown,
+  options: TraceGraphValidationOptions,
+): asserts value is TraceNode {
   if (!isRecord(value)) invalid("persisted node is not an object", { id: recordId });
   const kind = value.kind;
   if (typeof kind !== "string" || !(kind in idPrefix)) invalid("persisted node has an unknown kind", { id: recordId, kind });
@@ -312,22 +334,32 @@ function assertPersistedNode(recordId: string, value: unknown): asserts value is
     if (typeof value.verificationConfigSha256 !== "string" || !hex64.test(value.verificationConfigSha256)) {
       invalid("persisted rollback has an invalid verificationConfigSha256", { id: recordId });
     }
+    const allowLegacyRepair = value.status !== "tombstoned"
+      && value.sourceArtifact === options.allowUnsafeFileScopeSourceArtifact;
+    if (value.status !== "tombstoned" && !allowLegacyRepair) {
+      assertSafeFileScope(value.fileScope as string[], recordId, true);
+    }
   }
 }
 
-function assertPersistedLedgerShape(ledger: TraceabilityLedger): void {
+function assertPersistedLedgerShape(ledger: TraceabilityLedger, options: TraceGraphValidationOptions): void {
   if (typeof ledger.featureId !== "string" || !ledger.featureId) invalid("ledger featureId is invalid");
   if (!Number.isInteger(ledger.revision) || ledger.revision < 0) invalid("ledger revision is invalid");
   if (!Number.isInteger(ledger.stateRevision) || ledger.stateRevision < 0) invalid("ledger stateRevision is invalid");
   if (typeof ledger.projectConfigSha256 !== "string" || !hex64.test(ledger.projectConfigSha256)) {
     invalid("ledger projectConfigSha256 is invalid");
   }
-  for (const [id, node] of Object.entries(ledger.nodes)) assertPersistedNode(id, node);
+  for (const [id, node] of Object.entries(ledger.nodes)) assertPersistedNode(id, node, options);
 }
 
-export function validateTraceGraph(ledger: TraceabilityLedger, route: RouteId, mode: "partial" | "complete"): void {
+export function validateTraceGraph(
+  ledger: TraceabilityLedger,
+  route: RouteId,
+  mode: "partial" | "complete",
+  options: TraceGraphValidationOptions = {},
+): void {
   if (!isRecord(ledger) || ledger.schemaVersion !== 1 || !isRecord(ledger.nodes) || !Array.isArray(ledger.edges)) invalid("traceability ledger has an invalid shape");
-  assertPersistedLedgerShape(ledger as TraceabilityLedger);
+  assertPersistedLedgerShape(ledger as TraceabilityLedger, options);
   const nodes = ledger.nodes as Record<string, TraceNode>;
   for (const node of currentNodes(nodes)) {
     if (node.kind === "acceptance-criterion") assertReference(nodes, node.parentRequirement, ["requirement"], { from: node.id });

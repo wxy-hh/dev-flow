@@ -108,12 +108,22 @@ export function pathWithinFileScope(path: string, fileScope: string[]): boolean 
   return fileScope.some((pattern) => scopePatternMatches(pattern, path));
 }
 
+/**
+ * Canonical admission contract for a rollback-unit fileScope pattern. Patterns
+ * are stored in Trace snapshots and must remain safe and meaningful across
+ * every host before they reach the runtime matcher.
+ */
+export function isSafeFileScopePattern(value: unknown): value is string {
+  if (typeof value !== "string" || !value || value.trim() !== value) return false;
+  if (value.includes("\\") || value.startsWith("/") || /^[A-Za-z]:/.test(value)) return false;
+  if (value === ".") return true;
+  return value.split("/").every((segment) => segment.length > 0 && segment !== "." && segment !== "..");
+}
+
 function scopePatternMatches(pattern: string, target: string): boolean {
-  if (typeof pattern !== "string" || !pattern.trim() || typeof target !== "string" || !target.trim()) return false;
-  if (pattern.includes("\\") || target.includes("\\")) return false;
-  if (pattern.startsWith("/") || target.startsWith("/")) return false;
+  if (!isSafeFileScopePattern(pattern) || typeof target !== "string" || !target.trim()) return false;
+  if (target.includes("\\") || target.startsWith("/")) return false;
   const segments = pattern.split("/");
-  if (segments.some((segment) => segment === "..")) return false;
   const parts = target.split("/");
   if (parts.some((part) => part === "..")) return false;
   if (/[*?]/.test(pattern)) return globSegmentsMatch(segments, parts);

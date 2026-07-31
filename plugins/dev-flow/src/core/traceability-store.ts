@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { mkdir, open, readFile, readdir, rename } from "node:fs/promises";
 import path from "node:path";
-import type { TraceabilityLedger, TraceabilityPointer } from "../policy/traceability.js";
+import type { TraceArtifactKind, TraceabilityLedger, TraceabilityPointer } from "../policy/traceability.js";
 import type { FeatureState } from "./state-store.js";
 import { DevFlowError } from "./errors.js";
 import { validateProjectConfig, type ProjectConfig } from "./project-config.js";
@@ -100,7 +100,15 @@ function sameEdges(left: TraceabilityLedger["edges"], right: TraceabilityLedger[
   });
 }
 
-export async function readTraceability(root: string, state: FeatureState): Promise<TraceabilityLedger> {
+interface TraceReadOptions {
+  allowUnsafeFileScopeSourceArtifact?: "implementation-plan" | "rollback-units";
+}
+
+async function readTraceabilityWithOptions(
+  root: string,
+  state: FeatureState,
+  options: TraceReadOptions = {},
+): Promise<TraceabilityLedger> {
   if (!state.traceability) integrity("Trace pointer is missing", { featureId: state.featureId });
   const pointer = state.traceability;
   const relative = safeSnapshotPath(pointer);
@@ -112,7 +120,7 @@ export async function readTraceability(root: string, state: FeatureState): Promi
   let ledger: TraceabilityLedger;
   try { ledger = JSON.parse(contents!) as TraceabilityLedger; }
   catch { integrity("Trace snapshot is not valid JSON", { featureId: state.featureId }); }
-  try { validateTraceGraph(ledger!, state.route, "partial"); }
+  try { validateTraceGraph(ledger!, state.route, "partial", options); }
   catch (error) { integrity("Trace snapshot graph is invalid", { cause: error instanceof Error ? error.message : String(error) }); }
   if (ledger!.featureId !== state.featureId || ledger!.revision !== pointer.revision || ledger!.stateRevision > state.revision) {
     integrity("Trace pointer and ledger revisions do not match", { featureId: state.featureId });
@@ -125,6 +133,26 @@ export async function readTraceability(root: string, state: FeatureState): Promi
     integrity("Trace pointer summary or ledger edges do not match", { featureId: state.featureId });
   }
   return ledger!;
+}
+
+export async function readTraceability(root: string, state: FeatureState): Promise<TraceabilityLedger> {
+  return readTraceabilityWithOptions(root, state);
+}
+
+/**
+ * Reads an otherwise valid legacy snapshot only while replacing its originating
+ * Trace source. The replacement delta is still strictly validated and the
+ * resulting ledger is re-read through the normal strict path.
+ */
+export async function readTraceabilityForArtifactReplacement(
+  root: string,
+  state: FeatureState,
+  artifactKind: TraceArtifactKind,
+): Promise<TraceabilityLedger> {
+  const allowUnsafeFileScopeSourceArtifact = artifactKind === "implementation-plan" || artifactKind === "rollback-units"
+    ? artifactKind
+    : undefined;
+  return readTraceabilityWithOptions(root, state, { allowUnsafeFileScopeSourceArtifact });
 }
 
 export async function listOrphanTraceSnapshots(root: string, state: FeatureState): Promise<string[]> {

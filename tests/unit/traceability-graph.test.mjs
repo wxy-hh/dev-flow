@@ -153,6 +153,18 @@ test("delta and graph validation reject caller-owned fields and broken rollback 
   );
 });
 
+test("delta validation rejects unsafe rollback fileScope patterns before graph registration", () => {
+  const rollback = (fileScope) => ({
+    kind: "rollback", id: "RU-001", tasks: ["TASK-001"], dependsOn: [], fileScope,
+    covers: ["REQ-001"], forwardVerification: ["unit"], rollbackVerification: ["unit"],
+  });
+  for (const fileScope of [["../x"], ["/abs"], ["C:/abs"], ["src\\x"], ["src/../../x"], ["src", "../x"]]) {
+    assert.throws(() => trace.validateTraceDelta({ nodes: [rollback(fileScope)] }), /TRACE_GRAPH_INVALID/, JSON.stringify(fileScope));
+  }
+  assert.doesNotThrow(() => trace.validateTraceDelta({ nodes: [rollback(["src/**"])] }));
+  assert.doesNotThrow(() => trace.validateTraceDelta({ nodes: [rollback(["."])] }));
+});
+
 test("graph validation rejects every missing or asymmetric Task to RU relationship", () => {
   const requirements = requirementsLedger();
   assert.throws(

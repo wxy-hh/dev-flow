@@ -134,6 +134,125 @@ test("artifact and trace pointer register in one CAS and preserve old state on f
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 
+test("only the originating Trace artifact can repair a legacy unsafe fileScope snapshot", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "dev-flow-trace-file-scope-repair-"));
+  try {
+    let state = await standardFeature(root);
+    state = await registerTraceFixture({ root, featureId: "f", state, kind: "requirements" });
+    state = await store.mutate(root, "f", state.revision, "ready-for-plan", (draft) => {
+      draft.steps.requirements = { status: "satisfied" };
+      draft.steps.requirement_confirmation = { status: "satisfied" };
+    });
+    state = await registerTraceFixture({ root, featureId: "f", state, kind: "implementation-plan" });
+
+    const legacy = await traceStore.readTraceability(root, state);
+    legacy.nodes["RU-001"].fileScope = ["../x"];
+    const legacyPointer = await traceStore.writeTraceSnapshot(root, legacy);
+    state = await store.mutate(root, "f", state.revision, "seed-legacy-unsafe-file-scope", (draft) => {
+      draft.traceability = legacyPointer;
+    });
+    await assert.rejects(() => traceStore.readTraceability(root, state), /TRACEABILITY_INTEGRITY_FAILED/);
+
+    const beforeWrongSource = await store.readState(root, "f");
+    await assert.rejects(
+      () => artifacts.recordArtifactWithTrace(root, "f", beforeWrongSource.revision, "requirements", traceDeltaFor("requirements", "standard-m")),
+      /TRACEABILITY_INTEGRITY_FAILED/,
+    );
+    assert.deepEqual(await store.readState(root, "f"), beforeWrongSource);
+
+    const illegalRepair = structuredClone(traceDeltaFor("implementation-plan", "standard-m"));
+    illegalRepair.nodes.find((node) => node.kind === "rollback").fileScope = ["../still-bad"];
+    await assert.rejects(
+      () => artifacts.recordArtifactWithTrace(root, "f", beforeWrongSource.revision, "implementation-plan", illegalRepair),
+      /TRACE_GRAPH_INVALID/,
+    );
+    assert.deepEqual(await store.readState(root, "f"), beforeWrongSource);
+    const stillBroken = await store.readState(root, "f");
+    await assert.rejects(() => traceStore.readTraceability(root, stillBroken), /TRACEABILITY_INTEGRITY_FAILED/);
+
+    state = await artifacts.recordArtifactWithTrace(root, "f", beforeWrongSource.revision, "implementation-plan", traceDeltaFor("implementation-plan", "standard-m"));
+    const repaired = await traceStore.readTraceability(root, state);
+    assert.deepEqual(repaired.nodes["RU-001"].fileScope, ["src"]);
+    assert.notDeepEqual(state.traceability, legacyPointer);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test("standard L rollback-units source can repair its own legacy unsafe fileScope snapshot", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "dev-flow-trace-file-scope-repair-l-"));
+  try {
+    await store.initProject(root, config);
+    let state = await store.startFeature(root, {
+      featureId: "f", host: "codex", level: "L", topology: "multi-chain", execution: "standard", requirements: "provided-confirmed",
+    });
+    assert.equal(state.route, "standard-l");
+    state = await registerTraceFixture({ root, featureId: "f", state, kind: "requirements" });
+    state = await store.mutate(root, "f", state.revision, "ready-for-plan", (draft) => {
+      draft.steps.requirements = { status: "satisfied" };
+      draft.steps.requirement_confirmation = { status: "satisfied" };
+    });
+    state = await registerTraceFixture({ root, featureId: "f", state, kind: "implementation-plan" });
+    state = await store.mutate(root, "f", state.revision, "ready-for-coverage", (draft) => {
+      draft.steps.implementation_plan = { status: "satisfied" };
+    });
+    state = await registerTraceFixture({ root, featureId: "f", state, kind: "coverage-matrix" });
+    state = await store.mutate(root, "f", state.revision, "ready-for-ru", (draft) => {
+      draft.steps.coverage_review = { status: "satisfied" };
+    });
+    state = await registerTraceFixture({ root, featureId: "f", state, kind: "rollback-units" });
+    assert.equal((await traceStore.readTraceability(root, state)).nodes["RU-001"].sourceArtifact, "rollback-units");
+
+    const legacy = await traceStore.readTraceability(root, state);
+    legacy.nodes["RU-001"].fileScope = ["/etc/passwd"];
+    const legacyPointer = await traceStore.writeTraceSnapshot(root, legacy);
+    state = await store.mutate(root, "f", state.revision, "seed-legacy-l-unsafe-file-scope", (draft) => {
+      draft.traceability = legacyPointer;
+    });
+    await assert.rejects(() => traceStore.readTraceability(root, state), /TRACEABILITY_INTEGRITY_FAILED/);
+
+    const before = await store.readState(root, "f");
+    await assert.rejects(
+      () => artifacts.recordArtifactWithTrace(root, "f", before.revision, "implementation-plan", traceDeltaFor("implementation-plan", "standard-l")),
+      /TRACEABILITY_INTEGRITY_FAILED/,
+    );
+    assert.deepEqual(await store.readState(root, "f"), before);
+
+    state = await artifacts.recordArtifactWithTrace(root, "f", before.revision, "rollback-units", traceDeltaFor("rollback-units", "standard-l"));
+    const repaired = await traceStore.readTraceability(root, state);
+    assert.deepEqual(repaired.nodes["RU-001"].fileScope, ["src"]);
+    assert.equal(repaired.nodes["RU-001"].sourceArtifact, "rollback-units");
+    assert.notDeepEqual(state.traceability, legacyPointer);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test("legacy fileScope repair does not bypass other integrity failures", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "dev-flow-trace-file-scope-repair-integrity-"));
+  try {
+    let state = await standardFeature(root);
+    state = await registerTraceFixture({ root, featureId: "f", state, kind: "requirements" });
+    state = await store.mutate(root, "f", state.revision, "ready-for-plan", (draft) => {
+      draft.steps.requirements = { status: "satisfied" };
+      draft.steps.requirement_confirmation = { status: "satisfied" };
+    });
+    state = await registerTraceFixture({ root, featureId: "f", state, kind: "implementation-plan" });
+
+    const legacy = await traceStore.readTraceability(root, state);
+    legacy.nodes["RU-001"].fileScope = ["../x"];
+    // Break a relationship so the ledger is not merely an unsafe-fileScope legacy case.
+    legacy.nodes["TASK-001"].covers = ["REQ-999"];
+    const legacyPointer = await traceStore.writeTraceSnapshot(root, legacy);
+    state = await store.mutate(root, "f", state.revision, "seed-legacy-broken-graph", (draft) => {
+      draft.traceability = legacyPointer;
+    });
+
+    const before = await store.readState(root, "f");
+    await assert.rejects(
+      () => artifacts.recordArtifactWithTrace(root, "f", before.revision, "implementation-plan", traceDeltaFor("implementation-plan", "standard-m")),
+      /TRACEABILITY_INTEGRITY_FAILED/,
+    );
+    assert.deepEqual(await store.readState(root, "f"), before);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
 test("requirements artifact or delta changes revoke only downstream approvals", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "dev-flow-trace-artifacts-invalidate-"));
   try {

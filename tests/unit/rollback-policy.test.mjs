@@ -34,6 +34,16 @@ const standardLNode = Object.freeze({
   sourceArtifact: "rollback-units",
 });
 
+test("fileScope patterns use one canonical safe relative-path contract", () => {
+  for (const pattern of ["src", "src/**", "src/*.ts", "."]) {
+    assert.equal(rollback.isSafeFileScopePattern(pattern), true, pattern);
+  }
+  for (const pattern of ["", "   ", " src", "src ", "/etc/passwd", "C:/temp/file", "C:temp/file", "src\\file", "../x", "src/../x", "src//x", "src/./x"]) {
+    assert.equal(rollback.isSafeFileScopePattern(pattern), false, pattern);
+    assert.equal(rollback.pathWithinFileScope("src/file.ts", [pattern]), false, pattern);
+  }
+});
+
 test("implementationUnitForRollbackNode derives isomorphic pending units from standard M and L rollback nodes", () => {
   const basisHash = sha("d");
   assert.deepEqual(rollback.implementationUnitForRollbackNode(standardMNode, basisHash), {
