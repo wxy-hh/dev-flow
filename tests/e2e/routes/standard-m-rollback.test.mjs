@@ -24,6 +24,8 @@ const status = await loadSource("plugins/dev-flow/src/core/status.ts");
 const verification = await loadSource("plugins/dev-flow/src/core/verification.ts");
 const rollback = await loadSource("plugins/dev-flow/src/core/rollback.ts");
 const checks = await loadSource("plugins/dev-flow/src/core/feature-check.ts");
+const next = await loadSource("plugins/dev-flow/src/core/next.ts");
+const reviewJobs = await loadSource("plugins/dev-flow/src/core/review-jobs.ts");
 
 const config = {
   schemaVersion: 1,
@@ -97,11 +99,32 @@ function satisfyPreImplementation(draft) {
   draft.humanGates.implementation_approval = { status: "confirmed" };
 }
 
+function satisfyPreReview(draft) {
+  const definition = contract.routeDefinitionForFeature(draft.route, draft.workflowCapabilities);
+  for (const step of definition.orderedSteps.slice(0, definition.orderedSteps.indexOf("plan_review"))) {
+    draft.steps[step] = { status: "satisfied" };
+  }
+}
+
+async function completeReviewBatch(root, state) {
+  const created = await reviewJobs.createReviewBatch(root, "f", state.revision);
+  let current = created.state;
+  for (const [index, job] of created.batch.jobs.entries()) {
+    const capability = `claim-rollback-review-${index + 1}-abcdefghijklmnopqrstuv`;
+    const claimed = await reviewJobs.claimReviewJob(root, "f", current.revision, created.batch.batchId, job.jobId, capability);
+    current = (await reviewJobs.submitReviewJob(
+      root, "f", claimed.state.revision, created.batch.batchId, job.jobId, capability,
+      { coverageSummary: `${job.role} complete`, findings: [] },
+    )).state;
+  }
+  return { state: current, batch: created.batch };
+}
+
 /**
  * Standard M feature with rollbackExecution:1, three RUs all checkpointed.
  * CP-001 (RU-001), CP-002 (RU-002), CP-003 (RU-003).
  */
-async function checkpointedFeature(root) {
+async function checkpointedFeature(root, { review = false } = {}) {
   await store.initProject(root, config);
   await mkdir(path.join(root, "src/one"), { recursive: true });
   await mkdir(path.join(root, "src/two"), { recursive: true });
@@ -116,10 +139,13 @@ async function checkpointedFeature(root) {
   let state = await store.startFeature(root, {
     featureId: "f", host: "claude", level: "M", topology: "local", execution: "standard", requirements: "provided-confirmed",
   });
-  // Override review to 0: rollback tests don't exercise the review-batch cycle.
-  state = await store.mutate(root, "f", state.revision, "rb-e2e-capabilities", (draft) => {
-    draft.workflowCapabilities = { trace: 1, review: 0, checkpoints: 1, rollbackExecution: 1 };
-  });
+  if (!review) {
+    // Most rollback cases isolate checkpoint mechanics; the dedicated test below
+    // keeps review enabled to exercise the successor-batch recovery path.
+    state = await store.mutate(root, "f", state.revision, "rb-e2e-capabilities", (draft) => {
+      draft.workflowCapabilities = { trace: 1, review: 0, checkpoints: 1, rollbackExecution: 1 };
+    });
+  }
   assert.equal(state.workflowCapabilities.rollbackExecution, 1);
 
   // Advance through requirements, plan, coverage, approval.
@@ -134,10 +160,21 @@ async function checkpointedFeature(root) {
   });
   state = await registerTraceFixture({ root, featureId: "f", state, kind: "coverage-matrix" });
   const statusSha = await writeStatusArtifact(root, "f", state.route);
-  state = await store.mutate(root, "f", state.revision, "rb-e2e-approval", (draft) => {
-    satisfyPreImplementation(draft);
-    draft.artifacts.status = { path: statusArtifactName, sha256: statusSha };
-  });
+  if (review) {
+    state = await store.mutate(root, "f", state.revision, "rb-e2e-pre-review", satisfyPreReview);
+    state = (await completeReviewBatch(root, state)).state;
+    state = await checks.recordStep(root, "f", state.revision, "plan_review", {});
+    state = await store.mutate(root, "f", state.revision, "rb-e2e-review-approval", (draft) => {
+      draft.steps.implementation_approval = { status: "satisfied" };
+      draft.humanGates.implementation_approval = { status: "confirmed" };
+      draft.artifacts.status = { path: statusArtifactName, sha256: statusSha };
+    });
+  } else {
+    state = await store.mutate(root, "f", state.revision, "rb-e2e-approval", (draft) => {
+      satisfyPreImplementation(draft);
+      draft.artifacts.status = { path: statusArtifactName, sha256: statusSha };
+    });
+  }
 
   // Checkpoint RU-001: modify src/one/a.txt.
   state = await units.beginImplementationUnit(root, "f", state.revision, "RU-001");
@@ -237,6 +274,27 @@ test("standard M rollback: three RUs → rollback to RU-001 → re-implement →
     state = await checks.finalize(root, "f", state.revision);
     assert.equal(state.logicComplete, true);
 
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("standard M rollback: stale review directs a successor batch before re-beginning a unit", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "dev-flow-s-m-rollback-review-"));
+  try {
+    let state = await checkpointedFeature(root, { review: true });
+    const presented = await rollback.presentRollbackGate(root, "f", state.revision, "CP-001");
+    state = await rollback.resolveRollbackGateElicitation(
+      root, "f", presented.state.revision, presented.interaction.id, "confirm", undefined, "claude",
+    );
+    state = (await rollback.executeRollback(root, "f", state.revision, "CP-001")).state;
+
+    assert.deepEqual(await next.nextAction(root, "f"), { kind: "create-review-batch", step: "plan_review" });
+    state = (await completeReviewBatch(root, state)).state;
+    assert.deepEqual(await next.nextAction(root, "f"), { kind: "begin-implementation-unit", unitId: "RU-002" });
+
+    state = await units.beginImplementationUnit(root, "f", state.revision, "RU-002");
+    assert.equal(state.implementationUnits.find((unit) => unit.unitId === "RU-002").status, "active");
   } finally {
     await rm(root, { recursive: true, force: true });
   }

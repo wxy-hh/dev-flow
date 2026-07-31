@@ -4072,7 +4072,10 @@ async function deriveReviewInput(root2, state) {
       invalid3("REVIEW_BASIS_ARTIFACT_MISSING", `review basis artifact cannot be read: ${kind}`, { kind });
     }
     if (digest5(contents) !== artifact.sha256) {
-      invalid3("ARTIFACT_INTEGRITY_FAILED", `review basis artifact was edited without registration: ${kind}`, { kind });
+      invalid3("ARTIFACT_INTEGRITY_FAILED", `review basis artifact was edited without registration: ${kind}`, {
+        kind,
+        recoveryHint: `Re-register the edited ${kind} artifact with the latest feature revision known before the edit.`
+      });
     }
     return { kind, path: artifact.path, sha256: artifact.sha256, contents };
   }));
@@ -4429,6 +4432,10 @@ async function submitReviewJob(root2, id, expectedRevision, batchId, jobId, capa
     const batch = currentBatch2(ledger, batchId);
     const job = findJob(batch, jobId);
     const payloadSha256 = digest5(canonicalReviewValueJson(parsed));
+    if (job.status === "sampling") invalid3("REVIEW_JOB_SAMPLING_IN_PROGRESS", "review job is held by server sampling", { jobId });
+    if (!job.claim || digest5(capability) !== job.claim.requestSha256) {
+      invalid3("REVIEW_JOB_CAPABILITY_INVALID", "review job capability is invalid");
+    }
     if (job.status === "submitted") {
       if (job.submission?.payloadSha256 !== payloadSha256) invalid3("REVIEW_SUBMISSION_CONFLICT", "review job was submitted with a different payload", { jobId });
       if (hostAttestation) {
@@ -4442,8 +4449,6 @@ async function submitReviewJob(root2, id, expectedRevision, batchId, jobId, capa
       result = { batch, idempotent: true };
       return { mutate: () => void 0, unchanged: true, eventData: { batchId, jobId, idempotent: true } };
     }
-    if (job.status === "sampling") invalid3("REVIEW_JOB_SAMPLING_IN_PROGRESS", "review job is held by server sampling", { jobId });
-    if (!job.claim || digest5(capability) !== job.claim.requestSha256) invalid3("REVIEW_JOB_CAPABILITY_INVALID", "review job capability is invalid");
     if (Date.parse(job.claim.leaseExpiresAt) <= now.getTime()) invalid3("REVIEW_JOB_LEASE_EXPIRED", "review job lease has expired", { jobId });
     const submitted = await submitParsedReviewJob(root2, id, ledger, batch, job, parsed, now, void 0, hostAttestation);
     const batches = ledger.batches.map((candidate) => candidate.batchId === batchId ? submitted.batch : candidate);
@@ -5306,10 +5311,12 @@ async function unitLifecycleAction(root2, state) {
 async function nextAction(root2, id) {
   const state = await readState(root2, id);
   const action = deriveNext(toDerivedState(state, await verificationIsStale(root2, state)));
-  if (action.kind === "run-step" && action.step === "plan_review") {
+  if (action.kind === "run-step" && (action.step === "plan_review" || action.step === "implementation")) {
     const reviewAction = await reviewPlanAction(root2, state);
     if (reviewAction) return reviewAction;
-    await assertCurrentReviewProjection(root2, state);
+    if (action.step === "plan_review") {
+      await assertCurrentReviewProjection(root2, state);
+    }
   }
   if (action.kind === "run-step" || action.kind === "present-human-gate") {
     const definition = routeDefinitionForFeature(state.route, state.workflowCapabilities);

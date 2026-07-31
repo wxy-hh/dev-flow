@@ -133,6 +133,10 @@ test("claim and submit use opaque capabilities, expire leases, and are idempoten
     const pending = created.batch.jobs[1];
     const firstClaim = await reviewJobs.claimReviewJob(root, "f", retriedSubmit.state.revision, created.batch.batchId, pending.jobId, "claim-1234567890-zyxwvutsrqponmlkjihgfedc", at);
     await assert.rejects(
+      () => reviewJobs.submitReviewJob(root, "f", firstClaim.state.revision, created.batch.batchId, job.jobId, "claim-1234567890-zyxwvutsrqponmlkjihgfedc", payload, at),
+      (error) => error.code === "REVIEW_JOB_CAPABILITY_INVALID",
+    );
+    await assert.rejects(
       () => reviewJobs.submitReviewJob(root, "f", firstClaim.state.revision, created.batch.batchId, pending.jobId, "claim-1234567890-zyxwvutsrqponmlkjihgfedc", payload, new Date(at.getTime() + 60 * 60 * 1000)),
       /REVIEW_JOB_LEASE_EXPIRED/,
     );

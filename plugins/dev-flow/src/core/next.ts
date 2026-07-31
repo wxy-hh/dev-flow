@@ -130,12 +130,18 @@ export async function nextAction(root: string, id: string): Promise<NextAction> 
   const state = await readState(root, id);
   const action = deriveNext(toDerivedState(state, await verificationIsStale(root, state)));
 
-  if (action.kind === "run-step" && action.step === "plan_review") {
+  // A rollback can stale the review batch while plan_review evidence remains
+  // satisfied and implementation becomes the derived route step. Review is
+  // still a prerequisite of beginning a replacement unit, so derive its
+  // recovery action before exposing the implementation lifecycle.
+  if (action.kind === "run-step" && (action.step === "plan_review" || action.step === "implementation")) {
     const reviewAction = await reviewPlanAction(root, state);
     if (reviewAction) return reviewAction;
-    // A complete ledger is necessary but not sufficient: the generated
-    // projection is a registered artifact and must still be readable/current.
-    await assertCurrentReviewProjection(root, state);
+    if (action.step === "plan_review") {
+      // A complete ledger is necessary but not sufficient: the generated
+      // projection is a registered artifact and must still be readable/current.
+      await assertCurrentReviewProjection(root, state);
+    }
   }
 
   if (action.kind === "run-step" || action.kind === "present-human-gate") {

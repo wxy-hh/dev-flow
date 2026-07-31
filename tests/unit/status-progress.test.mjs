@@ -11,6 +11,7 @@ const artifacts = await loadSource("plugins/dev-flow/src/core/artifacts.ts");
 const status = await loadSource("plugins/dev-flow/src/core/status.ts");
 const checks = await loadSource("plugins/dev-flow/src/core/feature-check.ts");
 const gates = await loadSource("plugins/dev-flow/src/core/human-gates.ts");
+const reviewJobs = await loadSource("plugins/dev-flow/src/core/review-jobs.ts");
 const verification = await loadSource("plugins/dev-flow/src/core/verification.ts");
 const grill = await loadSource("plugins/dev-flow/src/core/requirements-grill.ts");
 const config = {
@@ -19,6 +20,37 @@ const config = {
   enforcement: { mode: "strict", gitWriteRequiresLogicComplete: true, oneActiveFeature: true, requireExplicitHumanReply: true },
   protectedRoots: ["src"],
 };
+
+async function createCurrentReviewBatch(root) {
+  await store.initProject(root, config);
+  let state = await store.startFeature(root, {
+    featureId: "f", host: "codex", level: "M", topology: "local", execution: "standard", requirements: "provided-confirmed",
+  });
+  state = await artifacts.scaffoldArtifact(root, "f", state.revision, "requirements");
+  state = await registerTraceFixture({ root, featureId: "f", state, kind: "requirements" });
+  state = await checks.recordStep(root, "f", state.revision, "requirements", {});
+  state = await store.mutate(root, "f", state.revision, "status-review-confirmation", (draft) => {
+    draft.steps.requirement_confirmation = { status: "satisfied" };
+  });
+  state = await artifacts.scaffoldArtifact(root, "f", state.revision, "implementation-plan");
+  state = await registerTraceFixture({ root, featureId: "f", state, kind: "implementation-plan" });
+  state = await checks.recordStep(root, "f", state.revision, "implementation_plan", {});
+  state = await artifacts.scaffoldArtifact(root, "f", state.revision, "coverage-matrix");
+  state = await registerTraceFixture({ root, featureId: "f", state, kind: "coverage-matrix" });
+  state = await checks.recordStep(root, "f", state.revision, "coverage_review", {});
+  state = await checks.recordStep(root, "f", state.revision, "rollback_unit", {});
+  const created = await reviewJobs.createReviewBatch(root, "f", state.revision);
+  state = created.state;
+  for (const job of created.batch.jobs) {
+    const capability = `claim-status-review-${job.jobId}-abcdefghijklmnop`;
+    const claimed = await reviewJobs.claimReviewJob(root, "f", state.revision, created.batch.batchId, job.jobId, capability);
+    state = (await reviewJobs.submitReviewJob(
+      root, "f", claimed.state.revision, created.batch.batchId, job.jobId, capability,
+      { coverageSummary: `${job.role} complete`, findings: [] },
+    )).state;
+  }
+  return { ...created, state };
+}
 
 test("status progress reports grill wait without changing revision", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "dev-flow-status-"));
@@ -75,6 +107,21 @@ test("status progress reports human gates", async () => {
     const returned = await status.readStatusView(root, "f");
     assert.match(returned.progress.wait.replyHint, /已记录修改意见/);
     assert.equal(returned.progress.wait.feedback, "补充边界条件");
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test("status explains how to recover from an unregistered review basis edit", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "dev-flow-status-review-basis-"));
+  try {
+    const created = await createCurrentReviewBatch(root);
+    const requirements = path.join(root, ".dev-flow", "features", "f", created.state.artifacts.requirements.path);
+    await writeFile(requirements, `${await readFile(requirements, "utf8")}\n- unregistered basis edit\n`);
+    await assert.rejects(
+      () => status.readStatusView(root, "f"),
+      (error) => error.code === "ARTIFACT_INTEGRITY_FAILED"
+        && error.details.kind === "requirements"
+        && error.details.recoveryHint === "Re-register the edited requirements artifact with the latest feature revision known before the edit.",
+    );
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 

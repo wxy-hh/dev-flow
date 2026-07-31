@@ -126,7 +126,10 @@ async function deriveReviewInput(root: string, state: FeatureState): Promise<Der
     try { contents = await readFile(path.join(root, ".dev-flow", "features", state.featureId, artifact!.path), "utf8"); }
     catch { invalid("REVIEW_BASIS_ARTIFACT_MISSING", `review basis artifact cannot be read: ${kind}`, { kind }); }
     if (digest(contents!) !== artifact!.sha256) {
-      invalid("ARTIFACT_INTEGRITY_FAILED", `review basis artifact was edited without registration: ${kind}`, { kind });
+      invalid("ARTIFACT_INTEGRITY_FAILED", `review basis artifact was edited without registration: ${kind}`, {
+        kind,
+        recoveryHint: `Re-register the edited ${kind} artifact with the latest feature revision known before the edit.`,
+      });
     }
     return { kind, path: artifact!.path, sha256: artifact!.sha256, contents: contents! };
   }));
@@ -585,6 +588,10 @@ export async function submitReviewJob(
     const batch = currentBatch(ledger, batchId);
     const job = findJob(batch, jobId);
     const payloadSha256 = digest(canonicalReviewValueJson(parsed));
+    if (job.status === "sampling") invalid("REVIEW_JOB_SAMPLING_IN_PROGRESS", "review job is held by server sampling", { jobId });
+    if (!job.claim || digest(capability) !== job.claim.requestSha256) {
+      invalid("REVIEW_JOB_CAPABILITY_INVALID", "review job capability is invalid");
+    }
     if (job.status === "submitted") {
       if (job.submission?.payloadSha256 !== payloadSha256) invalid("REVIEW_SUBMISSION_CONFLICT", "review job was submitted with a different payload", { jobId });
       if (hostAttestation) {
@@ -599,8 +606,6 @@ export async function submitReviewJob(
       result = { batch, idempotent: true };
       return { mutate: () => undefined, unchanged: true, eventData: { batchId, jobId, idempotent: true } };
     }
-    if (job.status === "sampling") invalid("REVIEW_JOB_SAMPLING_IN_PROGRESS", "review job is held by server sampling", { jobId });
-    if (!job.claim || digest(capability) !== job.claim.requestSha256) invalid("REVIEW_JOB_CAPABILITY_INVALID", "review job capability is invalid");
     if (Date.parse(job.claim.leaseExpiresAt) <= now.getTime()) invalid("REVIEW_JOB_LEASE_EXPIRED", "review job lease has expired", { jobId });
     const submitted = await submitParsedReviewJob(root, id, ledger, batch, job, parsed, now, undefined, hostAttestation);
     const batches = ledger.batches.map((candidate) => candidate.batchId === batchId ? submitted.batch : candidate);
