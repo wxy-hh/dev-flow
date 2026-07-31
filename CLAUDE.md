@@ -77,8 +77,8 @@ npm run test:host-e2e   # 真机
 | `plugins/dev-flow/hosts/{claude,codex}/hooks.json` | 宿主 hook 接线 |
 | `scripts/` | build / 测试静默包装 / 版本同步 |
 | `tests/unit`、`tests/e2e`、`tests/fixtures`、`tests/helpers` | 测试与 fixture |
-| `docs/architecture.md`、`docs/routes.md`、`docs/publishing.md` | 架构 / 路线 / 发布权威说明 |
-| `docs/plans/`、`docs/superpowers/plans/` | 设计与可执行实施计划 |
+| `docs/architecture.md`、`docs/routes.md`、`docs/publishing.md` | 架构 / 路线 / 发布权威说明（活文档） |
+| `docs/plans/` | 过程计划与草稿（非合同；完成后可删） |
 | `AGENTS.md` | 智能体仓库级规则（与本文件互补） |
 
 Marketplace 元数据：根 `.claude-plugin/marketplace.json`、`.agents/plugins/marketplace.json`。
@@ -158,7 +158,6 @@ standard-m / standard-l 且 `workflowCapabilities.trace === 1` 时强制 `REQ/AC
 - Markdown 锚点解析：`src/core/traceability-anchors.ts`  
 - 快照路径：`.dev-flow/features/<id>/traceability/snapshots/<sha256>.json`（不可变）  
 - 旧 feature 无 `workflowCapabilities` 时视为零能力；插件升级不得改已启动 feature 的能力位  
-- 实施计划：`docs/superpowers/plans/2026-07-28-dev-flow-traceability-ledger.md`  
 
 错误码示例：`TRACE_GRAPH_INVALID`、`TRACE_SLICE_INCOMPLETE`、`TRACE_SLICE_STALE`、`TRACE_SOURCE_ANCHOR_INVALID`。
 
