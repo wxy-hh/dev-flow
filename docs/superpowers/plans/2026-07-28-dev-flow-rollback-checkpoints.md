@@ -323,11 +323,11 @@ Blob 路径：
 
 **步骤：**
 
-- [ ] 先写工具只在 transaction schema/doctor 就绪后注册的合同测试。
-- [ ] 运行回撤路线、跨宿主、故障注入和控制文件 Hook 测试。
-- [ ] 更新中文文档，区分 unit checkpoint 与 finalize 的 feature 级反向 patch。
-- [ ] 运行全量测试、类型检查、构建和 `git diff --check`。
-- [ ] 提交：`feat(dev-flow): complete transactional checkpoint rollback`
+- [x] 先写工具只在 transaction schema/doctor 就绪后注册的合同测试（`mcp-server.test.mjs` 的 phase-4A 严格 schema 合同 + `rollbackExecution:0` 拒绝路径）。
+- [x] 运行回撤路线、跨宿主、故障注入和控制文件 Hook 测试。
+- [x] 更新中文文档，区分 unit checkpoint 与 finalize 的 feature 级反向 patch（`docs/architecture.md`、`docs/routes.md`、`README.md`）。
+- [x] 运行全量测试、类型检查、构建和 `git diff --check`。
+- [x] 提交：`feat(dev-flow): complete transactional checkpoint rollback`（由用户手动提交）
 
 ## 完成条件
 
