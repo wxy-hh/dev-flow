@@ -31,7 +31,7 @@ Dev Flow 以**一个预构建插件包**同时服务 Claude Code 与 Codex CLI�
 - 验证只对配置的 protected roots 做业务指纹；指纹变化会使 verification、feature-check、logic-complete 失效。  
 - 即使绕过 Skills 直接调 MCP，core 仍拒绝乱序步骤与「抢先」创建未来资产。
 
-## Traceability 事实层（1.7.0+）
+## Traceability 事实层（1.8.0+）
 
 - Markdown artifact 是人类可读的**叙述层**；Trace snapshot 才是需求、任务、测试与回撤关系的 Core 事实层。
 - snapshot 按内容寻址、不可变；`state.traceability` pointer 是唯一提交点。通过 `dev_flow_record_artifact_with_trace` 同一 CAS 更新 artifact hash 与 pointer。

@@ -1,4 +1,4 @@
-/* dev-flow 1.7.0; built from source, deterministic build */
+/* dev-flow 1.8.0; built from source, deterministic build */
 
 // plugins/dev-flow/src/hosts/codex-adapter.ts
 import { lstat } from "node:fs/promises";
