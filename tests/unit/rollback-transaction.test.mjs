@@ -617,7 +617,7 @@ test("a fresh local drive heartbeat prevents an old acquisition timestamp from b
       () => rollback.executeRollback(root, "f", state.revision, "CP-001", { fault: INJECTED("before-verification") }),
     );
     const journal = await readJournal(root);
-    const leaseFile = path.join(featureDirectory(root), journal.backupDirectory, "drive-lease.json");
+    const leaseFile = path.join(featureDirectory(root), `${journal.backupDirectory}-drive-lease.json`);
     const oldTimestamp = new Date(Date.now() - 31_000).toISOString();
     await writeFile(leaseFile, `${JSON.stringify({
       schemaVersion: 1,
@@ -645,7 +645,7 @@ test("a stale local drive heartbeat is reclaimable even when its pid is wedged",
       () => rollback.executeRollback(root, "f", state.revision, "CP-001", { fault: INJECTED("before-verification") }),
     );
     const journal = await readJournal(root);
-    const leaseFile = path.join(featureDirectory(root), journal.backupDirectory, "drive-lease.json");
+    const leaseFile = path.join(featureDirectory(root), `${journal.backupDirectory}-drive-lease.json`);
     const oldTimestamp = new Date(Date.now() - 31_000).toISOString();
     await writeFile(leaseFile, `${JSON.stringify({
       schemaVersion: 1,
@@ -672,7 +672,7 @@ test("a fresh remote drive heartbeat prevents a stale acquisition timestamp from
       () => rollback.executeRollback(root, "f", state.revision, "CP-001", { fault: INJECTED("before-verification") }),
     );
     const journal = await readJournal(root);
-    const leaseFile = path.join(featureDirectory(root), journal.backupDirectory, "drive-lease.json");
+    const leaseFile = path.join(featureDirectory(root), `${journal.backupDirectory}-drive-lease.json`);
     await writeFile(leaseFile, `${JSON.stringify({
       schemaVersion: 1,
       transactionId: journal.transactionId,
@@ -688,6 +688,98 @@ test("a fresh remote drive heartbeat prevents a stale acquisition timestamp from
       () => stateStore.claimRollbackDriveLease(root, "f", journal.transactionId),
       (error) => error.code === "ROLLBACK_TRANSACTION_BUSY",
     );
+  });
+});
+
+test("an active legacy lease (pre-1.7.x path) blocks new-host claim without migration", async () => {
+  await withRoot(async (root) => {
+    let state = await checkpointedFeature(root);
+    state = await confirmedGate(root, state);
+    await assert.rejects(
+      () => rollback.executeRollback(root, "f", state.revision, "CP-001", { fault: INJECTED("before-verification") }),
+    );
+    const journal = await readJournal(root);
+    // Write a fresh lease at the legacy path (inside the recovery directory).
+    const legacyFile = path.join(featureDirectory(root), "checkpoints", "recovery", journal.transactionId, "drive-lease.json");
+    await mkdir(path.dirname(legacyFile), { recursive: true });
+    await writeFile(legacyFile, `${JSON.stringify({
+      schemaVersion: 1,
+      transactionId: journal.transactionId,
+      featureId: "f",
+      ownerId: "legacy-owner",
+      pid: process.pid,
+      hostname: os.hostname(),
+      acquiredAt: new Date(Date.now() - 5_000).toISOString(),
+      heartbeatAt: new Date().toISOString(),
+    })}\n`);
+
+    // New-host claim must see the active legacy lease and return BUSY.
+    await assert.rejects(
+      () => stateStore.claimRollbackDriveLease(root, "f", journal.transactionId),
+      (error) => error.code === "ROLLBACK_TRANSACTION_BUSY",
+    );
+
+    // Legacy file must NOT be deleted (old host still renews there).
+    assert.equal(await pathExists(legacyFile), true, "active legacy lease is preserved");
+
+    // No sidecar must have been created.
+    const sidecarFile = path.join(featureDirectory(root), `checkpoints/recovery/${journal.transactionId}-drive-lease.json`);
+    assert.equal(await pathExists(sidecarFile), false, "no sidecar for an active legacy lease");
+  });
+});
+
+test("a stale legacy lease is reclaimed into a dual lease so an old host sees the new owner", async () => {
+  await withRoot(async (root) => {
+    let state = await checkpointedFeature(root);
+    state = await confirmedGate(root, state);
+    await assert.rejects(
+      () => rollback.executeRollback(root, "f", state.revision, "CP-001", { fault: INJECTED("before-verification") }),
+    );
+    const journal = await readJournal(root);
+    // Write a stale lease (31+ s old heartbeat) at the legacy path.
+    const legacyFile = path.join(featureDirectory(root), "checkpoints", "recovery", journal.transactionId, "drive-lease.json");
+    const oldTimestamp = new Date(Date.now() - 31_000).toISOString();
+    await mkdir(path.dirname(legacyFile), { recursive: true });
+    await writeFile(legacyFile, `${JSON.stringify({
+      schemaVersion: 1,
+      transactionId: journal.transactionId,
+      featureId: "f",
+      ownerId: "stale-legacy-owner",
+      pid: 99999,
+      hostname: "unknown-host",
+      acquiredAt: oldTimestamp,
+      heartbeatAt: oldTimestamp,
+    })}\n`);
+
+    // Claim should succeed and reclaim the stale lease.
+    const lease = await stateStore.claimRollbackDriveLease(root, "f", journal.transactionId);
+    assert.equal(lease.transactionId, journal.transactionId);
+
+    // A current host keeps the legacy mirror while the transaction is open so
+    // an old host, which only knows this path, observes the fresh owner.
+    assert.equal(await pathExists(legacyFile), true, "legacy mirror remains during the open transaction");
+    const sidecarFile = path.join(featureDirectory(root), `checkpoints/recovery/${journal.transactionId}-drive-lease.json`);
+    assert.equal(await pathExists(sidecarFile), true, "current sidecar exists");
+    const [legacy, sidecar] = await Promise.all([
+      readFile(legacyFile, "utf8").then(JSON.parse),
+      readFile(sidecarFile, "utf8").then(JSON.parse),
+    ]);
+    assert.equal(legacy.ownerId, lease.ownerId, "legacy-only contender sees the new owner");
+    assert.equal(sidecar.ownerId, lease.ownerId, "sidecar has the same fencing owner");
+
+    // Renewal maintains both mirrors, rather than silently leaving the old
+    // path stale after the first claim.
+    await stateStore.renewRollbackDriveLease(root, "f", lease);
+    const renewedLegacy = JSON.parse(await readFile(legacyFile, "utf8"));
+    const renewedSidecar = JSON.parse(await readFile(sidecarFile, "utf8"));
+    assert.equal(renewedLegacy.ownerId, lease.ownerId);
+    assert.equal(renewedSidecar.ownerId, lease.ownerId);
+    assert.equal(renewedLegacy.heartbeatAt, renewedSidecar.heartbeatAt, "both mirrors renew together");
+
+    // Clean up.
+    await stateStore.releaseRollbackDriveLease(root, "f", lease);
+    assert.equal(await pathExists(legacyFile), false, "release removes legacy mirror after the driver stops");
+    assert.equal(await pathExists(sidecarFile), false, "release removes sidecar after the driver stops");
   });
 });
 

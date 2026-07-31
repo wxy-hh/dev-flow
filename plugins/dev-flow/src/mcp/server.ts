@@ -12,7 +12,7 @@ import { nextAction } from "../core/next.js";
 import { readStatusView } from "../core/status.js";
 import { beginImplementationUnit } from "../core/implementation-units.js";
 import { checkpointImplementationUnit } from "../core/checkpoints.js";
-import { previewRollback, resolveRollbackGateToken } from "../core/rollback.js";
+import { executeRollback, presentRollbackGate, previewRollback, resolveRollbackGateElicitation, resolveRollbackGateToken, type RollbackPreview } from "../core/rollback.js";
 import { runVerification } from "../core/verification.js";
 import { allowedRiskLabels } from "../policy/contract.js";
 import { deriveRiskRequirements, selectRoute } from "../policy/route.js";
@@ -55,6 +55,7 @@ const tools = [
   "dev_flow_respond_interaction", "dev_flow_request_grill_decision", "dev_flow_resolve_grill_decision",
   "dev_flow_feature_check", "dev_flow_finalize", "dev_flow_abandon", "dev_flow_enable_windows_notifications", "dev_flow_doctor",
   "dev_flow_begin_implementation_unit", "dev_flow_checkpoint_implementation_unit", "dev_flow_preview_rollback",
+  "dev_flow_present_rollback_gate", "dev_flow_execute_rollback",
   "dev_flow_recover_corrupt_feature",
 ];
 
@@ -241,9 +242,17 @@ const toolSchemas: Record<string, { description: string; inputSchema: Record<str
     inputSchema: object(["featureId", "expectedRevision", "unitId"], { featureId: string, expectedRevision: integer, unitId: traceId("RU") }),
   },
   dev_flow_preview_rollback: {
-    description: "Read-only rollback plan for a confirmed checkpoint: undo order, restored files, verification commands. Phase 3 has no execution tool.",
+    description: "Read-only rollback plan for a confirmed checkpoint: undo order, restored files, verification commands.",
     inputSchema: object(["featureId", "targetCheckpointId"], { featureId: string, targetCheckpointId: string }),
     annotations: { readOnlyHint: true },
+  },
+  dev_flow_present_rollback_gate: {
+    description: "Present a rollback confirmation gate for a confirmed checkpoint. Requires checkpoints:1 and rollbackExecution:1.",
+    inputSchema: object(["featureId", "expectedRevision", "targetCheckpointId"], { featureId: string, expectedRevision: integer, targetCheckpointId: string }),
+  },
+  dev_flow_execute_rollback: {
+    description: "Execute a confirmed rollback as a resumable file transaction. Rolls back to the target checkpoint, undoing all later units in reverse order.",
+    inputSchema: object(["featureId", "expectedRevision", "targetCheckpointId"], { featureId: string, expectedRevision: integer, targetCheckpointId: string }),
   },
   dev_flow_present_gate: { description: "Present a strict human gate.", inputSchema: featureMutation({ gate: { enum: ["requirement_confirmation", "implementation_approval"] } }) },
   dev_flow_confirm_gate: {
@@ -443,6 +452,15 @@ function assertPreviewRollbackInput(value: unknown): asserts value is { featureI
   }
 }
 
+function assertRollbackMutationInput(value: unknown, tool: string): asserts value is Record<string, unknown> & {
+  featureId: string; expectedRevision: number; targetCheckpointId: string;
+} {
+  assertReviewMutationInput(value, tool, ["targetCheckpointId"]);
+  if (typeof value.targetCheckpointId !== "string" || !value.targetCheckpointId) {
+    throw new DevFlowError("INVALID_TOOL_INPUT", `${tool} input does not match its schema`);
+  }
+}
+
 type ElicitationResult = { action: "accept" | "decline" | "cancel"; content?: Record<string, unknown> };
 type ElicitationSelection = { action: string; comment?: string };
 
@@ -459,6 +477,19 @@ function interactionEnvelope(
     interactionOutcome,
     ...(response ? { response } : {}),
   };
+}
+
+/** Human gates must expose the exact preview that their basis hash commits to. */
+function rollbackGateMessage(preview: RollbackPreview): string {
+  const files = preview.filePlan.map((action) => `${action.action === "restore" ? "恢复" : "删除"} ${action.path}`);
+  const verification = preview.verificationCommands.map((command) => `${command.commandId}: ${command.command}`);
+  return [
+    `回撤目标：${preview.targetUnitId}（${preview.targetCheckpointId}）。`,
+    `将撤销 ${preview.undoOrder.length} 个单元：${preview.undoOrder.join(" → ")}。`,
+    `文件影响（${files.length}）：${files.length ? files.join("；") : "无"}。`,
+    `回撤验证：${verification.length ? verification.join("；") : "无"}。`,
+    "确认执行回撤？",
+  ].join("\n");
 }
 
 /** A submitter may inspect its own accepted payload, never sibling review output. */
@@ -747,6 +778,34 @@ async function call(name: string, a: any, connection: McpConnection) {
     case "dev_flow_preview_rollback": {
       assertPreviewRollbackInput(a);
       return previewRollback(root, a.featureId, a.targetCheckpointId);
+    }
+    case "dev_flow_present_rollback_gate": {
+      assertRollbackMutationInput(a, "dev_flow_present_rollback_gate");
+      const presentation = await presentRollbackGate(root, a.featureId, a.expectedRevision, a.targetCheckpointId);
+      emitAttentionNotification({ kind: "decision-required", featureId: a.featureId, decision: "rollback-confirmation" });
+      const selection = await connection.elicit(
+        presentation.interaction,
+        rollbackGateMessage(presentation.preview),
+      );
+      if (!selection) return { ...interactionEnvelope(presentation.state, presentation.interaction, "pending"), preview: presentation.preview };
+      const state = await resolveRollbackGateElicitation(
+        root, a.featureId, presentation.state.revision, presentation.interaction.id,
+        selection.action, selection.comment, (a.host as "claude" | "codex" | undefined) ?? "codex",
+      );
+      return {
+        ...interactionEnvelope(
+          state,
+          toPublicInteraction(getInteraction(state, presentation.interaction.id)),
+          selection.action,
+          interactionResponse(state, presentation.interaction.id),
+        ),
+        preview: presentation.preview,
+      };
+    }
+    case "dev_flow_execute_rollback": {
+      assertRollbackMutationInput(a, "dev_flow_execute_rollback");
+      const result = await executeRollback(root, a.featureId, a.expectedRevision, a.targetCheckpointId);
+      return { outcome: result.outcome, state: result.state, transactionId: result.transaction.transactionId };
     }
     case "dev_flow_present_gate": {
       const presentation = await presentGate(root, a.featureId, a.expectedRevision, a.gate);

@@ -37,7 +37,7 @@ const ROUTE_HIT_TOKENS = {
   requirements: [/requirements/, /requirement_confirmation/, /dev_flow_record_artifact/, /scaffold_artifact/, /dev_flow_present_gate/, /禁止同回合/],
   grillme: [/grill me/, /requirements/, /每轮只问一个阻塞问题/, /禁止调用任何 MCP mutation/, /grill_question_id/, /dev_flow_record_artifact/, /Source: codebase/],
   "coverage-review": [/coverage/],
-  "rollback-safety": [/rollback/, /requiredEvidence\.checks/, /full-rollback/, /dev_flow_preview_rollback/, /不存在.*execute|不可执行/, /禁止.*自行恢复/],
+  "rollback-safety": [/rollback/, /requiredEvidence\.checks/, /full-rollback/, /dev_flow_preview_rollback/, /dev_flow_execute_rollback/, /禁止.*自行恢复/],
   task: [/does not integrate OpenSpec/, /dev_flow_next/, /execution: light/, /documented-unconfirmed/, /scaffold_artifact/, /topology/, /具体失败后果/, /riskRequirements/, /light-L/],
   status: [/dev_flow_status/, /dev_flow_next/, /progress\.wait/, /继续/, /verificationFreshness/, /replyHint/, /requiredEvidence/, /可选建议，不影响流程/, /reviewStatus/, /validTargets/, /activeUnitId/, /remainingUnitIds/],
   doctor: [/dev_flow_doctor/],

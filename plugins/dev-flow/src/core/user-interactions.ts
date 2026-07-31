@@ -44,6 +44,7 @@ export interface UserInteraction {
 export interface PublicInteraction {
   id: string;
   kind: InteractionKind;
+  status: "pending" | "resolved";
   question?: string;
   options: InteractionOption[];
   fallback: {
@@ -222,6 +223,7 @@ export function toPublicInteraction(interaction: UserInteraction): PublicInterac
   return {
     id: interaction.id,
     kind: interaction.kind,
+    status: interaction.status,
     ...(interaction.question ? { question: interaction.question } : {}),
     options: interaction.options.map((option) => ({ ...option })),
     fallback: {

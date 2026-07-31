@@ -3,7 +3,7 @@
 // plugins/dev-flow/src/mcp/server.ts
 import readline from "node:readline";
 import { fileURLToPath } from "node:url";
-import path15 from "node:path";
+import path16 from "node:path";
 
 // plugins/dev-flow/src/core/artifacts.ts
 import { createHash as createHash8 } from "node:crypto";
@@ -85,7 +85,7 @@ var SUPPORTED_WORKFLOW_CAPABILITIES = Object.freeze({
   trace: 1,
   review: 1,
   checkpoints: 1,
-  rollbackExecution: 0
+  rollbackExecution: 1
 });
 
 // plugins/dev-flow/src/policy/contract.ts
@@ -171,6 +171,9 @@ function reviewEnforcementRequired(route, capabilities) {
 }
 function checkpointsEnforcementRequired(route, capabilities) {
   return normalizeWorkflowCapabilities(capabilities).checkpoints === 1 && traceEnforcementRequired(route, capabilities);
+}
+function rollbackExecutionAllowed(route, capabilities) {
+  return normalizeWorkflowCapabilities(capabilities).rollbackExecution === 1 && checkpointsEnforcementRequired(route, capabilities);
 }
 
 // plugins/dev-flow/src/core/artifact-templates.ts
@@ -315,7 +318,7 @@ function gateBasis(state, gate) {
 
 // plugins/dev-flow/src/core/state-store.ts
 import { randomUUID as randomUUID4, createHash as createHash6 } from "node:crypto";
-import { access, mkdir as mkdir4, open as open4, readFile as readFile6, rename as rename4, rm, writeFile as writeFile2 } from "node:fs/promises";
+import { access, mkdir as mkdir4, open as open4, readdir as readdir4, readFile as readFile6, rename as rename4, rm, rmdir, writeFile as writeFile2 } from "node:fs/promises";
 import { hostname } from "node:os";
 import path7 from "node:path";
 
@@ -1934,12 +1937,13 @@ function validateImplementationUnits(units) {
   const checkpoints = /* @__PURE__ */ new Set();
   for (const value of units) {
     const unit = value;
-    if (!unit || typeof unit !== "object" || Array.isArray(unit) || typeof unit.unitId !== "string" || !/^RU-[0-9]{3,}$/.test(unit.unitId) || typeof unit.status !== "string" || !unitStatuses.has(unit.status) || typeof unit.basisHash !== "string" || !/^[a-f0-9]{64}$/.test(unit.basisHash) || unit.startedFingerprint !== void 0 && (typeof unit.startedFingerprint !== "string" || !/^[a-f0-9]{64}$/.test(unit.startedFingerprint)) || unit.checkpointId !== void 0 && typeof unit.checkpointId !== "string") {
+    if (!unit || typeof unit !== "object" || Array.isArray(unit) || typeof unit.unitId !== "string" || !/^RU-[0-9]{3,}$/.test(unit.unitId) || typeof unit.status !== "string" || !unitStatuses.has(unit.status) || typeof unit.basisHash !== "string" || !/^[a-f0-9]{64}$/.test(unit.basisHash) || unit.startedFingerprint !== void 0 && (typeof unit.startedFingerprint !== "string" || !/^[a-f0-9]{64}$/.test(unit.startedFingerprint)) || unit.checkpointId !== void 0 && typeof unit.checkpointId !== "string" || unit.beginNonce !== void 0 && (typeof unit.beginNonce !== "string" || unit.beginNonce.trim().length === 0)) {
       throw new DevFlowError("INVALID_STATE_SCHEMA", "implementation unit state is invalid");
     }
     const started = unit.startedFingerprint !== void 0;
     const checkpointed = unit.checkpointId !== void 0;
-    const consistent = unit.status === "pending" && !started && !checkpointed || (unit.status === "active" || unit.status === "verified") && started && !checkpointed || (unit.status === "checkpointed" || unit.status === "rolled_back") && started && checkpointed;
+    const hasNonce = unit.beginNonce !== void 0;
+    const consistent = unit.status === "pending" && !started && !checkpointed && !hasNonce || (unit.status === "active" || unit.status === "verified") && started && !checkpointed || (unit.status === "checkpointed" || unit.status === "rolled_back") && started && checkpointed;
     if (!consistent) throw new DevFlowError("INVALID_STATE_SCHEMA", "implementation unit status is inconsistent with its fields");
     if (ids.has(unit.unitId)) throw new DevFlowError("INVALID_STATE_SCHEMA", "implementation units duplicate a rollback unit");
     if (checkpointed && checkpoints.has(unit.checkpointId)) throw new DevFlowError("INVALID_STATE_SCHEMA", "implementation units duplicate a checkpoint id");
@@ -1979,6 +1983,12 @@ function validateFeatureState(value) {
     throw new DevFlowError("INVALID_STATE_SCHEMA", "review-enabled standard feature requires a review pointer");
   }
   if (state.implementationUnits !== void 0) validateImplementationUnits(state.implementationUnits);
+  if (state.rollbackGate !== void 0) {
+    const gate = state.rollbackGate;
+    if (typeof gate !== "object" || gate === null || gate.status !== "pending" && gate.status !== "confirmed" || typeof gate.targetCheckpointId !== "string" || typeof gate.targetUnitId !== "string" || !/^[a-f0-9]{64}$/.test(gate.previewBasisHash) || typeof gate.interactionId !== "string" || typeof gate.stateRevision !== "number" || !Number.isInteger(gate.stateRevision) || gate.stateRevision < 0 || typeof gate.presentedAt !== "string" || gate.confirmedAt !== void 0 && typeof gate.confirmedAt !== "string") {
+      throw new DevFlowError("INVALID_STATE_SCHEMA", "rollbackGate is invalid");
+    }
+  }
 }
 function validateScopeInput(scope) {
   if (scope === void 0 || scope === null) return { inScope: [], outOfScope: [] };
@@ -2014,6 +2024,7 @@ var eventPath = (root2, id) => path7.join(features(root2), id, "events.jsonl");
 var activePath = (root2) => path7.join(devFlow(root2), "active.json");
 var recoveryTxnPath = (root2) => path7.join(devFlow(root2), "recovery-transaction.json");
 var recoveryEventsPath = (root2) => path7.join(devFlow(root2), "recovery-events.jsonl");
+var rollbackTxnPath = (root2, featureId) => path7.join(features(root2), featureId, "rollback-transaction.json");
 async function readProjectConfig(root2) {
   try {
     const value = JSON.parse(await readFile6(path7.join(devFlow(root2), "project.json"), "utf8"));
@@ -2184,11 +2195,13 @@ async function readFeatureEvents(root2, id) {
 async function startFeature(root2, input, options = {}) {
   await readProjectConfig(root2);
   await assertNoOpenRecovery(root2);
+  await assertNoOpenRollbackTransaction(root2);
   const scope = validateScopeInput(input.scope);
   const id = input.featureId ?? randomUUID4();
   const release = await lock(root2, id, "start");
   try {
     await assertNoOpenRecovery(root2);
+    await assertNoOpenRollbackTransaction(root2);
     const active = await readActive(root2);
     const lifecycle = input.activation ?? "active";
     if (lifecycle === "active" && active) throw new DevFlowError("ACTIVE_FEATURE_CONFLICT", "an active feature already exists");
@@ -2288,6 +2301,7 @@ async function mutatePrepared(root2, id, expectedRevision, operation, prepare, o
 }
 async function mutatePreparedLocked(root2, id, expectedRevision, operation, prepare, options = {}) {
   const state = await readState(root2, id);
+  await assertNoOpenRollbackTransaction(root2, { featureId: id, transactionId: options.allowRollbackTransaction });
   if (state.revision !== expectedRevision) throw new DevFlowError("STATE_REVISION_CONFLICT", "state revision changed", { currentRevision: state.revision });
   const prepared = await prepare(state, state.revision + 1);
   if (prepared.unchanged) return state;
@@ -2335,6 +2349,7 @@ async function switchActive(root2, from, to, reason) {
   if (!reason) throw new DevFlowError("SWITCH_REASON_REQUIRED", "switch requires a reason");
   const release = await lock(root2, `${from}:${to}`, "switch-active");
   try {
+    await assertNoOpenRollbackTransaction(root2);
     const active = await readActive(root2);
     if (active?.featureId !== from) throw new DevFlowError("ACTIVE_FEATURE_CONFLICT", "source is not active");
     const source = await readState(root2, from), target = await readState(root2, to);
@@ -2481,12 +2496,303 @@ async function resumeRecovery(root2, transaction) {
   if (transaction.phase === "completed") await rm(recoveryTxnPath(root2), { force: true });
   return { recoveredTo: transaction.recoveredTo, featureId: transaction.featureId, stateSha256: transaction.stateSha256 };
 }
+var rollbackTransactionPhases = /* @__PURE__ */ new Set(["prepared", "backing-up", "rolling-back", "verifying", "committed", "compensating", "compensated"]);
+function isSha256(value) {
+  return typeof value === "string" && /^[a-f0-9]{64}$/.test(value);
+}
+function validateRollbackTransaction(value) {
+  const transaction = value;
+  const validPlan = Array.isArray(transaction?.filePlan) && transaction.filePlan.every((action) => {
+    const candidate = action;
+    if (!candidate || candidate.action !== "restore" && candidate.action !== "delete" || typeof candidate.path !== "string" || !candidate.path) return false;
+    if (candidate.action === "restore" && (!isSha256(candidate.blobSha256) || typeof candidate.mode !== "string" || !/^[0-7]{3,4}$/.test(candidate.mode))) return false;
+    if (candidate.blobSha256 !== void 0 && !isSha256(candidate.blobSha256)) return false;
+    if (candidate.mode !== void 0 && (typeof candidate.mode !== "string" || !/^[0-7]{3,4}$/.test(candidate.mode))) return false;
+    return true;
+  });
+  if (transaction?.schemaVersion !== 1 || typeof transaction.transactionId !== "string" || !transaction.transactionId || typeof transaction.featureId !== "string" || !transaction.featureId || !rollbackTransactionPhases.has(transaction.phase) || typeof transaction.targetCheckpointId !== "string" || !/^CP-[0-9]{3,}$/.test(transaction.targetCheckpointId) || typeof transaction.targetUnitId !== "string" || !/^RU-[0-9]{3,}$/.test(transaction.targetUnitId) || !Array.isArray(transaction.undoOrder) || transaction.undoOrder.length === 0 || !transaction.undoOrder.every((unitId) => typeof unitId === "string" && /^RU-[0-9]{3,}$/.test(unitId)) || transaction.undoCheckpoints !== void 0 && (!Array.isArray(transaction.undoCheckpoints) || !transaction.undoCheckpoints.every((id) => typeof id === "string" && /^CP-[0-9]{3,}$/.test(id))) || !isSha256(transaction.previewBasisHash) || !isSha256(transaction.projectConfigSha256) || !Number.isInteger(transaction.stateRevision) || (transaction.stateRevision ?? -1) < 0 || typeof transaction.backupDirectory !== "string" || !/^checkpoints\/recovery\/[^/]+$/.test(transaction.backupDirectory) || !Number.isInteger(transaction.nextFileIndex) || (transaction.nextFileIndex ?? -1) < 0 || !validPlan || !Array.isArray(transaction.verificationAttemptIds) || !transaction.verificationAttemptIds.every((id) => typeof id === "string" && id.length > 0) || typeof transaction.startedAt !== "string" || transaction.completedAt !== void 0 && typeof transaction.completedAt !== "string" || transaction.error !== void 0 && typeof transaction.error !== "string") {
+    throw new DevFlowError("ROLLBACK_TRANSACTION_UNREADABLE", "rollback transaction journal is invalid", {
+      recoveryHint: "Run dev_flow_doctor; the workspace may be mid-rollback \u2014 do not hand-edit .dev-flow"
+    });
+  }
+}
+function rollbackTransactionFinished(transaction) {
+  return (transaction.phase === "committed" || transaction.phase === "compensated") && typeof transaction.completedAt === "string";
+}
+async function readRollbackTransaction(root2, featureId) {
+  let raw;
+  try {
+    raw = await readFile6(rollbackTxnPath(root2, featureId), "utf8");
+  } catch (error) {
+    if (error.code === "ENOENT") return void 0;
+    throw new DevFlowError("ROLLBACK_TRANSACTION_UNREADABLE", "rollback transaction journal cannot be read", {
+      recoveryHint: "Run dev_flow_doctor; the workspace may be mid-rollback \u2014 do not hand-edit .dev-flow"
+    });
+  }
+  let parsed;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    throw new DevFlowError("ROLLBACK_TRANSACTION_UNREADABLE", "rollback transaction journal is not valid JSON", {
+      recoveryHint: "Run dev_flow_doctor; the workspace may be mid-rollback \u2014 do not hand-edit .dev-flow"
+    });
+  }
+  validateRollbackTransaction(parsed);
+  if (parsed.featureId !== featureId) {
+    throw new DevFlowError("ROLLBACK_TRANSACTION_UNREADABLE", "rollback transaction journal feature id does not match its path", {
+      recoveryHint: "Run dev_flow_doctor; the workspace may be mid-rollback \u2014 do not hand-edit .dev-flow"
+    });
+  }
+  return parsed;
+}
+async function writeRollbackTransaction(root2, featureId, transaction) {
+  validateRollbackTransaction(transaction);
+  if (transaction.featureId !== featureId) {
+    throw new DevFlowError("ROLLBACK_TRANSACTION_UNREADABLE", "rollback transaction journal feature id does not match its path");
+  }
+  await writeAtomic(rollbackTxnPath(root2, featureId), transaction);
+}
+async function assertNoOpenRollbackTransaction(root2, allow) {
+  let entries;
+  try {
+    entries = await readdir4(features(root2), { withFileTypes: true });
+  } catch (error) {
+    if (error.code === "ENOENT") return;
+    throw error;
+  }
+  for (const entry of entries) {
+    if (!entry.isDirectory()) continue;
+    const transaction = await readRollbackTransaction(root2, entry.name);
+    if (!transaction || rollbackTransactionFinished(transaction)) continue;
+    if (allow?.featureId === entry.name && allow.transactionId !== void 0 && allow.transactionId === transaction.transactionId) continue;
+    throw new DevFlowError("ROLLBACK_TRANSACTION_OPEN", "a rollback transaction is open", {
+      transactionId: transaction.transactionId,
+      featureId: entry.name,
+      phase: transaction.phase,
+      recoveryHint: `Resume the rollback transaction for feature ${entry.name} with the same input before mutating features`
+    });
+  }
+}
+async function prepareRollbackTransaction(root2, featureId, expectedRevision, transaction) {
+  if (transaction.featureId !== featureId) {
+    throw new DevFlowError("ROLLBACK_TRANSACTION_UNREADABLE", "rollback transaction journal feature id does not match its path");
+  }
+  if (transaction.phase !== "prepared") {
+    throw new DevFlowError("ROLLBACK_TRANSACTION_UNREADABLE", "prepareRollbackTransaction only accepts phase prepared");
+  }
+  if (transaction.stateRevision !== expectedRevision) {
+    throw new DevFlowError("STATE_REVISION_CONFLICT", "state revision changed", { currentRevision: transaction.stateRevision });
+  }
+  const release = await lock(root2, featureId, "prepare-rollback-transaction");
+  try {
+    await assertNoOpenRollbackTransaction(root2);
+    const state = await readState(root2, featureId);
+    if (state.revision !== expectedRevision) {
+      throw new DevFlowError("STATE_REVISION_CONFLICT", "state revision changed", { currentRevision: state.revision });
+    }
+    await writeRollbackTransaction(root2, featureId, transaction);
+    return transaction;
+  } finally {
+    await release();
+  }
+}
+var ROLLBACK_DRIVE_LEASE_STALE_MS = 3e4;
+var ROLLBACK_DRIVE_LEASE_HEARTBEAT_MS = 1e4;
+function driveLeasePath(root2, featureId, transactionId) {
+  return path7.join(features(root2), featureId, "checkpoints", "recovery", `${transactionId}-drive-lease.json`);
+}
+function legacyDriveLeasePath(root2, featureId, transactionId) {
+  return path7.join(features(root2), featureId, "checkpoints", "recovery", transactionId, "drive-lease.json");
+}
+async function readLeaseAt(leaseFile, transactionId) {
+  try {
+    const raw = await readFile6(leaseFile, "utf8");
+    return JSON.parse(raw);
+  } catch (error) {
+    if (error.code === "ENOENT") return void 0;
+    throw new DevFlowError("ROLLBACK_TRANSACTION_UNREADABLE", "rollback drive lease is unreadable", {
+      transactionId,
+      recoveryHint: "Run dev_flow_doctor; do not hand-edit the drive lease"
+    });
+  }
+}
+async function readDriveLeases(root2, featureId, transactionId) {
+  const [sidecar, legacy] = await Promise.all([
+    readLeaseAt(driveLeasePath(root2, featureId, transactionId), transactionId),
+    readLeaseAt(legacyDriveLeasePath(root2, featureId, transactionId), transactionId)
+  ]);
+  return { ...sidecar ? { sidecar } : {}, ...legacy ? { legacy } : {} };
+}
+async function writeDriveLeasePair(root2, featureId, transactionId, lease) {
+  const legacyFile = legacyDriveLeasePath(root2, featureId, transactionId);
+  const sidecarFile = driveLeasePath(root2, featureId, transactionId);
+  await mkdir4(path7.dirname(legacyFile), { recursive: true });
+  await mkdir4(path7.dirname(sidecarFile), { recursive: true });
+  await writeAtomic(legacyFile, lease);
+  await writeAtomic(sidecarFile, lease);
+}
+function isProcessAlive(pid, ownerHostname) {
+  if (ownerHostname !== hostname()) return true;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+function leaseHeartbeatAt(lease) {
+  const timestamp = Date.parse(lease.heartbeatAt ?? lease.acquiredAt);
+  return Number.isFinite(timestamp) ? timestamp : Number.NaN;
+}
+function activeLease(lease) {
+  const heartbeatAt = leaseHeartbeatAt(lease);
+  const live = Number.isFinite(heartbeatAt) && isProcessAlive(lease.pid, lease.hostname);
+  const stale = !Number.isFinite(heartbeatAt) || Date.now() - heartbeatAt > ROLLBACK_DRIVE_LEASE_STALE_MS;
+  return live && !stale;
+}
+function leaseBusyError(featureId, transactionId, lease) {
+  return new DevFlowError("ROLLBACK_TRANSACTION_BUSY", "another host is already driving this rollback transaction", {
+    transactionId,
+    featureId,
+    ownerId: lease.ownerId,
+    pid: lease.pid,
+    hostname: lease.hostname,
+    recoveryHint: "Wait for the other host to finish, or resume after its process exits and the lease ages out"
+  });
+}
+async function claimRollbackDriveLease(root2, featureId, transactionId) {
+  const release = await lock(root2, featureId, "claim-rollback-drive");
+  try {
+    const journal = await readRollbackTransaction(root2, featureId);
+    if (!journal || rollbackTransactionFinished(journal)) {
+      throw new DevFlowError("ROLLBACK_TRANSACTION_MISMATCH", "no open rollback transaction to drive", {
+        featureId,
+        transactionId
+      });
+    }
+    if (journal.transactionId !== transactionId) {
+      throw new DevFlowError("ROLLBACK_TRANSACTION_MISMATCH", "rollback transaction id does not match the open journal", {
+        openTransactionId: journal.transactionId,
+        transactionId
+      });
+    }
+    const leases = await readDriveLeases(root2, featureId, transactionId);
+    for (const existing of [leases.sidecar, leases.legacy]) {
+      if (existing && activeLease(existing)) {
+        throw leaseBusyError(featureId, transactionId, existing);
+      }
+    }
+    const lease = {
+      schemaVersion: 1,
+      transactionId,
+      featureId,
+      ownerId: randomUUID4(),
+      pid: process.pid,
+      hostname: hostname(),
+      acquiredAt: (/* @__PURE__ */ new Date()).toISOString(),
+      heartbeatAt: (/* @__PURE__ */ new Date()).toISOString()
+    };
+    await writeDriveLeasePair(root2, featureId, transactionId, lease);
+    return lease;
+  } finally {
+    await release();
+  }
+}
+async function renewRollbackDriveLease(root2, featureId, lease) {
+  const release = await lock(root2, featureId, "renew-rollback-drive");
+  try {
+    const leases = await readDriveLeases(root2, featureId, lease.transactionId);
+    const existing = leases.sidecar ?? leases.legacy;
+    if (!existing) {
+      throw new DevFlowError("ROLLBACK_TRANSACTION_MISMATCH", "rollback drive lease disappeared while being renewed", {
+        transactionId: lease.transactionId
+      });
+    }
+    for (const candidate of [leases.sidecar, leases.legacy]) {
+      if (candidate && candidate.ownerId !== lease.ownerId) {
+        throw leaseBusyError(featureId, lease.transactionId, candidate);
+      }
+    }
+    const renewed = { ...existing, heartbeatAt: (/* @__PURE__ */ new Date()).toISOString() };
+    await writeDriveLeasePair(root2, featureId, lease.transactionId, renewed);
+  } finally {
+    await release();
+  }
+}
+function maintainRollbackDriveLease(root2, featureId, lease) {
+  let stopped = false;
+  let inFlight2;
+  let failure2;
+  const renew = () => {
+    if (stopped || failure2) return inFlight2 ?? Promise.resolve();
+    if (!inFlight2) {
+      inFlight2 = renewRollbackDriveLease(root2, featureId, lease).catch((error) => {
+        failure2 = error;
+      }).finally(() => {
+        inFlight2 = void 0;
+      });
+    }
+    return inFlight2;
+  };
+  const interval = setInterval(() => {
+    void renew();
+  }, ROLLBACK_DRIVE_LEASE_HEARTBEAT_MS);
+  interval.unref();
+  return {
+    assertOwned() {
+      if (!failure2) return;
+      if (failure2 instanceof DevFlowError && failure2.code === "ROLLBACK_TRANSACTION_BUSY") throw failure2;
+      throw new DevFlowError("ROLLBACK_TRANSACTION_BUSY", "rollback drive lease could not be renewed; refusing to continue this driver", {
+        transactionId: lease.transactionId,
+        cause: failure2 instanceof DevFlowError ? failure2.code : String(failure2),
+        recoveryHint: "Wait for the current driver to finish, then resume the open rollback transaction"
+      });
+    },
+    async stop() {
+      stopped = true;
+      clearInterval(interval);
+      await inFlight2;
+    }
+  };
+}
+async function releaseRollbackDriveLease(root2, featureId, lease) {
+  const release = await lock(root2, featureId, "release-rollback-drive");
+  try {
+    const sidecarFile = driveLeasePath(root2, featureId, lease.transactionId);
+    const legacyFile = legacyDriveLeasePath(root2, featureId, lease.transactionId);
+    let sidecar;
+    try {
+      sidecar = JSON.parse(await readFile6(sidecarFile, "utf8"));
+    } catch {
+    }
+    if (sidecar?.ownerId === lease.ownerId) {
+      await rm(sidecarFile, { force: true });
+    }
+    try {
+      const legacyExisting = JSON.parse(await readFile6(legacyFile, "utf8"));
+      if (legacyExisting?.ownerId === lease.ownerId) {
+        await rm(legacyFile, { force: true });
+      }
+    } catch {
+    }
+    try {
+      await rmdir(path7.dirname(legacyFile));
+    } catch {
+    }
+  } finally {
+    await release();
+  }
+}
+async function appendFeatureEvent(root2, id, revision, type, data) {
+  await appendEvent(root2, id, revision, type, data);
+}
 async function recoverCorruptFeature(root2, input) {
   if (input.action !== "abandon") throw new DevFlowError("INVALID_RECOVERY_ACTION", "only abandon is supported in 1.3");
   if (!input.reason || !input.userEvidence) throw new DevFlowError("RECOVERY_EVIDENCE_REQUIRED", "reason and userEvidence are required");
   if (path7.basename(input.featureId) !== input.featureId || input.featureId === "." || input.featureId === "..") throw new DevFlowError("INVALID_FEATURE_ID", "recovery featureId must name one feature directory");
   const release = await lock(root2, input.featureId, "recover-corrupt");
   try {
+    await assertNoOpenRollbackTransaction(root2);
     const openTransaction = await readRecoveryTransaction(root2);
     if (openTransaction) {
       if (openTransaction.featureId !== input.featureId || openTransaction.stateSha256 !== input.stateSha256 || openTransaction.activeSha256 !== input.activeSha256) {
@@ -2880,6 +3186,7 @@ function toPublicInteraction(interaction) {
   return {
     id: interaction.id,
     kind: interaction.kind,
+    status: interaction.status,
     ...interaction.question ? { question: interaction.question } : {},
     options: interaction.options.map((option) => ({ ...option })),
     fallback: {
@@ -4849,15 +5156,17 @@ async function nextAction(root2, id) {
 }
 
 // plugins/dev-flow/src/core/status.ts
-import { readFile as readFile10 } from "node:fs/promises";
-import path12 from "node:path";
+import { readFile as readFile11 } from "node:fs/promises";
+import path13 from "node:path";
 
 // plugins/dev-flow/src/core/rollback.ts
-import { createHash as createHash12 } from "node:crypto";
+import { createHash as createHash13, randomUUID as randomUUID9 } from "node:crypto";
+import { access as access3, chmod, lstat as lstat3, mkdir as mkdir6, open as open6, readFile as readFile10, rename as rename6, rm as rm2 } from "node:fs/promises";
+import path12 from "node:path";
 
 // plugins/dev-flow/src/core/checkpoints.ts
 import { randomUUID as randomUUID7, createHash as createHash11 } from "node:crypto";
-import { access as access2, mkdir as mkdir5, open as open5, readFile as readFile9, rename as rename5 } from "node:fs/promises";
+import { access as access2, mkdir as mkdir5, open as open5, readFile as readFile9, readdir as readdir5, rename as rename5 } from "node:fs/promises";
 import path11 from "node:path";
 
 // plugins/dev-flow/src/policy/rollback.ts
@@ -4866,14 +5175,14 @@ var IMPLEMENTATION_UNIT_TRANSITIONS = Object.freeze({
   active: Object.freeze(["verified"]),
   verified: Object.freeze(["checkpointed", "active"]),
   checkpointed: Object.freeze(["rolled_back"]),
-  rolled_back: Object.freeze([])
+  rolled_back: Object.freeze(["active"])
 });
 var fileChanges = ["added", "modified", "deleted", "renamed", "mode-changed"];
 var ROLLBACK_ID = /^RU-[0-9]{3,}$/;
 var SHA256 = /^[0-9a-f]{64}$/;
 var FILE_MODE = /^[0-7]{3,4}$/;
-function pathWithinFileScope(path16, fileScope) {
-  return fileScope.some((pattern) => scopePatternMatches(pattern, path16));
+function pathWithinFileScope(path17, fileScope) {
+  return fileScope.some((pattern) => scopePatternMatches(pattern, path17));
 }
 function scopePatternMatches(pattern, target) {
   if (typeof pattern !== "string" || !pattern.trim() || typeof target !== "string" || !target.trim()) return false;
@@ -4921,7 +5230,7 @@ function isRecord4(value) {
 function isRollbackId(value) {
   return typeof value === "string" && ROLLBACK_ID.test(value);
 }
-function isSha256(value) {
+function isSha2562(value) {
   return typeof value === "string" && SHA256.test(value);
 }
 function isTimestamp(value) {
@@ -4940,7 +5249,7 @@ function implementationUnitForRollbackNode(node, basisHash2) {
   if (!isRecord4(node) || node.kind !== "rollback" || !isRollbackId(node.id) || !isNonEmptyStringArray(node.tasks) || !isNonEmptyStringArray(node.fileScope) || !isNonEmptyStringArray(node.forwardVerification) || !isNonEmptyStringArray(node.rollbackVerification) || node.status !== "current") {
     invalid3("rollback node is missing fields required to open an implementation unit");
   }
-  if (!isSha256(basisHash2)) invalid3("implementation unit basis hash must be a SHA-256 hex digest");
+  if (!isSha2562(basisHash2)) invalid3("implementation unit basis hash must be a SHA-256 hex digest");
   return { unitId: node.id, status: "pending", basisHash: basisHash2 };
 }
 function parseFileRecord(value, index) {
@@ -4949,8 +5258,8 @@ function parseFileRecord(value, index) {
   }
   const label = `checkpoint file record ${index}`;
   const change = value.change;
-  const beforeOk = change !== "added" ? isSha256(value.beforeSha256) && isSha256(value.beforeBlobSha256) && typeof value.beforeMode === "string" && FILE_MODE.test(value.beforeMode) : value.beforeSha256 === void 0 && value.beforeBlobSha256 === void 0 && value.beforeMode === void 0;
-  const afterOk = change !== "deleted" ? isSha256(value.afterSha256) && isSha256(value.afterBlobSha256) && typeof value.afterMode === "string" && FILE_MODE.test(value.afterMode) : value.afterSha256 === void 0 && value.afterBlobSha256 === void 0 && value.afterMode === void 0;
+  const beforeOk = change !== "added" ? isSha2562(value.beforeSha256) && isSha2562(value.beforeBlobSha256) && typeof value.beforeMode === "string" && FILE_MODE.test(value.beforeMode) : value.beforeSha256 === void 0 && value.beforeBlobSha256 === void 0 && value.beforeMode === void 0;
+  const afterOk = change !== "deleted" ? isSha2562(value.afterSha256) && isSha2562(value.afterBlobSha256) && typeof value.afterMode === "string" && FILE_MODE.test(value.afterMode) : value.afterSha256 === void 0 && value.afterBlobSha256 === void 0 && value.afterMode === void 0;
   if (!beforeOk) invalid3(`${label} has invalid before fields for change ${change}`);
   if (!afterOk) invalid3(`${label} has invalid after fields for change ${change}`);
   if (change === "renamed" && !isNonEmptyString(value.renamedFrom)) invalid3(`${label} renamed record requires renamedFrom`);
@@ -4977,7 +5286,7 @@ function parseVerificationAttempt(value, index) {
   };
 }
 function parseCheckpointManifest(value) {
-  if (!isRecord4(value) || !hasOnlyKeys(value, ["schemaVersion", "checkpointId", "unitId", "sequence", "basisHash", "startedFingerprint", "completedFingerprint", "startedAt", "completedAt", "files", "forwardPatchSha256", "reversePatchSha256", "verificationAttempts", "requirementsSha256", "planSha256", "traceabilitySha256", "approvalBasisHash", "projectConfigSha256", "verificationCommands"]) || value.schemaVersion !== 1 || !isNonEmptyString(value.checkpointId) || !isRollbackId(value.unitId) || typeof value.sequence !== "number" || !Number.isInteger(value.sequence) || value.sequence < 1 || !isSha256(value.basisHash) || !isSha256(value.startedFingerprint) || !isSha256(value.completedFingerprint) || !isTimestamp(value.startedAt) || !isTimestamp(value.completedAt) || !Array.isArray(value.files) || !isSha256(value.forwardPatchSha256) || !isSha256(value.reversePatchSha256) || !Array.isArray(value.verificationAttempts) || !isSha256(value.requirementsSha256) || !isSha256(value.planSha256) || !isSha256(value.traceabilitySha256) || !isSha256(value.approvalBasisHash) || !isSha256(value.projectConfigSha256) || !Array.isArray(value.verificationCommands) || value.verificationCommands.length === 0) {
+  if (!isRecord4(value) || !hasOnlyKeys(value, ["schemaVersion", "checkpointId", "unitId", "sequence", "basisHash", "startedFingerprint", "completedFingerprint", "startedAt", "completedAt", "files", "forwardPatchSha256", "reversePatchSha256", "verificationAttempts", "requirementsSha256", "planSha256", "traceabilitySha256", "approvalBasisHash", "projectConfigSha256", "verificationCommands", "beginNonce"]) || value.schemaVersion !== 1 || !isNonEmptyString(value.checkpointId) || !isRollbackId(value.unitId) || typeof value.sequence !== "number" || !Number.isInteger(value.sequence) || value.sequence < 1 || !isSha2562(value.basisHash) || !isSha2562(value.startedFingerprint) || !isSha2562(value.completedFingerprint) || value.beginNonce !== void 0 && !isNonEmptyString(value.beginNonce) || !isTimestamp(value.startedAt) || !isTimestamp(value.completedAt) || !Array.isArray(value.files) || !isSha2562(value.forwardPatchSha256) || !isSha2562(value.reversePatchSha256) || !Array.isArray(value.verificationAttempts) || !isSha2562(value.requirementsSha256) || !isSha2562(value.planSha256) || !isSha2562(value.traceabilitySha256) || !isSha2562(value.approvalBasisHash) || !isSha2562(value.projectConfigSha256) || !Array.isArray(value.verificationCommands) || value.verificationCommands.length === 0) {
     invalid3("checkpoint manifest has an invalid shape");
   }
   const files = value.files.map((file, index) => parseFileRecord(file, index));
@@ -5013,7 +5322,8 @@ function parseCheckpointManifest(value) {
     traceabilitySha256: value.traceabilitySha256,
     approvalBasisHash: value.approvalBasisHash,
     projectConfigSha256: value.projectConfigSha256,
-    verificationCommands
+    verificationCommands,
+    ...typeof value.beginNonce === "string" ? { beginNonce: value.beginNonce } : {}
   };
 }
 
@@ -5241,6 +5551,21 @@ function resolveVerificationCommands(config, node) {
     return command2;
   });
 }
+async function nextCheckpointSequence(root2, featureId) {
+  const directory = path11.join(featureDirectory2(root2, featureId), "checkpoints", "manifests");
+  let entries;
+  try {
+    entries = await readdir5(directory);
+  } catch {
+    return 1;
+  }
+  let max = 0;
+  for (const entry of entries) {
+    const match = /^CP-(\d+)\.json$/.exec(entry);
+    if (match) max = Math.max(max, Number.parseInt(match[1], 10));
+  }
+  return max + 1;
+}
 async function checkpointImplementationUnit(root2, id, expectedRevision, unitId, options = {}) {
   const initial = await readState(root2, id);
   if (initial.revision !== expectedRevision) {
@@ -5282,18 +5607,42 @@ async function checkpointImplementationUnit(root2, id, expectedRevision, unitId,
       }
     }
   }
-  const chainLength = (initial.implementationUnits ?? []).filter((candidate) => candidate.checkpointId).length;
-  const sequence = chainLength + 1;
+  const sequence = await nextCheckpointSequence(root2, id);
   const checkpointId = `CP-${String(sequence).padStart(3, "0")}`;
   const rollbackUnitId = unit.unitId;
   const featureDir = featureDirectory2(root2, id);
-  const manifestFile = path11.join(featureDir, manifestPath(checkpointId));
-  if (await pathExists2(manifestFile)) {
-    const existing = await readCheckpoint(root2, id, checkpointId);
-    const sameCheckpoint = existing.unitId === rollbackUnitId && existing.sequence === sequence && existing.basisHash === unit.basisHash && existing.projectConfigSha256 === projectConfigSha256 && JSON.stringify(existing.files) === JSON.stringify(records);
+  const manifestsDir = path11.join(featureDir, "checkpoints", "manifests");
+  let orphan;
+  let entries;
+  try {
+    entries = await readdir5(manifestsDir);
+  } catch (error) {
+    if (error.code === "ENOENT") entries = [];
+    else throw error;
+  }
+  for (const entry of entries.sort().reverse()) {
+    if (!/^CP-\d+\.json$/.test(entry)) continue;
+    let candidate;
+    try {
+      candidate = parseCheckpointManifest(JSON.parse(await readFile9(path11.join(manifestsDir, entry), "utf8")));
+    } catch (error) {
+      throw new DevFlowError("ROLLBACK_CHECKPOINT_CORRUPT", "checkpoint manifest is unreadable or invalid", {
+        checkpointFile: entry,
+        unitId: rollbackUnitId,
+        cause: error instanceof Error ? error.message : String(error),
+        recoveryHint: "Do not hand-edit checkpoint manifests; repair or remove the corrupt file before retrying the checkpoint"
+      });
+    }
+    if (candidate.unitId === rollbackUnitId && candidate.beginNonce === unit.beginNonce) {
+      orphan = candidate;
+      break;
+    }
+  }
+  if (orphan) {
+    const sameCheckpoint = orphan.basisHash === unit.basisHash && orphan.projectConfigSha256 === projectConfigSha256 && JSON.stringify(orphan.files) === JSON.stringify(records);
     if (!sameCheckpoint) {
       throw new DevFlowError("CHECKPOINT_CONFLICT", "an existing checkpoint manifest no longer matches this unit", {
-        checkpointId,
+        checkpointId: orphan.checkpointId,
         unitId: rollbackUnitId
       });
     }
@@ -5303,10 +5652,11 @@ async function checkpointImplementationUnit(root2, id, expectedRevision, unitId,
         throw new DevFlowError("IMPLEMENTATION_UNIT_NOT_ACTIVE", "checkpoint requires an active rollback unit", { unitId, status: current?.status });
       }
       current.status = "checkpointed";
-      current.checkpointId = checkpointId;
-    }, { unitId, checkpointId, sequence });
-    return { state: reused, manifest: existing };
+      current.checkpointId = orphan.checkpointId;
+    }, { unitId, checkpointId: orphan.checkpointId, sequence: orphan.sequence });
+    return { state: reused, manifest: orphan };
   }
+  const manifestFile = path11.join(featureDir, manifestPath(checkpointId));
   const attempts = [];
   for (const command2 of commands) {
     const startedAt = (/* @__PURE__ */ new Date()).toISOString();
@@ -5364,6 +5714,7 @@ async function checkpointImplementationUnit(root2, id, expectedRevision, unitId,
     traceabilitySha256: initial.traceability?.sha256 ?? "",
     approvalBasisHash: unit.basisHash,
     projectConfigSha256,
+    ...unit.beginNonce ? { beginNonce: unit.beginNonce } : {},
     verificationCommands: commands.map((command2) => ({ commandId: command2.id, command: commandSummary(command2) }))
   };
   const validated = parseCheckpointManifest(JSON.parse(JSON.stringify(manifest)));
@@ -5426,8 +5777,85 @@ async function checkpointChain(root2, featureId, state) {
   return manifests.sort((a, b) => a.sequence - b.sequence);
 }
 
-// plugins/dev-flow/src/core/rollback.ts
+// plugins/dev-flow/src/core/implementation-units.ts
+import { createHash as createHash12, randomUUID as randomUUID8 } from "node:crypto";
 var digest8 = (value) => createHash12("sha256").update(value).digest("hex");
+function currentRollbackNodes(ledger) {
+  return Object.values(ledger?.nodes ?? {}).filter((node) => node.kind === "rollback" && node.status === "current");
+}
+function implementationUnitBasisHash(state) {
+  return digest8(canonicalReviewValueJson({
+    traceability: state.traceability,
+    approval: state.humanGates.implementation_approval ?? null
+  }));
+}
+async function beginImplementationUnit(root2, id, expectedRevision, unitId) {
+  return mutate(root2, id, expectedRevision, "implementation-unit-begun", async (state) => {
+    if (!checkpointsEnforcementRequired(state.route, state.workflowCapabilities)) {
+      throw new DevFlowError("IMPLEMENTATION_UNITS_NOT_ENFORCED", "implementation units require a checkpoints:1 standard feature");
+    }
+    if (currentOpenStep(state) !== "implementation") {
+      throw new DevFlowError("STEP_OUT_OF_ORDER", "begin requires the implementation step", { expected: currentOpenStep(state) });
+    }
+    const approval = state.humanGates.implementation_approval;
+    if (approval?.status !== "confirmed") {
+      throw new DevFlowError("DEV_FLOW_IMPLEMENTATION_APPROVAL_REQUIRED", "implementation approval must be confirmed before beginning a unit");
+    }
+    const ledger = await assertTraceGateCurrent(root2, state, "implementation");
+    for (const kind of ["requirements", "implementation-plan", "coverage-matrix", ...state.route === "standard-l" ? ["rollback-units"] : []]) {
+      await assertArtifactCurrent(root2, id, state, kind);
+    }
+    if (reviewEnforcementRequired(state.route, state.workflowCapabilities)) {
+      await assertReviewComplete(root2, state);
+    }
+    const nodes = currentRollbackNodes(ledger);
+    const node = nodes.find((candidate) => candidate.id === unitId);
+    if (!node) {
+      throw new DevFlowError("IMPLEMENTATION_UNIT_UNKNOWN", "rollback unit is not part of the current trace graph", { unitId });
+    }
+    if ((state.implementationUnits ?? []).some((unit) => unit.status === "active")) {
+      const active = state.implementationUnits.find((unit) => unit.status === "active");
+      throw new DevFlowError("IMPLEMENTATION_UNIT_ALREADY_ACTIVE", "another rollback unit is already active", { activeUnitId: active.unitId });
+    }
+    const basisHash2 = implementationUnitBasisHash(state);
+    const byId = new Map((state.implementationUnits ?? []).map((unit) => [unit.unitId, unit]));
+    const merged = [];
+    for (const candidate of nodes) {
+      const existing = byId.get(candidate.id);
+      if (existing && existing.status !== "pending") {
+        merged.push(existing);
+      } else {
+        merged.push(implementationUnitForRollbackNode(candidate, basisHash2));
+      }
+    }
+    for (const dependency of node.dependsOn) {
+      const unit = merged.find((candidate) => candidate.unitId === dependency);
+      if (unit?.status !== "checkpointed") {
+        throw new DevFlowError("IMPLEMENTATION_UNIT_DEPENDENCY_INCOMPLETE", "rollback unit dependencies must be checkpointed first", {
+          unitId,
+          dependency,
+          status: unit?.status ?? "unknown"
+        });
+      }
+    }
+    const target = merged.find((unit) => unit.unitId === unitId);
+    if (target.status !== "pending" && target.status !== "rolled_back") {
+      throw new DevFlowError("IMPLEMENTATION_UNIT_NOT_PENDING", "rollback unit cannot begin from its current status", { unitId, status: target.status });
+    }
+    const project = await readProjectConfig(root2);
+    const snapshot = await snapshotProtectedRoots(root2, project.protectedRoots);
+    await captureUnitBaseline(root2, id, unitId, snapshot);
+    delete target.checkpointId;
+    target.basisHash = basisHash2;
+    target.beginNonce = randomUUID8();
+    target.status = "active";
+    target.startedFingerprint = await fingerprintProtectedRoots(root2, project.protectedRoots);
+    state.implementationUnits = merged;
+  }, { unitId });
+}
+
+// plugins/dev-flow/src/core/rollback.ts
+var digest9 = (value) => createHash13("sha256").update(value).digest("hex");
 function rollbackNodes(nodes) {
   return Object.values(nodes).filter((node) => node.kind === "rollback" && node.status === "current");
 }
@@ -5516,6 +5944,12 @@ function assertChainIntegrity(chain, nodes) {
     }
   }
 }
+function liveChain(state, chain) {
+  const liveIds = new Set(
+    (state.implementationUnits ?? []).filter((unit) => unit.status === "checkpointed" && unit.checkpointId).map((unit) => unit.checkpointId)
+  );
+  return chain.filter((manifest) => liveIds.has(manifest.checkpointId));
+}
 async function previewContext(root2, featureId) {
   const state = await readState(root2, featureId);
   if (!checkpointsEnforcementRequired(state.route, state.workflowCapabilities)) {
@@ -5523,7 +5957,7 @@ async function previewContext(root2, featureId) {
   }
   const ledger = await readTraceability(root2, state);
   const nodes = rollbackNodes(ledger.nodes);
-  const chain = await checkpointChain(root2, featureId, state);
+  const chain = liveChain(state, await checkpointChain(root2, featureId, state));
   assertChainIntegrity(chain, nodes);
   const { config, sha256: projectConfigSha256 } = await readProjectConfigSnapshot(root2);
   return { state, chain, nodes, config, projectConfigSha256 };
@@ -5535,9 +5969,15 @@ async function previewRollback(root2, featureId, targetCheckpointId) {
   const { state, chain, nodes, config, projectConfigSha256 } = await previewContext(root2, featureId);
   const target = chain.find((manifest) => manifest.checkpointId === targetCheckpointId);
   if (!target) {
-    throw new DevFlowError("ROLLBACK_TARGET_INVALID", "rollback target is not a confirmed checkpoint in the chain", {
+    throw new DevFlowError("ROLLBACK_TARGET_INVALID", "rollback target is not a confirmed checkpoint in the live chain", {
       targetCheckpointId,
       validTargets: chain.map((manifest) => manifest.checkpointId)
+    });
+  }
+  const suffix = chain.filter((manifest) => manifest.sequence > target.sequence);
+  if (!suffix.length) {
+    throw new DevFlowError("ROLLBACK_TARGET_INVALID", "rollback target is the live chain tip; there is nothing to undo", {
+      targetCheckpointId
     });
   }
   const snapshot = await snapshotProtectedRoots(root2, config.protectedRoots);
@@ -5549,7 +5989,6 @@ async function previewRollback(root2, featureId, targetCheckpointId) {
       conflicts
     });
   }
-  const suffix = chain.filter((manifest) => manifest.sequence > target.sequence);
   const stale = suffix.filter((manifest) => manifest.projectConfigSha256 !== projectConfigSha256);
   if (stale.length) {
     throw new DevFlowError("ROLLBACK_BASIS_STALE", "project verification config changed after these checkpoints", {
@@ -5572,8 +6011,8 @@ async function previewRollback(root2, featureId, targetCheckpointId) {
     }
   }
   const filePlan = /* @__PURE__ */ new Map();
-  const planAction = (path16, action) => {
-    filePlan.set(path16, action);
+  const planAction = (path17, action) => {
+    filePlan.set(path17, action);
   };
   for (const manifest of undoManifests) {
     for (const record of manifest.files) {
@@ -5604,15 +6043,14 @@ async function previewRollback(root2, featureId, targetCheckpointId) {
     }
   }
   const plan = [...filePlan.values()].sort((a, b) => a.path.localeCompare(b.path));
-  const previewBasisHash = digest8(canonicalReviewValueJson({
+  const previewBasisHash = digest9(canonicalReviewValueJson({
     targetCheckpointId,
     targetUnitId: target.unitId,
     undoOrder: undoManifests.map((manifest) => manifest.unitId),
     filePlan: plan,
     verificationCommands,
     projectConfigSha256,
-    traceabilitySha256: state.traceability?.sha256 ?? null,
-    stateRevision: state.revision
+    traceabilitySha256: state.traceability?.sha256 ?? null
   }));
   return {
     targetCheckpointId,
@@ -5629,15 +6067,38 @@ async function rollbackChainView(root2, state) {
   if (!checkpointsEnforcementRequired(state.route, state.workflowCapabilities)) {
     return { enforced: false, chain: [], validTargets: [], conflicts: [] };
   }
+  const gateStatus = state.rollbackGate?.status === "pending" || state.rollbackGate?.status === "confirmed" ? {
+    status: state.rollbackGate.status,
+    targetCheckpointId: state.rollbackGate.targetCheckpointId,
+    targetUnitId: state.rollbackGate.targetUnitId,
+    interactionId: state.rollbackGate.interactionId,
+    presentedAt: state.rollbackGate.presentedAt,
+    ...state.rollbackGate.status === "confirmed" && state.rollbackGate.confirmedAt ? { confirmedAt: state.rollbackGate.confirmedAt } : {}
+  } : void 0;
+  let openTransaction;
+  try {
+    const tx = await readRollbackTransaction(root2, state.featureId);
+    if (tx && !rollbackTransactionFinished(tx)) {
+      openTransaction = {
+        transactionId: tx.transactionId,
+        phase: tx.phase,
+        targetCheckpointId: tx.targetCheckpointId,
+        startedAt: tx.startedAt,
+        ...tx.error ? { error: tx.error } : {}
+      };
+    }
+  } catch {
+  }
   let nodes;
   try {
     nodes = rollbackNodes((await readTraceability(root2, state)).nodes);
   } catch {
-    return { enforced: true, chain: [], validTargets: [], conflicts: [] };
+    return { enforced: true, chain: [], validTargets: [], conflicts: [], gateStatus, openTransaction };
   }
   const chain = await checkpointChain(root2, state.featureId, state);
+  const live = liveChain(state, chain);
   try {
-    assertChainIntegrity(chain, nodes);
+    assertChainIntegrity(live, nodes);
   } catch {
     return {
       enforced: true,
@@ -5647,18 +6108,20 @@ async function rollbackChainView(root2, state) {
         sequence: manifest.sequence
       })),
       validTargets: [],
-      conflicts: []
+      conflicts: [],
+      gateStatus,
+      openTransaction
     };
   }
   const { config } = await readProjectConfigSnapshot(root2);
   const snapshot = await snapshotProtectedRoots(root2, config.protectedRoots);
   const fileScopes = [...new Set(nodes.flatMap((node) => node.fileScope))];
   let baselineFiles = [];
-  if (chain.length) {
+  if (live.length) {
     try {
-      baselineFiles = (await readCheckpointBaseline(root2, state.featureId, chain[0].unitId)).files;
+      baselineFiles = (await readCheckpointBaseline(root2, state.featureId, live[0].unitId)).files;
     } catch {
-      return { enforced: true, chain: [], validTargets: [], conflicts: [] };
+      return { enforced: true, chain: [], validTargets: [], conflicts: [], gateStatus, openTransaction };
     }
   }
   return {
@@ -5668,9 +6131,882 @@ async function rollbackChainView(root2, state) {
       unitId: manifest.unitId,
       sequence: manifest.sequence
     })),
-    validTargets: chain.map((manifest) => manifest.checkpointId),
-    conflicts: detectChainConflicts(chain, snapshot, fileScopes, baselineFiles)
+    // The live chain tip has nothing to undo and can never be a target.
+    validTargets: live.slice(0, -1).map((manifest) => manifest.checkpointId),
+    conflicts: live.length ? detectChainConflicts(live, snapshot, fileScopes, baselineFiles) : [],
+    gateStatus,
+    openTransaction
   };
+}
+async function presentRollbackGate(root2, featureId, expectedRevision, targetCheckpointId) {
+  const initial = await readState(root2, featureId);
+  if (initial.revision !== expectedRevision) {
+    throw new DevFlowError("STATE_REVISION_CONFLICT", "state revision changed", { currentRevision: initial.revision });
+  }
+  if (!rollbackExecutionAllowed(initial.route, initial.workflowCapabilities)) {
+    throw new DevFlowError("ROLLBACK_EXECUTION_NOT_ALLOWED", "rollback execution requires checkpoints:1 and rollbackExecution:1 in a standard route");
+  }
+  if (initial.lifecycle !== "active") {
+    throw new DevFlowError("INVALID_LIFECYCLE", "rollback gate requires an active feature");
+  }
+  if (initial.rollbackGate?.status === "pending") {
+    throw new DevFlowError("ROLLBACK_GATE_ALREADY_PRESENTED", "a rollback confirmation gate is already pending", {
+      interactionId: initial.rollbackGate.interactionId
+    });
+  }
+  const preview = await previewRollback(root2, featureId, targetCheckpointId);
+  let interaction;
+  const state = await mutate(root2, featureId, expectedRevision, "rollback-gate-presented", async (state2) => {
+    if (!rollbackExecutionAllowed(state2.route, state2.workflowCapabilities)) {
+      throw new DevFlowError("ROLLBACK_EXECUTION_NOT_ALLOWED", "rollback execution requires checkpoints:1 and rollbackExecution:1 in a standard route");
+    }
+    if (state2.lifecycle !== "active") {
+      throw new DevFlowError("INVALID_LIFECYCLE", "rollback gate requires an active feature");
+    }
+    if (state2.rollbackGate?.status === "pending") {
+      throw new DevFlowError("ROLLBACK_GATE_ALREADY_PRESENTED", "a rollback confirmation gate was presented concurrently");
+    }
+    interaction = createInteraction(state2, {
+      kind: "rollback-confirmation",
+      target: `rollback:${targetCheckpointId}`,
+      basisHash: preview.previewBasisHash,
+      options: [
+        { id: "confirm", label: "\u786E\u8BA4\u56DE\u64A4" },
+        { id: "request-changes", label: "\u63D0\u51FA\u4FEE\u6539\u610F\u89C1", requiresComment: true }
+      ]
+    });
+    state2.rollbackGate = {
+      status: "pending",
+      targetCheckpointId: preview.targetCheckpointId,
+      targetUnitId: preview.targetUnitId,
+      previewBasisHash: preview.previewBasisHash,
+      interactionId: interaction.id,
+      stateRevision: state2.revision,
+      presentedAt: (/* @__PURE__ */ new Date()).toISOString()
+    };
+  }, () => ({
+    gate: "rollback-confirmation",
+    targetCheckpointId,
+    interactionId: interaction?.id
+  }));
+  if (!interaction) throw new DevFlowError("INTERACTION_NOT_CREATED", targetCheckpointId);
+  return { state, interaction: toPublicInteraction(interaction), preview };
+}
+async function resolveRollbackGateResponse(root2, featureId, expectedRevision, interactionId, host, input) {
+  const initial = await readState(root2, featureId);
+  if (initial.revision !== expectedRevision) {
+    throw new DevFlowError("STATE_REVISION_CONFLICT", "state revision changed", { currentRevision: initial.revision });
+  }
+  const gate = initial.rollbackGate;
+  if (!gate || gate.status !== "pending" || gate.interactionId !== interactionId) {
+    throw new DevFlowError("ROLLBACK_GATE_NOT_PENDING", "rollback gate is not pending or belongs to a different interaction");
+  }
+  const interaction = getInteraction(initial, interactionId);
+  if (interaction.kind !== "rollback-confirmation" || interaction.status !== "pending") {
+    throw new DevFlowError("INTERACTION_NOT_PENDING", interactionId);
+  }
+  let currentPreview;
+  try {
+    currentPreview = await previewRollback(root2, featureId, gate.targetCheckpointId);
+  } catch (err) {
+    if (err instanceof DevFlowError) {
+      await mutate(root2, featureId, expectedRevision, "rollback-gate-stale", async (state) => {
+        if (state.rollbackGate?.interactionId === interactionId) {
+          delete state.rollbackGate;
+          clearInteractionsForTarget(state, `rollback:${gate.targetCheckpointId}`);
+        }
+      });
+      throw new DevFlowError("ROLLBACK_GATE_BASIS_CHANGED", "rollback preview failed or basis changed since gate was presented; the pending gate has been cleared", {
+        originalError: err.code,
+        recoveryHint: "Resolve the conflict or update checkpoints, then present the rollback gate again"
+      });
+    }
+    throw err;
+  }
+  if (currentPreview.previewBasisHash !== gate.previewBasisHash) {
+    await mutate(root2, featureId, expectedRevision, "rollback-gate-stale", async (state) => {
+      if (state.rollbackGate?.interactionId === interactionId) {
+        delete state.rollbackGate;
+        clearInteractionsForTarget(state, `rollback:${gate.targetCheckpointId}`);
+      }
+    });
+    throw new DevFlowError("ROLLBACK_GATE_BASIS_CHANGED", "rollback preview basis hash changed since gate was presented; the pending gate has been cleared", {
+      recoveryHint: "Present the rollback gate again after updating checkpoint state"
+    });
+  }
+  if (input.source === "text-token") {
+    if (!input.promptEventId) {
+      throw new DevFlowError("ROLLBACK_GATE_PROVENANCE_UNAVAILABLE", "text-token resolution requires a prompt event id", {
+        recoveryHint: "Pass the host-captured promptEventId from a user prompt that occurred after gate presentation"
+      });
+    }
+    const events = await readFeatureEvents(root2, featureId);
+    const eventRecord = events.find(
+      (item) => item.type === "host-event" && item.data.eventId === input.promptEventId
+    );
+    if (!eventRecord) {
+      throw new DevFlowError("ROLLBACK_GATE_PROVENANCE_UNAVAILABLE", "no matching host event found for the given promptEventId", {
+        recoveryHint: "Ensure the host UserPromptSubmit hook is active, then submit one exact approval reply and retry"
+      });
+    }
+    const event = eventRecord.data;
+    if (event.type !== "user-prompt") {
+      throw new DevFlowError("ROLLBACK_GATE_PROVENANCE_UNAVAILABLE", "the event referenced by promptEventId is not a user prompt; tool events cannot confirm a gate", {
+        recoveryHint: "Submit the confirmation reply in a user message, not through a tool callback"
+      });
+    }
+    if (eventRecord.revision <= gate.stateRevision) {
+      throw new DevFlowError("ROLLBACK_GATE_SAME_TURN", "confirmation must come from a later user turn after gate presentation", {
+        recoveryHint: "Submit the confirmation reply in a later user message"
+      });
+    }
+    if (Date.parse(event.at ?? "") < Date.parse(gate.presentedAt)) {
+      throw new DevFlowError("ROLLBACK_GATE_SAME_TURN", "confirmation event timestamp is before gate presentation", {
+        recoveryHint: "Submit the confirmation reply after the gate has been presented"
+      });
+    }
+    if (event.text !== input.userReply) {
+      throw new DevFlowError("ROLLBACK_GATE_REPLY_MISMATCH", "userReply must match the captured prompt text exactly", {
+        recoveryHint: "Pass the exact user prompt text that was captured for this event"
+      });
+    }
+  }
+  let response;
+  return mutate(root2, featureId, expectedRevision, "rollback-gate-resolved", async (state) => {
+    const currentGate = state.rollbackGate;
+    if (!currentGate || currentGate.status !== "pending" || currentGate.interactionId !== interactionId) {
+      throw new DevFlowError("ROLLBACK_GATE_NOT_PENDING", "rollback gate was resolved concurrently");
+    }
+    response = input.source === "elicitation" ? resolveNativeInteraction(state, interactionId, input.action, input.comment, host) : resolveTokenInteraction(state, interactionId, input.userReply, host, input.promptEventId);
+    if (response.action === "confirm") {
+      state.rollbackGate = {
+        ...currentGate,
+        status: "confirmed",
+        confirmedAt: (/* @__PURE__ */ new Date()).toISOString()
+      };
+    } else if (response.action === "request-changes") {
+      delete state.rollbackGate;
+      clearInteractionsForTarget(state, `rollback:${gate.targetCheckpointId}`);
+    } else {
+      throw new DevFlowError("INTERACTION_ACTION_INVALID", response.action);
+    }
+    state.lastUpdatedBy = { host, pluginVersion: "1.7.0" };
+  }, () => ({ gate: "rollback-confirmation", interactionId, response }));
+}
+async function resolveRollbackGateElicitation(root2, featureId, expectedRevision, interactionId, action, comment, host) {
+  return resolveRollbackGateResponse(root2, featureId, expectedRevision, interactionId, host, {
+    action,
+    comment,
+    source: "elicitation"
+  });
+}
+async function resolveRollbackGateToken(root2, featureId, expectedRevision, interactionId, userReply, host, promptEventId) {
+  return resolveRollbackGateResponse(root2, featureId, expectedRevision, interactionId, host, {
+    userReply,
+    promptEventId,
+    source: "text-token"
+  });
+}
+var featureDirectory3 = (root2, featureId) => path12.join(root2, ".dev-flow", "features", featureId);
+async function pathExists3(file) {
+  try {
+    await access3(file);
+    return true;
+  } catch {
+    return false;
+  }
+}
+async function fsyncDirectory4(directory) {
+  const handle = await open6(directory, "r");
+  try {
+    await handle.sync();
+  } finally {
+    await handle.close();
+  }
+}
+async function writeFileAtomicMode(file, bytes, mode) {
+  await mkdir6(path12.dirname(file), { recursive: true });
+  const temp = `${file}.${randomUUID9()}.tmp`;
+  const handle = await open6(temp, "w");
+  try {
+    await handle.writeFile(bytes);
+    await handle.sync();
+  } finally {
+    await handle.close();
+  }
+  await chmod(temp, Number.parseInt(mode, 8));
+  await rename6(temp, file);
+  await fsyncDirectory4(path12.dirname(file));
+}
+async function writeAtomicBuffer(file, contents) {
+  await mkdir6(path12.dirname(file), { recursive: true });
+  const temp = `${file}.${randomUUID9()}.tmp`;
+  const handle = await open6(temp, "w");
+  try {
+    await handle.writeFile(contents);
+    await handle.sync();
+  } finally {
+    await handle.close();
+  }
+  await rename6(temp, file);
+  await fsyncDirectory4(path12.dirname(file));
+}
+function validateBackupManifest(value, transactionId) {
+  const manifest = value;
+  const files = manifest?.files;
+  if (!manifest || manifest.schemaVersion !== 1 || manifest.transactionId !== transactionId || typeof manifest.featureId !== "string" || typeof manifest.capturedAt !== "string" || !Array.isArray(files) || !files.every((file) => file && typeof file.path === "string" && /^[a-f0-9]{64}$/.test(file.sha256) && /^[0-7]{3,4}$/.test(file.mode))) {
+    throw new DevFlowError("ROLLBACK_BACKUP_CORRUPT", "rollback backup manifest is invalid", { transactionId });
+  }
+}
+async function readBackupManifest(manifestFile, transactionId) {
+  let raw;
+  try {
+    raw = await readFile10(manifestFile, "utf8");
+  } catch {
+    throw new DevFlowError("ROLLBACK_BACKUP_CORRUPT", "rollback backup manifest is missing", { transactionId });
+  }
+  try {
+    const parsed = JSON.parse(raw);
+    validateBackupManifest(parsed, transactionId);
+    return parsed;
+  } catch (error) {
+    if (error instanceof DevFlowError) throw error;
+    throw new DevFlowError("ROLLBACK_BACKUP_CORRUPT", "rollback backup manifest is unreadable", { transactionId });
+  }
+}
+function snapshotMismatches(expected, current) {
+  const mismatches = [];
+  const expectedByPath = new Map(expected.map((file) => [file.path, file]));
+  const currentByPath = new Map(current.map((file) => [file.path, file]));
+  for (const [filePath, file] of expectedByPath) {
+    const actual = currentByPath.get(filePath);
+    if (!actual) {
+      mismatches.push({ path: filePath, expected: "present", actual: "absent" });
+    } else if (actual.sha256 !== file.sha256 || actual.mode !== file.mode) {
+      mismatches.push({ path: filePath, expected: "present", actual: "changed" });
+    }
+  }
+  for (const filePath of currentByPath.keys()) {
+    if (!expectedByPath.has(filePath)) {
+      mismatches.push({ path: filePath, expected: "absent", actual: "present" });
+    }
+  }
+  return mismatches.sort((a, b) => a.path.localeCompare(b.path));
+}
+async function assertWorkspaceMatchesChainTip(root2, featureId, config) {
+  const state = await readState(root2, featureId);
+  const chain = liveChain(state, await checkpointChain(root2, featureId, state));
+  const nodes = rollbackNodes((await readTraceability(root2, state)).nodes);
+  const fileScopes = [...new Set(nodes.flatMap((node) => node.fileScope))];
+  const baselineFiles = chain.length ? (await readCheckpointBaseline(root2, featureId, chain[0].unitId)).files : [];
+  const snapshot = await snapshotProtectedRoots(root2, config.protectedRoots);
+  const conflicts = detectChainConflicts(chain, snapshot, fileScopes, baselineFiles);
+  if (conflicts.length) {
+    throw new DevFlowError("ROLLBACK_HASH_MISMATCH", "workspace drifted from the confirmed rollback basis; refusing to capture it as the pre-rollback backup", {
+      conflicts,
+      recoveryHint: "Restore the drifted files to their checkpointed bytes, then resume the rollback with the same target; run dev_flow_doctor to inspect the open transaction"
+    });
+  }
+}
+async function captureBackup(root2, featureId, journal, config, options) {
+  const dir = path12.join(featureDirectory3(root2, featureId), journal.backupDirectory);
+  const manifestFile = path12.join(dir, "backup-manifest.json");
+  if (await pathExists3(manifestFile)) {
+    const manifest2 = await readBackupManifest(manifestFile, journal.transactionId);
+    const current = await snapshotProtectedRoots(root2, config.protectedRoots);
+    const mismatches = snapshotMismatches(manifest2.files, current);
+    if (mismatches.length) {
+      throw new DevFlowError("ROLLBACK_HASH_MISMATCH", "workspace drifted from the recorded rollback backup", { mismatches });
+    }
+    return;
+  }
+  await assertWorkspaceMatchesChainTip(root2, featureId, config);
+  await mkdir6(path12.join(dir, "files"), { recursive: true });
+  await mkdir6(path12.join(dir, "trash"), { recursive: true });
+  const snapshot = await snapshotProtectedRoots(root2, config.protectedRoots);
+  let first = true;
+  for (const file of snapshot) {
+    const bytes = await readFile10(path12.join(root2, file.path));
+    if (digest9(bytes) !== file.sha256) {
+      throw new DevFlowError("ROLLBACK_HASH_MISMATCH", "protected files changed while capturing the rollback backup", { path: file.path });
+    }
+    const blobFile = path12.join(dir, "files", file.sha256);
+    if (!await pathExists3(blobFile)) await writeAtomicBuffer(blobFile, bytes);
+    if (first) {
+      first = false;
+      await options.fault?.("during-backup");
+    }
+  }
+  const manifest = {
+    schemaVersion: 1,
+    transactionId: journal.transactionId,
+    featureId,
+    capturedAt: (/* @__PURE__ */ new Date()).toISOString(),
+    files: snapshot
+  };
+  await writeAtomicBuffer(manifestFile, `${JSON.stringify(manifest, null, 2)}
+`);
+  const captureDrift = snapshotMismatches(manifest.files, await snapshotProtectedRoots(root2, config.protectedRoots));
+  if (captureDrift.length) {
+    throw new DevFlowError("ROLLBACK_HASH_MISMATCH", "protected files changed while capturing the rollback backup", { mismatches: captureDrift });
+  }
+}
+async function assertPathMatchesBackupExpectation(root2, filePath, expected) {
+  const absolute = path12.join(root2, filePath);
+  if (expected) {
+    let metadata;
+    let bytes;
+    try {
+      metadata = await lstat3(absolute);
+      bytes = await readFile10(absolute);
+    } catch {
+      throw new DevFlowError("ROLLBACK_HASH_MISMATCH", "workspace drifted from the pre-rollback backup before a file action", {
+        path: filePath,
+        expected: "present",
+        actual: "missing",
+        recoveryHint: "Restore the drifted path to its pre-rollback bytes, then resume the rollback with the same target"
+      });
+    }
+    const mode = (metadata.mode & 511).toString(8).padStart(3, "0");
+    if (digest9(bytes) !== expected.sha256 || mode !== expected.mode) {
+      throw new DevFlowError("ROLLBACK_HASH_MISMATCH", "workspace drifted from the pre-rollback backup before a file action", {
+        path: filePath,
+        expected: "present",
+        actual: "changed",
+        recoveryHint: "Restore the drifted path to its pre-rollback bytes, then resume the rollback with the same target"
+      });
+    }
+    return;
+  }
+  if (await pathExists3(absolute)) {
+    throw new DevFlowError("ROLLBACK_HASH_MISMATCH", "workspace drifted from the pre-rollback backup before a file action", {
+      path: filePath,
+      expected: "absent",
+      actual: "present",
+      recoveryHint: "Remove the unregistered path, then resume the rollback with the same target"
+    });
+  }
+}
+async function applyFilePlan(root2, featureId, journal, options) {
+  const dir = path12.join(featureDirectory3(root2, featureId), journal.backupDirectory);
+  const trash = path12.join(dir, "trash");
+  const backup = await readBackupManifest(path12.join(dir, "backup-manifest.json"), journal.transactionId);
+  const expectedByPath = new Map(backup.files.map((file) => [file.path, file]));
+  for (let index = journal.nextFileIndex; index < journal.filePlan.length; index += 1) {
+    const action = journal.filePlan[index];
+    if (index === 0) await options.fault?.("before-first-rename");
+    await assertPathMatchesBackupExpectation(root2, action.path, expectedByPath.get(action.path));
+    const target = path12.join(root2, action.path);
+    if (action.action === "restore") {
+      const blobFile = path12.join(featureDirectory3(root2, featureId), blobPath(action.blobSha256));
+      let bytes;
+      try {
+        bytes = await readFile10(blobFile);
+      } catch {
+        throw new DevFlowError("ROLLBACK_CHECKPOINT_CORRUPT", "checkpoint blob is missing", {
+          blobSha256: action.blobSha256,
+          path: action.path
+        });
+      }
+      if (digest9(bytes) !== action.blobSha256) {
+        throw new DevFlowError("ROLLBACK_CHECKPOINT_CORRUPT", "checkpoint blob failed its digest check", {
+          blobSha256: action.blobSha256,
+          path: action.path
+        });
+      }
+      await writeFileAtomicMode(target, bytes, action.mode);
+    } else {
+      const trashFile = path12.join(trash, `${String(index).padStart(4, "0")}-${path12.basename(action.path)}`);
+      if (await pathExists3(target)) {
+        await mkdir6(trash, { recursive: true });
+        await rename6(target, trashFile);
+        await fsyncDirectory4(path12.dirname(target));
+        await fsyncDirectory4(trash);
+      } else if (!await pathExists3(trashFile)) {
+        throw new DevFlowError("ROLLBACK_HASH_MISMATCH", "file planned for deletion vanished outside the transaction", { path: action.path });
+      }
+    }
+    journal.nextFileIndex = index + 1;
+    await writeRollbackTransaction(root2, featureId, journal);
+    const progressive = await expectedPlanStateAfter(root2, featureId, journal, journal.nextFileIndex);
+    for (const action2 of journal.filePlan.slice(0, journal.nextFileIndex)) {
+      const expected = progressive.find((file) => file.path === action2.path);
+      if (action2.action === "delete") {
+        if (await pathExists3(path12.join(root2, action2.path))) {
+          throw new DevFlowError("ROLLBACK_HASH_MISMATCH", "workspace drifted after a rollback file action", {
+            path: action2.path,
+            source: "post-plan",
+            expected: "absent",
+            actual: "present",
+            recoveryHint: "Restore the drifted path to the post-plan state, then resume the rollback with the same target"
+          });
+        }
+      } else if (expected) {
+        let metadata;
+        let bytes;
+        try {
+          metadata = await lstat3(path12.join(root2, action2.path));
+          bytes = await readFile10(path12.join(root2, action2.path));
+        } catch {
+          throw new DevFlowError("ROLLBACK_HASH_MISMATCH", "workspace drifted after a rollback file action", {
+            path: action2.path,
+            source: "post-plan",
+            expected: "present",
+            actual: "missing",
+            recoveryHint: "Restore the drifted path to the post-plan state, then resume the rollback with the same target"
+          });
+        }
+        const mode = (metadata.mode & 511).toString(8).padStart(3, "0");
+        if (digest9(bytes) !== expected.sha256 || mode !== expected.mode) {
+          throw new DevFlowError("ROLLBACK_HASH_MISMATCH", "workspace drifted after a rollback file action", {
+            path: action2.path,
+            source: "post-plan",
+            expected: "present",
+            actual: "changed",
+            recoveryHint: "Restore the drifted path to the post-plan state, then resume the rollback with the same target"
+          });
+        }
+      }
+    }
+    if (index === 0) await options.fault?.("after-first-rename");
+  }
+  journal.phase = "verifying";
+  await writeRollbackTransaction(root2, featureId, journal);
+}
+async function transactionVerificationCommands(root2, featureId, journal, config) {
+  const state = await readState(root2, featureId);
+  const nodes = rollbackNodes((await readTraceability(root2, state)).nodes);
+  const plan = [];
+  for (const unitId of journal.undoOrder) {
+    const node = nodes.find((candidate) => candidate.id === unitId);
+    if (!node) {
+      throw new DevFlowError("ROLLBACK_CHAIN_INVALID", "undo unit is not current in the trace graph", { unitId });
+    }
+    for (const commandId of node.rollbackVerification) {
+      const command2 = config.verification.commands.find((candidate) => candidate.id === commandId);
+      if (!command2) {
+        throw new DevFlowError("TRACE_VERIFICATION_COMMAND_UNKNOWN", "rollback verification command is not configured", {
+          unitId,
+          commandId
+        });
+      }
+      plan.push({ unitId, command: command2 });
+    }
+  }
+  return plan;
+}
+async function expectedPlanStateAfter(root2, featureId, journal, appliedCount) {
+  const manifest = await readBackupManifest(
+    path12.join(featureDirectory3(root2, featureId), journal.backupDirectory, "backup-manifest.json"),
+    journal.transactionId
+  );
+  const expected = new Map(manifest.files.map((file) => [file.path, { path: file.path, sha256: file.sha256, mode: file.mode }]));
+  for (const action of journal.filePlan.slice(0, appliedCount)) {
+    if (action.action === "restore") {
+      expected.set(action.path, { path: action.path, sha256: action.blobSha256, mode: action.mode });
+    } else {
+      expected.delete(action.path);
+    }
+  }
+  return [...expected.values()].sort((a, b) => a.path.localeCompare(b.path));
+}
+async function expectedPlanState(root2, featureId, journal) {
+  return expectedPlanStateAfter(root2, featureId, journal, journal.filePlan.length);
+}
+async function recordVerificationAttempt(root2, featureId, journal, attempt) {
+  const attemptId = randomUUID9();
+  const state = await readState(root2, featureId);
+  await appendFeatureEvent(root2, featureId, state.revision, "rollback-verification-attempt", {
+    attemptId,
+    transactionId: journal.transactionId,
+    ...attempt
+  });
+  journal.verificationAttemptIds.push(attemptId);
+  await writeRollbackTransaction(root2, featureId, journal);
+  return attemptId;
+}
+async function runRollbackVerification(root2, featureId, journal, config, options) {
+  await options.fault?.("before-verification");
+  const commands = await transactionVerificationCommands(root2, featureId, journal, config);
+  const events = await readFeatureEvents(root2, featureId);
+  const passedByUnit = /* @__PURE__ */ new Map();
+  for (const event of events) {
+    if (event.type !== "rollback-verification-attempt") continue;
+    const data = event.data;
+    if (data.transactionId !== journal.transactionId || data.status !== "passed" || !data.unitId || !data.commandId) continue;
+    const passed = passedByUnit.get(data.unitId) ?? /* @__PURE__ */ new Set();
+    passed.add(data.commandId);
+    passedByUnit.set(data.unitId, passed);
+  }
+  for (const { unitId, command: command2 } of commands) {
+    if (passedByUnit.get(unitId)?.has(command2.id)) continue;
+    const startedAt = (/* @__PURE__ */ new Date()).toISOString();
+    const result = await runVerificationCommand(root2, command2);
+    const attemptId = await recordVerificationAttempt(root2, featureId, journal, {
+      unitId,
+      commandId: command2.id,
+      command: commandSummary2(command2),
+      status: result.exitCode === 0 ? "passed" : "failed",
+      exitCode: result.exitCode,
+      output: result.output.slice(-4e3),
+      startedAt,
+      completedAt: (/* @__PURE__ */ new Date()).toISOString()
+    });
+    if (result.exitCode !== 0) {
+      throw new DevFlowError("ROLLBACK_VERIFICATION_FAILED", "rollback verification failed; the transaction compensates the workspace", {
+        unitId,
+        commandId: command2.id,
+        attemptId,
+        exitCode: result.exitCode,
+        output: result.output.slice(-4e3)
+      });
+    }
+  }
+  const expected = await expectedPlanState(root2, featureId, journal);
+  const current = await snapshotProtectedRoots(root2, config.protectedRoots);
+  const mismatches = snapshotMismatches(expected, current);
+  if (mismatches.length) {
+    const attemptId = await recordVerificationAttempt(root2, featureId, journal, {
+      unitId: null,
+      commandId: "drift-guard",
+      command: "protected-root drift guard",
+      status: "failed",
+      reason: "drift",
+      mismatches,
+      startedAt: (/* @__PURE__ */ new Date()).toISOString(),
+      completedAt: (/* @__PURE__ */ new Date()).toISOString()
+    });
+    throw new DevFlowError("ROLLBACK_VERIFICATION_FAILED", "rollback verification changed protected files; the transaction compensates the workspace", {
+      attemptId,
+      mismatches,
+      source: "verification-drift"
+    });
+  }
+}
+async function recordCompensationAttempt(root2, featureId, journal, attempt) {
+  const attemptId = randomUUID9();
+  const state = await readState(root2, featureId);
+  await appendFeatureEvent(root2, featureId, state.revision, "rollback-compensation-attempt", {
+    attemptId,
+    transactionId: journal.transactionId,
+    status: attempt.status,
+    ...attempt.reason ? { reason: attempt.reason } : {},
+    ...attempt.mismatches ? { mismatches: attempt.mismatches } : {},
+    startedAt: attempt.startedAt,
+    completedAt: (/* @__PURE__ */ new Date()).toISOString()
+  });
+  journal.verificationAttemptIds.push(attemptId);
+  await writeRollbackTransaction(root2, featureId, journal);
+  return attemptId;
+}
+async function blockRecovery(root2, featureId, journal, message, details) {
+  journal.error = message;
+  await writeRollbackTransaction(root2, featureId, journal);
+  throw new DevFlowError("ROLLBACK_RECOVERY_BLOCKED", "rollback recovery is blocked: compensation could not restore the pre-rollback workspace", {
+    transactionId: journal.transactionId,
+    backupDirectory: journal.backupDirectory,
+    attemptIds: [...journal.verificationAttemptIds],
+    ...details,
+    recoveryHint: "Resolve the reported cause, then resume the same rollback transaction; the backup scene is preserved"
+  });
+}
+async function compensateRollback(root2, featureId, journal, config, options) {
+  if (journal.phase !== "compensating") {
+    journal.phase = "compensating";
+    await writeRollbackTransaction(root2, featureId, journal);
+  }
+  const dir = path12.join(featureDirectory3(root2, featureId), journal.backupDirectory);
+  const startedAt = (/* @__PURE__ */ new Date()).toISOString();
+  try {
+    const manifest = await readBackupManifest(path12.join(dir, "backup-manifest.json"), journal.transactionId);
+    let restored = 0;
+    for (const file of manifest.files) {
+      const blobFile = path12.join(dir, "files", file.sha256);
+      let bytes;
+      try {
+        bytes = await readFile10(blobFile);
+      } catch {
+        throw new DevFlowError("ROLLBACK_BACKUP_CORRUPT", "rollback backup bytes are missing", { path: file.path, sha256: file.sha256 });
+      }
+      if (digest9(bytes) !== file.sha256) {
+        throw new DevFlowError("ROLLBACK_BACKUP_CORRUPT", "rollback backup bytes failed their digest check", { path: file.path, sha256: file.sha256 });
+      }
+      await writeFileAtomicMode(path12.join(root2, file.path), bytes, file.mode);
+      restored += 1;
+      if (restored === 1) await options.fault?.("during-compensation");
+    }
+    const current = await snapshotProtectedRoots(root2, config.protectedRoots);
+    const expectedPaths = new Set(manifest.files.map((file) => file.path));
+    const trash = path12.join(dir, "trash");
+    for (const file of current) {
+      if (expectedPaths.has(file.path)) continue;
+      const trashFile = path12.join(trash, `extra-${digest9(file.path).slice(0, 16)}-${path12.basename(file.path)}`);
+      await mkdir6(trash, { recursive: true });
+      await rename6(path12.join(root2, file.path), trashFile);
+      await fsyncDirectory4(path12.dirname(path12.join(root2, file.path)));
+    }
+    const after = await snapshotProtectedRoots(root2, config.protectedRoots);
+    const mismatches = snapshotMismatches(manifest.files, after);
+    if (mismatches.length) {
+      await recordCompensationAttempt(root2, featureId, journal, { status: "failed", reason: "mismatch", mismatches, startedAt });
+      await blockRecovery(root2, featureId, journal, "compensation verification failed: the workspace does not match the pre-rollback backup", { mismatches });
+    }
+    await recordCompensationAttempt(root2, featureId, journal, { status: "passed", startedAt });
+  } catch (error) {
+    if (error instanceof DevFlowError && error.code === "ROLLBACK_BACKUP_CORRUPT") {
+      await recordCompensationAttempt(root2, featureId, journal, { status: "failed", reason: "backup-corrupt", startedAt });
+      await blockRecovery(root2, featureId, journal, error.message, { cause: error.details });
+    }
+    throw error;
+  }
+  journal.phase = "compensated";
+  delete journal.error;
+  await writeRollbackTransaction(root2, featureId, journal);
+}
+async function commitRollbackState(root2, featureId, journal) {
+  const target = await readCheckpoint(root2, featureId, journal.targetCheckpointId);
+  return mutatePrepared(root2, featureId, journal.stateRevision, "rollback-executed", async (current, nextStateRevision) => {
+    const nodes = rollbackNodes((await readTraceability(root2, current)).nodes);
+    const basisKept = implementationUnitBasisHash(current) === target.basisHash;
+    const review = reviewEnforcementRequired(current.route, current.workflowCapabilities) ? await prepareReviewInvalidation(root2, current, nextStateRevision) : void 0;
+    return {
+      mutate: (draft) => {
+        const units = draft.implementationUnits ?? [];
+        for (const unitId of journal.undoOrder) {
+          const unit = units.find((candidate) => candidate.unitId === unitId);
+          if (!unit) {
+            throw new DevFlowError("ROLLBACK_CHAIN_INVALID", "undo unit is missing from implementation state", { unitId });
+          }
+          unit.status = "rolled_back";
+        }
+        const earliest = units.find((candidate) => candidate.unitId === journal.undoOrder[journal.undoOrder.length - 1]);
+        earliest.status = "pending";
+        delete earliest.checkpointId;
+        delete earliest.startedFingerprint;
+        delete earliest.beginNonce;
+        if (!basisKept) {
+          delete draft.humanGates.implementation_approval;
+          clearInteractionsForTarget(draft, "gate:implementation_approval");
+        }
+        const basisHash2 = implementationUnitBasisHash(draft);
+        for (const node of nodes) {
+          if (!units.some((candidate) => candidate.unitId === node.id)) {
+            units.push(implementationUnitForRollbackNode(node, basisHash2));
+          }
+        }
+        draft.implementationUnits = units;
+        for (const step of ["implementation", "code_review", "verification", "feature_check", "finalize"]) {
+          delete draft.steps[step];
+        }
+        draft.logicComplete = false;
+        draft.featureCheck = {};
+        delete draft.verification.satisfiedByAttemptId;
+        delete draft.verification.verifiedFingerprint;
+        if (review) draft.review = review;
+        delete draft.rollbackGate;
+        clearInteractionsForTarget(draft, `rollback:${journal.targetCheckpointId}`);
+      },
+      eventData: {
+        transactionId: journal.transactionId,
+        targetCheckpointId: journal.targetCheckpointId,
+        targetUnitId: journal.targetUnitId,
+        undoOrder: [...journal.undoOrder],
+        undoCheckpoints: [...journal.undoCheckpoints ?? []],
+        verificationAttemptIds: [...journal.verificationAttemptIds]
+      }
+    };
+  }, { allowRollbackTransaction: journal.transactionId });
+}
+async function cleanupRollbackBackup(root2, featureId, journal) {
+  const directory = path12.join(featureDirectory3(root2, featureId), journal.backupDirectory);
+  await rm2(path12.join(directory, "files"), { recursive: true, force: true });
+  await rm2(path12.join(directory, "trash"), { recursive: true, force: true });
+  await rm2(path12.join(directory, "backup-manifest.json"), { force: true });
+}
+async function finishCommitted(root2, featureId, journal, options) {
+  await options.fault?.("before-state-cas");
+  let state = await readState(root2, featureId);
+  if (state.revision === journal.stateRevision) {
+    state = await commitRollbackState(root2, featureId, journal);
+  }
+  await options.fault?.("after-state-cas");
+  await cleanupRollbackBackup(root2, featureId, journal);
+  journal.completedAt = (/* @__PURE__ */ new Date()).toISOString();
+  await writeRollbackTransaction(root2, featureId, journal);
+  return { outcome: "committed", state, transaction: journal };
+}
+async function finishCompensated(root2, featureId, journal, cause) {
+  const state = await readState(root2, featureId);
+  if (state.revision === journal.stateRevision) {
+    await mutatePrepared(root2, featureId, journal.stateRevision, "rollback-compensated", async () => ({
+      mutate: (draft) => {
+        delete draft.rollbackGate;
+        clearInteractionsForTarget(draft, `rollback:${journal.targetCheckpointId}`);
+      },
+      eventData: {
+        transactionId: journal.transactionId,
+        targetCheckpointId: journal.targetCheckpointId,
+        cause: cause.code
+      }
+    }), { allowRollbackTransaction: journal.transactionId });
+  }
+  await cleanupRollbackBackup(root2, featureId, journal);
+  journal.completedAt = (/* @__PURE__ */ new Date()).toISOString();
+  await writeRollbackTransaction(root2, featureId, journal);
+  throw new DevFlowError("ROLLBACK_EXECUTION_FAILED", "rollback execution failed; the workspace was compensated to its pre-rollback state", {
+    compensated: true,
+    transactionId: journal.transactionId,
+    cause: cause.code,
+    attemptIds: [...journal.verificationAttemptIds]
+  });
+}
+async function driveRollbackTransaction(root2, featureId, journal, options) {
+  const lease = await claimRollbackDriveLease(root2, featureId, journal.transactionId);
+  const heartbeat = maintainRollbackDriveLease(root2, featureId, lease);
+  try {
+    heartbeat.assertOwned();
+    const current = await readRollbackTransaction(root2, featureId);
+    if (!current || current.transactionId !== journal.transactionId) {
+      throw new DevFlowError("ROLLBACK_TRANSACTION_MISMATCH", "rollback transaction disappeared while claiming the drive lease", {
+        transactionId: journal.transactionId
+      });
+    }
+    journal = current;
+    const { config, sha256: projectConfigSha256 } = await readProjectConfigSnapshot(root2);
+    try {
+      if ((journal.phase === "prepared" || journal.phase === "backing-up" || journal.phase === "rolling-back" || journal.phase === "verifying") && projectConfigSha256 !== journal.projectConfigSha256) {
+        throw new DevFlowError("ROLLBACK_BASIS_STALE", "project verification config changed during the rollback transaction", {
+          transactionId: journal.transactionId
+        });
+      }
+      if (journal.phase === "prepared") {
+        journal.phase = "backing-up";
+        await writeRollbackTransaction(root2, featureId, journal);
+      }
+      if (journal.phase === "backing-up") {
+        await captureBackup(root2, featureId, journal, config, options);
+        heartbeat.assertOwned();
+        journal.phase = "rolling-back";
+        journal.nextFileIndex = 0;
+        await writeRollbackTransaction(root2, featureId, journal);
+      }
+      if (journal.phase === "rolling-back") {
+        await applyFilePlan(root2, featureId, journal, options);
+        heartbeat.assertOwned();
+      }
+      if (journal.phase === "verifying") {
+        await runRollbackVerification(root2, featureId, journal, config, options);
+        heartbeat.assertOwned();
+        journal.phase = "committed";
+        await writeRollbackTransaction(root2, featureId, journal);
+      }
+      if (journal.phase === "committed") {
+        return await finishCommitted(root2, featureId, journal, options);
+      }
+      if (journal.phase === "compensating") {
+        await compensateRollback(root2, featureId, journal, config, options);
+      }
+      return await finishCompensated(root2, featureId, journal, new DevFlowError(
+        "ROLLBACK_VERIFICATION_FAILED",
+        "rollback verification failed (resumed transaction)",
+        { transactionId: journal.transactionId }
+      ));
+    } catch (error) {
+      if (!(error instanceof DevFlowError)) throw error;
+      if (error.code === "ROLLBACK_RECOVERY_BLOCKED") throw error;
+      if (error.code === "ROLLBACK_HASH_MISMATCH" || error.code === "ROLLBACK_TRANSACTION_BUSY") throw error;
+      if (journal.phase !== "rolling-back" && journal.phase !== "verifying") throw error;
+      await compensateRollback(root2, featureId, journal, config, options);
+      return await finishCompensated(root2, featureId, journal, error);
+    }
+  } finally {
+    await heartbeat.stop();
+    await releaseRollbackDriveLease(root2, featureId, lease);
+  }
+}
+async function clearStaleRollbackGate(root2, featureId, expectedRevision, targetCheckpointId) {
+  await mutate(root2, featureId, expectedRevision, "rollback-gate-stale", async (state) => {
+    if (state.rollbackGate?.targetCheckpointId === targetCheckpointId) {
+      delete state.rollbackGate;
+      clearInteractionsForTarget(state, `rollback:${targetCheckpointId}`);
+    }
+  });
+}
+async function executeRollback(root2, featureId, expectedRevision, targetCheckpointId, options = {}) {
+  const initial = await readState(root2, featureId);
+  if (initial.revision !== expectedRevision) {
+    throw new DevFlowError("STATE_REVISION_CONFLICT", "state revision changed", { currentRevision: initial.revision });
+  }
+  const open7 = await readRollbackTransaction(root2, featureId);
+  if (open7 && !rollbackTransactionFinished(open7)) {
+    if (open7.targetCheckpointId !== targetCheckpointId) {
+      throw new DevFlowError("ROLLBACK_TRANSACTION_MISMATCH", "an open rollback transaction targets a different checkpoint", {
+        transactionId: open7.transactionId,
+        openTargetCheckpointId: open7.targetCheckpointId,
+        targetCheckpointId,
+        recoveryHint: "Resume the open transaction with its original target checkpoint"
+      });
+    }
+    return driveRollbackTransaction(root2, featureId, open7, options);
+  }
+  if (!rollbackExecutionAllowed(initial.route, initial.workflowCapabilities)) {
+    throw new DevFlowError("ROLLBACK_EXECUTION_NOT_ALLOWED", "rollback execution requires checkpoints:1 and rollbackExecution:1 in a standard route");
+  }
+  if (initial.lifecycle !== "active") {
+    throw new DevFlowError("INVALID_LIFECYCLE", "rollback execution requires an active feature");
+  }
+  const gate = initial.rollbackGate;
+  if (gate?.status !== "confirmed") {
+    throw new DevFlowError("ROLLBACK_GATE_NOT_CONFIRMED", "rollback execution requires a confirmed rollback gate");
+  }
+  if (gate.targetCheckpointId !== targetCheckpointId) {
+    throw new DevFlowError("ROLLBACK_GATE_TARGET_MISMATCH", "rollback target does not match the confirmed gate", {
+      confirmedTargetCheckpointId: gate.targetCheckpointId,
+      targetCheckpointId
+    });
+  }
+  let preview;
+  try {
+    preview = await previewRollback(root2, featureId, targetCheckpointId);
+  } catch (error) {
+    if (error instanceof DevFlowError) {
+      await clearStaleRollbackGate(root2, featureId, expectedRevision, targetCheckpointId);
+      throw new DevFlowError("ROLLBACK_GATE_BASIS_CHANGED", "rollback preview failed since the gate was confirmed; the gate has been cleared", {
+        originalError: error.code,
+        recoveryHint: "Resolve the conflict or update checkpoints, then present the rollback gate again"
+      });
+    }
+    throw error;
+  }
+  if (preview.previewBasisHash !== gate.previewBasisHash) {
+    await clearStaleRollbackGate(root2, featureId, expectedRevision, targetCheckpointId);
+    throw new DevFlowError("ROLLBACK_GATE_BASIS_CHANGED", "rollback preview basis changed since the gate was confirmed; the gate has been cleared", {
+      recoveryHint: "Present the rollback gate again after updating checkpoint state"
+    });
+  }
+  const transactionId = randomUUID9();
+  const journal = {
+    schemaVersion: 1,
+    transactionId,
+    featureId,
+    phase: "prepared",
+    targetCheckpointId,
+    targetUnitId: preview.targetUnitId,
+    undoOrder: [...preview.undoOrder],
+    undoCheckpoints: [...preview.undoCheckpoints],
+    previewBasisHash: preview.previewBasisHash,
+    stateRevision: expectedRevision,
+    backupDirectory: `checkpoints/recovery/${transactionId}`,
+    nextFileIndex: 0,
+    filePlan: preview.filePlan.map((action) => ({ ...action })),
+    verificationAttemptIds: [],
+    projectConfigSha256: preview.projectConfigSha256,
+    startedAt: (/* @__PURE__ */ new Date()).toISOString()
+  };
+  await options.fault?.("before-journal-write");
+  await prepareRollbackTransaction(root2, featureId, expectedRevision, journal);
+  await options.fault?.("after-journal-write");
+  return driveRollbackTransaction(root2, featureId, journal, options);
 }
 
 // plugins/dev-flow/src/core/status.ts
@@ -5696,7 +7032,7 @@ async function grillWait(root2, state, action) {
   if (!artifact) return { kind: "none" };
   let contents;
   try {
-    contents = await readFile10(path12.join(root2, ".dev-flow", "features", state.featureId, artifact.path), "utf8");
+    contents = await readFile11(path13.join(root2, ".dev-flow", "features", state.featureId, artifact.path), "utf8");
   } catch {
     throw new DevFlowError("GRILL_STATUS_INVALID", "registered requirements artifact cannot be read", {
       recoveryHint: "Restore or re-scaffold the requirements artifact through MCP, then record it before continuing"
@@ -5798,87 +7134,13 @@ async function readStatusView(root2, featureId) {
   };
 }
 
-// plugins/dev-flow/src/core/implementation-units.ts
-import { createHash as createHash13 } from "node:crypto";
-var digest9 = (value) => createHash13("sha256").update(value).digest("hex");
-function currentRollbackNodes(ledger) {
-  return Object.values(ledger?.nodes ?? {}).filter((node) => node.kind === "rollback" && node.status === "current");
-}
-function implementationUnitBasisHash(state) {
-  return digest9(canonicalReviewValueJson({
-    traceability: state.traceability,
-    approval: state.humanGates.implementation_approval ?? null
-  }));
-}
-async function beginImplementationUnit(root2, id, expectedRevision, unitId) {
-  return mutate(root2, id, expectedRevision, "implementation-unit-begun", async (state) => {
-    if (!checkpointsEnforcementRequired(state.route, state.workflowCapabilities)) {
-      throw new DevFlowError("IMPLEMENTATION_UNITS_NOT_ENFORCED", "implementation units require a checkpoints:1 standard feature");
-    }
-    if (currentOpenStep(state) !== "implementation") {
-      throw new DevFlowError("STEP_OUT_OF_ORDER", "begin requires the implementation step", { expected: currentOpenStep(state) });
-    }
-    const approval = state.humanGates.implementation_approval;
-    if (approval?.status !== "confirmed") {
-      throw new DevFlowError("DEV_FLOW_IMPLEMENTATION_APPROVAL_REQUIRED", "implementation approval must be confirmed before beginning a unit");
-    }
-    const ledger = await assertTraceGateCurrent(root2, state, "implementation");
-    for (const kind of ["requirements", "implementation-plan", "coverage-matrix", ...state.route === "standard-l" ? ["rollback-units"] : []]) {
-      await assertArtifactCurrent(root2, id, state, kind);
-    }
-    if (reviewEnforcementRequired(state.route, state.workflowCapabilities)) {
-      await assertReviewComplete(root2, state);
-    }
-    const nodes = currentRollbackNodes(ledger);
-    const node = nodes.find((candidate) => candidate.id === unitId);
-    if (!node) {
-      throw new DevFlowError("IMPLEMENTATION_UNIT_UNKNOWN", "rollback unit is not part of the current trace graph", { unitId });
-    }
-    if ((state.implementationUnits ?? []).some((unit) => unit.status === "active")) {
-      const active = state.implementationUnits.find((unit) => unit.status === "active");
-      throw new DevFlowError("IMPLEMENTATION_UNIT_ALREADY_ACTIVE", "another rollback unit is already active", { activeUnitId: active.unitId });
-    }
-    const basisHash2 = implementationUnitBasisHash(state);
-    const byId = new Map((state.implementationUnits ?? []).map((unit) => [unit.unitId, unit]));
-    const merged = [];
-    for (const candidate of nodes) {
-      const existing = byId.get(candidate.id);
-      if (existing && existing.status !== "pending") {
-        merged.push(existing);
-      } else {
-        merged.push(implementationUnitForRollbackNode(candidate, basisHash2));
-      }
-    }
-    for (const dependency of node.dependsOn) {
-      const unit = merged.find((candidate) => candidate.unitId === dependency);
-      if (unit?.status !== "checkpointed") {
-        throw new DevFlowError("IMPLEMENTATION_UNIT_DEPENDENCY_INCOMPLETE", "rollback unit dependencies must be checkpointed first", {
-          unitId,
-          dependency,
-          status: unit?.status ?? "unknown"
-        });
-      }
-    }
-    const target = merged.find((unit) => unit.unitId === unitId);
-    if (target.status !== "pending") {
-      throw new DevFlowError("IMPLEMENTATION_UNIT_NOT_PENDING", "rollback unit cannot begin from its current status", { unitId, status: target.status });
-    }
-    const project = await readProjectConfig(root2);
-    const snapshot = await snapshotProtectedRoots(root2, project.protectedRoots);
-    await captureUnitBaseline(root2, id, unitId, snapshot);
-    target.status = "active";
-    target.startedFingerprint = await fingerprintProtectedRoots(root2, project.protectedRoots);
-    state.implementationUnits = merged;
-  }, { unitId });
-}
-
 // plugins/dev-flow/src/mcp/doctor.ts
-import { lstat as lstat3, readdir as readdir4, readFile as readFile11 } from "node:fs/promises";
-import path13 from "node:path";
+import { lstat as lstat4, readdir as readdir6, readFile as readFile12 } from "node:fs/promises";
+import path14 from "node:path";
 import { createHash as createHash14 } from "node:crypto";
 async function readable(file) {
   try {
-    await lstat3(file);
+    await lstat4(file);
     return true;
   } catch {
     return false;
@@ -5886,7 +7148,7 @@ async function readable(file) {
 }
 async function validJson(file) {
   try {
-    JSON.parse(await readFile11(file, "utf8"));
+    JSON.parse(await readFile12(file, "utf8"));
     return true;
   } catch {
     return false;
@@ -5894,8 +7156,8 @@ async function validJson(file) {
 }
 async function pointerRecoveryCandidates(root2) {
   try {
-    const directory = path13.join(root2, ".dev-flow", "features");
-    const entries = await readdir4(directory, { withFileTypes: true });
+    const directory = path14.join(root2, ".dev-flow", "features");
+    const entries = await readdir6(directory, { withFileTypes: true });
     return await Promise.all(entries.filter((entry) => entry.isDirectory()).map(async (entry) => {
       let stateSha256;
       try {
@@ -5911,7 +7173,7 @@ async function pointerRecoveryCandidates(root2) {
 async function collectDoctorReport(root2, pluginRoot2, version, tools2) {
   const diagnostics = [];
   const add = (code, status, message, recoveryHint) => diagnostics.push({ code, status, message, ...recoveryHint ? { recoveryHint } : {} });
-  const projectFile = path13.join(root2, ".dev-flow", "project.json");
+  const projectFile = path14.join(root2, ".dev-flow", "project.json");
   let project = { initialized: await readable(projectFile), valid: false };
   if (!project.initialized) add("PROJECT_NOT_INITIALIZED", "warning", "run dev_flow_init_project before starting a feature");
   else {
@@ -5923,7 +7185,7 @@ async function collectDoctorReport(root2, pluginRoot2, version, tools2) {
       add("PROJECT_CONFIG_INVALID", "error", error instanceof Error ? error.message : String(error));
     }
   }
-  const activeFile = path13.join(root2, ".dev-flow", "active.json");
+  const activeFile = path14.join(root2, ".dev-flow", "active.json");
   let activeFeature = { present: await readable(activeFile), valid: false };
   let corruptFeature;
   let corruptActivePointer;
@@ -5949,7 +7211,7 @@ async function collectDoctorReport(root2, pluginRoot2, version, tools2) {
         }
         if (!digest10) {
           try {
-            const raw = await readFile11(path13.join(root2, ".dev-flow", "features", active.featureId, "state.json"));
+            const raw = await readFile12(path14.join(root2, ".dev-flow", "features", active.featureId, "state.json"));
             digest10 = createHash14("sha256").update(raw).digest("hex");
           } catch {
             digest10 = void 0;
@@ -5979,7 +7241,7 @@ async function collectDoctorReport(root2, pluginRoot2, version, tools2) {
       if (error.code === "ACTIVE_POINTER_UNREADABLE") {
         let activeSha256;
         try {
-          activeSha256 = createHash14("sha256").update(await readFile11(activeFile)).digest("hex");
+          activeSha256 = createHash14("sha256").update(await readFile12(activeFile)).digest("hex");
         } catch {
         }
         activeFeature = { present: true, valid: false, corrupt: true, recoveryAction: "abandon" };
@@ -6006,6 +7268,61 @@ async function collectDoctorReport(root2, pluginRoot2, version, tools2) {
     `open recovery transaction phase=${String(recoveryTxn.phase)} featureId=${String(recoveryTxn.featureId ?? "")}`,
     "Re-run dev_flow_recover_corrupt_feature with the same doctor-reported input to resume the next safe journal phase"
   );
+  const rollbackTransactions = [];
+  try {
+    const featuresDirectory = path14.join(root2, ".dev-flow", "features");
+    const entries = await readdir6(featuresDirectory, { withFileTypes: true });
+    for (const entry of entries.filter((candidate) => candidate.isDirectory())) {
+      let journal;
+      try {
+        journal = await readRollbackTransaction(root2, entry.name);
+      } catch (error) {
+        add(
+          "ROLLBACK_TRANSACTION_UNREADABLE",
+          "error",
+          error instanceof Error ? error.message : String(error),
+          "Do not hand-edit .dev-flow; the feature stays fail-closed while its rollback journal is unreadable"
+        );
+        continue;
+      }
+      if (!journal) continue;
+      const current = journal;
+      const finished = rollbackTransactionFinished(current);
+      const blocked = !finished && typeof current.error === "string";
+      const events = blocked ? await readFeatureEvents(root2, entry.name).catch(() => []) : [];
+      const attemptIds = (type) => events.filter((event) => event.type === type && event.data.transactionId === current.transactionId).map((event) => event.data.attemptId).filter((attemptId) => typeof attemptId === "string");
+      rollbackTransactions.push({
+        featureId: entry.name,
+        transactionId: current.transactionId,
+        phase: current.phase,
+        targetCheckpointId: current.targetCheckpointId,
+        undoOrder: [...current.undoOrder],
+        backupDirectory: current.backupDirectory,
+        blocked,
+        ...current.error ? { error: current.error } : {},
+        verificationAttemptIds: attemptIds("rollback-verification-attempt"),
+        compensationAttemptIds: attemptIds("rollback-compensation-attempt")
+      });
+      if (finished) {
+        add("ROLLBACK_TRANSACTION_COMPLETED", "ok", `rollback transaction ${current.transactionId} finished phase=${current.phase} feature=${entry.name}`);
+      } else if (blocked) {
+        add(
+          "ROLLBACK_RECOVERY_BLOCKED",
+          "error",
+          `rollback recovery is blocked feature=${entry.name} transaction=${current.transactionId}: ${current.error ?? ""}`,
+          "Resolve the reported cause, then resume the rollback with the same target checkpoint; the backup scene is preserved"
+        );
+      } else {
+        add(
+          "ROLLBACK_TRANSACTION_OPEN",
+          "error",
+          `open rollback transaction phase=${current.phase} feature=${entry.name} target=${current.targetCheckpointId}`,
+          `Resume the rollback with the same target checkpoint ${current.targetCheckpointId} before mutating this feature`
+        );
+      }
+    }
+  } catch {
+  }
   let trace;
   if (traceState) {
     const enforced = traceEnforcementRequired(traceState.route, traceState.workflowCapabilities);
@@ -6073,14 +7390,14 @@ async function collectDoctorReport(root2, pluginRoot2, version, tools2) {
     }
   }
   const paths = {
-    claudeManifest: path13.join(pluginRoot2, ".claude-plugin", "plugin.json"),
-    codexManifest: path13.join(pluginRoot2, ".codex-plugin", "plugin.json"),
-    mcp: path13.join(pluginRoot2, ".mcp.json"),
-    claudeHooks: path13.join(pluginRoot2, "hosts", "claude", "hooks.json"),
-    codexHooks: path13.join(pluginRoot2, "hosts", "codex", "hooks.json"),
-    mcpBundle: path13.join(pluginRoot2, "dist", "mcp-server.mjs"),
-    claudeBundle: path13.join(pluginRoot2, "dist", "claude-hook.mjs"),
-    codexBundle: path13.join(pluginRoot2, "dist", "codex-hook.mjs")
+    claudeManifest: path14.join(pluginRoot2, ".claude-plugin", "plugin.json"),
+    codexManifest: path14.join(pluginRoot2, ".codex-plugin", "plugin.json"),
+    mcp: path14.join(pluginRoot2, ".mcp.json"),
+    claudeHooks: path14.join(pluginRoot2, "hosts", "claude", "hooks.json"),
+    codexHooks: path14.join(pluginRoot2, "hosts", "codex", "hooks.json"),
+    mcpBundle: path14.join(pluginRoot2, "dist", "mcp-server.mjs"),
+    claudeBundle: path14.join(pluginRoot2, "dist", "claude-hook.mjs"),
+    codexBundle: path14.join(pluginRoot2, "dist", "codex-hook.mjs")
   };
   const files = await Promise.all(Object.entries(paths).map(async ([name, file]) => [name, await readable(file)]));
   const missing = files.filter(([, exists]) => !exists).map(([name]) => name);
@@ -6098,6 +7415,7 @@ async function collectDoctorReport(root2, pluginRoot2, version, tools2) {
     corruptFeature,
     corruptActivePointer,
     recoveryTransaction: recoveryTxn ?? null,
+    rollbackTransactions,
     trace: trace ?? null,
     review: review ?? null,
     mcp: { server: "running", configuration: !invalidJson },
@@ -6111,8 +7429,8 @@ import { promisify as promisify4 } from "node:util";
 
 // plugins/dev-flow/src/mcp/windows-notifications.ts
 import { execFile as execFile3 } from "node:child_process";
-import { access as access3 } from "node:fs/promises";
-import path14 from "node:path";
+import { access as access4 } from "node:fs/promises";
+import path15 from "node:path";
 import { promisify as promisify3 } from "node:util";
 var run3 = promisify3(execFile3);
 var WINDOWS_NOTIFICATION_APP_ID = "io.github.wxy_hh.dev_flow";
@@ -6125,14 +7443,14 @@ function environmentOf(options) {
 }
 function shortcutPathOf(environment) {
   const appData = environment.APPDATA;
-  return appData ? path14.win32.join(appData, "Microsoft", "Windows", "Start Menu", "Programs", shortcutName) : void 0;
+  return appData ? path15.win32.join(appData, "Microsoft", "Windows", "Start Menu", "Programs", shortcutName) : void 0;
 }
 async function command(file, args) {
   return run3(file, args);
 }
-async function pathExists3(file) {
+async function pathExists4(file) {
   try {
-    await access3(file);
+    await access4(file);
     return true;
   } catch {
     return false;
@@ -6153,7 +7471,7 @@ $ErrorActionPreference = 'Stop'
 $shortcutPath = ${powerShellLiteral(shortcutPath)}
 $nodeExecutable = ${powerShellLiteral(nodeExecutable)}
 $nodeArguments = '-e "process.exit(0)"'
-$workingDirectory = ${powerShellLiteral(path14.win32.dirname(shortcutPath))}
+$workingDirectory = ${powerShellLiteral(path15.win32.dirname(shortcutPath))}
 $appId = ${powerShellLiteral(WINDOWS_NOTIFICATION_APP_ID)}
 $source = @'
 using System;
@@ -6302,7 +7620,7 @@ async function emitWindowsToast(title, body, options = {}) {
   const shortcutPath = shortcutPathOf(environmentOf(options));
   if (!shortcutPath) return;
   try {
-    if (!await (options.exists ?? pathExists3)(shortcutPath)) return;
+    if (!await (options.exists ?? pathExists4)(shortcutPath)) return;
     await (options.execute ?? command)("powershell.exe", encodedPowerShell(toastScript(title, body)));
   } catch {
   }
@@ -6314,7 +7632,7 @@ function messageFor(event) {
   if (event.kind === "workflow-finalized") {
     return { title: "Dev Flow \u5DF2\u5B8C\u6210", body: `\u529F\u80FD ${event.featureId} \u5DF2\u5B8C\u6210\u5E76\u751F\u6210\u4EA4\u4ED8\u5FEB\u7167\u3002` };
   }
-  const decision = event.decision === "requirement_confirmation" ? "\u9700\u6C42\u786E\u8BA4" : event.decision === "implementation_approval" ? "\u786E\u8BA4\u6267\u884C" : "\u9700\u6C42\u9009\u62E9";
+  const decision = event.decision === "requirement_confirmation" ? "\u9700\u6C42\u786E\u8BA4" : event.decision === "implementation_approval" ? "\u786E\u8BA4\u6267\u884C" : event.decision === "rollback-confirmation" ? "\u56DE\u64A4\u786E\u8BA4" : "\u9700\u6C42\u9009\u62E9";
   return { title: "Dev Flow \u9700\u8981\u51B3\u7B56", body: `\u529F\u80FD ${event.featureId} \u6B63\u5728\u7B49\u5F85\u4F60\u7684${decision}\u3002` };
 }
 function appleScriptString(value) {
@@ -6349,8 +7667,8 @@ async function emitAttention(event, options = {}) {
 
 // plugins/dev-flow/src/mcp/server.ts
 var root = process.cwd();
-var moduleDirectory = path15.dirname(fileURLToPath(import.meta.url));
-var pluginRoot = path15.basename(moduleDirectory) === "dist" ? path15.resolve(moduleDirectory, "..") : path15.resolve(moduleDirectory, "../..");
+var moduleDirectory = path16.dirname(fileURLToPath(import.meta.url));
+var pluginRoot = path16.basename(moduleDirectory) === "dist" ? path16.resolve(moduleDirectory, "..") : path16.resolve(moduleDirectory, "../..");
 var tools = [
   "dev_flow_init_project",
   "dev_flow_classify",
@@ -6385,6 +7703,8 @@ var tools = [
   "dev_flow_begin_implementation_unit",
   "dev_flow_checkpoint_implementation_unit",
   "dev_flow_preview_rollback",
+  "dev_flow_present_rollback_gate",
+  "dev_flow_execute_rollback",
   "dev_flow_recover_corrupt_feature"
 ];
 var object = (required, properties = {}) => ({
@@ -6573,9 +7893,17 @@ var toolSchemas = {
     inputSchema: object(["featureId", "expectedRevision", "unitId"], { featureId: string, expectedRevision: integer, unitId: traceId("RU") })
   },
   dev_flow_preview_rollback: {
-    description: "Read-only rollback plan for a confirmed checkpoint: undo order, restored files, verification commands. Phase 3 has no execution tool.",
+    description: "Read-only rollback plan for a confirmed checkpoint: undo order, restored files, verification commands.",
     inputSchema: object(["featureId", "targetCheckpointId"], { featureId: string, targetCheckpointId: string }),
     annotations: { readOnlyHint: true }
+  },
+  dev_flow_present_rollback_gate: {
+    description: "Present a rollback confirmation gate for a confirmed checkpoint. Requires checkpoints:1 and rollbackExecution:1.",
+    inputSchema: object(["featureId", "expectedRevision", "targetCheckpointId"], { featureId: string, expectedRevision: integer, targetCheckpointId: string })
+  },
+  dev_flow_execute_rollback: {
+    description: "Execute a confirmed rollback as a resumable file transaction. Rolls back to the target checkpoint, undoing all later units in reverse order.",
+    inputSchema: object(["featureId", "expectedRevision", "targetCheckpointId"], { featureId: string, expectedRevision: integer, targetCheckpointId: string })
   },
   dev_flow_present_gate: { description: "Present a strict human gate.", inputSchema: featureMutation({ gate: { enum: ["requirement_confirmation", "implementation_approval"] } }) },
   dev_flow_confirm_gate: {
@@ -6741,6 +8069,12 @@ function assertPreviewRollbackInput(value) {
     throw new DevFlowError("INVALID_TOOL_INPUT", "dev_flow_preview_rollback input does not match its schema");
   }
 }
+function assertRollbackMutationInput(value, tool) {
+  assertReviewMutationInput(value, tool, ["targetCheckpointId"]);
+  if (typeof value.targetCheckpointId !== "string" || !value.targetCheckpointId) {
+    throw new DevFlowError("INVALID_TOOL_INPUT", `${tool} input does not match its schema`);
+  }
+}
 function interactionEnvelope(state, interaction, interactionOutcome, response) {
   return {
     ...state,
@@ -6748,6 +8082,17 @@ function interactionEnvelope(state, interaction, interactionOutcome, response) {
     interactionOutcome,
     ...response ? { response } : {}
   };
+}
+function rollbackGateMessage(preview) {
+  const files = preview.filePlan.map((action) => `${action.action === "restore" ? "\u6062\u590D" : "\u5220\u9664"} ${action.path}`);
+  const verification = preview.verificationCommands.map((command2) => `${command2.commandId}: ${command2.command}`);
+  return [
+    `\u56DE\u64A4\u76EE\u6807\uFF1A${preview.targetUnitId}\uFF08${preview.targetCheckpointId}\uFF09\u3002`,
+    `\u5C06\u64A4\u9500 ${preview.undoOrder.length} \u4E2A\u5355\u5143\uFF1A${preview.undoOrder.join(" \u2192 ")}\u3002`,
+    `\u6587\u4EF6\u5F71\u54CD\uFF08${files.length}\uFF09\uFF1A${files.length ? files.join("\uFF1B") : "\u65E0"}\u3002`,
+    `\u56DE\u64A4\u9A8C\u8BC1\uFF1A${verification.length ? verification.join("\uFF1B") : "\u65E0"}\u3002`,
+    "\u786E\u8BA4\u6267\u884C\u56DE\u64A4\uFF1F"
+  ].join("\n");
 }
 function reviewSubmissionEnvelope(result, submittedJobId) {
   const job = result.batch.jobs.find((candidate) => candidate.jobId === submittedJobId);
@@ -7043,6 +8388,39 @@ async function call(name, a, connection2) {
       assertPreviewRollbackInput(a);
       return previewRollback(root, a.featureId, a.targetCheckpointId);
     }
+    case "dev_flow_present_rollback_gate": {
+      assertRollbackMutationInput(a, "dev_flow_present_rollback_gate");
+      const presentation = await presentRollbackGate(root, a.featureId, a.expectedRevision, a.targetCheckpointId);
+      emitAttentionNotification({ kind: "decision-required", featureId: a.featureId, decision: "rollback-confirmation" });
+      const selection = await connection2.elicit(
+        presentation.interaction,
+        rollbackGateMessage(presentation.preview)
+      );
+      if (!selection) return { ...interactionEnvelope(presentation.state, presentation.interaction, "pending"), preview: presentation.preview };
+      const state = await resolveRollbackGateElicitation(
+        root,
+        a.featureId,
+        presentation.state.revision,
+        presentation.interaction.id,
+        selection.action,
+        selection.comment,
+        a.host ?? "codex"
+      );
+      return {
+        ...interactionEnvelope(
+          state,
+          toPublicInteraction(getInteraction(state, presentation.interaction.id)),
+          selection.action,
+          interactionResponse(state, presentation.interaction.id)
+        ),
+        preview: presentation.preview
+      };
+    }
+    case "dev_flow_execute_rollback": {
+      assertRollbackMutationInput(a, "dev_flow_execute_rollback");
+      const result = await executeRollback(root, a.featureId, a.expectedRevision, a.targetCheckpointId);
+      return { outcome: result.outcome, state: result.state, transactionId: result.transaction.transactionId };
+    }
     case "dev_flow_present_gate": {
       const presentation = await presentGate(root, a.featureId, a.expectedRevision, a.gate);
       emitAttentionNotification({ kind: "decision-required", featureId: a.featureId, decision: a.gate });
@@ -7070,6 +8448,20 @@ async function call(name, a, connection2) {
     case "dev_flow_confirm_gate":
       return confirmGate(root, a.featureId, a.expectedRevision, a.gate, a.userReply, { promptEventId: a.promptEventId, turnBoundaryEventId: a.turnBoundaryEventId }, a.host ?? "codex");
     case "dev_flow_respond_interaction": {
+      const interaction = getInteraction(await readState(root, a.featureId), a.interactionId);
+      if (interaction.kind === "rollback-confirmation") {
+        const state2 = await resolveRollbackGateToken(
+          root,
+          a.featureId,
+          a.expectedRevision,
+          a.interactionId,
+          a.userReply,
+          a.host ?? "codex",
+          a.promptEventId
+        );
+        const response2 = interactionResponse(state2, a.interactionId);
+        return interactionEnvelope(state2, toPublicInteraction(getInteraction(state2, a.interactionId)), response2?.action ?? "resolved", response2);
+      }
       const state = await resolveGateToken(
         root,
         a.featureId,

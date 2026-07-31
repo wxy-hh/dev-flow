@@ -76,6 +76,21 @@ export interface RollbackChainView {
   chain: Array<{ checkpointId: string; unitId: string; sequence: number }>;
   validTargets: string[];
   conflicts: RollbackConflict[];
+  gateStatus?: {
+    status: "pending" | "confirmed";
+    targetCheckpointId: string;
+    targetUnitId: string;
+    interactionId: string;
+    presentedAt: string;
+    confirmedAt?: string;
+  };
+  openTransaction?: {
+    transactionId: string;
+    phase: string;
+    targetCheckpointId: string;
+    startedAt: string;
+    error?: string;
+  };
 }
 
 function rollbackNodes(nodes: TraceabilityLedger["nodes"]): RollbackNode[] {
@@ -346,13 +361,46 @@ export async function rollbackChainView(root: string, state: FeatureState): Prom
   if (!checkpointsEnforcementRequired(state.route, state.workflowCapabilities)) {
     return { enforced: false, chain: [], validTargets: [], conflicts: [] };
   }
+
+  // Gate status and open transaction are read first so they survive ledger/chain
+  // degradation (fail-soft below may clear chain fields but shouldn't hide a
+  // pending gate or an open transaction).
+  const gateStatus = state.rollbackGate?.status === "pending" || state.rollbackGate?.status === "confirmed"
+    ? {
+      status: state.rollbackGate.status as "pending" | "confirmed",
+      targetCheckpointId: state.rollbackGate.targetCheckpointId,
+      targetUnitId: state.rollbackGate.targetUnitId,
+      interactionId: state.rollbackGate.interactionId,
+      presentedAt: state.rollbackGate.presentedAt,
+      ...(state.rollbackGate.status === "confirmed" && state.rollbackGate.confirmedAt
+        ? { confirmedAt: state.rollbackGate.confirmedAt } : {}),
+    }
+    : undefined;
+
+  let openTransaction: RollbackChainView["openTransaction"] | undefined;
+  try {
+    const tx = await readRollbackTransaction(root, state.featureId);
+    if (tx && !rollbackTransactionFinished(tx)) {
+      openTransaction = {
+        transactionId: tx.transactionId,
+        phase: tx.phase,
+        targetCheckpointId: tx.targetCheckpointId,
+        startedAt: tx.startedAt,
+        ...(tx.error ? { error: tx.error } : {}),
+      };
+    }
+  } catch {
+    // An open transaction with an unreadable journal is already reported by
+    // doctor; StatusView stays fail-soft.
+  }
+
   let nodes: RollbackNode[];
   try {
     nodes = rollbackNodes((await readTraceability(root, state)).nodes);
   } catch {
     // StatusView stays fail-soft: trace corruption is already reported through
     // view.trace.blockers, and enforcement entry points still fail closed.
-    return { enforced: true, chain: [], validTargets: [], conflicts: [] };
+    return { enforced: true, chain: [], validTargets: [], conflicts: [], gateStatus, openTransaction };
   }
   const chain = await checkpointChain(root, state.featureId, state);
   const live = liveChain(state, chain);
@@ -373,6 +421,8 @@ export async function rollbackChainView(root: string, state: FeatureState): Prom
       })),
       validTargets: [],
       conflicts: [],
+      gateStatus,
+      openTransaction,
     };
   }
   const { config } = await readProjectConfigSnapshot(root);
@@ -386,7 +436,7 @@ export async function rollbackChainView(root: string, state: FeatureState): Prom
       // A missing baseline alongside confirmed checkpoints is corruption; the
       // projection degrades instead of crashing StatusView, while preview and
       // execution entry points stay fail-closed.
-      return { enforced: true, chain: [], validTargets: [], conflicts: [] };
+      return { enforced: true, chain: [], validTargets: [], conflicts: [], gateStatus, openTransaction };
     }
   }
   return {
@@ -399,6 +449,8 @@ export async function rollbackChainView(root: string, state: FeatureState): Prom
     // The live chain tip has nothing to undo and can never be a target.
     validTargets: live.slice(0, -1).map((manifest) => manifest.checkpointId),
     conflicts: live.length ? detectChainConflicts(live, snapshot, fileScopes, baselineFiles) : [],
+    gateStatus,
+    openTransaction,
   };
 }
 
@@ -1343,6 +1395,19 @@ async function commitRollbackState(root: string, featureId: string, journal: Rol
   }, { allowRollbackTransaction: journal.transactionId });
 }
 
+/**
+ * Removes transaction backup material without touching drive-lease.json. The
+ * lease is the compatibility mirror for older hosts and remains until the
+ * completedAt marker is durable; releaseRollbackDriveLease then removes it and
+ * the now-empty recovery directory in the driver's finally block.
+ */
+async function cleanupRollbackBackup(root: string, featureId: string, journal: RollbackTransaction): Promise<void> {
+  const directory = path.join(featureDirectory(root, featureId), journal.backupDirectory);
+  await rm(path.join(directory, "files"), { recursive: true, force: true });
+  await rm(path.join(directory, "trash"), { recursive: true, force: true });
+  await rm(path.join(directory, "backup-manifest.json"), { force: true });
+}
+
 async function finishCommitted(
   root: string,
   featureId: string,
@@ -1357,7 +1422,10 @@ async function finishCommitted(
     state = await commitRollbackState(root, featureId, journal);
   }
   await options.fault?.("after-state-cas");
-  await rm(path.join(featureDirectory(root, featureId), journal.backupDirectory), { recursive: true, force: true });
+  // Keep the legacy lease mirror in place until completedAt is durable. Older
+  // hosts only see that path; deleting the whole directory first would let one
+  // of them claim a still-open journal during a rolling upgrade.
+  await cleanupRollbackBackup(root, featureId, journal);
   journal.completedAt = new Date().toISOString();
   await writeRollbackTransaction(root, featureId, journal);
   return { outcome: "committed", state, transaction: journal };
@@ -1384,7 +1452,7 @@ async function finishCompensated(
       },
     }), { allowRollbackTransaction: journal.transactionId });
   }
-  await rm(path.join(featureDirectory(root, featureId), journal.backupDirectory), { recursive: true, force: true });
+  await cleanupRollbackBackup(root, featureId, journal);
   journal.completedAt = new Date().toISOString();
   await writeRollbackTransaction(root, featureId, journal);
   throw new DevFlowError("ROLLBACK_EXECUTION_FAILED", "rollback execution failed; the workspace was compensated to its pre-rollback state", {

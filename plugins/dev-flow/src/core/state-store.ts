@@ -1,5 +1,5 @@
 import { randomUUID, createHash } from "node:crypto";
-import { access, mkdir, open, readdir, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { access, mkdir, open, readdir, readFile, rename, rm, rmdir, writeFile } from "node:fs/promises";
 import { hostname } from "node:os";
 import path from "node:path";
 import { normalizeWorkflowCapabilities, reviewEnforcementRequired, routeDefinition, routeDefinitionForFeature, traceEnforcementRequired } from "../policy/contract.js";
@@ -798,7 +798,66 @@ export interface RollbackDriveLease {
 }
 
 function driveLeasePath(root: string, featureId: string, transactionId: string): string {
+  // The sidecar is the current-version fencing token. It is paired with the
+  // legacy in-directory lease below for the whole open-transaction lifetime.
+  return path.join(features(root), featureId, "checkpoints", "recovery", `${transactionId}-drive-lease.json`);
+}
+
+/**
+ * Older hosts only read this in-directory lease. New hosts therefore mirror
+ * their lease here until completedAt is durable; a sidecar-only lease would be
+ * invisible to an older host and permit two concurrent transaction drivers.
+ */
+function legacyDriveLeasePath(root: string, featureId: string, transactionId: string): string {
   return path.join(features(root), featureId, "checkpoints", "recovery", transactionId, "drive-lease.json");
+}
+
+/** Read a lease from a specific file path.  Returns undefined for ENOENT,
+ *  throws ROLLBACK_TRANSACTION_UNREADABLE for other I/O errors. */
+async function readLeaseAt(leaseFile: string, transactionId: string): Promise<RollbackDriveLease | undefined> {
+  try {
+    const raw = await readFile(leaseFile, "utf8");
+    return JSON.parse(raw) as RollbackDriveLease;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+    throw new DevFlowError("ROLLBACK_TRANSACTION_UNREADABLE", "rollback drive lease is unreadable", {
+      transactionId,
+      recoveryHint: "Run dev_flow_doctor; do not hand-edit the drive lease",
+    });
+  }
+}
+
+/** Both lease locations are read independently: any fresh lease is authoritative. */
+async function readDriveLeases(
+  root: string,
+  featureId: string,
+  transactionId: string,
+): Promise<{ sidecar?: RollbackDriveLease; legacy?: RollbackDriveLease }> {
+  const [sidecar, legacy] = await Promise.all([
+    readLeaseAt(driveLeasePath(root, featureId, transactionId), transactionId),
+    readLeaseAt(legacyDriveLeasePath(root, featureId, transactionId), transactionId),
+  ]);
+  return { ...(sidecar ? { sidecar } : {}), ...(legacy ? { legacy } : {}) };
+}
+
+/**
+ * New hosts publish to both locations. The legacy write comes first so a host
+ * that knows only the old path never observes an unlocked active transaction.
+ * Calls happen under the shared project lock, making the pair a single claim
+ * protocol for current and older binaries.
+ */
+async function writeDriveLeasePair(
+  root: string,
+  featureId: string,
+  transactionId: string,
+  lease: RollbackDriveLease,
+): Promise<void> {
+  const legacyFile = legacyDriveLeasePath(root, featureId, transactionId);
+  const sidecarFile = driveLeasePath(root, featureId, transactionId);
+  await mkdir(path.dirname(legacyFile), { recursive: true });
+  await mkdir(path.dirname(sidecarFile), { recursive: true });
+  await writeAtomic(legacyFile, lease);
+  await writeAtomic(sidecarFile, lease);
 }
 
 function isProcessAlive(pid: number, ownerHostname: string): boolean {
@@ -814,6 +873,24 @@ function isProcessAlive(pid: number, ownerHostname: string): boolean {
 function leaseHeartbeatAt(lease: RollbackDriveLease): number {
   const timestamp = Date.parse(lease.heartbeatAt ?? lease.acquiredAt);
   return Number.isFinite(timestamp) ? timestamp : Number.NaN;
+}
+
+function activeLease(lease: RollbackDriveLease): boolean {
+  const heartbeatAt = leaseHeartbeatAt(lease);
+  const live = Number.isFinite(heartbeatAt) && isProcessAlive(lease.pid, lease.hostname);
+  const stale = !Number.isFinite(heartbeatAt) || Date.now() - heartbeatAt > ROLLBACK_DRIVE_LEASE_STALE_MS;
+  return live && !stale;
+}
+
+function leaseBusyError(featureId: string, transactionId: string, lease: RollbackDriveLease): DevFlowError {
+  return new DevFlowError("ROLLBACK_TRANSACTION_BUSY", "another host is already driving this rollback transaction", {
+    transactionId,
+    featureId,
+    ownerId: lease.ownerId,
+    pid: lease.pid,
+    hostname: lease.hostname,
+    recoveryHint: "Wait for the other host to finish, or resume after its process exits and the lease ages out",
+  });
 }
 
 /**
@@ -842,37 +919,13 @@ export async function claimRollbackDriveLease(
         transactionId,
       });
     }
-    const leaseFile = driveLeasePath(root, featureId, transactionId);
-    let existing: RollbackDriveLease | undefined;
-    try {
-      const raw = await readFile(leaseFile, "utf8");
-      existing = JSON.parse(raw) as RollbackDriveLease;
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
-        throw new DevFlowError("ROLLBACK_TRANSACTION_UNREADABLE", "rollback drive lease is unreadable", {
-          transactionId,
-          recoveryHint: "Run dev_flow_doctor; do not hand-edit the drive lease",
-        });
+    // Every fresh lease is authoritative. This includes the legacy mirror so
+    // an old host and a new host cannot independently claim the same journal.
+    const leases = await readDriveLeases(root, featureId, transactionId);
+    for (const existing of [leases.sidecar, leases.legacy]) {
+      if (existing && activeLease(existing)) {
+        throw leaseBusyError(featureId, transactionId, existing);
       }
-    }
-    if (existing) {
-      const heartbeatAt = leaseHeartbeatAt(existing);
-      const live = Number.isFinite(heartbeatAt) && isProcessAlive(existing.pid, existing.hostname);
-      const stale = !Number.isFinite(heartbeatAt) || Date.now() - heartbeatAt > ROLLBACK_DRIVE_LEASE_STALE_MS;
-      // A driver renews heartbeatAt while long verification commands run. A
-      // fresh heartbeat proves ownership on every host; a stale heartbeat can
-      // be reclaimed even when a wedged local process still has a live pid.
-      if (live && !stale) {
-        throw new DevFlowError("ROLLBACK_TRANSACTION_BUSY", "another host is already driving this rollback transaction", {
-          transactionId,
-          featureId,
-          ownerId: existing.ownerId,
-          pid: existing.pid,
-          hostname: existing.hostname,
-          recoveryHint: "Wait for the other host to finish, or resume after its process exits and the lease ages out",
-        });
-      }
-      // Dead or stale owner: reclaim.
     }
     const lease: RollbackDriveLease = {
       schemaVersion: 1,
@@ -884,8 +937,7 @@ export async function claimRollbackDriveLease(
       acquiredAt: new Date().toISOString(),
       heartbeatAt: new Date().toISOString(),
     };
-    await mkdir(path.dirname(leaseFile), { recursive: true });
-    await writeAtomic(leaseFile, lease);
+    await writeDriveLeasePair(root, featureId, transactionId, lease);
     return lease;
   } finally {
     await release();
@@ -900,29 +952,20 @@ export async function renewRollbackDriveLease(
 ): Promise<void> {
   const release = await lock(root, featureId, "renew-rollback-drive");
   try {
-    const leaseFile = driveLeasePath(root, featureId, lease.transactionId);
-    let existing: RollbackDriveLease;
-    try {
-      existing = JSON.parse(await readFile(leaseFile, "utf8")) as RollbackDriveLease;
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === "ENOENT") {
-        throw new DevFlowError("ROLLBACK_TRANSACTION_MISMATCH", "rollback drive lease disappeared while being renewed", {
-          transactionId: lease.transactionId,
-        });
-      }
-      throw new DevFlowError("ROLLBACK_TRANSACTION_UNREADABLE", "rollback drive lease is unreadable", {
+    const leases = await readDriveLeases(root, featureId, lease.transactionId);
+    const existing = leases.sidecar ?? leases.legacy;
+    if (!existing) {
+      throw new DevFlowError("ROLLBACK_TRANSACTION_MISMATCH", "rollback drive lease disappeared while being renewed", {
         transactionId: lease.transactionId,
-        recoveryHint: "Run dev_flow_doctor; do not hand-edit the drive lease",
       });
     }
-    if (existing.ownerId !== lease.ownerId) {
-      throw new DevFlowError("ROLLBACK_TRANSACTION_BUSY", "rollback drive lease was claimed by another owner", {
-        transactionId: lease.transactionId,
-        ownerId: existing.ownerId,
-      });
+    for (const candidate of [leases.sidecar, leases.legacy]) {
+      if (candidate && candidate.ownerId !== lease.ownerId) {
+        throw leaseBusyError(featureId, lease.transactionId, candidate);
+      }
     }
     const renewed: RollbackDriveLease = { ...existing, heartbeatAt: new Date().toISOString() };
-    await writeAtomic(leaseFile, renewed);
+    await writeDriveLeasePair(root, featureId, lease.transactionId, renewed);
   } finally {
     await release();
   }
@@ -983,16 +1026,29 @@ export async function releaseRollbackDriveLease(
 ): Promise<void> {
   const release = await lock(root, featureId, "release-rollback-drive");
   try {
-    const leaseFile = driveLeasePath(root, featureId, lease.transactionId);
-    let existing: RollbackDriveLease | undefined;
+    const sidecarFile = driveLeasePath(root, featureId, lease.transactionId);
+    const legacyFile = legacyDriveLeasePath(root, featureId, lease.transactionId);
+    let sidecar: RollbackDriveLease | undefined;
     try {
-      existing = JSON.parse(await readFile(leaseFile, "utf8")) as RollbackDriveLease;
+      sidecar = JSON.parse(await readFile(sidecarFile, "utf8")) as RollbackDriveLease;
     } catch {
-      return;
+      // Best-effort release continues with the legacy mirror.
     }
-    if (existing?.ownerId === lease.ownerId) {
-      await rm(leaseFile, { force: true });
+    if (sidecar?.ownerId === lease.ownerId) {
+      await rm(sidecarFile, { force: true });
     }
+    try {
+      const legacyExisting = JSON.parse(await readFile(legacyFile, "utf8")) as RollbackDriveLease;
+      if (legacyExisting?.ownerId === lease.ownerId) {
+        await rm(legacyFile, { force: true });
+      }
+    } catch {
+      // ENOENT or unreadable: nothing to clean up.
+    }
+    // After the terminal marker is durable, both mirrors are gone and this
+    // otherwise-empty directory can disappear. During a resumable failure it
+    // still contains the backup, so rmdir safely leaves it in place.
+    try { await rmdir(path.dirname(legacyFile)); } catch { /* backup is still present or another owner holds the lease */ }
   } finally {
     await release();
   }

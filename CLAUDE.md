@@ -186,3 +186,4 @@ standard-m / standard-l 且 `workflowCapabilities.trace === 1` 时强制 `REQ/AC
 - 中间任务不跑 `npm run build`，除非计划/用户明确要求统一更新 dist  
 - 修改路线步骤或资产要求时，同步 `policy/contract.json`、`docs/routes.md` 与相关测试  
 - 深入契约以 `docs/architecture.md`、`docs/routes.md`、`plugins/dev-flow/policy/contract.json` 为准，勿臆造路线或风险标签  
+- **边界不清必须 grillme**：遇到 API 契约、函数签名、参数格式、流程顺序、设计意图等任何不确定的边界问题时，**先调用 `/grill-me` 提问，禁止自行假设或试错**。判断标准：如果需要读源码才能确定的调用方式，那就是边界问题，必须问。

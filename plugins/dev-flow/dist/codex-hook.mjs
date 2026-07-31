@@ -5,7 +5,7 @@ import { lstat } from "node:fs/promises";
 import path6 from "node:path";
 
 // plugins/dev-flow/src/core/state-store.ts
-import { access, mkdir as mkdir3, open as open3, readFile as readFile3, rename as rename3, rm, writeFile } from "node:fs/promises";
+import { access, mkdir as mkdir3, open as open3, readdir as readdir3, readFile as readFile3, rename as rename3, rm, rmdir, writeFile } from "node:fs/promises";
 import { hostname } from "node:os";
 import path4 from "node:path";
 
@@ -84,7 +84,7 @@ var SUPPORTED_WORKFLOW_CAPABILITIES = Object.freeze({
   trace: 1,
   review: 1,
   checkpoints: 1,
-  rollbackExecution: 0
+  rollbackExecution: 1
 });
 
 // plugins/dev-flow/src/policy/contract.ts
@@ -651,12 +651,13 @@ function validateImplementationUnits(units) {
   const checkpoints = /* @__PURE__ */ new Set();
   for (const value of units) {
     const unit = value;
-    if (!unit || typeof unit !== "object" || Array.isArray(unit) || typeof unit.unitId !== "string" || !/^RU-[0-9]{3,}$/.test(unit.unitId) || typeof unit.status !== "string" || !unitStatuses.has(unit.status) || typeof unit.basisHash !== "string" || !/^[a-f0-9]{64}$/.test(unit.basisHash) || unit.startedFingerprint !== void 0 && (typeof unit.startedFingerprint !== "string" || !/^[a-f0-9]{64}$/.test(unit.startedFingerprint)) || unit.checkpointId !== void 0 && typeof unit.checkpointId !== "string") {
+    if (!unit || typeof unit !== "object" || Array.isArray(unit) || typeof unit.unitId !== "string" || !/^RU-[0-9]{3,}$/.test(unit.unitId) || typeof unit.status !== "string" || !unitStatuses.has(unit.status) || typeof unit.basisHash !== "string" || !/^[a-f0-9]{64}$/.test(unit.basisHash) || unit.startedFingerprint !== void 0 && (typeof unit.startedFingerprint !== "string" || !/^[a-f0-9]{64}$/.test(unit.startedFingerprint)) || unit.checkpointId !== void 0 && typeof unit.checkpointId !== "string" || unit.beginNonce !== void 0 && (typeof unit.beginNonce !== "string" || unit.beginNonce.trim().length === 0)) {
       throw new DevFlowError("INVALID_STATE_SCHEMA", "implementation unit state is invalid");
     }
     const started = unit.startedFingerprint !== void 0;
     const checkpointed = unit.checkpointId !== void 0;
-    const consistent = unit.status === "pending" && !started && !checkpointed || (unit.status === "active" || unit.status === "verified") && started && !checkpointed || (unit.status === "checkpointed" || unit.status === "rolled_back") && started && checkpointed;
+    const hasNonce = unit.beginNonce !== void 0;
+    const consistent = unit.status === "pending" && !started && !checkpointed && !hasNonce || (unit.status === "active" || unit.status === "verified") && started && !checkpointed || (unit.status === "checkpointed" || unit.status === "rolled_back") && started && checkpointed;
     if (!consistent) throw new DevFlowError("INVALID_STATE_SCHEMA", "implementation unit status is inconsistent with its fields");
     if (ids.has(unit.unitId)) throw new DevFlowError("INVALID_STATE_SCHEMA", "implementation units duplicate a rollback unit");
     if (checkpointed && checkpoints.has(unit.checkpointId)) throw new DevFlowError("INVALID_STATE_SCHEMA", "implementation units duplicate a checkpoint id");
@@ -696,6 +697,12 @@ function validateFeatureState(value) {
     throw new DevFlowError("INVALID_STATE_SCHEMA", "review-enabled standard feature requires a review pointer");
   }
   if (state.implementationUnits !== void 0) validateImplementationUnits(state.implementationUnits);
+  if (state.rollbackGate !== void 0) {
+    const gate = state.rollbackGate;
+    if (typeof gate !== "object" || gate === null || gate.status !== "pending" && gate.status !== "confirmed" || typeof gate.targetCheckpointId !== "string" || typeof gate.targetUnitId !== "string" || !/^[a-f0-9]{64}$/.test(gate.previewBasisHash) || typeof gate.interactionId !== "string" || typeof gate.stateRevision !== "number" || !Number.isInteger(gate.stateRevision) || gate.stateRevision < 0 || typeof gate.presentedAt !== "string" || gate.confirmedAt !== void 0 && typeof gate.confirmedAt !== "string") {
+      throw new DevFlowError("INVALID_STATE_SCHEMA", "rollbackGate is invalid");
+    }
+  }
 }
 var delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 var devFlow = (root) => path4.join(root, ".dev-flow");
@@ -891,7 +898,7 @@ var IMPLEMENTATION_UNIT_TRANSITIONS = Object.freeze({
   active: Object.freeze(["verified"]),
   verified: Object.freeze(["checkpointed", "active"]),
   checkpointed: Object.freeze(["rolled_back"]),
-  rolled_back: Object.freeze([])
+  rolled_back: Object.freeze(["active"])
 });
 function pathWithinFileScope(path7, fileScope) {
   return fileScope.some((pattern) => scopePatternMatches(pattern, path7));

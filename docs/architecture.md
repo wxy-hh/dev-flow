@@ -38,7 +38,7 @@ Dev Flow 以**一个预构建插件包**同时服务 Claude Code 与 Codex CLI�
 - `dev_flow_get_traceability` 只读返回 pointer、ledger、有效摘要及当前步骤 blocker。任何人不得直接编辑 snapshot、pointer 或 state。
 - generated `status` 由 Core scaffold/refresh，禁止人工 record；standard L 不生成 status 文件，应以 `StatusView` 为准。
 - Host Hook 将 `features/<id>/traceability/**` 视为 MCP 控制路径；当前 pointer 损坏时，`.dev-flow` 与 protected roots 均 fail closed。
-- rollback unit 只验证已登记的 Trace 关系；可执行 rollback / checkpoint 仍未发布。
+- rollback unit 只验证已登记的 Trace 关系；checkpoint 于第 3 阶段（1.7.0+）发布，可执行 rollback 于 1.7.0+ 的 Phase 4A 发布。
 
 ## Checkpoints 实现单元生命周期（1.7.0+，`checkpoints: 1`）
 
@@ -47,9 +47,21 @@ standard M/L 启用了 `checkpoints: 1` 后，implementation 步骤通过 **roll
 - **写入权限**：`implementationUnitWriteBlock` 纯函数判断。非 implementation 阶段、approval 未确认、或无 active unit 时返回 `IMPLEMENTATION_UNIT_REQUIRED`；文件超出 unit 的 `fileScope` 时返回 `IMPLEMENTATION_UNIT_OUT_OF_SCOPE`。Host Hook 在 PreToolUse 中调用该函数拦截 protected 路径写操作。
 - **开始单元**：`beginImplementationUnit` 校验 trace gate 当前、所有 trace artifact 最新、review complete（若 `review: 1`）、rollback node 存在、依赖已 checkpointed。成功后捕获 protected roots 基线指纹与内容快照。
 - **检查点**：`checkpointImplementationUnit` 快照当前 protected roots 内容到 `.dev-flow/features/<id>/checkpoints/` 目录，创建内容寻址不可变检查点（SHA-256 命名），标记 unit 为 `checkpointed`。顺序编号 `CP-001`、`CP-002` ...
-- **回撤预览**：`dev_flow_status` 的 StatusView 包含 `rollback.validTargets`（可回撤目标列表）、`rollback.chain`（CP 顺序记录）和 `implementation.remainingUnitIds`（待完成单元）。无 `rollback_confirmation` 等人为门禁，回撤仍为 future 功能。
+- **回撤预览**：`dev_flow_status` 的 StatusView 包含 `rollback.validTargets`（可回撤目标列表）、`rollback.chain`（CP 顺序记录）、`rollback.conflicts`（未登记修改）、`rollback.gateStatus`（门禁状态）和 `rollback.openTransaction`（进行中事务）。`validTargets` 为空表示无可回撤目标。仅 `checkpoints: 1` 即可预览；`dev_flow_preview_rollback` 为只读工具，不改工作区或状态。
 - **状态投影**：`deriveNext` 在 implementation 步骤且 checkpoints 强制时，无 active unit → `begin-implementation-unit`，有 active 未 checkpointed → `checkpoint-implementation-unit`，所有 unit 已完成 → `run-step(implementation)`。
 - **跨宿主安全**：checkpoints 目录受 adapter policy `isControlPath` 保护，禁止技能直接写。Host Hook 将 `features/<id>/checkpoints/**` 视为控制路径。
+
+## 回撤执行（1.7.0+，Phase 4A，`checkpoints: 1` + `rollbackExecution: 1`）
+
+`rollbackExecution: 1` 在 `checkpoints: 1` 之上增加完整的回撤确认门禁与执行能力：
+
+- **回撤确认门禁**：`dev_flow_present_rollback_gate` 为目标 checkpoint 重新计算预览与 basis hash，创建 `rollback-confirmation` 交互，等待用户确认。basis 过期或工作区冲突时门禁自动清除，提示重新展示。确认后 `rollbackGate.status === "confirmed"`。必须等用户下一条消息，不可同回合自批。
+- **回撤执行**：`dev_flow_execute_rollback` 以可续办事务日志执行回撤：备份 → 文件恢复 → 回撤验证 → 状态提交。事务分为 `prepared` / `backing-up` / `rolling-back` / `verifying` / `committed` / `compensating` / `compensated` 七个阶段。任何阶段中断可续办；验证失败自动补偿恢复到回撤前状态。
+- **事务安全**：journal 写入先于任何工作区字节移动；完整备份先于首条 rename；commit intent 先于 state CAS。补偿从备份恢复、多余文件移至 trash——字节绝不中途删除。
+- **跨版本 driver lease**：事务未完成时同时维护 sidecar lease 与 recovery 目录内的 legacy mirror；旧宿主只能读取后者。终态先清理备份内容、写入 `completedAt`，再释放两份 lease，避免滚动升级期间出现锁盲区。
+- **gate / step 联动**：成功回撤后将目标之后的 RU 标记 `rolled_back`，最早撤销 RU 变回 `pending`（可重新 begin）。下游步骤（code review、verification、feature-check、finalize）与 logic-complete 失效，需重新走完路线。
+- **两类反向能力**：unit checkpoint 只用于 implementation 期间的局部、事务化恢复；finalize 产生的 delivery snapshot / feature 级反向 patch 仍是整个功能的交付层回退证据，二者不可互相替代。
+- **doctor 集成**：`dev_flow_doctor` 检测 open transaction，报告 phase、target、undoOrder、blocked 状态与 verification/compensation attempt ID。任一 open transaction 阻止所有 feature mutation。
 
 ## Review 2a 多视角审查（`review: 1`）
 

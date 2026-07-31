@@ -16,7 +16,7 @@ Dev Flow 是面向 **Claude Code** 与 **Codex CLI** 的预构建双宿主插件
 
 generated status 只由 Core scaffold/refresh；standard L 没有 status 文件，应读取 `dev_flow_status`。
 
-**Review 2a / 4B**：新 standard M/L feature 使用不可变 review batch 与 Core 生成的只读 `plan-review` 投影。默认保证等级为 `multi-perspective`（多角色完成 ≠ 已证明多代理）。可选服务端采样可升至 `independent-sampling`；可选宿主 subagent attestation 最多 `multi-agent-attested`（不是 verified）。`review: 0` 的既有 feature 继续旧 plan-review artifact/evidence。Checkpoints（`checkpoints: 1`）extension 1.7.0+ 在 standard M/L 启用：implementation 通过 rollback unit 管理受保护文件写入权限与内容地址检查点，提供回撤预览。
+**Review 2a / 4B**：新 standard M/L feature 使用不可变 review batch 与 Core 生成的只读 `plan-review` 投影。默认保证等级为 `multi-perspective`（多角色完成 ≠ 已证明多代理）。可选服务端采样可升至 `independent-sampling`；可选宿主 subagent attestation 最多 `multi-agent-attested`（不是 verified）。`review: 0` 的既有 feature 继续旧 plan-review artifact/evidence。Checkpoints（`checkpoints: 1`）1.7.0+ 在 standard M/L 启用：implementation 通过 rollback unit 管理受保护文件写入权限与内容地址检查点，提供回撤预览。回撤执行（`rollbackExecution: 1`）增加确认门禁与可续办事务回撤，doctor 报告 open transaction。
 
 ---
 

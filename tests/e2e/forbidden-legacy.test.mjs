@@ -18,7 +18,19 @@ function listPaths(directory) {
 }
 
 test("repository has only plugin distribution surfaces, not legacy injection surfaces", () => {
-  assert.equal(existsSync(path.join(root, ".claude")), false);
+  // Root .claude/ is the repo's own dev config (settings, skills) and may exist;
+  // it must not contain legacy injection artifacts, though.
+  const claudeRoot = path.join(root, ".claude");
+  if (existsSync(claudeRoot)) {
+    const claudePaths = listPaths(claudeRoot).map((entry) => path.relative(root, entry));
+    assert.equal(
+      claudePaths.some(
+        (entry) => entry.includes("project-workflow.md") || entry.includes("dev-flow-upgrade") || entry.includes("CLAUDE.dev-flow-snippet.md"),
+      ),
+      false,
+      ".claude must not contain legacy injection artifacts",
+    );
+  }
   assert.equal(existsSync(path.join(root, "templates", "CLAUDE.dev-flow-snippet.md")), false);
   assert.equal(existsSync(path.join(root, "plugins", "dev-flow", "dev-flow-upgrade")), false);
 

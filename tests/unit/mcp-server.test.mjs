@@ -6,12 +6,14 @@ import path from "node:path";
 import { after, test } from "node:test";
 import { createTinyApp, strictProjectConfig } from "../helpers/fixture-repo.mjs";
 import { loadSource } from "../helpers/load-source.mjs";
-import { registerTraceFixture } from "../helpers/trace-fixtures.mjs";
+import { appendSecondTraceClosure, registerTraceFixture, twoClosureTraceDeltaFor } from "../helpers/trace-fixtures.mjs";
 import { buildTestBundles } from "../helpers/test-bundle.mjs";
 
 const store = await loadSource("plugins/dev-flow/src/core/state-store.ts");
 const artifacts = await loadSource("plugins/dev-flow/src/core/artifacts.ts");
 const checks = await loadSource("plugins/dev-flow/src/core/feature-check.ts");
+const units = await loadSource("plugins/dev-flow/src/core/implementation-units.ts");
+const checkpoints = await loadSource("plugins/dev-flow/src/core/checkpoints.ts");
 const reviewStore = await loadSource("plugins/dev-flow/src/core/review-store.ts");
 const distBefore = await Promise.all(["mcp-server.mjs", "claude-hook.mjs", "codex-hook.mjs"].map((name) => readFile(path.resolve("plugins/dev-flow/dist", name))));
 const bundles = await buildTestBundles();
@@ -32,14 +34,15 @@ function request(messages, cwd) {
   });
 }
 
-function requestWithElicitation(message, cwd, elicitationResult) {
+function requestWithElicitation(message, cwd, elicitationResult, captureRequests = false) {
   return new Promise((resolve, reject) => {
     const child = spawn(process.execPath, [bundles.pathFor("mcp-server")], { cwd, stdio: ["pipe", "pipe", "pipe"], env: { ...process.env, DEV_FLOW_DISABLE_ATTENTION: "1" } });
     let stdout = "", stderr = "", settled = false;
+    const requests = [];
     const finish = (value) => {
       if (settled) return;
       settled = true;
-      resolve(value);
+      resolve(captureRequests ? { response: value, requests } : value);
     };
     child.stdout.on("data", (chunk) => {
       stdout += chunk;
@@ -48,6 +51,7 @@ function requestWithElicitation(message, cwd, elicitationResult) {
       for (const line of lines.filter(Boolean)) {
         const response = JSON.parse(line);
         if (response.method === "elicitation/create") {
+          requests.push(response);
           child.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", id: response.id, result: elicitationResult })}\n`);
         } else if (response.id === 2) {
           child.stdin.end();
@@ -58,8 +62,7 @@ function requestWithElicitation(message, cwd, elicitationResult) {
     child.stderr.on("data", (chunk) => { stderr += chunk; });
     child.on("error", reject);
     child.on("close", (code) => {
-      if (!settled && code === 0) finish(undefined);
-      else if (!settled) reject(new Error(stderr));
+      if (!settled) reject(new Error(stderr || `MCP elicitation stream ended before tools/call response (exit ${code ?? "unknown"})`));
     });
     child.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2025-06-18", capabilities: { elicitation: { form: {} } } } })}\n`);
     child.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", id: 2, method: "tools/call", params: message })}\n`);
@@ -519,21 +522,57 @@ async function unitReadyMcpFeature(root, { checkpoints = 1 } = {}) {
   return store.mutate(root, "f", state.revision, "unit-mcp-approval", satisfyPreImplementation);
 }
 
-test("MCP exposes only phase-3 rollback tools with strict schemas and no execution entry", async () => {
+/** Two checkpointed units make CP-001 a valid rollback target for MCP tests. */
+async function rollbackReadyMcpFeature(root) {
+  await mkdir(path.join(root, "src"));
+  await writeFile(path.join(root, "src", "one.ts"), "export const one = 1;\n");
+  await writeFile(path.join(root, "src", "two.ts"), "export const two = 1;\n");
+  await store.initProject(root, config);
+  let state = await store.startFeature(root, {
+    featureId: "f", host: "codex", level: "M", topology: "local", execution: "standard", requirements: "provided-confirmed",
+  });
+  state = await store.mutate(root, "f", state.revision, "rollback-mcp-capabilities", (draft) => {
+    draft.workflowCapabilities = { trace: 1, review: 0, checkpoints: 1, rollbackExecution: 1 };
+  });
+  const fixture = (kind) => ({
+    root, featureId: "f", state, kind,
+    delta: twoClosureTraceDeltaFor(kind, "standard-m"),
+    edit: (markdown) => appendSecondTraceClosure(markdown, kind, "standard-m"),
+  });
+  state = await registerTraceFixture(fixture("requirements"));
+  state = await store.mutate(root, "f", state.revision, "rollback-mcp-requirements", (draft) => {
+    draft.steps.requirements = { status: "satisfied" };
+    draft.steps.requirement_confirmation = { status: "satisfied" };
+  });
+  state = await registerTraceFixture(fixture("implementation-plan"));
+  state = await store.mutate(root, "f", state.revision, "rollback-mcp-plan", (draft) => {
+    draft.steps.implementation_plan = { status: "satisfied" };
+  });
+  state = await registerTraceFixture(fixture("coverage-matrix"));
+  state = await store.mutate(root, "f", state.revision, "rollback-mcp-approval", satisfyPreImplementation);
+
+  state = await units.beginImplementationUnit(root, "f", state.revision, "RU-001");
+  await writeFile(path.join(root, "src", "one.ts"), "export const one = 2;\n");
+  state = (await checkpoints.checkpointImplementationUnit(root, "f", state.revision, "RU-001")).state;
+  state = await units.beginImplementationUnit(root, "f", state.revision, "RU-002");
+  await writeFile(path.join(root, "src", "two.ts"), "export const two = 2;\n");
+  return (await checkpoints.checkpointImplementationUnit(root, "f", state.revision, "RU-002")).state;
+}
+
+test("MCP exposes phase-4A rollback tools with strict schemas including gate and execution", async () => {
   const responses = await request([
     { jsonrpc: "2.0", id: 1, method: "tools/list" },
     { jsonrpc: "2.0", id: 2, method: "tools/call", params: { name: "dev_flow_present_rollback_gate", arguments: {} } },
     { jsonrpc: "2.0", id: 3, method: "tools/call", params: { name: "dev_flow_execute_rollback", arguments: {} } },
   ], process.cwd());
   const names = responses[0].result.tools.map((tool) => tool.name);
-  for (const name of ["dev_flow_begin_implementation_unit", "dev_flow_checkpoint_implementation_unit", "dev_flow_preview_rollback"]) {
+  for (const name of ["dev_flow_begin_implementation_unit", "dev_flow_checkpoint_implementation_unit", "dev_flow_preview_rollback",
+    "dev_flow_present_rollback_gate", "dev_flow_execute_rollback"]) {
     assert.ok(names.includes(name), `missing tool ${name}`);
   }
-  for (const forbidden of ["dev_flow_present_rollback_gate", "dev_flow_execute_rollback"]) {
-    assert.equal(names.includes(forbidden), false, `${forbidden} must not exist in phase 3`);
-  }
-  assert.equal(responses[1].error.data.code, "UNKNOWN_TOOL");
-  assert.equal(responses[2].error.data.code, "UNKNOWN_TOOL");
+  // Both gate and execute tools must reject missing arguments with schema errors.
+  assert.equal(responses[1].error.data.code, "INVALID_TOOL_INPUT");
+  assert.equal(responses[2].error.data.code, "INVALID_TOOL_INPUT");
 
   const tools = responses[0].result.tools;
   for (const name of ["dev_flow_begin_implementation_unit", "dev_flow_checkpoint_implementation_unit"]) {
@@ -550,6 +589,49 @@ test("MCP exposes only phase-3 rollback tools with strict schemas and no executi
   assert.equal(preview.additionalProperties, false);
   assert.equal("expectedRevision" in preview.properties, false);
   assert.equal(tools.find((tool) => tool.name === "dev_flow_preview_rollback").annotations.readOnlyHint, true);
+
+  // Gate and execute tools require expectedRevision (feature-mutation contract).
+  for (const name of ["dev_flow_present_rollback_gate", "dev_flow_execute_rollback"]) {
+    const schema = tools.find((tool) => tool.name === name).inputSchema;
+    assert.deepEqual(schema.required, ["featureId", "expectedRevision", "targetCheckpointId"], name);
+    assert.equal(schema.additionalProperties, false, name);
+    for (const forbidden of ["unitId", "fileScope", "basisHash", "status", "checkpointId", "files", "verificationAttempts"]) {
+      assert.equal(forbidden in schema.properties, false, `${name} must not accept Core-owned ${forbidden}`);
+    }
+  }
+});
+
+test("MCP rollback gate returns its full preview and execution follows the confirmed elicitation", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "dev-flow-mcp-rollback-"));
+  try {
+    const state = await rollbackReadyMcpFeature(root);
+    const gateResult = await requestWithElicitation({
+      name: "dev_flow_present_rollback_gate",
+      arguments: { featureId: "f", expectedRevision: state.revision, targetCheckpointId: "CP-001" },
+    }, root, { action: "accept", content: { action: "confirm" } }, true);
+    assert.equal(gateResult.requests.length, 1);
+    assert.match(gateResult.requests[0].params.message, /src\/two\.ts/);
+    assert.match(gateResult.requests[0].params.message, /unit:/);
+    const gate = gateResult.response;
+    assert.ok(gate.result, JSON.stringify(gate));
+    const presented = gate.result.structuredContent;
+    assert.equal(presented.interaction.kind, "rollback-confirmation");
+    assert.equal(presented.interaction.status, "resolved");
+    assert.equal(presented.response.action, "confirm");
+    assert.equal(presented.preview.targetCheckpointId, "CP-001");
+    assert.deepEqual(presented.preview.undoOrder, ["RU-002"]);
+    assert.equal(presented.preview.filePlan.some((action) => action.path === "src/two.ts"), true);
+    assert.equal(presented.preview.verificationCommands.some((command) => command.commandId === "unit"), true);
+
+    const [executed] = await request([{
+      jsonrpc: "2.0", id: 1, method: "tools/call", params: {
+        name: "dev_flow_execute_rollback",
+        arguments: { featureId: "f", expectedRevision: presented.revision, targetCheckpointId: "CP-001" },
+      },
+    }], root);
+    assert.equal(executed.result.structuredContent.outcome, "committed");
+    assert.equal(await readFile(path.join(root, "src", "two.ts"), "utf8"), "export const two = 1;\n");
+  } finally { await rm(root, { recursive: true, force: true }); }
 });
 
 test("MCP drives the phase-3 unit lifecycle and rejects checkpoints:0 features", async () => {

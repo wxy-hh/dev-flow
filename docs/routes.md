@@ -36,7 +36,7 @@ verification 命令 attempt 与人类可读 narrative 分轨：protected-root �
 - generated status 只能由 Core scaffold/refresh，不能人工登记；standard L 没有 status Markdown，请读取 `dev_flow_status`。
 - **Review 2a（`review: 1`）**：standard M/L 的 `plan_review` 走不可变 review batch。Core 按路线与 risk labels 派生角色（M：`requirements-coverage` + `architecture-testability`；L 另加 `rollback-operability`；`security` / data-money 类 risk 再追加对应角色）。`plan-review` 为 generated 投影；`recordStep(plan_review)` 的 evidence 由 Core 派生为 `{ batchId, basisHash, assuranceLevel }`，2a 默认 `assuranceLevel: "multi-perspective"`。
 - **`review: 0` 兼容**：插件升级前已启动的 feature 继续旧合同——standard M 仍可无 plan-review artifact 并以 `{ reviewType: "plan" }` 记步；standard L 仍使用可编辑 plan-review artifact。不发生中途迁移。
-- **Checkpoints（1.7.0+，`checkpoints: 1`）**：standard M/L 启用后，implementation 步骤内由 rollback unit 管理写入权限。必须先 `begin-implementation-unit` 再写入 protected 文件，完成后 `checkpoint-implementation-unit`。Hook 基于 `implementationUnitWriteBlock` 在 logic-complete 前拦截未经 unit 授权的文件修改。本阶段仍无可执行 rollback / checkpoint。
+- **Checkpoints 与回撤执行（1.7.0+）**：standard M/L 启用 `checkpoints: 1` 后，implementation 步骤内由 rollback unit 管理写入权限。必须先 `begin-implementation-unit` 再写入 protected 文件，完成后 `checkpoint-implementation-unit`。Hook 基于 `implementationUnitWriteBlock` 在 logic-complete 前拦截未经 unit 授权的文件修改。`checkpoints: 1` 即可使用 `dev_flow_preview_rollback` 做只读预览。`rollbackExecution: 1` 额外提供 `dev_flow_present_rollback_gate`（返回绑定 basis 的完整文件/验证预览与确认门禁）及 `dev_flow_execute_rollback`（可续办事务回撤）；回撤后下游步骤失效并重新走完路线。checkpoint 是 unit 级实现期恢复，finalize 的 delivery snapshot / feature 级反向 patch 仍是交付层回退证据。`doctor` 报告 open transaction 与补偿指引。
 
 ### 如何选 light vs standard（1.3.0+）
 

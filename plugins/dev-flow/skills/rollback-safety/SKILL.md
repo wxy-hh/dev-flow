@@ -7,6 +7,25 @@ description: 登记回撤与安全证据，并做只读回撤预览。触发：�
 
 从 `requiredEvidence.checks` 提交本步要求的 rollback / full-rollback；二者是不同义务，不得互相替代。禁止在 Skill 内复制风险映射或替其他步骤补 evidence。
 
-## 只读回撤预览（第 3 阶段）
+## 回撤预览、门禁与执行（第 4A 阶段）
 
-`checkpoints: 1` feature 可用 `dev_flow_preview_rollback` 对已确认 checkpoint 做**只读**预览：只返回撤销顺序、文件影响与验证命令，不修改工作区或状态。当前**不存在** `dev_flow_present_rollback_gate` 与 `dev_flow_execute_rollback`：不得声称回撤可执行，禁止通过 Bash、Write 或任何宿主工具自行恢复文件。预览返回 `ROLLBACK_CONFLICT` 时，只如实复述冲突明细（路径与 expected/actual）并停止，由用户决定下一步。
+`checkpoints: 1` feature 可用 `dev_flow_preview_rollback` 对已确认 checkpoint 做**只读**预览：只返回撤销顺序、文件影响与验证命令，不修改工作区或状态。预览返回 `ROLLBACK_CONFLICT` 时，只如实复述冲突明细（路径与 expected/actual）并停止，由用户决定下一步。
+
+`checkpoints: 1` 且 `rollbackExecution: 1` feature 可用以下完整回撤流程：
+
+### 回撤确认门禁
+
+1. 调用 `dev_flow_present_rollback_gate` 展示回撤确认门禁。工具会：重新计算预览与 basis hash、创建 `rollback-confirmation` 交互、返回撤销单元、文件影响和回撤验证命令，并通过 MCP 启示等待用户响应。
+2. 用户必须从后续交互中确认；无法在同一条消息中自批。
+3. 若 basis 过期或工作区出现冲突，门禁自动清除并提示重新展示。
+4. 门禁确认后的 `rollbackGate.status === "confirmed"`。
+
+### 回撤执行
+
+1. 确认门禁后，调用 `dev_flow_execute_rollback` 执行回撤。
+2. 执行过程采用可续办事务日志：备份 → 文件恢复 → 回撤验证 → 状态提交。
+3. 验证失败时自动补偿恢复到回撤前状态。
+4. 事务中断（崩溃）时可续办，`dev_flow_doctor` 报告 open transaction 状态。
+5. 成功回撤后将撤销的 RU 标记 `rolled_back`，最早撤销 RU 变回 `pending`，下游步骤（code review、verification、feature-check、finalize）失效。
+
+禁止通过 Bash、Write 或任何宿主工具自行恢复文件。若 preview 返回冲突或 basis 过期，必须先解决问题再重新展示门禁。
