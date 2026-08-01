@@ -19,14 +19,14 @@ if (event.hook_event_name === "PreToolUse") {
     try {
       await lstat(path.join(cwd, ".dev-flow", "active.json"));
       allow = false;
-      reason = "DEV_FLOW_WORKFLOW_STATE_UNREADABLE: Active workflow cannot be read safely; run dev_flow_doctor and recover if corrupt";
+      reason = "DEV_FLOW_WORKFLOW_STATE_UNREADABLE: 无法安全读取活动工作流；请运行 dev_flow_doctor，损坏时使用 recover 恢复";
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === "ENOENT") {
         allow = true;
         reason = undefined;
       } else {
         allow = false;
-        reason = "DEV_FLOW_WORKFLOW_STATE_UNREADABLE: Active workflow path cannot be inspected safely; run dev_flow_doctor";
+        reason = "DEV_FLOW_WORKFLOW_STATE_UNREADABLE: 无法安全检查活动工作流路径；请运行 dev_flow_doctor";
       }
     }
   }

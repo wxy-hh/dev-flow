@@ -457,7 +457,7 @@ async function mutatePreparedLocked(
   }
   return state;
 }
-export async function switchActive(root: string, from: string, to: string, reason: string): Promise<void> {
+export async function switchActive(root: string, from: string, to: string, reason: string): Promise<FeatureState> {
   if (!reason) throw new DevFlowError("SWITCH_REASON_REQUIRED", "switch requires a reason");
   const release = await lock(root, `${from}:${to}`, "switch-active");
   try {
@@ -471,6 +471,7 @@ export async function switchActive(root: string, from: string, to: string, reaso
     await appendEvent(root, from, source.revision, "paused", { reason });
     await appendEvent(root, to, target.revision, "activated", { reason });
     await writeAtomic(activePath(root), { featureId: to, revision: target.revision, updatedAt: new Date().toISOString() });
+    return target;
   } finally { await release(); }
 }
 export async function abandonFeature(root: string, id: string, expectedRevision: number, reason: string, userEvidence: string): Promise<FeatureState> {

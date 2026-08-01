@@ -18,6 +18,7 @@ import {
   createInteraction,
   fallbackHint,
   getInteraction,
+  normalizeReplyText,
   resolveNativeInteraction,
   resolveTokenInteraction,
   toPublicInteraction,
@@ -99,16 +100,58 @@ type GateConfirmation = {
   turnBoundaryEventId?: string;
 };
 
-function eventIdFromConfirmation(value: unknown): string | undefined {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) return undefined;
+/** Collects every confirmation event id (both prompt and turn-boundary slots). */
+function confirmationEventIds(value: unknown): string[] {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return [];
   const confirmation = (value as { confirmation?: unknown }).confirmation;
-  if (typeof confirmation !== "object" || confirmation === null || Array.isArray(confirmation)) return undefined;
+  if (typeof confirmation !== "object" || confirmation === null || Array.isArray(confirmation)) return [];
   const record = confirmation as { promptEventId?: unknown; turnBoundaryEventId?: unknown };
-  return typeof record.promptEventId === "string"
-    ? record.promptEventId
-    : typeof record.turnBoundaryEventId === "string"
-      ? record.turnBoundaryEventId
-      : undefined;
+  const ids: string[] = [];
+  if (typeof record.promptEventId === "string") ids.push(record.promptEventId);
+  if (typeof record.turnBoundaryEventId === "string") ids.push(record.turnBoundaryEventId);
+  return ids;
+}
+
+type HostEventRecord = { revision: number; type: string; at: string; data: unknown };
+
+function hostEventRecord(events: HostEventRecord[], eventId: string): HostEventRecord | undefined {
+  return events.find((item) => item.type === "host-event"
+    && (item.data as { eventId?: string }).eventId === eventId);
+}
+
+function assertGateEvidenceTiming(
+  eventRecord: HostEventRecord | undefined,
+  event: { type?: string; text?: string; at?: string } | undefined,
+  presented: { presentedRevision?: number; presentedAt?: string } | undefined,
+  recoveryHint: string,
+): void {
+  if (!event || !presented?.presentedAt
+    || (eventRecord?.revision ?? -1) <= (presented.presentedRevision ?? -1)
+    || Date.parse(event.at ?? "") < Date.parse(presented.presentedAt)) {
+    throw new DevFlowError("HUMAN_GATE_SAME_TURN", "confirmation evidence must be later than gate presentation", {
+      recoveryHint,
+    });
+  }
+}
+
+function assertPromptEvidence(
+  event: { type?: string; text?: string } | undefined,
+  userReply: string,
+  recoveryHint: string,
+): void {
+  if (event?.type !== "user-prompt" || normalizeReplyText(String(event.text ?? "")) !== normalizeReplyText(userReply)) {
+    throw new DevFlowError("HUMAN_GATE_REPLY_MISMATCH", "userReply must match the captured prompt", {
+      recoveryHint,
+    });
+  }
+}
+
+function assertTurnBoundaryEvidence(event: { type?: string } | undefined, recoveryHint?: string): void {
+  if (event?.type !== "turn-boundary") {
+    throw new DevFlowError("HUMAN_GATE_PROVENANCE_UNAVAILABLE", "turn boundary was not captured", {
+      ...(recoveryHint ? { recoveryHint } : {}),
+    });
+  }
 }
 
 function resolveProvenance(
@@ -121,18 +164,14 @@ function resolveProvenance(
   if (provenance.promptEventId || provenance.turnBoundaryEventId) return provenance;
 
   const current = state.humanGates[gate] as { presentedAt?: string; presentedRevision?: number } | undefined;
-  const consumed = new Set(
-    Object.values(state.humanGates)
-      .map(eventIdFromConfirmation)
-      .filter((eventId): eventId is string => Boolean(eventId)),
-  );
+  const consumed = new Set(Object.values(state.humanGates).flatMap(confirmationEventIds));
   const match = [...events].reverse().find((item) => {
     const event = item.data as { eventId?: unknown; type?: unknown; text?: unknown; at?: unknown };
     return item.type === "host-event"
       && typeof event.eventId === "string"
       && !consumed.has(event.eventId)
       && event.type === "user-prompt"
-      && event.text === userReply
+      && normalizeReplyText(String(event.text ?? "")) === normalizeReplyText(userReply)
       && item.revision > (current?.presentedRevision ?? state.revision)
       && typeof current?.presentedAt === "string"
       && typeof event.at === "string"
@@ -143,7 +182,7 @@ function resolveProvenance(
     throw new DevFlowError(
       "HUMAN_GATE_PROVENANCE_UNAVAILABLE",
       "no matching post-presentation user prompt was captured",
-      { recoveryHint: "Ensure the host UserPromptSubmit hook is active, then submit one exact approval phrase and retry confirmation" },
+      { recoveryHint: "请确保宿主 UserPromptSubmit hook 已生效，然后在门禁呈现后提交一条准确的批准词（如“确认需求”）重试确认" },
     );
   }
   return { promptEventId: eventId };
@@ -165,25 +204,18 @@ function assertTokenEvidence(
   provenance: GateConfirmation,
 ): GateConfirmation {
   const resolved = resolveProvenance(events, state, gate, userReply, provenance);
-  const marker = resolved.promptEventId ?? resolved.turnBoundaryEventId;
   const current = state.humanGates[gate] as { presentedRevision?: number; presentedAt?: string } | undefined;
-  const eventRecord = events.find((item) => item.type === "host-event"
-    && (item.data as { eventId?: string }).eventId === marker);
-  const event = eventRecord?.data as { type?: string; text?: string; at?: string } | undefined;
-  if (!marker || !event || !current?.presentedAt
-    || (eventRecord?.revision ?? -1) <= (current.presentedRevision ?? -1)
-    || Date.parse(event.at ?? "") < Date.parse(current.presentedAt)) {
-    throw new DevFlowError("HUMAN_GATE_SAME_TURN", "confirmation evidence must be later than gate presentation", {
-      recoveryHint: "Submit the exact one-time reply in a later user turn",
-    });
+  if (resolved.promptEventId) {
+    const eventRecord = hostEventRecord(events, resolved.promptEventId);
+    const event = eventRecord?.data as { type?: string; text?: string; at?: string } | undefined;
+    assertGateEvidenceTiming(eventRecord, event, current, "请在门禁呈现后的后续回合提交一次性回复或批准词");
+    assertPromptEvidence(event, userReply, "请原样传递捕获到的用户回复文本（空格与大小写差异会自动归一化）");
   }
-  if (resolved.promptEventId && (event.type !== "user-prompt" || event.text !== userReply)) {
-    throw new DevFlowError("HUMAN_GATE_REPLY_MISMATCH", "userReply must match the captured prompt", {
-      recoveryHint: "Pass the captured user prompt text exactly",
-    });
-  }
-  if (resolved.turnBoundaryEventId && event.type !== "turn-boundary") {
-    throw new DevFlowError("HUMAN_GATE_PROVENANCE_UNAVAILABLE", "turn boundary was not captured");
+  if (resolved.turnBoundaryEventId) {
+    const eventRecord = hostEventRecord(events, resolved.turnBoundaryEventId);
+    const event = eventRecord?.data as { type?: string; text?: string; at?: string } | undefined;
+    assertGateEvidenceTiming(eventRecord, event, current, "请在门禁呈现后的后续回合提交一次性回复或批准词");
+    assertTurnBoundaryEvidence(event);
   }
   return resolved;
 }
@@ -225,12 +257,33 @@ async function resolveGateResponse(
     const basisHash = digest(gateBasis(state, gate));
     if (basisHash !== current.basisHash || basisHash !== interaction.basisHash) {
       throw new DevFlowError("HUMAN_GATE_BASIS_CHANGED", gate, {
-        recoveryHint: "Present the gate again after updating its approval basis",
+        recoveryHint: "门禁依据已变更，请更新并登记相关资产后重新呈现门禁",
       });
+    }
+    if (input.source === "text-token") {
+      // 与 confirmGate 相同的跨门禁防重放：任一 provenance id 已被其他门禁消费即拒绝。
+      const ids = [
+        ...(provenance?.promptEventId ? [provenance.promptEventId] : []),
+        ...(provenance?.turnBoundaryEventId ? [provenance.turnBoundaryEventId] : []),
+      ];
+      for (const [otherGate, value] of Object.entries(state.humanGates)) {
+        if (otherGate === gate) continue;
+        const replayed = confirmationEventIds(value).find((eventId) => ids.includes(eventId));
+        if (replayed) throw new DevFlowError("HUMAN_GATE_EVENT_CONSUMED", replayed);
+      }
     }
     response = input.source === "elicitation"
       ? resolveNativeInteraction(state, interactionId, input.action, input.comment, host)
-      : resolveTokenInteraction(state, interactionId, input.userReply, host, provenance!.promptEventId ?? provenance!.turnBoundaryEventId!);
+      : resolveTokenInteraction(
+          state,
+          interactionId,
+          input.userReply,
+          host,
+          provenance!,
+          // HUMAN GATE 支持自然语言批准词（如“确认需求”“批准实现”），映射为 confirm 选项；
+          // 一次性 token 行仍作为兜底通道。grill 等动态选项交互不映射。
+          isExplicitGateApproval(gate, input.userReply) ? "confirm" : undefined,
+        );
     if (response.action === "confirm") {
       state.humanGates[gate] = {
         ...current,
@@ -293,15 +346,18 @@ export async function confirmGate(
       {
         gate: selectedGate,
         allowed: gateApprovalPhrases[selectedGate],
-        recoveryHint: "Reply with one exact approval phrase after the gate is presented",
+        recoveryHint: "请在门禁呈现后输入一条准确批准词（如“确认需求”）或复制一次性回复整行",
       },
     );
   }
   const currentState = await readState(root, id);
   const events = await readFeatureEvents(root, id);
   const resolvedProvenance = resolveProvenance(events, currentState, selectedGate, userReply, provenance);
-  const marker = resolvedProvenance.promptEventId ?? resolvedProvenance.turnBoundaryEventId;
-  if (!marker) throw new DevFlowError("HUMAN_GATE_PROVENANCE_UNAVAILABLE", "confirmation provenance is required");
+  const eventIds = [
+    ...(resolvedProvenance.promptEventId ? [resolvedProvenance.promptEventId] : []),
+    ...(resolvedProvenance.turnBoundaryEventId ? [resolvedProvenance.turnBoundaryEventId] : []),
+  ];
+  if (!eventIds.length) throw new DevFlowError("HUMAN_GATE_PROVENANCE_UNAVAILABLE", "confirmation provenance is required");
   return mutate(root, id, expectedRevision, "gate-confirmed", async (state) => {
     await assertRequirementsGrillSatisfied(root, id, state);
     await assertTraceGateCurrent(root, state, selectedGate);
@@ -314,46 +370,37 @@ export async function confirmGate(
     } | undefined;
     if (current?.status !== "pending") {
       throw new DevFlowError("HUMAN_GATE_NOT_PENDING", selectedGate, {
-        recoveryHint: "Present the current gate before attempting confirmation",
+        recoveryHint: "请先呈现当前门禁再尝试确认",
       });
     }
     if ((current.presentedRevision ?? state.revision) >= state.revision) {
       throw new DevFlowError("HUMAN_GATE_SAME_TURN", "confirmation must occur after presentation", {
-        recoveryHint: "Wait for a later user turn before confirming the gate",
+        recoveryHint: "请等待门禁呈现后的新回合再确认",
       });
     }
-    const eventRecord = events.find((item) => item.type === "host-event"
-      && (item.data as { eventId?: string }).eventId === marker);
-    const event = eventRecord?.data as { type?: string; text?: string; at?: string } | undefined;
-    if (!event || !current.presentedAt
-      || (eventRecord?.revision ?? -1) <= (current.presentedRevision ?? -1)
-      || Date.parse(event.at ?? "") < Date.parse(current.presentedAt)) {
-      throw new DevFlowError("HUMAN_GATE_SAME_TURN", "confirmation evidence must be later than gate presentation", {
-        recoveryHint: "Capture confirmation from a later user turn",
-      });
+    // Each event id is validated against its own event type and timing; a
+    // prompt id must be a user-prompt and a turn-boundary id must be a boundary.
+    if (resolvedProvenance.promptEventId) {
+      const eventRecord = hostEventRecord(events, resolvedProvenance.promptEventId);
+      const event = eventRecord?.data as { type?: string; text?: string; at?: string } | undefined;
+      assertGateEvidenceTiming(eventRecord, event, current, "请在门禁呈现后的后续回合提交确认");
+      assertPromptEvidence(event, userReply, "请原样传递捕获到的用户回复文本（空格与大小写差异会自动归一化）");
     }
-    if (resolvedProvenance.promptEventId && (event.type !== "user-prompt" || event.text !== userReply)) {
-      throw new DevFlowError("HUMAN_GATE_REPLY_MISMATCH", "userReply must match the captured prompt", {
-        recoveryHint: "Pass the captured user prompt text exactly",
-      });
-    }
-    if (resolvedProvenance.turnBoundaryEventId && event.type !== "turn-boundary") {
-      throw new DevFlowError("HUMAN_GATE_PROVENANCE_UNAVAILABLE", "turn boundary was not captured", {
-        recoveryHint: "Use a captured turn-boundary event or later user prompt",
-      });
+    if (resolvedProvenance.turnBoundaryEventId) {
+      const eventRecord = hostEventRecord(events, resolvedProvenance.turnBoundaryEventId);
+      const event = eventRecord?.data as { type?: string; text?: string; at?: string } | undefined;
+      assertGateEvidenceTiming(eventRecord, event, current, "请在门禁呈现后的后续回合提交确认");
+      assertTurnBoundaryEvidence(event, "请使用已捕获的回合边界事件或后续用户回复");
     }
     for (const [otherGate, value] of Object.entries(state.humanGates)) {
-      const confirmation = (value as {
-        confirmation?: { promptEventId?: string; turnBoundaryEventId?: string };
-      }).confirmation;
-      if (otherGate !== selectedGate && confirmation && Object.values(confirmation).includes(marker)) {
-        throw new DevFlowError("HUMAN_GATE_EVENT_CONSUMED", String(marker));
-      }
+      if (otherGate === selectedGate) continue;
+      const replayed = confirmationEventIds(value).find((eventId) => eventIds.includes(eventId));
+      if (replayed) throw new DevFlowError("HUMAN_GATE_EVENT_CONSUMED", replayed);
     }
     const basisHash = digest(gateBasis(state, selectedGate));
     if (basisHash !== current.basisHash) {
       throw new DevFlowError("HUMAN_GATE_BASIS_CHANGED", selectedGate, {
-        recoveryHint: "Present the gate again after updating its approval basis",
+        recoveryHint: "门禁依据已变更，请更新并登记相关资产后重新呈现门禁",
       });
     }
     state.humanGates[selectedGate] = {

@@ -8,6 +8,7 @@ import type { RequiredEvidence } from "../policy/types.js";
 import { assertArtifactIntegrity } from "./artifacts.js";
 import { DevFlowError } from "./errors.js";
 import {
+  assertImplementationFilesExist,
   assertImplementationFilesInProtectedRoots,
   createDeliverySnapshot,
   implementationFiles,
@@ -43,6 +44,9 @@ export async function recordStep(
     const files = implementationFiles(evidence);
     const config = await readProjectConfig(root);
     assertImplementationFilesInProtectedRoots(files, config.protectedRoots);
+    // Validated before the mutation so a rejected registration leaves the step
+    // open and can be re-recorded without a dead end.
+    await assertImplementationFilesExist(root, files);
     normalizedEvidence = {
       ...(typeof evidence === "object" && evidence !== null && !Array.isArray(evidence) ? evidence : {}),
       files,

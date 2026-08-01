@@ -1,4 +1,4 @@
-/* dev-flow 1.9.0; built from source, deterministic build */
+/* dev-flow 1.10.0; built from source, deterministic build */
 
 // plugins/dev-flow/src/mcp/server.ts
 import readline from "node:readline";
@@ -472,6 +472,53 @@ function implementationFiles(evidence) {
   }
   return normalized.sort();
 }
+var missingFileHint = 'files \u53EA\u63A5\u53D7\u7EAF\u8DEF\u5F84\uFF0C\u5982 "src/foo.js"\uFF08\u800C\u975E "src/foo.js (\u65B0\u589E)"\uFF09\uFF1B\u5148\u521B\u5EFA\u6216\u767B\u8BB0\u5B9E\u9645\u5B58\u5728\u7684\u6587\u4EF6\u540E\u518D\u91CD\u5F55';
+async function assertImplementationFilesExist(root2, files) {
+  const missing = [];
+  for (const file of files) {
+    try {
+      await lstat(path.join(root2, file));
+    } catch (error) {
+      if (error.code !== "ENOENT") throw error;
+      missing.push(file);
+    }
+  }
+  if (!missing.length) return;
+  let status;
+  try {
+    status = await git(root2, ["status", "--porcelain=v1", "-z"]);
+  } catch (error) {
+    if (error instanceof DevFlowError && error.code === "DELIVERY_SNAPSHOT_GIT_REQUIRED") {
+      throw new DevFlowError("INVALID_IMPLEMENTATION_FILE", `implementation file does not exist: ${missing.join(", ")}`, {
+        files: missing,
+        recoveryHint: missingFileHint
+      });
+    }
+    throw error;
+  }
+  const allowed = /* @__PURE__ */ new Set();
+  const items = nulItems(status);
+  for (let index = 0; index < items.length; index += 1) {
+    const item = items[index];
+    if (item.length < 4) continue;
+    const code = item.slice(0, 2);
+    if (code.includes("D")) allowed.add(normalizePath(item.slice(3)));
+    if (/[RC]/.test(code)) {
+      const original = items[index + 1];
+      if (original) {
+        allowed.add(normalizePath(original));
+        index += 1;
+      }
+    }
+  }
+  const stillMissing = missing.filter((file) => !allowed.has(file));
+  if (stillMissing.length) {
+    throw new DevFlowError("INVALID_IMPLEMENTATION_FILE", `implementation file does not exist: ${stillMissing.join(", ")}`, {
+      files: stillMissing,
+      recoveryHint: missingFileHint
+    });
+  }
+}
 function statusPaths(value) {
   const items = nulItems(value);
   const paths = /* @__PURE__ */ new Set();
@@ -552,7 +599,7 @@ async function createDeliverySnapshot(root2, featureId, state, config) {
   if (unexpected.length) {
     throw new DevFlowError("DELIVERY_FILE_UNREGISTERED", "protected changes are not registered in implementation evidence", {
       files: unexpected,
-      recoveryHint: "Add every feature-owned protected file to implementation evidence.files, then rerun verification and finalize"
+      recoveryHint: '\u628A\u6BCF\u4E2A feature \u62E5\u6709\u7684\u53D7\u4FDD\u62A4\u6587\u4EF6\u52A0\u5165 implementation evidence.files\uFF08\u53EA\u63A5\u53D7\u7EAF\u8DEF\u5F84\uFF0C\u5982 "src/foo.js" \u800C\u975E "src/foo.js (\u65B0\u589E)"\uFF09\uFF0C\u7136\u540E\u91CD\u65B0\u9A8C\u8BC1\u5E76 finalize'
     });
   }
   const changed = files.filter((file) => currentDirty.includes(file));
@@ -2419,7 +2466,7 @@ async function startFeature(root2, input, options = {}) {
         deliveryBaseline,
         blockingFindings: [],
         logicComplete: false,
-        lastUpdatedBy: { host: input.host, pluginVersion: "1.9.0" }
+        lastUpdatedBy: { host: input.host, pluginVersion: "1.10.0" }
       };
       if (traceEnforcementRequired(route, workflowCapabilities)) {
         const configSnapshot = await readProjectConfigSnapshot(root2);
@@ -2548,6 +2595,7 @@ async function switchActive(root2, from, to, reason) {
     await appendEvent(root2, from, source.revision, "paused", { reason });
     await appendEvent(root2, to, target.revision, "activated", { reason });
     await writeAtomic(activePath(root2), { featureId: to, revision: target.revision, updatedAt: (/* @__PURE__ */ new Date()).toISOString() });
+    return target;
   } finally {
     await release();
   }
@@ -3235,6 +3283,9 @@ function parseTraceSourceBlocks(markdown) {
 
 // plugins/dev-flow/src/core/user-interactions.ts
 import { randomBytes, randomUUID as randomUUID5 } from "node:crypto";
+function normalizeReplyText(value) {
+  return value.trim().replace(/[\s\u00A0\uFEFF]+/g, " ").toLowerCase();
+}
 function interactions(state) {
   if (!state.interactions) state.interactions = {};
   return state.interactions;
@@ -3311,6 +3362,41 @@ function optionFor(interaction, action) {
   if (!option) throw new DevFlowError("INTERACTION_ACTION_INVALID", action, { interactionId: interaction.id });
   return option;
 }
+function matchNaturalOption(interaction, userReply) {
+  const normalized = normalizeReplyText(userReply);
+  if (!normalized) return void 0;
+  const stripped = normalized.replace(/[.、)）\s]/g, "");
+  const letter = stripped.match(/^([a-c])$/u);
+  if (letter) {
+    const option = interaction.options[letter[1].toLowerCase().charCodeAt(0) - 97];
+    if (option) return { option };
+  }
+  const number = stripped.match(/^([1-9])$/u);
+  if (number) {
+    const option = interaction.options[Number(number[1]) - 1];
+    if (option) return { option };
+  }
+  if (normalized === "\u63A8\u8350" || normalized === "\u6309\u63A8\u8350" || normalized === "\u9009\u63A8\u8350") {
+    const recommended = interaction.options[0];
+    if (recommended) return { option: recommended };
+  }
+  const editMatch = normalized.match(/^修改(?:需求|意见|计划|方案|)?[:：]?\s*([\s\S]*)$/u);
+  if (editMatch) {
+    const option = interaction.options.find((candidate) => candidate.id === "request-changes");
+    if (option) return { option, comment: editMatch[1] || void 0 };
+  }
+  for (const candidate of interaction.options) {
+    const labelNorm = normalizeReplyText(candidate.label);
+    if (!labelNorm) continue;
+    if (labelNorm === normalized || labelNorm.startsWith(normalized) && normalized.length >= 1) {
+      return { option: candidate };
+    }
+    if (candidate.id !== "confirm" && normalized.startsWith(labelNorm) && normalized.length > labelNorm.length) {
+      return { option: candidate, comment: normalized.slice(labelNorm.length).trim() };
+    }
+  }
+  return void 0;
+}
 function validateComment(option, comment) {
   const normalized = comment?.trim();
   if (option.requiresComment && !normalized) {
@@ -3334,31 +3420,37 @@ function resolveNativeInteraction(state, interactionId, action, comment, host) {
   interaction.response = response;
   return response;
 }
-function resolveTokenInteraction(state, interactionId, userReply, host, promptEventId) {
+function resolveTokenInteraction(state, interactionId, userReply, host, provenance, phraseAction) {
   const interaction = getInteraction(state, interactionId);
   if (interaction.status !== "pending") throw new DevFlowError("INTERACTION_ALREADY_RESOLVED", interactionId);
   let match;
-  for (const option of interaction.options) {
-    const prefix = `${interaction.fallbackToken} ${option.id}`;
-    if (option.requiresComment) {
-      if (userReply === prefix) match = { option };
-      else if (userReply.startsWith(`${prefix} `)) match = { option, comment: userReply.slice(prefix.length).trim() };
-    } else if (userReply === prefix) {
-      match = { option };
+  if (phraseAction) {
+    match = { option: optionFor(interaction, phraseAction) };
+  } else if (match = matchNaturalOption(interaction, userReply)) {
+  } else {
+    const trimmed = userReply.trim();
+    const segments = trimmed.match(/^(\S+)\s+(\S+)(?:[\s]+([\s\S]*))?$/);
+    if (segments) {
+      const [, tokenPart, actionPart, rest] = segments;
+      if (normalizeReplyText(tokenPart) === normalizeReplyText(interaction.fallbackToken)) {
+        const option = interaction.options.find((candidate) => candidate.id === actionPart);
+        if (option) match = { option, comment: rest?.trim() };
+      }
     }
-    if (match) break;
   }
   if (!match) {
     throw new DevFlowError("INTERACTION_TOKEN_MISMATCH", "response does not match the current one-time interaction token", {
-      recoveryHint: `Use the exact reply shown for interaction ${interactionId}`
+      recoveryHint: "\u8BF7\u539F\u6837\u590D\u5236\u63D0\u793A\u4E2D\u5C55\u793A\u7684\u4E00\u6B21\u6027\u56DE\u590D\u6574\u884C\u5E76\u53D1\u9001\uFF0C\u52FF\u6DFB\u52A0\u7A7A\u683C\u3001\u524D\u7F00\u6216\u6807\u70B9\uFF1BHUMAN GATE \u4E5F\u53EF\u76F4\u63A5\u8F93\u5165\u6279\u51C6\u8BCD\uFF08\u5982\u201C\u786E\u8BA4\u9700\u6C42\u201D\uFF09"
     });
   }
   const normalizedComment = validateComment(match.option, match.comment);
+  const ids = typeof provenance === "string" ? { promptEventId: provenance } : provenance;
   const response = {
     action: match.option.id,
     ...normalizedComment ? { comment: normalizedComment } : {},
     source: "text-token",
-    promptEventId,
+    ...ids.promptEventId ? { promptEventId: ids.promptEventId } : {},
+    ...ids.turnBoundaryEventId ? { turnBoundaryEventId: ids.turnBoundaryEventId } : {},
     userReply,
     host,
     respondedAt: (/* @__PURE__ */ new Date()).toISOString()
@@ -3385,11 +3477,25 @@ function toPublicInteraction(interaction) {
   };
 }
 function fallbackHint(interaction) {
-  const replies = toPublicInteraction(interaction).fallback.replies;
-  return interaction.options.map((option) => {
-    const reply = replies.find((candidate) => candidate.action === option.id);
-    return `${option.label}: ${reply.reply}`;
-  }).join("\uFF1B");
+  if (interaction.kind === "gate") {
+    const confirm = interaction.options.find((option) => option.id === "confirm");
+    const changes = interaction.options.find((option) => option.id === "request-changes");
+    const gate = interaction.target.replace("gate:", "");
+    const verb = gate === "requirement_confirmation" ? "\u786E\u8BA4\u9700\u6C42" : "\u6279\u51C6\u5B9E\u73B0";
+    const editWord = gate === "requirement_confirmation" ? "\u4FEE\u6539\u9700\u6C42" : "\u4FEE\u6539\u8BA1\u5212";
+    const parts = [];
+    if (confirm) parts.push(`\u2705 \u5982\u9700${verb}\uFF0C\u76F4\u63A5\u56DE\u590D\uFF1A${confirm.label}\uFF08\u6216\u300C\u786E\u8BA4\u300D\uFF09`);
+    if (changes) parts.push(`\u270F\uFE0F \u5982\u9700\u8C03\u6574\uFF0C\u8BF7\u56DE\u590D\uFF1A${editWord}: <\u8865\u5145\u4F60\u7684\u4FEE\u6539\u610F\u89C1>`);
+    return parts.join("\uFF1B");
+  }
+  const lines = [interaction.question ?? "\u8BF7\u9009\u62E9\u65B9\u6848\uFF1A"];
+  interaction.options.forEach((option, index) => {
+    const letter = String.fromCharCode(97 + index).toUpperCase();
+    const recommended = index === 0 ? "\uFF08\u63A8\u8350\uFF09" : "";
+    lines.push(`${letter}. ${option.label}${recommended}`);
+  });
+  lines.push("\u56DE\u590D A/B/C\uFF08\u6216\u65B9\u6848\u540D\u79F0\uFF09\uFF0C\u4E5F\u53EF\u4EE5\u76F4\u63A5\u8BF4\u51FA\u4F60\u7684\u60F3\u6CD5");
+  return lines.join("\n");
 }
 
 // plugins/dev-flow/src/core/artifacts.ts
@@ -3644,7 +3750,7 @@ function allowedStatuses(state) {
 function invalidStatus(details) {
   throw new DevFlowError("GRILL_STATUS_INVALID", "requirements grill_status must be a supported enum", {
     allowed: statuses,
-    recoveryHint: "Set grill_status to a supported value and re-record the requirements artifact",
+    recoveryHint: "\u8BF7\u5C06 grill_status \u8BBE\u4E3A\u53D7\u652F\u6301\u7684\u503C\u5E76\u91CD\u65B0\u767B\u8BB0\u9700\u6C42\u6587\u6863",
     ...details
   });
 }
@@ -3682,13 +3788,13 @@ function parseGrillFrontMatter(contents) {
   if (fields.grill_response_hint) result.responseHint = fields.grill_response_hint;
   if (status === "in_progress" && (!result.questionId || !result.responseHint)) {
     throw new DevFlowError("GRILL_STATUS_INVALID", "in_progress grill requires grill_question_id and grill_response_hint", {
-      recoveryHint: "Set the current Q-id and response hint, record the requirements artifact, then ask the user"
+      recoveryHint: "\u8BF7\u8BBE\u7F6E\u5F53\u524D\u9898\u53F7\u4E0E\u56DE\u590D\u63D0\u793A\u3001\u767B\u8BB0\u9700\u6C42\u6587\u6863\u540E\u518D\u8BE2\u95EE\u7528\u6237"
     });
   }
   if (status === "complete" || status === "not_required") {
     if (result.questionId || result.responseHint) {
       throw new DevFlowError("GRILL_STATUS_INVALID", "complete/not_required grill must not retain current-question fields", {
-        recoveryHint: "Clear grill_question_id and grill_response_hint when grill is finished"
+        recoveryHint: "grill \u5B8C\u6210\u540E\u8BF7\u6E05\u9664\u5F53\u524D\u9898\u5B57\u6BB5"
       });
     }
   }
@@ -3724,7 +3830,7 @@ async function requestGrillDecision(root2, id, expectedRevision, input) {
       question: input.question,
       options: withMergeRemaining(input.options)
     });
-    draft.lastUpdatedBy = { host: input.host, pluginVersion: "1.9.0" };
+    draft.lastUpdatedBy = { host: input.host, pluginVersion: "1.10.0" };
   }, () => ({ questionId: input.questionId, interactionId: interaction?.id, options: input.options }));
   if (!interaction) throw new DevFlowError("INTERACTION_NOT_CREATED", target);
   return { state, interaction: toPublicInteraction(interaction) };
@@ -3732,12 +3838,12 @@ async function requestGrillDecision(root2, id, expectedRevision, input) {
 function resolveGrillTextPrompt(events, interactionId, userReply, promptEventId) {
   const matches = (item) => {
     const event2 = item.data;
-    return item.type === "host-event" && event2.type === "user-prompt" && event2.text === userReply && typeof event2.eventId === "string";
+    return item.type === "host-event" && event2.type === "user-prompt" && normalizeReplyText(String(event2.text ?? "")) === normalizeReplyText(userReply) && typeof event2.eventId === "string";
   };
   const selected = promptEventId ? events.find((item) => matches(item) && item.data.eventId === promptEventId) : [...events].reverse().find(matches);
   if (!selected) {
     throw new DevFlowError("INTERACTION_PROVENANCE_UNAVAILABLE", interactionId, {
-      recoveryHint: "Ensure the UserPromptSubmit hook captured the exact one-time reply, then retry"
+      recoveryHint: "\u8BF7\u786E\u4FDD\u5BBF\u4E3B hook \u6355\u83B7\u5230\u672C\u6B21\u4E00\u6B21\u6027\u56DE\u590D\uFF08\u7A7A\u683C\u4E0E\u5927\u5C0F\u5199\u5DEE\u5F02\u4F1A\u81EA\u52A8\u5F52\u4E00\u5316\uFF09\uFF0C\u518D\u91CD\u8BD5"
     });
   }
   const event = selected.data;
@@ -3754,7 +3860,7 @@ async function resolveGrillDecision(root2, id, expectedRevision, interactionId, 
   if (interaction.kind !== "grill" || interaction.status !== "pending") throw new DevFlowError("INTERACTION_NOT_PENDING", interactionId);
   const grill = await currentGrillQuestion(root2, id, initial);
   if (interaction.target !== `grill:${grill.questionId}` || interaction.basisHash !== initial.artifacts.requirements.sha256) {
-    throw new DevFlowError("GRILL_BASIS_CHANGED", interactionId, { recoveryHint: "Record the current requirements and request a new decision" });
+    throw new DevFlowError("GRILL_BASIS_CHANGED", interactionId, { recoveryHint: "\u9700\u6C42\u6587\u6863\u5DF2\u53D8\u66F4\uFF0C\u8BF7\u91CD\u65B0\u767B\u8BB0\u540E\u8BF7\u6C42\u65B0\u7684\u51B3\u7B56" });
   }
   let promptEventId;
   if (input.source === "text-token") {
@@ -3762,13 +3868,13 @@ async function resolveGrillDecision(root2, id, expectedRevision, interactionId, 
     promptEventId = resolveGrillTextPrompt(events, interactionId, input.userReply, input.promptEventId);
     const event = events.find((item) => item.data.eventId === promptEventId)?.data;
     if (!event?.at || Date.parse(event.at) < Date.parse(interaction.presentedAt)) {
-      throw new DevFlowError("INTERACTION_PROVENANCE_UNAVAILABLE", interactionId, { recoveryHint: "Use a reply submitted after the decision was shown" });
+      throw new DevFlowError("INTERACTION_PROVENANCE_UNAVAILABLE", interactionId, { recoveryHint: "\u8BF7\u4F7F\u7528\u51B3\u7B56\u5448\u73B0\u4E4B\u540E\u63D0\u4EA4\u7684\u56DE\u590D" });
     }
   }
   let response;
   const state = await mutate(root2, id, expectedRevision, "grill-decision-resolved", (draft) => {
     response = input.source === "elicitation" ? resolveNativeInteraction(draft, interactionId, input.action, input.comment, host) : resolveTokenInteraction(draft, interactionId, input.userReply, host, promptEventId);
-    draft.lastUpdatedBy = { host, pluginVersion: "1.9.0" };
+    draft.lastUpdatedBy = { host, pluginVersion: "1.10.0" };
   }, () => ({ interactionId, response }));
   if (!response) throw new DevFlowError("INTERACTION_NOT_RESOLVED", interactionId);
   return { state, interaction: toPublicInteraction(getInteraction(state, interactionId)), response };
@@ -3790,12 +3896,12 @@ async function assertRequirementsGrillSatisfied(root2, id, state) {
       requirementsState: state.classification.requirements,
       status,
       allowedStatuses: allowed,
-      recoveryHint: "Continue grillme until grill_status is complete, record the artifact, then record the requirements step"
+      recoveryHint: "\u8BF7\u7EE7\u7EED grillme \u76F4\u5230 grill_status \u4E3A complete\uFF0C\u767B\u8BB0\u8D44\u4EA7\u540E\u8BB0\u5F55 requirements \u6B65\u9AA4"
     });
   }
   if (fields.grill_question_id || fields.grill_response_hint) {
     throw new DevFlowError("GRILL_STATUS_INVALID", "complete/not_required grill must not retain current-question fields", {
-      recoveryHint: "Clear grill_question_id and grill_response_hint when grill is finished"
+      recoveryHint: "grill \u5B8C\u6210\u540E\u8BF7\u6E05\u9664\u5F53\u524D\u9898\u5B57\u6BB5"
     });
   }
 }
@@ -3994,7 +4100,7 @@ async function runVerification(root2, id, expectedRevision, host, commandIds, ma
         }
       };
     }
-    state.lastUpdatedBy = { host, pluginVersion: "1.9.0" };
+    state.lastUpdatedBy = { host, pluginVersion: "1.10.0" };
   });
 }
 async function readVerificationFreshness(root2, state) {
@@ -4805,6 +4911,7 @@ async function recordStep(root2, id, expectedRevision, step, evidence) {
     const files = implementationFiles(evidence);
     const config = await readProjectConfig(root2);
     assertImplementationFilesInProtectedRoots(files, config.protectedRoots);
+    await assertImplementationFilesExist(root2, files);
     normalizedEvidence = {
       ...typeof evidence === "object" && evidence !== null && !Array.isArray(evidence) ? evidence : {},
       files
@@ -4936,6 +5043,7 @@ import { createHash as createHash10 } from "node:crypto";
 // plugins/dev-flow/src/core/gate-approval.ts
 var gateApprovalPhrases = {
   requirement_confirmation: [
+    "\u786E\u8BA4",
     "\u786E\u8BA4\u9700\u6C42",
     "\u9700\u6C42\u5DF2\u786E\u8BA4",
     "\u540C\u610F\u9700\u6C42",
@@ -4943,6 +5051,7 @@ var gateApprovalPhrases = {
     "LGTM"
   ],
   implementation_approval: [
+    "\u786E\u8BA4",
     "\u786E\u8BA4\u6267\u884C",
     "\u6279\u51C6\u5B9E\u73B0",
     "\u540C\u610F\u5B9E\u73B0",
@@ -4951,9 +5060,10 @@ var gateApprovalPhrases = {
     "LGTM"
   ]
 };
-var normalizeGateReply = (value) => value.trim().toLocaleLowerCase("en-US");
+var normalizeGateReply = (value) => normalizeReplyText(value);
 function gateReplyHint(gate) {
-  return gateApprovalPhrases[gate].join(" / ");
+  const verb = gate === "requirement_confirmation" ? "\u786E\u8BA4\u9700\u6C42" : "\u6279\u51C6\u5B9E\u73B0";
+  return `\u2705 \u5982\u9700${verb}\uFF0C\u76F4\u63A5\u56DE\u590D\uFF1A${gateApprovalPhrases[gate].join(" / ")}`;
 }
 function isExplicitGateApproval(gate, userReply) {
   const normalized = normalizeGateReply(userReply);
@@ -5018,29 +5128,54 @@ async function presentGate(root2, id, expectedRevision, gate) {
   if (!interaction) throw new DevFlowError("INTERACTION_NOT_CREATED", selectedGate);
   return { ...state, gateReplyHint: fallbackHint(interaction), gateInteraction: toPublicInteraction(interaction) };
 }
-function eventIdFromConfirmation(value) {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) return void 0;
+function confirmationEventIds(value) {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return [];
   const confirmation = value.confirmation;
-  if (typeof confirmation !== "object" || confirmation === null || Array.isArray(confirmation)) return void 0;
+  if (typeof confirmation !== "object" || confirmation === null || Array.isArray(confirmation)) return [];
   const record = confirmation;
-  return typeof record.promptEventId === "string" ? record.promptEventId : typeof record.turnBoundaryEventId === "string" ? record.turnBoundaryEventId : void 0;
+  const ids = [];
+  if (typeof record.promptEventId === "string") ids.push(record.promptEventId);
+  if (typeof record.turnBoundaryEventId === "string") ids.push(record.turnBoundaryEventId);
+  return ids;
+}
+function hostEventRecord(events, eventId) {
+  return events.find((item) => item.type === "host-event" && item.data.eventId === eventId);
+}
+function assertGateEvidenceTiming(eventRecord, event, presented, recoveryHint) {
+  if (!event || !presented?.presentedAt || (eventRecord?.revision ?? -1) <= (presented.presentedRevision ?? -1) || Date.parse(event.at ?? "") < Date.parse(presented.presentedAt)) {
+    throw new DevFlowError("HUMAN_GATE_SAME_TURN", "confirmation evidence must be later than gate presentation", {
+      recoveryHint
+    });
+  }
+}
+function assertPromptEvidence(event, userReply, recoveryHint) {
+  if (event?.type !== "user-prompt" || normalizeReplyText(String(event.text ?? "")) !== normalizeReplyText(userReply)) {
+    throw new DevFlowError("HUMAN_GATE_REPLY_MISMATCH", "userReply must match the captured prompt", {
+      recoveryHint
+    });
+  }
+}
+function assertTurnBoundaryEvidence(event, recoveryHint) {
+  if (event?.type !== "turn-boundary") {
+    throw new DevFlowError("HUMAN_GATE_PROVENANCE_UNAVAILABLE", "turn boundary was not captured", {
+      ...recoveryHint ? { recoveryHint } : {}
+    });
+  }
 }
 function resolveProvenance(events, state, gate, userReply, provenance) {
   if (provenance.promptEventId || provenance.turnBoundaryEventId) return provenance;
   const current = state.humanGates[gate];
-  const consumed = new Set(
-    Object.values(state.humanGates).map(eventIdFromConfirmation).filter((eventId2) => Boolean(eventId2))
-  );
+  const consumed = new Set(Object.values(state.humanGates).flatMap(confirmationEventIds));
   const match = [...events].reverse().find((item) => {
     const event = item.data;
-    return item.type === "host-event" && typeof event.eventId === "string" && !consumed.has(event.eventId) && event.type === "user-prompt" && event.text === userReply && item.revision > (current?.presentedRevision ?? state.revision) && typeof current?.presentedAt === "string" && typeof event.at === "string" && Date.parse(event.at) >= Date.parse(current.presentedAt);
+    return item.type === "host-event" && typeof event.eventId === "string" && !consumed.has(event.eventId) && event.type === "user-prompt" && normalizeReplyText(String(event.text ?? "")) === normalizeReplyText(userReply) && item.revision > (current?.presentedRevision ?? state.revision) && typeof current?.presentedAt === "string" && typeof event.at === "string" && Date.parse(event.at) >= Date.parse(current.presentedAt);
   });
   const eventId = match?.data?.eventId;
   if (typeof eventId !== "string") {
     throw new DevFlowError(
       "HUMAN_GATE_PROVENANCE_UNAVAILABLE",
       "no matching post-presentation user prompt was captured",
-      { recoveryHint: "Ensure the host UserPromptSubmit hook is active, then submit one exact approval phrase and retry confirmation" }
+      { recoveryHint: "\u8BF7\u786E\u4FDD\u5BBF\u4E3B UserPromptSubmit hook \u5DF2\u751F\u6548\uFF0C\u7136\u540E\u5728\u95E8\u7981\u5448\u73B0\u540E\u63D0\u4EA4\u4E00\u6761\u51C6\u786E\u7684\u6279\u51C6\u8BCD\uFF08\u5982\u201C\u786E\u8BA4\u9700\u6C42\u201D\uFF09\u91CD\u8BD5\u786E\u8BA4" }
     );
   }
   return { promptEventId: eventId };
@@ -5054,22 +5189,18 @@ function gateFromInteraction(state, interactionId) {
 }
 function assertTokenEvidence(events, state, gate, userReply, provenance) {
   const resolved = resolveProvenance(events, state, gate, userReply, provenance);
-  const marker = resolved.promptEventId ?? resolved.turnBoundaryEventId;
   const current = state.humanGates[gate];
-  const eventRecord = events.find((item) => item.type === "host-event" && item.data.eventId === marker);
-  const event = eventRecord?.data;
-  if (!marker || !event || !current?.presentedAt || (eventRecord?.revision ?? -1) <= (current.presentedRevision ?? -1) || Date.parse(event.at ?? "") < Date.parse(current.presentedAt)) {
-    throw new DevFlowError("HUMAN_GATE_SAME_TURN", "confirmation evidence must be later than gate presentation", {
-      recoveryHint: "Submit the exact one-time reply in a later user turn"
-    });
+  if (resolved.promptEventId) {
+    const eventRecord = hostEventRecord(events, resolved.promptEventId);
+    const event = eventRecord?.data;
+    assertGateEvidenceTiming(eventRecord, event, current, "\u8BF7\u5728\u95E8\u7981\u5448\u73B0\u540E\u7684\u540E\u7EED\u56DE\u5408\u63D0\u4EA4\u4E00\u6B21\u6027\u56DE\u590D\u6216\u6279\u51C6\u8BCD");
+    assertPromptEvidence(event, userReply, "\u8BF7\u539F\u6837\u4F20\u9012\u6355\u83B7\u5230\u7684\u7528\u6237\u56DE\u590D\u6587\u672C\uFF08\u7A7A\u683C\u4E0E\u5927\u5C0F\u5199\u5DEE\u5F02\u4F1A\u81EA\u52A8\u5F52\u4E00\u5316\uFF09");
   }
-  if (resolved.promptEventId && (event.type !== "user-prompt" || event.text !== userReply)) {
-    throw new DevFlowError("HUMAN_GATE_REPLY_MISMATCH", "userReply must match the captured prompt", {
-      recoveryHint: "Pass the captured user prompt text exactly"
-    });
-  }
-  if (resolved.turnBoundaryEventId && event.type !== "turn-boundary") {
-    throw new DevFlowError("HUMAN_GATE_PROVENANCE_UNAVAILABLE", "turn boundary was not captured");
+  if (resolved.turnBoundaryEventId) {
+    const eventRecord = hostEventRecord(events, resolved.turnBoundaryEventId);
+    const event = eventRecord?.data;
+    assertGateEvidenceTiming(eventRecord, event, current, "\u8BF7\u5728\u95E8\u7981\u5448\u73B0\u540E\u7684\u540E\u7EED\u56DE\u5408\u63D0\u4EA4\u4E00\u6B21\u6027\u56DE\u590D\u6216\u6279\u51C6\u8BCD");
+    assertTurnBoundaryEvidence(event);
   }
   return resolved;
 }
@@ -5095,10 +5226,30 @@ async function resolveGateResponse(root2, id, expectedRevision, interactionId, h
     const basisHash2 = digest6(gateBasis(state, gate));
     if (basisHash2 !== current.basisHash || basisHash2 !== interaction.basisHash) {
       throw new DevFlowError("HUMAN_GATE_BASIS_CHANGED", gate, {
-        recoveryHint: "Present the gate again after updating its approval basis"
+        recoveryHint: "\u95E8\u7981\u4F9D\u636E\u5DF2\u53D8\u66F4\uFF0C\u8BF7\u66F4\u65B0\u5E76\u767B\u8BB0\u76F8\u5173\u8D44\u4EA7\u540E\u91CD\u65B0\u5448\u73B0\u95E8\u7981"
       });
     }
-    response = input.source === "elicitation" ? resolveNativeInteraction(state, interactionId, input.action, input.comment, host) : resolveTokenInteraction(state, interactionId, input.userReply, host, provenance.promptEventId ?? provenance.turnBoundaryEventId);
+    if (input.source === "text-token") {
+      const ids = [
+        ...provenance?.promptEventId ? [provenance.promptEventId] : [],
+        ...provenance?.turnBoundaryEventId ? [provenance.turnBoundaryEventId] : []
+      ];
+      for (const [otherGate, value] of Object.entries(state.humanGates)) {
+        if (otherGate === gate) continue;
+        const replayed = confirmationEventIds(value).find((eventId) => ids.includes(eventId));
+        if (replayed) throw new DevFlowError("HUMAN_GATE_EVENT_CONSUMED", replayed);
+      }
+    }
+    response = input.source === "elicitation" ? resolveNativeInteraction(state, interactionId, input.action, input.comment, host) : resolveTokenInteraction(
+      state,
+      interactionId,
+      input.userReply,
+      host,
+      provenance,
+      // HUMAN GATE 支持自然语言批准词（如“确认需求”“批准实现”），映射为 confirm 选项；
+      // 一次性 token 行仍作为兜底通道。grill 等动态选项交互不映射。
+      isExplicitGateApproval(gate, input.userReply) ? "confirm" : void 0
+    );
     if (response.action === "confirm") {
       state.humanGates[gate] = {
         ...current,
@@ -5115,7 +5266,7 @@ async function resolveGateResponse(root2, id, expectedRevision, interactionId, h
     } else {
       throw new DevFlowError("INTERACTION_ACTION_INVALID", response.action);
     }
-    state.lastUpdatedBy = { host, pluginVersion: "1.9.0" };
+    state.lastUpdatedBy = { host, pluginVersion: "1.10.0" };
   }, () => ({ gate, interactionId, response }));
 }
 async function resolveGateElicitation(root2, id, expectedRevision, interactionId, action, comment, host) {
@@ -5134,15 +5285,18 @@ async function confirmGate(root2, id, expectedRevision, gate, userReply, provena
       {
         gate: selectedGate,
         allowed: gateApprovalPhrases[selectedGate],
-        recoveryHint: "Reply with one exact approval phrase after the gate is presented"
+        recoveryHint: "\u8BF7\u5728\u95E8\u7981\u5448\u73B0\u540E\u8F93\u5165\u4E00\u6761\u51C6\u786E\u6279\u51C6\u8BCD\uFF08\u5982\u201C\u786E\u8BA4\u9700\u6C42\u201D\uFF09\u6216\u590D\u5236\u4E00\u6B21\u6027\u56DE\u590D\u6574\u884C"
       }
     );
   }
   const currentState = await readState(root2, id);
   const events = await readFeatureEvents(root2, id);
   const resolvedProvenance = resolveProvenance(events, currentState, selectedGate, userReply, provenance);
-  const marker = resolvedProvenance.promptEventId ?? resolvedProvenance.turnBoundaryEventId;
-  if (!marker) throw new DevFlowError("HUMAN_GATE_PROVENANCE_UNAVAILABLE", "confirmation provenance is required");
+  const eventIds = [
+    ...resolvedProvenance.promptEventId ? [resolvedProvenance.promptEventId] : [],
+    ...resolvedProvenance.turnBoundaryEventId ? [resolvedProvenance.turnBoundaryEventId] : []
+  ];
+  if (!eventIds.length) throw new DevFlowError("HUMAN_GATE_PROVENANCE_UNAVAILABLE", "confirmation provenance is required");
   return mutate(root2, id, expectedRevision, "gate-confirmed", async (state) => {
     await assertRequirementsGrillSatisfied(root2, id, state);
     await assertTraceGateCurrent(root2, state, selectedGate);
@@ -5150,41 +5304,35 @@ async function confirmGate(root2, id, expectedRevision, gate, userReply, provena
     const current = state.humanGates[selectedGate];
     if (current?.status !== "pending") {
       throw new DevFlowError("HUMAN_GATE_NOT_PENDING", selectedGate, {
-        recoveryHint: "Present the current gate before attempting confirmation"
+        recoveryHint: "\u8BF7\u5148\u5448\u73B0\u5F53\u524D\u95E8\u7981\u518D\u5C1D\u8BD5\u786E\u8BA4"
       });
     }
     if ((current.presentedRevision ?? state.revision) >= state.revision) {
       throw new DevFlowError("HUMAN_GATE_SAME_TURN", "confirmation must occur after presentation", {
-        recoveryHint: "Wait for a later user turn before confirming the gate"
+        recoveryHint: "\u8BF7\u7B49\u5F85\u95E8\u7981\u5448\u73B0\u540E\u7684\u65B0\u56DE\u5408\u518D\u786E\u8BA4"
       });
     }
-    const eventRecord = events.find((item) => item.type === "host-event" && item.data.eventId === marker);
-    const event = eventRecord?.data;
-    if (!event || !current.presentedAt || (eventRecord?.revision ?? -1) <= (current.presentedRevision ?? -1) || Date.parse(event.at ?? "") < Date.parse(current.presentedAt)) {
-      throw new DevFlowError("HUMAN_GATE_SAME_TURN", "confirmation evidence must be later than gate presentation", {
-        recoveryHint: "Capture confirmation from a later user turn"
-      });
+    if (resolvedProvenance.promptEventId) {
+      const eventRecord = hostEventRecord(events, resolvedProvenance.promptEventId);
+      const event = eventRecord?.data;
+      assertGateEvidenceTiming(eventRecord, event, current, "\u8BF7\u5728\u95E8\u7981\u5448\u73B0\u540E\u7684\u540E\u7EED\u56DE\u5408\u63D0\u4EA4\u786E\u8BA4");
+      assertPromptEvidence(event, userReply, "\u8BF7\u539F\u6837\u4F20\u9012\u6355\u83B7\u5230\u7684\u7528\u6237\u56DE\u590D\u6587\u672C\uFF08\u7A7A\u683C\u4E0E\u5927\u5C0F\u5199\u5DEE\u5F02\u4F1A\u81EA\u52A8\u5F52\u4E00\u5316\uFF09");
     }
-    if (resolvedProvenance.promptEventId && (event.type !== "user-prompt" || event.text !== userReply)) {
-      throw new DevFlowError("HUMAN_GATE_REPLY_MISMATCH", "userReply must match the captured prompt", {
-        recoveryHint: "Pass the captured user prompt text exactly"
-      });
-    }
-    if (resolvedProvenance.turnBoundaryEventId && event.type !== "turn-boundary") {
-      throw new DevFlowError("HUMAN_GATE_PROVENANCE_UNAVAILABLE", "turn boundary was not captured", {
-        recoveryHint: "Use a captured turn-boundary event or later user prompt"
-      });
+    if (resolvedProvenance.turnBoundaryEventId) {
+      const eventRecord = hostEventRecord(events, resolvedProvenance.turnBoundaryEventId);
+      const event = eventRecord?.data;
+      assertGateEvidenceTiming(eventRecord, event, current, "\u8BF7\u5728\u95E8\u7981\u5448\u73B0\u540E\u7684\u540E\u7EED\u56DE\u5408\u63D0\u4EA4\u786E\u8BA4");
+      assertTurnBoundaryEvidence(event, "\u8BF7\u4F7F\u7528\u5DF2\u6355\u83B7\u7684\u56DE\u5408\u8FB9\u754C\u4E8B\u4EF6\u6216\u540E\u7EED\u7528\u6237\u56DE\u590D");
     }
     for (const [otherGate, value] of Object.entries(state.humanGates)) {
-      const confirmation = value.confirmation;
-      if (otherGate !== selectedGate && confirmation && Object.values(confirmation).includes(marker)) {
-        throw new DevFlowError("HUMAN_GATE_EVENT_CONSUMED", String(marker));
-      }
+      if (otherGate === selectedGate) continue;
+      const replayed = confirmationEventIds(value).find((eventId) => eventIds.includes(eventId));
+      if (replayed) throw new DevFlowError("HUMAN_GATE_EVENT_CONSUMED", replayed);
     }
     const basisHash2 = digest6(gateBasis(state, selectedGate));
     if (basisHash2 !== current.basisHash) {
       throw new DevFlowError("HUMAN_GATE_BASIS_CHANGED", selectedGate, {
-        recoveryHint: "Present the gate again after updating its approval basis"
+        recoveryHint: "\u95E8\u7981\u4F9D\u636E\u5DF2\u53D8\u66F4\uFF0C\u8BF7\u66F4\u65B0\u5E76\u767B\u8BB0\u76F8\u5173\u8D44\u4EA7\u540E\u91CD\u65B0\u5448\u73B0\u95E8\u7981"
       });
     }
     state.humanGates[selectedGate] = {
@@ -5194,7 +5342,7 @@ async function confirmGate(root2, id, expectedRevision, gate, userReply, provena
     };
     clearInteractionsForTarget(state, `gate:${selectedGate}`);
     state.steps[selectedGate] = { status: "satisfied" };
-    state.lastUpdatedBy = { host, pluginVersion: "1.9.0" };
+    state.lastUpdatedBy = { host, pluginVersion: "1.10.0" };
   }, { gate: selectedGate });
 }
 
@@ -5707,7 +5855,8 @@ async function checkpointImplementationUnit(root2, id, expectedRevision, unitId,
         attemptId: attempt.attemptId,
         commandId: attempt.commandId,
         exitCode: result.exitCode,
-        output: result.output.slice(-4e3)
+        output: result.output.slice(-4e3),
+        recoveryHint: "\u524D\u5411\u9A8C\u8BC1\u5931\u8D25\u65F6\u5355\u5143\u4FDD\u6301 active \u4E14\u4E0D\u8BB0 checkpoint\uFF1A\u82E5\u5931\u8D25\u6E90\u4E8E\u6D4B\u8BD5\u5148\u884C\uFF08\u9A8C\u8BC1\u4F9D\u8D56\u5C1A\u672A\u843D\u5730\u7684\u5355\u5143\uFF09\uFF0C\u8BF7\u628A\u6D4B\u8BD5\u4E0E\u4FEE\u590D\u5408\u5E76\u4E3A\u540C\u4E00\u56DE\u64A4\u5355\u5143\uFF08\u539F\u5B50\u5355\u5143\uFF09\u4E00\u5E76\u56DE\u6EDA\uFF1Bcheckpoint \u524D\u6E05\u7406 scratch/ \u4E2D\u7684\u6B8B\u7559\u7EA2\u6D4B\u8BD5"
       });
     }
   }
@@ -6321,7 +6470,7 @@ async function resolveRollbackGateResponse(root2, featureId, expectedRevision, i
     } else {
       throw new DevFlowError("INTERACTION_ACTION_INVALID", response.action);
     }
-    state.lastUpdatedBy = { host, pluginVersion: "1.9.0" };
+    state.lastUpdatedBy = { host, pluginVersion: "1.10.0" };
   }, () => ({ gate: "rollback-confirmation", interactionId, response }));
 }
 async function resolveRollbackGateElicitation(root2, featureId, expectedRevision, interactionId, action, comment, host) {
@@ -7660,10 +7809,10 @@ async function emitWindowsToast(title, body, options = {}) {
 var run4 = promisify4(execFile4);
 function messageFor(event) {
   if (event.kind === "workflow-finalized") {
-    return { title: "Dev Flow \u5DF2\u5B8C\u6210", body: `\u529F\u80FD ${event.featureId} \u5DF2\u5B8C\u6210\u5E76\u751F\u6210\u4EA4\u4ED8\u5FEB\u7167\u3002` };
+    return { title: "Dev Flow \u5DF2\u5B8C\u6210", body: "\u5F53\u524D\u529F\u80FD\u5DF2\u5B8C\u6210\u5E76\u751F\u6210\u4EA4\u4ED8\u5FEB\u7167\u3002" };
   }
   const decision = event.decision === "requirement_confirmation" ? "\u9700\u6C42\u786E\u8BA4" : event.decision === "implementation_approval" ? "\u786E\u8BA4\u6267\u884C" : event.decision === "rollback-confirmation" ? "\u56DE\u64A4\u786E\u8BA4" : "\u9700\u6C42\u9009\u62E9";
-  return { title: "Dev Flow \u9700\u8981\u51B3\u7B56", body: `\u529F\u80FD ${event.featureId} \u6B63\u5728\u7B49\u5F85\u4F60\u7684${decision}\u3002` };
+  return { title: "Dev Flow \u9700\u8981\u51B3\u7B56", body: `\u5F53\u524D\u529F\u80FD\u6B63\u5728\u7B49\u5F85\u4F60\u7684${decision}\u3002` };
 }
 function appleScriptString(value) {
   return `"${value.replaceAll("\\", "\\\\").replaceAll('"', '\\"').replaceAll("\n", "\\n")}"`;
@@ -7697,6 +7846,7 @@ async function emitAttention(event, options = {}) {
 
 // plugins/dev-flow/src/mcp/server.ts
 var root = process.cwd();
+var formElicitationEnabled = process.env.DEV_FLOW_ELICITATION_FORM === "1";
 var moduleDirectory = path16.dirname(fileURLToPath(import.meta.url));
 var pluginRoot = path16.basename(moduleDirectory) === "dist" ? path16.resolve(moduleDirectory, "..") : path16.resolve(moduleDirectory, "../..");
 var tools = [
@@ -8115,10 +8265,10 @@ function interactionEnvelope(state, interaction, interactionOutcome, response) {
 }
 function rollbackGateMessage(preview) {
   const files = preview.filePlan.map((action) => `${action.action === "restore" ? "\u6062\u590D" : "\u5220\u9664"} ${action.path}`);
-  const verification = preview.verificationCommands.map((command2) => `${command2.commandId}: ${command2.command}`);
+  const verification = preview.verificationCommands.map((command2) => command2.command);
   return [
-    `\u56DE\u64A4\u76EE\u6807\uFF1A${preview.targetUnitId}\uFF08${preview.targetCheckpointId}\uFF09\u3002`,
-    `\u5C06\u64A4\u9500 ${preview.undoOrder.length} \u4E2A\u5355\u5143\uFF1A${preview.undoOrder.join(" \u2192 ")}\u3002`,
+    `\u56DE\u64A4\u76EE\u6807\uFF1A\u8BE5\u5B9E\u73B0\u5355\u5143\u6700\u8FD1\u4E00\u6B21\u4FDD\u5B58\u70B9\u3002`,
+    `\u5C06\u64A4\u9500 ${preview.undoOrder.length} \u4E2A\u5B9E\u73B0\u5355\u5143\uFF08\u6309\u63D0\u4EA4\u987A\u5E8F\u5012\u5E8F\uFF09\u3002`,
     `\u6587\u4EF6\u5F71\u54CD\uFF08${files.length}\uFF09\uFF1A${files.length ? files.join("\uFF1B") : "\u65E0"}\u3002`,
     `\u56DE\u64A4\u9A8C\u8BC1\uFF1A${verification.length ? verification.join("\uFF1B") : "\u65E0"}\u3002`,
     "\u786E\u8BA4\u6267\u884C\u56DE\u64A4\uFF1F"
@@ -8157,7 +8307,7 @@ var McpConnection = class {
     const elicitation = capabilities.elicitation;
     if (!elicitation || typeof elicitation !== "object" || Array.isArray(elicitation)) return;
     const modes = elicitation;
-    this.supportsFormElicitation = Object.keys(modes).length === 0 || modes.form !== void 0;
+    this.supportsFormElicitation = formElicitationEnabled && (Object.keys(modes).length === 0 || modes.form !== void 0);
   }
   consumeResponse(message) {
     if (typeof message.id !== "string" || message.method !== void 0) return false;
@@ -8565,7 +8715,7 @@ async function call(name, a, connection2) {
     case "dev_flow_enable_windows_notifications":
       return enableWindowsNotifications({ nodeExecutable: process.execPath });
     case "dev_flow_doctor":
-      return collectDoctorReport(root, pluginRoot, "1.9.0", tools);
+      return collectDoctorReport(root, pluginRoot, "1.10.0", tools);
     case "dev_flow_recover_corrupt_feature":
       return recoverCorruptFeature(root, {
         featureId: a.featureId,
@@ -8589,9 +8739,9 @@ async function dispatchRequest(message) {
       connection.configure(message.params?.capabilities);
       protocolResult(message.id, {
         protocolVersion: message.params?.protocolVersion || "2024-11-05",
-        serverInfo: { name: "dev-flow", version: "1.9.0" },
+        serverInfo: { name: "dev-flow", version: "1.10.0" },
         capabilities: { tools: {} },
-        instructions: "Classify before starting. Call dev_flow_next and execute exactly one returned action. A presented human gate may open a native structured confirmation control; otherwise use the returned one-time reply. Use dev_flow_init_project before start."
+        instructions: "Classify before starting. Call dev_flow_next and execute exactly one returned action. A presented human gate opens as a pending interaction: present the natural-language hint from replyHint to the user (HUMAN GATE: reply \u786E\u8BA4 to confirm or \u4FEE\u6539\u9700\u6C42: <\u610F\u89C1> to request changes; grill: reply A/B/C or the option name). One-time reply tokens are a last-resort fallback only when the user cannot answer naturally. Use dev_flow_init_project before start."
       });
       return;
     }

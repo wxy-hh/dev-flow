@@ -5,6 +5,11 @@ import type { FeatureState } from "./state-store.js";
 export type InteractionKind = "gate" | "grill" | "risk-acceptance" | "rollback-confirmation";
 export type InteractionSource = "elicitation" | "text-token";
 
+/** 比较用归一化：trim + 折叠连续空白 + 小写。仅用于匹配比较，存储始终保留原始输入。 */
+export function normalizeReplyText(value: string): string {
+  return value.trim().replace(/[\s\u00A0\uFEFF]+/g, " ").toLowerCase();
+}
+
 export interface InteractionOption {
   id: string;
   label: string;
@@ -17,6 +22,7 @@ export interface InteractionResponse {
   comment?: string;
   source: InteractionSource;
   promptEventId?: string;
+  turnBoundaryEventId?: string;
   userReply?: string;
   host: "claude" | "codex";
   respondedAt: string;
@@ -148,6 +154,49 @@ function optionFor(interaction: UserInteraction, action: string): InteractionOpt
   return option;
 }
 
+/**
+ * 自然语言选项匹配：① 序号（a/b/c 或 1/2/3）；② “推荐”→ 推荐选项（skill 约定推荐放第一位）；
+ * ③ 选项 label 精确匹配（归一化后）。仅用于比较，存储保留原始输入。
+ */
+function matchNaturalOption(interaction: UserInteraction, userReply: string): { option: InteractionOption; comment?: string } | undefined {
+  const normalized = normalizeReplyText(userReply);
+  if (!normalized) return undefined;
+  const stripped = normalized.replace(/[.、)）\s]/g, "");
+  const letter = stripped.match(/^([a-c])$/u);
+  if (letter) {
+    const option = interaction.options[letter[1].toLowerCase().charCodeAt(0) - 97];
+    if (option) return { option };
+  }
+  const number = stripped.match(/^([1-9])$/u);
+  if (number) {
+    const option = interaction.options[Number(number[1]) - 1];
+    if (option) return { option };
+  }
+  if (normalized === "推荐" || normalized === "按推荐" || normalized === "选推荐") {
+    const recommended = interaction.options[0];
+    if (recommended) return { option: recommended };
+  }
+  // 修改类前缀：「修改需求: <意见>」「修改计划: <意见>」→ request-changes + comment
+  const editMatch = normalized.match(/^修改(?:需求|意见|计划|方案|)?[:：]?\s*([\s\S]*)$/u);
+  if (editMatch) {
+    const option = interaction.options.find((candidate) => candidate.id === "request-changes");
+    if (option) return { option, comment: editMatch[1] || undefined };
+  }
+  // label 匹配：精确/缩写（用户回 label 的一部分，如「其他」）对所有交互生效；
+  // 前缀 + 补充说明形式（label + comment）对 confirm 选项禁用（防“确认需求，但先别改”被误判为确认），其余选项允许
+  for (const candidate of interaction.options) {
+    const labelNorm = normalizeReplyText(candidate.label);
+    if (!labelNorm) continue;
+    if (labelNorm === normalized || (labelNorm.startsWith(normalized) && normalized.length >= 1)) {
+      return { option: candidate };
+    }
+    if (candidate.id !== "confirm" && normalized.startsWith(labelNorm) && normalized.length > labelNorm.length) {
+      return { option: candidate, comment: normalized.slice(labelNorm.length).trim() };
+    }
+  }
+  return undefined;
+}
+
 function validateComment(option: InteractionOption, comment: string | undefined): string | undefined {
   const normalized = comment?.trim();
   if (option.requiresComment && !normalized) {
@@ -184,32 +233,45 @@ export function resolveTokenInteraction(
   interactionId: string,
   userReply: string,
   host: "claude" | "codex",
-  promptEventId: string,
+  provenance: { promptEventId?: string; turnBoundaryEventId?: string } | string,
+  phraseAction?: string,
 ): InteractionResponse {
   const interaction = getInteraction(state, interactionId);
   if (interaction.status !== "pending") throw new DevFlowError("INTERACTION_ALREADY_RESOLVED", interactionId);
   let match: { option: InteractionOption; comment?: string } | undefined;
-  for (const option of interaction.options) {
-    const prefix = `${interaction.fallbackToken} ${option.id}`;
-    if (option.requiresComment) {
-      if (userReply === prefix) match = { option };
-      else if (userReply.startsWith(`${prefix} `)) match = { option, comment: userReply.slice(prefix.length).trim() };
-    } else if (userReply === prefix) {
-      match = { option };
+  if (phraseAction) {
+    // 自然语言批准词映射（仅 HUMAN GATE 交互由调用方传入）：跳过一次性 token 匹配，
+    // 直接按批准词对应的选项构造响应；溯源（promptEventId 绑定）与存储仍走 text-token 路径。
+    match = { option: optionFor(interaction, phraseAction) };
+  } else if ((match = matchNaturalOption(interaction, userReply))) {
+    // 自然语言选项（序号/推荐/label）直接命中；grill 与 gate 通用。
+    // 落到此处说明用户没有走 token 行，无需再校验 token 前缀。
+  } else {
+    // 分词比较：首段 token、次段 action、其余为 comment（原样保留，仅去首尾空白）；
+    // 比较时归一化，容忍复制时的首尾空格、多余空格与大小写差异。
+    const trimmed = userReply.trim();
+    const segments = trimmed.match(/^(\S+)\s+(\S+)(?:[\s]+([\s\S]*))?$/);
+    if (segments) {
+      const [, tokenPart, actionPart, rest] = segments;
+      if (normalizeReplyText(tokenPart) === normalizeReplyText(interaction.fallbackToken)) {
+        const option = interaction.options.find((candidate) => candidate.id === actionPart);
+        if (option) match = { option, comment: rest?.trim() };
+      }
     }
-    if (match) break;
   }
   if (!match) {
     throw new DevFlowError("INTERACTION_TOKEN_MISMATCH", "response does not match the current one-time interaction token", {
-      recoveryHint: `Use the exact reply shown for interaction ${interactionId}`,
+      recoveryHint: "请原样复制提示中展示的一次性回复整行并发送，勿添加空格、前缀或标点；HUMAN GATE 也可直接输入批准词（如“确认需求”）",
     });
   }
   const normalizedComment = validateComment(match.option, match.comment);
+  const ids = typeof provenance === "string" ? { promptEventId: provenance } : provenance;
   const response: InteractionResponse = {
     action: match.option.id,
     ...(normalizedComment ? { comment: normalizedComment } : {}),
     source: "text-token",
-    promptEventId,
+    ...(ids.promptEventId ? { promptEventId: ids.promptEventId } : {}),
+    ...(ids.turnBoundaryEventId ? { turnBoundaryEventId: ids.turnBoundaryEventId } : {}),
     userReply,
     host,
     respondedAt: new Date().toISOString(),
@@ -237,12 +299,28 @@ export function toPublicInteraction(interaction: UserInteraction): PublicInterac
   };
 }
 
+/**
+ * 面向用户的自然语言提示（替代 token 行格式）：agent 可直接转述，用户无需复制任何标识。
+ * token 行保留在 PublicInteraction.fallback 中，仅在用户无法自然选择时由 skill 引导作为兜底展示。
+ */
 export function fallbackHint(interaction: UserInteraction): string {
-  const replies = toPublicInteraction(interaction).fallback.replies;
-  return interaction.options
-    .map((option) => {
-      const reply = replies.find((candidate) => candidate.action === option.id)!;
-      return `${option.label}: ${reply.reply}`;
-    })
-    .join("；");
+  if (interaction.kind === "gate") {
+    const confirm = interaction.options.find((option) => option.id === "confirm");
+    const changes = interaction.options.find((option) => option.id === "request-changes");
+    const gate = interaction.target.replace("gate:", "");
+    const verb = gate === "requirement_confirmation" ? "确认需求" : "批准实现";
+    const editWord = gate === "requirement_confirmation" ? "修改需求" : "修改计划";
+    const parts: string[] = [];
+    if (confirm) parts.push(`✅ 如需${verb}，直接回复：${confirm.label}（或「确认」）`);
+    if (changes) parts.push(`✏️ 如需调整，请回复：${editWord}: <补充你的修改意见>`);
+    return parts.join("；");
+  }
+  const lines = [interaction.question ?? "请选择方案："];
+  interaction.options.forEach((option, index) => {
+    const letter = String.fromCharCode(97 + index).toUpperCase();
+    const recommended = index === 0 ? "（推荐）" : "";
+    lines.push(`${letter}. ${option.label}${recommended}`);
+  });
+  lines.push("回复 A/B/C（或方案名称），也可以直接说出你的想法");
+  return lines.join("\n");
 }

@@ -164,7 +164,8 @@ test("checkpoint rejects out-of-scope changes, verification failures, manifest i
       await writeFile(path.join(root, "src/change.txt"), "change\n");
       await assert.rejects(
         () => checkpoints.checkpointImplementationUnit(root, "f", state.revision, "RU-001"),
-        /CHECKPOINT_VERIFICATION_FAILED/,
+        (error) => error.code === "CHECKPOINT_VERIFICATION_FAILED"
+          && /(原子单元|scratch)/.test(error.details.recoveryHint),
       );
       const after = await stateStore.readState(root, "f");
       assert.equal(after.implementationUnits[0].status, "active");

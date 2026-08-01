@@ -43,6 +43,9 @@ import {
 } from "../core/user-interactions.js";
 
 const root = process.cwd();
+// 原生 elicitation 表单在部分 Claude Code 客户端渲染损坏（选项不渲染、模态卡死），
+// 默认关闭 form 模式、走 text-token 一次性回复；显式置 1 可恢复表单链路。
+const formElicitationEnabled = process.env.DEV_FLOW_ELICITATION_FORM === "1";
 const moduleDirectory = path.dirname(fileURLToPath(import.meta.url));
 const pluginRoot = path.basename(moduleDirectory) === "dist" ? path.resolve(moduleDirectory, "..") : path.resolve(moduleDirectory, "../..");
 const tools = [
@@ -482,10 +485,10 @@ function interactionEnvelope(
 /** Human gates must expose the exact preview that their basis hash commits to. */
 function rollbackGateMessage(preview: RollbackPreview): string {
   const files = preview.filePlan.map((action) => `${action.action === "restore" ? "恢复" : "删除"} ${action.path}`);
-  const verification = preview.verificationCommands.map((command) => `${command.commandId}: ${command.command}`);
+  const verification = preview.verificationCommands.map((command) => command.command);
   return [
-    `回撤目标：${preview.targetUnitId}（${preview.targetCheckpointId}）。`,
-    `将撤销 ${preview.undoOrder.length} 个单元：${preview.undoOrder.join(" → ")}。`,
+    `回撤目标：该实现单元最近一次保存点。`,
+    `将撤销 ${preview.undoOrder.length} 个实现单元（按提交顺序倒序）。`,
     `文件影响（${files.length}）：${files.length ? files.join("；") : "无"}。`,
     `回撤验证：${verification.length ? verification.join("；") : "无"}。`,
     "确认执行回撤？",
@@ -535,7 +538,7 @@ class McpConnection {
     const elicitation = (capabilities as { elicitation?: unknown }).elicitation;
     if (!elicitation || typeof elicitation !== "object" || Array.isArray(elicitation)) return;
     const modes = elicitation as Record<string, unknown>;
-    this.supportsFormElicitation = Object.keys(modes).length === 0 || modes.form !== undefined;
+    this.supportsFormElicitation = formElicitationEnabled && (Object.keys(modes).length === 0 || modes.form !== undefined);
   }
 
   consumeResponse(message: { id?: unknown; method?: unknown; result?: unknown; error?: unknown }): boolean {
@@ -913,7 +916,7 @@ async function dispatchRequest(message: { id?: unknown; method?: string; params?
         protocolVersion: message.params?.protocolVersion || "2024-11-05",
         serverInfo: { name: "dev-flow", version: __DEV_FLOW_VERSION__ },
         capabilities: { tools: {} },
-        instructions: "Classify before starting. Call dev_flow_next and execute exactly one returned action. A presented human gate may open a native structured confirmation control; otherwise use the returned one-time reply. Use dev_flow_init_project before start.",
+        instructions: "Classify before starting. Call dev_flow_next and execute exactly one returned action. A presented human gate opens as a pending interaction: present the natural-language hint from replyHint to the user (HUMAN GATE: reply 确认 to confirm or 修改需求: <意见> to request changes; grill: reply A/B/C or the option name). One-time reply tokens are a last-resort fallback only when the user cannot answer naturally. Use dev_flow_init_project before start.",
       });
       return;
     }

@@ -84,7 +84,8 @@ test("status progress reports grill wait without changing revision", async () =>
     });
     const withInteraction = await status.readStatusView(root, "f");
     assert.equal(withInteraction.progress.wait.interaction.id, decision.interaction.id);
-    assert.match(withInteraction.progress.wait.responseHint, /^托管同步: DF-/);
+    assert.match(withInteraction.progress.wait.responseHint, /A\. 托管同步（推荐）/);
+    assert.match(withInteraction.progress.wait.responseHint, /回复 A\/B\/C/);
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 
@@ -102,7 +103,8 @@ test("status progress reports human gates", async () => {
     const view = await status.readStatusView(root, "f");
     assert.equal(view.progress.wait.kind, "human-gate");
     assert.equal(view.progress.wait.gate, "requirement_confirmation");
-    assert.match(view.progress.wait.replyHint, /^确认需求: DF-/);
+    assert.match(view.progress.wait.replyHint, /✅ 如需确认需求/);
+    assert.doesNotMatch(view.progress.wait.replyHint, /DF-/);
     assert.equal(view.progress.wait.interaction.options[0].label, "确认需求");
     state = await gates.resolveGateElicitation(root, "f", state.revision, state.gateInteraction.id, "request-changes", "补充边界条件", "claude");
     const returned = await status.readStatusView(root, "f");

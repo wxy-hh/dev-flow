@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -38,6 +38,8 @@ function satisfyPreImplementation(draft) {
 /** Registers the full standard-m trace graph and lands the feature on the implementation step. */
 async function implementationReadyFeature(root, { capabilities = checkpointsOn, twoClosures = false, dependency = false } = {}) {
   await stateStore.initProject(root, strictProjectConfig);
+  await mkdir(path.join(root, "src"));
+  await writeFile(path.join(root, "src", "one.ts"), "export const one = 1;\n");
   let state = await stateStore.startFeature(root, {
     featureId: "f", host: "codex", level: "M", topology: "local", execution: "standard", requirements: "provided-confirmed",
   });

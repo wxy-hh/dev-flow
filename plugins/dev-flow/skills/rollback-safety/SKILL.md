@@ -9,7 +9,7 @@ description: 登记回撤与安全证据，并做只读回撤预览。触发：�
 
 ## 回撤预览、门禁与执行（第 4A 阶段）
 
-`checkpoints: 1` feature 可用 `dev_flow_preview_rollback` 对已确认 checkpoint 做**只读**预览：只返回撤销顺序、文件影响与验证命令，不修改工作区或状态。预览返回 `ROLLBACK_CONFLICT` 时，只如实复述冲突明细（路径与 expected/actual）并停止，由用户决定下一步。
+`checkpoints: 1` feature 可用 `dev_flow_preview_rollback` 对已确认 checkpoint 做**只读**预览：只返回撤销顺序、文件影响与验证命令，不修改工作区或状态。预览返回 `ROLLBACK_CONFLICT` 时，用自然话术复述冲突明细（文件路径 + 期望状态与当前状态的中文描述，如「应为已保存/不存在，当前为已修改/缺失/未登记」）并停止，由用户决定下一步；不向用户展示 `RU-`/`CP-`/`expected`/`actual` 等内部标识。
 
 `checkpoints: 1` 且 `rollbackExecution: 1` feature 可用以下完整回撤流程：
 

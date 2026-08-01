@@ -409,6 +409,7 @@ export async function checkpointImplementationUnit(
         commandId: attempt.commandId,
         exitCode: result.exitCode,
         output: result.output.slice(-4_000),
+        recoveryHint: "前向验证失败时单元保持 active 且不记 checkpoint：若失败源于测试先行（验证依赖尚未落地的单元），请把测试与修复合并为同一回撤单元（原子单元）一并回滚；checkpoint 前清理 scratch/ 中的残留红测试",
       });
     }
   }

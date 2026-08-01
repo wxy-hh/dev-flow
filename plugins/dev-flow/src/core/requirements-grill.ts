@@ -5,6 +5,7 @@ import {
   createInteraction,
   findInteractionForTarget,
   getInteraction,
+  normalizeReplyText,
   resolveNativeInteraction,
   resolveTokenInteraction,
   toPublicInteraction,
@@ -53,7 +54,7 @@ function allowedStatuses(state: FeatureState): GrillStatus[] {
 function invalidStatus(details: Record<string, unknown>): never {
   throw new DevFlowError("GRILL_STATUS_INVALID", "requirements grill_status must be a supported enum", {
     allowed: statuses,
-    recoveryHint: "Set grill_status to a supported value and re-record the requirements artifact",
+    recoveryHint: "请将 grill_status 设为受支持的值并重新登记需求文档",
     ...details,
   });
 }
@@ -95,13 +96,13 @@ export function parseGrillFrontMatter(contents: string): GrillFrontMatter {
   if (fields.grill_response_hint) result.responseHint = fields.grill_response_hint;
   if (status === "in_progress" && (!result.questionId || !result.responseHint)) {
     throw new DevFlowError("GRILL_STATUS_INVALID", "in_progress grill requires grill_question_id and grill_response_hint", {
-      recoveryHint: "Set the current Q-id and response hint, record the requirements artifact, then ask the user",
+      recoveryHint: "请设置当前题号与回复提示、登记需求文档后再询问用户",
     });
   }
   if (status === "complete" || status === "not_required") {
     if (result.questionId || result.responseHint) {
       throw new DevFlowError("GRILL_STATUS_INVALID", "complete/not_required grill must not retain current-question fields", {
-        recoveryHint: "Clear grill_question_id and grill_response_hint when grill is finished",
+        recoveryHint: "grill 完成后请清除当前题字段",
       });
     }
   }
@@ -158,14 +159,15 @@ function resolveGrillTextPrompt(
 ): string {
   const matches = (item: { type: string; at: string; data: unknown }) => {
     const event = item.data as { eventId?: unknown; type?: unknown; text?: unknown; at?: unknown };
-    return item.type === "host-event" && event.type === "user-prompt" && event.text === userReply && typeof event.eventId === "string";
+    return item.type === "host-event" && event.type === "user-prompt"
+      && normalizeReplyText(String(event.text ?? "")) === normalizeReplyText(userReply) && typeof event.eventId === "string";
   };
   const selected = promptEventId
     ? events.find((item) => matches(item) && (item.data as { eventId?: string }).eventId === promptEventId)
     : [...events].reverse().find(matches);
   if (!selected) {
     throw new DevFlowError("INTERACTION_PROVENANCE_UNAVAILABLE", interactionId, {
-      recoveryHint: "Ensure the UserPromptSubmit hook captured the exact one-time reply, then retry",
+      recoveryHint: "请确保宿主 hook 捕获到本次一次性回复（空格与大小写差异会自动归一化），再重试",
     });
   }
   const event = selected.data as { eventId: string; at?: string };
@@ -191,7 +193,7 @@ async function resolveGrillDecision(
   if (interaction.kind !== "grill" || interaction.status !== "pending") throw new DevFlowError("INTERACTION_NOT_PENDING", interactionId);
   const grill = await currentGrillQuestion(root, id, initial);
   if (interaction.target !== `grill:${grill.questionId}` || interaction.basisHash !== initial.artifacts.requirements.sha256) {
-    throw new DevFlowError("GRILL_BASIS_CHANGED", interactionId, { recoveryHint: "Record the current requirements and request a new decision" });
+    throw new DevFlowError("GRILL_BASIS_CHANGED", interactionId, { recoveryHint: "需求文档已变更，请重新登记后请求新的决策" });
   }
   let promptEventId: string | undefined;
   if (input.source === "text-token") {
@@ -199,7 +201,7 @@ async function resolveGrillDecision(
     promptEventId = resolveGrillTextPrompt(events, interactionId, input.userReply, input.promptEventId);
     const event = events.find((item) => (item.data as { eventId?: string }).eventId === promptEventId)?.data as { at?: string } | undefined;
     if (!event?.at || Date.parse(event.at) < Date.parse(interaction.presentedAt)) {
-      throw new DevFlowError("INTERACTION_PROVENANCE_UNAVAILABLE", interactionId, { recoveryHint: "Use a reply submitted after the decision was shown" });
+      throw new DevFlowError("INTERACTION_PROVENANCE_UNAVAILABLE", interactionId, { recoveryHint: "请使用决策呈现之后提交的回复" });
     }
   }
   let response: InteractionResponse | undefined;
@@ -249,12 +251,12 @@ export async function assertRequirementsGrillSatisfied(root: string, id: string,
       requirementsState: state.classification.requirements,
       status,
       allowedStatuses: allowed,
-      recoveryHint: "Continue grillme until grill_status is complete, record the artifact, then record the requirements step",
+      recoveryHint: "请继续 grillme 直到 grill_status 为 complete，登记资产后记录 requirements 步骤",
     });
   }
   if (fields.grill_question_id || fields.grill_response_hint) {
     throw new DevFlowError("GRILL_STATUS_INVALID", "complete/not_required grill must not retain current-question fields", {
-      recoveryHint: "Clear grill_question_id and grill_response_hint when grill is finished",
+      recoveryHint: "grill 完成后请清除当前题字段",
     });
   }
 }

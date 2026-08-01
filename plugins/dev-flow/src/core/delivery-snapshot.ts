@@ -84,6 +84,59 @@ export function implementationFiles(evidence: unknown): string[] {
   return normalized.sort();
 }
 
+const missingFileHint = "files 只接受纯路径，如 \"src/foo.js\"（而非 \"src/foo.js (新增)\"）；先创建或登记实际存在的文件后再重录";
+
+/**
+ * Every registered implementation file must exist on disk. A file is still
+ * acceptable when Git reports it as deleted (worktree or staged) or as the
+ * renamed-from source of an R/C entry — those are legitimate feature-owned
+ * removals. Git failures (non-repository) reject conservatively.
+ */
+export async function assertImplementationFilesExist(root: string, files: string[]): Promise<void> {
+  const missing: string[] = [];
+  for (const file of files) {
+    try { await lstat(path.join(root, file)); }
+    catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      missing.push(file);
+    }
+  }
+  if (!missing.length) return;
+  let status: string;
+  try { status = await git(root, ["status", "--porcelain=v1", "-z"]); }
+  catch (error) {
+    if (error instanceof DevFlowError && error.code === "DELIVERY_SNAPSHOT_GIT_REQUIRED") {
+      throw new DevFlowError("INVALID_IMPLEMENTATION_FILE", `implementation file does not exist: ${missing.join(", ")}`, {
+        files: missing,
+        recoveryHint: missingFileHint,
+      });
+    }
+    throw error;
+  }
+  const allowed = new Set<string>();
+  const items = nulItems(status);
+  for (let index = 0; index < items.length; index += 1) {
+    const item = items[index];
+    if (item.length < 4) continue;
+    const code = item.slice(0, 2);
+    if (code.includes("D")) allowed.add(normalizePath(item.slice(3)));
+    if (/[RC]/.test(code)) {
+      const original = items[index + 1];
+      if (original) {
+        allowed.add(normalizePath(original));
+        index += 1;
+      }
+    }
+  }
+  const stillMissing = missing.filter((file) => !allowed.has(file));
+  if (stillMissing.length) {
+    throw new DevFlowError("INVALID_IMPLEMENTATION_FILE", `implementation file does not exist: ${stillMissing.join(", ")}`, {
+      files: stillMissing,
+      recoveryHint: missingFileHint,
+    });
+  }
+}
+
 function statusPaths(value: string): string[] {
   const items = nulItems(value);
   const paths = new Set<string>();
@@ -176,7 +229,7 @@ export async function createDeliverySnapshot(
   if (unexpected.length) {
     throw new DevFlowError("DELIVERY_FILE_UNREGISTERED", "protected changes are not registered in implementation evidence", {
       files: unexpected,
-      recoveryHint: "Add every feature-owned protected file to implementation evidence.files, then rerun verification and finalize",
+      recoveryHint: "把每个 feature 拥有的受保护文件加入 implementation evidence.files（只接受纯路径，如 \"src/foo.js\" 而非 \"src/foo.js (新增)\"），然后重新验证并 finalize",
     });
   }
   const changed = files.filter((file) => currentDirty.includes(file));

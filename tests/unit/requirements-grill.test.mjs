@@ -262,3 +262,35 @@ test("grill decisions use native structured choices or one-time replies and pres
     });
   } finally { await rm(root, { recursive: true, force: true }); }
 });
+
+test("grill token replies tolerate whitespace and reject gate approval phrases", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "dev-flow-grill-ws-"));
+  try {
+    let state = await start(root, "missing-or-unclear");
+    const file = fileFor(root);
+    await writeFile(file, (await readFile(file, "utf8")).replace(/^  grill_status: pending$/m, "  grill_status: in_progress\n  grill_question_id: Q-001\n  grill_response_hint: \"请选择一个方案\""));
+    state = await registerTraceFixture({ root, featureId: "f", state, kind: "requirements" });
+    const input = {
+      questionId: "Q-001",
+      question: "选择同步方案",
+      options: [{ id: "hosted", label: "托管同步" }, { id: "other", label: "其他 / 补充", requiresComment: true }],
+      host: "claude",
+    };
+    let decision = await grill.requestGrillDecision(root, "f", state.revision, input);
+    const reply = decision.interaction.fallback.replies.find((candidate) => candidate.action === "hosted").reply;
+
+    // 带首尾空格的一次性回复可匹配（归一化）
+    await store.recordHostEvent(root, { eventId: "ws-token", type: "user-prompt", host: "claude", text: `  ${reply}  ` });
+    let resolved = await grill.resolveGrillToken(root, "f", decision.state.revision, decision.interaction.id, `  ${reply}  `, undefined, "claude");
+    assert.equal(resolved.response.action, "hosted");
+
+    // 批准词仅映射 HUMAN GATE，grill 交互仍走 token 匹配并拒绝
+    state = await registerTraceFixture({ root, featureId: "f", state: resolved.state, kind: "requirements" });
+    decision = await grill.requestGrillDecision(root, "f", state.revision, input);
+    await store.recordHostEvent(root, { eventId: "phrase", type: "user-prompt", host: "claude", text: "确认需求" });
+    await assert.rejects(
+      () => grill.resolveGrillToken(root, "f", decision.state.revision, decision.interaction.id, "确认需求", undefined, "claude"),
+      (error) => error.code === "INTERACTION_TOKEN_MISMATCH",
+    );
+  } finally { await rm(root, { recursive: true, force: true }); }
+});

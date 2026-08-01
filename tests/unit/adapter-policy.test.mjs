@@ -281,6 +281,87 @@ test("analyzeBashWriteTargets resolves redirects and rejects expansions", () => 
   assert.equal(guard.analyzeBashWriteTargets('echo x > "$out"').kind, "unresolved");
 });
 
+test("analyzeBashWriteTargets allows /dev/null and masks heredoc bodies", () => {
+  assert.deepEqual(guard.analyzeBashWriteTargets("echo hi > /dev/null"), { kind: "read-only" });
+  assert.deepEqual(guard.analyzeBashWriteTargets("npm test > /dev/null 2>&1"), { kind: "read-only" });
+  assert.deepEqual(guard.analyzeBashWriteTargets("echo hi > /dev/null > log.txt"), { kind: "resolved", targets: ["log.txt"] });
+  assert.deepEqual(
+    guard.analyzeBashWriteTargets("cat > scratch/a.ts <<'EOF'\nconst x = a > b;\nEOF"),
+    { kind: "resolved", targets: ["scratch/a.ts"] },
+  );
+  // 未闭合的 heredoc 无法确认正文边界 → fail closed
+  assert.equal(guard.analyzeBashWriteTargets("cat > scratch/a.ts <<'EOF'\nconst x = a > b;").kind, "unresolved");
+  assert.deepEqual(
+    guard.analyzeBashWriteTargets("cat > scratch/a.ts <<-EOF\nconst x = a > b;\n\tEOF"),
+    { kind: "resolved", targets: ["scratch/a.ts"] },
+  );
+  assert.deepEqual(
+    guard.analyzeBashWriteTargets("cat <<EOF\nbody > not-a-target\nEOF"),
+    { kind: "read-only" },
+  );
+  assert.deepEqual(
+    guard.analyzeBashWriteTargets("printf '%s\\n' 'a <<b' > out.txt\necho x > real.txt"),
+    { kind: "resolved", targets: ["out.txt", "real.txt"] },
+  );
+  assert.deepEqual(
+    guard.analyzeBashWriteTargets("echo $((1 << 4)) > out.txt\necho x > real.txt"),
+    { kind: "resolved", targets: ["out.txt", "real.txt"] },
+  );
+  // 非数据消费者（shell/解释器/变量展开）→ 正文可能是代码 → fail closed
+  assert.equal(guard.analyzeBashWriteTargets("bash <<'EOF'\necho x > src/pwn\nEOF").kind, "unresolved");
+  assert.equal(guard.analyzeBashWriteTargets("sh <<EOF\nmv src/a src/b\nEOF").kind, "unresolved");
+  assert.equal(guard.analyzeBashWriteTargets("python <<EOF\nopen('src/pwn','w')\nEOF").kind, "unresolved");
+  assert.equal(guard.analyzeBashWriteTargets("cd /tmp && bash <<EOF\necho x > src/pwn\nEOF").kind, "unresolved");
+  assert.equal(guard.analyzeBashWriteTargets("$SHELL <<'EOF'\necho x > src/pwn\nEOF").kind, "unresolved");
+  // 合法但复杂的 delimiter（引号含空格、反斜杠转义）→ 正确闭合，正文后的真实写命令仍被解析
+  assert.deepEqual(
+    guard.analyzeBashWriteTargets("cat <<'END MARK'\nbody\nEND MARK\necho x > src/pwn"),
+    { kind: "resolved", targets: ["src/pwn"] },
+  );
+  assert.deepEqual(
+    guard.analyzeBashWriteTargets("cat <<E\\OF\nbody\nEOF\necho x > src/pwn"),
+    { kind: "resolved", targets: ["src/pwn"] },
+  );
+  assert.deepEqual(
+    guard.analyzeBashWriteTargets("cat <<\"E\\OF\"\nbody\nE\\OF\necho x > src/pwn\nEOF"),
+    { kind: "resolved", targets: ["src/pwn"] },
+  );
+  // 只支持可证明安全且目标可解析的 cat/tee；带输出文件参数的过滤器必须 fail closed。
+  assert.equal(guard.analyzeBashWriteTargets("sort -o src/pwn <<'EOF'\nb\na\nEOF").kind, "unresolved");
+  assert.equal(guard.analyzeBashWriteTargets("uniq - src/pwn <<'EOF'\na\nEOF").kind, "unresolved");
+  assert.equal(guard.analyzeBashWriteTargets("diff --output=src/pwn /dev/null - <<'EOF'\na\nEOF").kind, "unresolved");
+  assert.equal(guard.analyzeBashWriteTargets("grep bash <<'EOF'\nbash\nEOF").kind, "unresolved");
+  assert.deepEqual(
+    guard.analyzeBashWriteTargets("tee src/pwn <<'EOF'\na\nEOF"),
+    { kind: "resolved", targets: ["src/pwn"] },
+  );
+  assert.deepEqual(guard.analyzeBashWriteTargets("/bin/cat <<'EOF'\na\nEOF"), { kind: "read-only" });
+  assert.deepEqual(guard.analyzeBashWriteTargets("command cat <<'EOF'\na\nEOF"), { kind: "read-only" });
+  assert.equal(guard.analyzeBashWriteTargets("cat <<A <<B\na\nA\nb\nB").kind, "unresolved");
+});
+
+test("Bash writes to /dev/null pass the hook while mixed commands stay blocked", async () => {
+  const fixture = await createTinyApp();
+  try {
+    await startStandard(fixture.root);
+    assert.equal(await guard.preToolBlockReason(fixture.root, { tool_name: "Bash", tool_input: { command: "echo hi > /dev/null" } }), undefined);
+    assert.equal(await guard.preToolBlockReason(fixture.root, { tool_name: "Bash", tool_input: { command: "npm test > /dev/null 2>&1" } }), undefined);
+    assert.match(
+      await guard.preToolBlockReason(fixture.root, { tool_name: "Bash", tool_input: { command: "echo hi > src/foo.js > /dev/null" } }),
+      /DEV_FLOW_IMPLEMENTATION_APPROVAL_REQUIRED/,
+    );
+    assert.match(
+      await guard.preToolBlockReason(fixture.root, { tool_name: "Bash", tool_input: { command: "bash <<'EOF'\necho x > src/pwn\nEOF" } }),
+      /DEV_FLOW_WRITE_TARGET_UNRESOLVED/,
+    );
+    // 复杂 delimiter 正确闭合后，正文之后的真实受保护写入仍被拦截
+    assert.match(
+      await guard.preToolBlockReason(fixture.root, { tool_name: "Bash", tool_input: { command: "cat <<'END MARK'\nbody\nEND MARK\necho x > src/pwn" } }),
+      /DEV_FLOW_IMPLEMENTATION_APPROVAL_REQUIRED/,
+    );
+  } finally { await fixture.dispose(); }
+});
+
 async function unitGateFeature(root, { fileScope = ["src"], activeUnit = true, checkpoints = 1, confirmed = true } = {}) {
   await store.initProject(root, strictProjectConfig);
   let state = await store.startFeature(root, {
@@ -351,6 +432,8 @@ test("checkpoints:1 hook allows in-scope writes and blocks out-of-scope writes, 
       await guard.preToolBlockReason(fixture.root, { tool_name: "Bash", tool_input: { command: "echo x > test/other.js" } }),
       /DEV_FLOW_IMPLEMENTATION_UNIT_OUT_OF_SCOPE/,
     );
+    const outOfScope = await guard.preToolBlockReason(fixture.root, { tool_name: "Write", tool_input: { file_path: "test/counter.test.js" } });
+    assert.match(outOfScope, /scratch/);
   } finally { await fixture.dispose(); }
 
   const glob = await createTinyApp();
@@ -371,5 +454,48 @@ test("checkpoints:0 features keep the approval-only write contract", async () =>
     await unitGateFeature(fixture.root, { activeUnit: false, checkpoints: 0 });
     assert.equal(await guard.preToolBlockReason(fixture.root, { tool_name: "Write", tool_input: { file_path: "src/counter.js" } }), undefined);
     assert.equal(await guard.preToolBlockReason(fixture.root, { tool_name: "Write", tool_input: { file_path: "test/counter.test.js" } }), undefined);
+  } finally { await fixture.dispose(); }
+});
+
+test("revoked implementation approval explains the plan change in the block reason", async () => {
+  const fixture = await createTinyApp();
+  try {
+    const state = await unitGateFeature(fixture.root);
+    // 事件账本追加真实的确认记录，再重登记计划依据 → 批准按设计作废
+    const eventsPath = path.join(fixture.root, ".dev-flow", "features", "feature", "events.jsonl");
+    const at = new Date().toISOString();
+    await writeFile(eventsPath, JSON.stringify({ revision: state.revision + 1, type: "gate-confirmed", at, data: { gate: "implementation_approval" } }) + "\n", { flag: "a" });
+    await registerTraceFixture({ root: fixture.root, featureId: "feature", state, kind: "implementation-plan" });
+    const reason = await guard.preToolBlockReason(fixture.root, { tool_name: "Write", tool_input: { file_path: "src/counter.js" } });
+    assert.match(reason, /DEV_FLOW_IMPLEMENTATION_APPROVAL_REQUIRED/);
+    assert.match(reason, /implementation-plan/);
+    assert.match(reason, /作废/);
+    assert.match(reason, /scratch/);
+  } finally { await fixture.dispose(); }
+});
+
+test("never-confirmed features keep the generic approval hint", async () => {
+  const fixture = await createTinyApp();
+  try {
+    const state = await unitGateFeature(fixture.root, { confirmed: false });
+    await registerTraceFixture({ root: fixture.root, featureId: "feature", state, kind: "implementation-plan" });
+    const reason = await guard.preToolBlockReason(fixture.root, { tool_name: "Write", tool_input: { file_path: "src/counter.js" } });
+    assert.match(reason, /DEV_FLOW_IMPLEMENTATION_APPROVAL_REQUIRED/);
+    assert.doesNotMatch(reason, /已在批准后变更/);
+    assert.match(reason, /scratch/);
+  } finally { await fixture.dispose(); }
+});
+
+test("block reasons are user-visible Chinese and /tmp redirects get a project-relative hint", async () => {
+  const fixture = await createTinyApp();
+  try {
+    await startStandard(fixture.root);
+    const reason = await guard.preToolBlockReason(fixture.root, { tool_name: "Write", tool_input: { file_path: "src/counter.js" } });
+    assert.match(reason, /[一-鿿]/);
+    const redirect = await guard.preToolBlockReason(fixture.root, {
+      tool_name: "Bash", tool_input: { command: "pnpm vitest run > /tmp/full-vitest.log" },
+    });
+    assert.match(redirect, /DEV_FLOW_WRITE_TARGET_UNRESOLVED/);
+    assert.match(redirect, /vitest\.log/);
   } finally { await fixture.dispose(); }
 });

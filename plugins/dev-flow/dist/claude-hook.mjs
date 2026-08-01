@@ -1,4 +1,4 @@
-/* dev-flow 1.9.0; built from source, deterministic build */
+/* dev-flow 1.10.0; built from source, deterministic build */
 
 // plugins/dev-flow/src/hosts/claude-adapter.ts
 import { lstat } from "node:fs/promises";
@@ -934,6 +934,20 @@ async function readRecoveryTransaction(root) {
 // plugins/dev-flow/src/hosts/adapter-policy.ts
 import path5 from "node:path";
 
+// plugins/dev-flow/src/core/gate-basis.ts
+var gateBasisArtifacts = {
+  requirement_confirmation: ["requirements"],
+  implementation_approval: [
+    "requirements",
+    "implementation-plan",
+    "coverage-matrix",
+    "rollback-units",
+    "rollback-safety",
+    "risk-card",
+    "boundary-card"
+  ]
+};
+
 // plugins/dev-flow/src/core/git-policy.ts
 var readOnly = /* @__PURE__ */ new Set(["status", "diff", "log", "show", "rev-parse", "ls-files", "ls-tree", "cat-file", "name-rev"]);
 var write = /* @__PURE__ */ new Set(["add", "commit", "push", "merge", "rebase", "tag", "cherry-pick", "reset"]);
@@ -1006,6 +1020,7 @@ function formatPreToolBlock(block) {
 }
 var directWriteTools = /* @__PURE__ */ new Set(["write", "edit", "multiedit", "applypatch", "apply_patch", "patch"]);
 var controlFileNames = /* @__PURE__ */ new Set(["state.json", "active.json", "project.json", "events.jsonl", "status.md", "\u72B6\u6001\u6587\u6863.md", "recovery-transaction.json", "recovery-events.jsonl"]);
+var scratchHint = "\uFF1B\u4E34\u65F6\u9A8C\u8BC1\u6587\u4EF6\u8BF7\u653E\u5165 scratch/ \u76EE\u5F55";
 function toolName(event2) {
   return String(event2.tool_name ?? "").toLowerCase();
 }
@@ -1117,25 +1132,168 @@ function commandWords(segment, command) {
   if (!match) return void 0;
   return shellWords(match[1]);
 }
+var heredocDataConsumers = /* @__PURE__ */ new Set(["cat", "tee"]);
+function heredocDelimiter(rest) {
+  let word = "";
+  let index = 0;
+  while (index < rest.length && /\s/.test(rest[index])) index += 1;
+  while (index < rest.length) {
+    const char = rest[index];
+    if (char === "'") {
+      const end = rest.indexOf("'", index + 1);
+      if (end < 0) return void 0;
+      word += rest.slice(index + 1, end);
+      index = end + 1;
+      continue;
+    }
+    if (char === '"') {
+      let cursor = index + 1;
+      let inner = "";
+      let closed = false;
+      while (cursor < rest.length) {
+        const current = rest[cursor];
+        if (current === '"') {
+          closed = true;
+          break;
+        }
+        if (current === "\\" && cursor + 1 < rest.length) {
+          const next = rest[cursor + 1];
+          if (["$", "`", '"', "\\"].includes(next)) {
+            inner += next;
+            cursor += 2;
+            continue;
+          }
+          inner += `\\${next}`;
+          cursor += 2;
+          continue;
+        }
+        inner += current;
+        cursor += 1;
+      }
+      if (!closed) return void 0;
+      word += inner;
+      index = cursor + 1;
+      continue;
+    }
+    if (char === "\\") {
+      if (index + 1 >= rest.length) return void 0;
+      word += rest[index + 1];
+      index += 2;
+      continue;
+    }
+    if (/\s/.test(char)) break;
+    if (char === "$" || char === "`") return void 0;
+    word += char;
+    index += 1;
+  }
+  return word ? { value: word, consumed: index } : void 0;
+}
+function findHeredocOpener(line) {
+  let quote;
+  for (let cursor = 0; cursor < line.length - 1; cursor += 1) {
+    const char = line[cursor];
+    if (quote) {
+      if (char === quote) quote = void 0;
+      continue;
+    }
+    if (char === "'" || char === '"') {
+      quote = char;
+      continue;
+    }
+    if (char === "$" && line[cursor + 1] === "(" && line[cursor + 2] === "(" || char === "(" && line[cursor + 1] === "(") {
+      let depth = 1;
+      cursor += char === "$" ? 2 : 1;
+      while (depth > 0 && cursor + 1 < line.length) {
+        cursor += 1;
+        if (line[cursor] === "(" && line[cursor + 1] === "(") {
+          depth += 1;
+          cursor += 1;
+        } else if (line[cursor] === ")" && line[cursor + 1] === ")") {
+          depth -= 1;
+          cursor += 1;
+        }
+      }
+      continue;
+    }
+    if (char !== "<" || line[cursor + 1] !== "<" || line[cursor + 2] === "<") continue;
+    let restStart = cursor + 2;
+    const stripTabs = line[restStart] === "-";
+    if (stripTabs) restStart += 1;
+    const parsed = heredocDelimiter(line.slice(restStart));
+    return {
+      delimiter: parsed?.value,
+      openerIndex: cursor,
+      openerEndIndex: parsed ? restStart + parsed.consumed : line.length,
+      stripTabs
+    };
+  }
+  return void 0;
+}
+function heredocConsumer(line, openerIndex) {
+  const lastSegment = line.slice(0, openerIndex).split(/[;&|]\s*/).at(-1) ?? "";
+  const withoutEnv = lastSegment.replace(/^(?:\w+=\S+\s+)+/, "");
+  const command = withoutEnv.match(/^\s*(?:command\s+)?([A-Za-z0-9_./-]+)/)?.[1];
+  return command ? path5.posix.basename(command) : void 0;
+}
+function maskHeredocBodies(command) {
+  const lines = command.split("\n");
+  const masked = [...lines];
+  let index = 0;
+  while (index < lines.length) {
+    const opener = findHeredocOpener(lines[index]);
+    if (!opener) {
+      index += 1;
+      continue;
+    }
+    const consumer = heredocConsumer(lines[index], opener.openerIndex);
+    if (opener.delimiter === void 0 || !consumer || !heredocDataConsumers.has(consumer)) {
+      return { masked: command, unsafe: true };
+    }
+    masked[index] = `${lines[index].slice(0, opener.openerIndex)}${lines[index].slice(opener.openerEndIndex)}`;
+    if (findHeredocOpener(masked[index])) return { masked: command, unsafe: true };
+    let terminatorIndex = -1;
+    for (let candidate = index + 1; candidate < lines.length; candidate += 1) {
+      const candidateLine = opener.stripTabs ? lines[candidate].replace(/^\t+/, "") : lines[candidate];
+      if (candidateLine === opener.delimiter || candidateLine === `${opener.delimiter}\r`) {
+        terminatorIndex = candidate;
+        break;
+      }
+    }
+    if (terminatorIndex < 0) return { masked: command, unsafe: true };
+    for (let body = index + 1; body < terminatorIndex; body += 1) masked[body] = "";
+    index = terminatorIndex + 1;
+  }
+  return { masked: masked.join("\n"), unsafe: false };
+}
 function analyzeBashWriteTargets(command) {
   const trimmed = command.trim();
   if (!trimmed) return { kind: "read-only" };
   if (/\b(?:sh|bash|zsh)\s+-c\b/.test(trimmed) || /\bxargs\b/.test(trimmed) || /\bapply_patch\b/.test(trimmed)) {
     return { kind: "unresolved", syntax: "unsupported-shell-wrapper" };
   }
-  if (!writeSyntaxHint.test(trimmed)) return { kind: "read-only" };
-  const segments = trimmed.split(/(?:&&|\|\||;|\n)/).map((part) => part.trim()).filter(Boolean);
+  const { masked, unsafe } = maskHeredocBodies(trimmed);
+  if (unsafe) return { kind: "unresolved", syntax: "heredoc-unresolved" };
+  if (!writeSyntaxHint.test(masked)) return { kind: "read-only" };
+  const segments = masked.split(/(?:&&|\|\||;|\n)/).map((part) => part.trim()).filter(Boolean);
   const targets = [];
+  let sawDevNull = false;
+  const collect = (token) => {
+    if (token === "/dev/null") {
+      sawDevNull = true;
+      return;
+    }
+    targets.push(token);
+  };
   for (const segment of segments) {
     const withoutEnv = segment.replace(/^(?:\w+=\S+\s+)+/, "");
     if (/\b(?:python|node|ruby|perl)\b/.test(withoutEnv) && !/\bsed\s+-i\b/.test(withoutEnv) && !/\bperl\s+-pi\b/.test(withoutEnv)) {
       if (writeSyntaxHint.test(withoutEnv)) return { kind: "unresolved", syntax: "interpreter-write" };
     }
-    const redirectMatches = [...withoutEnv.matchAll(/(?:^|[^0-9])>{1,2}\s*([^\s|&;]+)/g)];
+    const redirectMatches = [...withoutEnv.matchAll(/(?:^|[^0-9&])>{1,2}\s*([^\s|&;]+)/g)];
     for (const match of redirectMatches) {
       const token = stripQuotes(match[1]);
       if (hasUnresolvedExpansion(token)) return { kind: "unresolved", syntax: "redirect-expansion" };
-      targets.push(token);
+      collect(token);
     }
     const teeIndex = withoutEnv.search(/\btee\b/);
     if (teeIndex >= 0) {
@@ -1143,29 +1301,29 @@ function analyzeBashWriteTargets(command) {
       const words = commandWords(withoutEnv.slice(teeIndex), "tee");
       const paths = words && collectPathOperands(words, 0);
       if (!paths) return { kind: "unresolved", syntax: "tee-args" };
-      targets.push(...paths);
+      for (const path7 of paths) collect(path7);
     }
     const simple = withoutEnv.match(/^(touch|mkdir|rm)\b/);
     if (simple) {
       const words = commandWords(withoutEnv, simple[1]);
       const paths = words && collectPathOperands(words, 0);
       if (!paths) return { kind: "unresolved", syntax: "simple-args" };
-      targets.push(...paths);
+      for (const path7 of paths) collect(path7);
     }
     const moveCopy = withoutEnv.match(/^(mv|cp)\b/);
     if (moveCopy) {
       const words = commandWords(withoutEnv, moveCopy[1]);
       const paths = words && collectPathOperands(words, 0);
       if (!paths || paths.length < 2) return { kind: "unresolved", syntax: "mv-cp-args" };
-      if (moveCopy[1] === "mv") targets.push(...paths);
-      else targets.push(paths.at(-1));
+      if (moveCopy[1] === "mv") for (const path7 of paths) collect(path7);
+      else collect(paths.at(-1));
     }
     const sed = withoutEnv.match(/^sed\s+(-i\S*)\s+([\s\S]*)$/);
     if (sed) {
       const words = shellWords(sed[2]);
       const paths = words && collectPathOperands(words, 1);
       if (!paths) return { kind: "unresolved", syntax: "sed-args" };
-      targets.push(...paths);
+      for (const path7 of paths) collect(path7);
     }
     const perl = withoutEnv.match(/^perl\s+(-pi\S*)\s+([\s\S]*)$/);
     if (perl) {
@@ -1173,10 +1331,13 @@ function analyzeBashWriteTargets(command) {
       const firstPath = words?.[0] === "-e" ? 2 : 0;
       const paths = words && collectPathOperands(words, firstPath);
       if (!paths) return { kind: "unresolved", syntax: "perl-args" };
-      targets.push(...paths);
+      for (const path7 of paths) collect(path7);
     }
   }
-  if (targets.length === 0) return { kind: "unresolved", syntax: "write-syntax-no-target" };
+  if (targets.length === 0) {
+    if (sawDevNull || masked !== trimmed) return { kind: "read-only" };
+    return { kind: "unresolved", syntax: "write-syntax-no-target" };
+  }
   return { kind: "resolved", targets };
 }
 async function loadActiveWorkflow(root) {
@@ -1249,12 +1410,15 @@ async function loadActiveWorkflow(root) {
 function classifyTarget(root, target, workflow) {
   const relative = projectRelative(root, target);
   if (!relative) {
-    return { code: "DEV_FLOW_WRITE_TARGET_UNRESOLVED", recoveryHint: "Use a project-relative path that resolves inside the repository" };
+    return {
+      code: "DEV_FLOW_WRITE_TARGET_UNRESOLVED",
+      recoveryHint: "\u8BF7\u4F7F\u7528\u80FD\u89E3\u6790\u5230\u4ED3\u5E93\u5185\u7684\u9879\u76EE\u76F8\u5BF9\u8DEF\u5F84\uFF08\u9A8C\u8BC1\u65E5\u5FD7\u8BF7\u5199\u5165\u9879\u76EE\u5185\uFF0C\u4F8B\u5982 vitest.log\uFF09"
+    };
   }
   if (isControlPath(relative)) {
     return {
       code: "DEV_FLOW_STATE_MUTATION_FORBIDDEN",
-      recoveryHint: "Workflow state is MCP-only; edit registered artifacts or use doctor/recovery for corrupt state"
+      recoveryHint: "\u5DE5\u4F5C\u6D41\u72B6\u6001\u4EC5\u80FD\u901A\u8FC7 MCP \u53D8\u66F4\uFF1B\u8BF7\u7F16\u8F91\u5DF2\u767B\u8BB0\u8D44\u4EA7\uFF0C\u6216\u5BF9\u635F\u574F\u72B6\u6001\u4F7F\u7528 doctor/recovery"
     };
   }
   if (isDevFlowPath(relative)) {
@@ -1262,19 +1426,19 @@ function classifyTarget(root, target, workflow) {
     if (relative.startsWith(`.dev-flow/features/${workflow.featureId}/`) && relative.endsWith(".md")) {
       return {
         code: "DEV_FLOW_ARTIFACT_NOT_REGISTERED",
-        recoveryHint: "Scaffold the artifact via MCP first, then edit and record it"
+        recoveryHint: "\u8BF7\u5148\u901A\u8FC7 MCP scaffold \u8BE5\u8D44\u4EA7\uFF0C\u7F16\u8F91\u540E\u767B\u8BB0"
       };
     }
     return {
       code: "DEV_FLOW_STATE_MUTATION_FORBIDDEN",
-      recoveryHint: "Only registered non-status artifacts for the active feature may be edited"
+      recoveryHint: "\u4EC5\u53EF\u7F16\u8F91 active feature \u5DF2\u767B\u8BB0\u7684\u975E status Markdown \u8D44\u4EA7"
     };
   }
   const needsApproval = ["risk-minimal", "standard-m", "light-l", "standard-l"].includes(workflow.route ?? "");
   if (needsApproval && !workflow.approvalConfirmed && isProtected(root, target, workflow.protectedRoots)) {
     return {
       code: "DEV_FLOW_IMPLEMENTATION_APPROVAL_REQUIRED",
-      recoveryHint: "Target is under a protected root; finish the route and wait for implementation approval"
+      recoveryHint: `\u76EE\u6807\u4F4D\u4E8E\u53D7\u4FDD\u62A4\u6839\u76EE\u5F55\uFF1B\u8BF7\u5B8C\u6210\u8DEF\u7EBF\u6B65\u9AA4\u5E76\u7B49\u5F85\u5B9E\u73B0\u6279\u51C6\uFF08\u8BA1\u5212\u4F9D\u636E\u53D8\u66F4\u4F1A\u4F7F\u6279\u51C6\u4F5C\u5E9F\uFF0C\u9700\u91CD\u65B0\u786E\u8BA4\uFF09${scratchHint}`
     };
   }
   if (workflow.state && isProtected(root, target, workflow.protectedRoots)) {
@@ -1283,23 +1447,54 @@ function classifyTarget(root, target, workflow) {
     if (block?.code === "IMPLEMENTATION_UNIT_REQUIRED") {
       return {
         code: "DEV_FLOW_IMPLEMENTATION_UNIT_REQUIRED",
-        recoveryHint: "Begin the next rollback unit via dev_flow_begin_implementation_unit before writing protected files"
+        recoveryHint: "\u8BF7\u5148\u901A\u8FC7 dev_flow_begin_implementation_unit \u5F00\u59CB\u4E0B\u4E00\u4E2A\u56DE\u64A4\u5355\u5143\uFF0C\u518D\u5199 protected \u6587\u4EF6"
       };
     }
     if (block?.code === "IMPLEMENTATION_UNIT_OUT_OF_SCOPE") {
       const scope = block.details.fileScope ?? [];
       return {
         code: "DEV_FLOW_IMPLEMENTATION_UNIT_OUT_OF_SCOPE",
-        recoveryHint: `Active rollback unit ${block.details.unitId} covers only: ${scope.join(", ") || "(no current scope)"}`
+        recoveryHint: `\u5F53\u524D\u56DE\u64A4\u5355\u5143 ${block.details.unitId} \u4EC5\u8986\u76D6\uFF1A${scope.join(", ") || "(\u5F53\u524D\u65E0 scope)"}\uFF1B\u79FB\u52A8/\u91CD\u547D\u540D\u9700\u628A\u6E90\u4E0E\u76EE\u6807\u8DEF\u5F84\u90FD\u52A0\u5165 file_scope \u5E76\u91CD\u767B\u8BB0\uFF1B\u4E34\u65F6\u9A8C\u8BC1\u6587\u4EF6\u8BF7\u653E scratch/`
       };
     }
   }
   return void 0;
 }
+async function revokedImplementationApprovalHint(root, featureId) {
+  const events = await readFeatureEvents(root, featureId);
+  let lastConfirmedIndex = -1;
+  for (let index = events.length - 1; index >= 0; index--) {
+    const event2 = events[index];
+    const data = event2.data;
+    if ((event2.type === "gate-confirmed" || event2.type === "gate-interaction-resolved") && data.gate === "implementation_approval") {
+      lastConfirmedIndex = index;
+      break;
+    }
+  }
+  if (lastConfirmedIndex < 0) return void 0;
+  const basis = gateBasisArtifacts.implementation_approval;
+  for (let index = events.length - 1; index >= lastConfirmedIndex; index--) {
+    const event2 = events[index];
+    const data = event2.data;
+    if ((event2.type === "artifact-recorded" || event2.type === "artifact-recorded-with-trace") && data.kind !== void 0 && basis.includes(data.kind) && data.invalidationReason) {
+      return data.kind;
+    }
+  }
+  return void 0;
+}
+async function augmentApprovalBlock(root, workflow, block) {
+  if (block.code !== "DEV_FLOW_IMPLEMENTATION_APPROVAL_REQUIRED") return block;
+  const revokedKind = await revokedImplementationApprovalHint(root, workflow.featureId);
+  if (!revokedKind) return block;
+  return {
+    ...block,
+    recoveryHint: `\u8BA1\u5212\u4F9D\u636E\uFF08${revokedKind}\uFF09\u5DF2\u5728\u5B9E\u73B0\u6279\u51C6\u540E\u53D8\u66F4\uFF0C\u6279\u51C6\u5DF2\u4F5C\u5E9F\uFF1B\u8BF7\u5148\u5B8C\u6210\u76F8\u5173\u6B65\u9AA4\u5E76\u91CD\u65B0\u786E\u8BA4\u5B9E\u73B0\u6279\u51C6\u540E\u518D\u5199 protected \u6587\u4EF6${scratchHint}`
+  };
+}
 function unreadableBlock(reason2) {
   return {
     code: "DEV_FLOW_WORKFLOW_STATE_UNREADABLE",
-    recoveryHint: `Active workflow cannot be read safely (${reason2}); run dev_flow_doctor and recover if corrupt`
+    recoveryHint: `\u65E0\u6CD5\u5B89\u5168\u8BFB\u53D6\u6D3B\u52A8\u5DE5\u4F5C\u6D41\uFF08${reason2}\uFF09\uFF1B\u8BF7\u8FD0\u884C dev_flow_doctor\uFF0C\u635F\u574F\u65F6\u4F7F\u7528 recover \u6062\u590D`
   };
 }
 function unreadableTargetBlock(root, target, workflow) {
@@ -1342,7 +1537,7 @@ async function preToolBlock(root, event2) {
   if (toolName(event2) === "bash" && classifyGitCommand(command) === "write" && !workflow.logicComplete) {
     return {
       code: "DEV_FLOW_GIT_GUARD",
-      recoveryHint: "Feature is not logic-complete; finish verify, feature-check, and finalize before git writes"
+      recoveryHint: "\u529F\u80FD\u5C1A\u672A logic-complete\uFF1B\u8BF7\u5148\u5B8C\u6210 verify\u3001feature-check \u4E0E finalize \u518D\u8FDB\u884C git \u5199\u5165"
     };
   }
   if (toolName(event2) === "bash") {
@@ -1351,12 +1546,12 @@ async function preToolBlock(root, event2) {
     if (analysis.kind === "unresolved") {
       return {
         code: "DEV_FLOW_WRITE_TARGET_UNRESOLVED",
-        recoveryHint: "Split into deterministic write commands or use MCP artifact tools; do not mix unresolved shell writes"
+        recoveryHint: "\u8BF7\u62C6\u5206\u786E\u5B9A\u6027\u7684\u5199\u547D\u4EE4\u6216\u4F7F\u7528 MCP \u8D44\u4EA7\u5DE5\u5177\uFF1B\u9A8C\u8BC1\u65E5\u5FD7\u8BF7\u5199\u5165\u9879\u76EE\u5185\u76F8\u5BF9\u8DEF\u5F84\uFF08\u4F8B\u5982 vitest.log\uFF09\uFF0C\u52FF\u6DF7\u7528\u672A\u89E3\u6790\u7684 shell \u5199\u5165"
       };
     }
     for (const target of analysis.targets) {
       const block = classifyTarget(root, target, workflow);
-      if (block) return block;
+      if (block) return augmentApprovalBlock(root, workflow, block);
     }
     return void 0;
   }
@@ -1364,12 +1559,12 @@ async function preToolBlock(root, event2) {
   if (!targets.length) {
     return {
       code: "DEV_FLOW_IMPLEMENTATION_APPROVAL_REQUIRED",
-      recoveryHint: "Patch has no parseable targets; denied conservatively until implementation approval"
+      recoveryHint: "\u8865\u4E01\u65E0\u53EF\u89E3\u6790\u76EE\u6807\uFF1B\u5728\u5B9E\u73B0\u6279\u51C6\u524D\u4FDD\u5B88\u62D2\u7EDD"
     };
   }
   for (const target of targets) {
     const block = classifyTarget(root, target, workflow);
-    if (block) return block;
+    if (block) return augmentApprovalBlock(root, workflow, block);
   }
   return void 0;
 }
@@ -1389,14 +1584,14 @@ if (event.hook_event_name === "PreToolUse") {
     try {
       await lstat(path6.join(cwd, ".dev-flow", "active.json"));
       allow = false;
-      reason = "DEV_FLOW_WORKFLOW_STATE_UNREADABLE: Active workflow cannot be read safely; run dev_flow_doctor and recover if corrupt";
+      reason = "DEV_FLOW_WORKFLOW_STATE_UNREADABLE: \u65E0\u6CD5\u5B89\u5168\u8BFB\u53D6\u6D3B\u52A8\u5DE5\u4F5C\u6D41\uFF1B\u8BF7\u8FD0\u884C dev_flow_doctor\uFF0C\u635F\u574F\u65F6\u4F7F\u7528 recover \u6062\u590D";
     } catch (error) {
       if (error.code === "ENOENT") {
         allow = true;
         reason = void 0;
       } else {
         allow = false;
-        reason = "DEV_FLOW_WORKFLOW_STATE_UNREADABLE: Active workflow path cannot be inspected safely; run dev_flow_doctor";
+        reason = "DEV_FLOW_WORKFLOW_STATE_UNREADABLE: \u65E0\u6CD5\u5B89\u5168\u68C0\u67E5\u6D3B\u52A8\u5DE5\u4F5C\u6D41\u8DEF\u5F84\uFF1B\u8BF7\u8FD0\u884C dev_flow_doctor";
       }
     }
   }

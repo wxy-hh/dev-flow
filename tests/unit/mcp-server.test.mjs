@@ -36,7 +36,7 @@ function request(messages, cwd) {
 
 function requestWithElicitation(message, cwd, elicitationResult, captureRequests = false) {
   return new Promise((resolve, reject) => {
-    const child = spawn(process.execPath, [bundles.pathFor("mcp-server")], { cwd, stdio: ["pipe", "pipe", "pipe"], env: { ...process.env, DEV_FLOW_DISABLE_ATTENTION: "1" } });
+    const child = spawn(process.execPath, [bundles.pathFor("mcp-server")], { cwd, stdio: ["pipe", "pipe", "pipe"], env: { ...process.env, DEV_FLOW_DISABLE_ATTENTION: "1", DEV_FLOW_ELICITATION_FORM: "1" } });
     let stdout = "", stderr = "", settled = false;
     const requests = [];
     const finish = (value) => {
@@ -63,6 +63,41 @@ function requestWithElicitation(message, cwd, elicitationResult, captureRequests
     child.on("error", reject);
     child.on("close", (code) => {
       if (!settled) reject(new Error(stderr || `MCP elicitation stream ended before tools/call response (exit ${code ?? "unknown"})`));
+    });
+    child.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2025-06-18", capabilities: { elicitation: { form: {} } } } })}\n`);
+    child.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", id: 2, method: "tools/call", params: message })}\n`);
+  });
+}
+
+// 默认环境（未设置 DEV_FLOW_ELICITATION_FORM）下初始化并调用工具，收集请求流断言不触发 elicitation/create。
+function requestWithoutFormElicitation(message, cwd) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, [bundles.pathFor("mcp-server")], { cwd, stdio: ["pipe", "pipe", "pipe"], env: { ...process.env, DEV_FLOW_DISABLE_ATTENTION: "1" } });
+    let stdout = "", stderr = "", settled = false;
+    const requests = [];
+    const finish = (value) => {
+      if (settled) return;
+      settled = true;
+      resolve({ response: value, requests });
+    };
+    child.stdout.on("data", (chunk) => {
+      stdout += chunk;
+      const lines = stdout.split("\n");
+      stdout = lines.pop();
+      for (const line of lines.filter(Boolean)) {
+        const response = JSON.parse(line);
+        if (response.method === "elicitation/create") {
+          requests.push(response);
+        } else if (response.id === 2) {
+          child.stdin.end();
+          finish(response);
+        }
+      }
+    });
+    child.stderr.on("data", (chunk) => { stderr += chunk; });
+    child.on("error", reject);
+    child.on("close", (code) => {
+      if (!settled) reject(new Error(stderr || `MCP stream ended before tools/call response (exit ${code ?? "unknown"})`));
     });
     child.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2025-06-18", capabilities: { elicitation: { form: {} } } } })}\n`);
     child.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", id: 2, method: "tools/call", params: message })}\n`);
@@ -428,6 +463,26 @@ test("MCP source-bundle tests never change the checked-in dist", async () => {
   assert.deepEqual(distAfter, distBefore);
 });
 
+test("MCP dev_flow_switch_active returns a structured target state", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "dev-flow-mcp-switch-"));
+  try {
+    const responses = await request([
+      { jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "dev_flow_init_project", arguments: { config } } },
+      { jsonrpc: "2.0", id: 2, method: "tools/call", params: { name: "dev_flow_start", arguments: { featureId: "a", host: "claude", level: "XS", topology: "local" } } },
+      { jsonrpc: "2.0", id: 3, method: "tools/call", params: { name: "dev_flow_start", arguments: { featureId: "b", host: "codex", level: "XS", topology: "local", activation: "paused" } } },
+      { jsonrpc: "2.0", id: 4, method: "tools/call", params: { name: "dev_flow_switch_active", arguments: { fromFeatureId: "a", toFeatureId: "b", reason: "handoff" } } },
+    ], root);
+    assert.equal(responses[0].error, undefined);
+    assert.equal(responses[1].error, undefined);
+    assert.equal(responses[2].error, undefined);
+    const switched = responses[3].result;
+    assert.equal(typeof switched.content[0].text, "string");
+    assert.equal(switched.structuredContent.featureId, "b");
+    assert.equal(switched.structuredContent.lifecycle, "active");
+    assert.equal(switched.structuredContent.revision, 1);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
 test("MCP dev_flow_next returns the same enriched evidence as the core action", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "dev-flow-mcp-next-"));
   const config = {
@@ -458,6 +513,30 @@ test("MCP dev_flow_next returns the same enriched evidence as the core action", 
   } finally {
     await rm(root, { recursive: true, force: true });
   }
+});
+
+test("MCP defaults to pending text-token interaction when elicitation form is disabled", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "dev-flow-mcp-form-off-"));
+  try {
+    await store.initProject(root, config);
+    let state = await store.startFeature(root, {
+      featureId: "f", host: "codex", level: "M", topology: "local", execution: "standard", requirements: "missing-or-unclear",
+    });
+    state = await artifacts.scaffoldArtifact(root, "f", state.revision, "requirements");
+    const requirements = path.join(root, ".dev-flow", "features", "f", "需求文档.md");
+    await writeFile(requirements, (await readFile(requirements, "utf8")).replace(/^  grill_status: pending$/m, "  grill_status: complete"));
+    state = await registerTraceFixture({ root, featureId: "f", state, kind: "requirements" });
+    state = await checks.recordStep(root, "f", state.revision, "requirements", {});
+
+    const { response, requests } = await requestWithoutFormElicitation({
+      name: "dev_flow_present_gate",
+      arguments: { featureId: "f", expectedRevision: state.revision, gate: "requirement_confirmation", host: "codex" },
+    }, root);
+    assert.equal(requests.length, 0);
+    assert.equal(response.result.structuredContent.interactionOutcome, "pending");
+    assert.match(response.result.structuredContent.interaction.fallback.token, /^DF-/);
+    assert.ok(response.result.structuredContent.interaction.fallback.replies.some((item) => item.action === "confirm" && item.reply.includes("confirm")));
+  } finally { await rm(root, { recursive: true, force: true }); }
 });
 
 test("MCP nests a native confirmation control and records its structured user decision", async () => {
@@ -681,7 +760,8 @@ test("MCP rollback gate returns its full preview and execution follows the confi
     }, root, { action: "accept", content: { action: "confirm" } }, true);
     assert.equal(gateResult.requests.length, 1);
     assert.match(gateResult.requests[0].params.message, /src\/two\.ts/);
-    assert.match(gateResult.requests[0].params.message, /unit:/);
+    assert.match(gateResult.requests[0].params.message, /回撤验证/);
+    assert.doesNotMatch(gateResult.requests[0].params.message, /RU-|CP-/);
     const gate = gateResult.response;
     assert.ok(gate.result, JSON.stringify(gate));
     const presented = gate.result.structuredContent;

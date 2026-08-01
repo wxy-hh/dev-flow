@@ -1,6 +1,7 @@
 import path from "node:path";
+import { gateBasisArtifacts } from "../core/gate-basis.js";
 import { classifyGitCommand } from "../core/git-policy.js";
-import { readActive, readProjectConfig, readRecoveryTransaction, readState, type FeatureState } from "../core/state-store.js";
+import { readActive, readFeatureEvents, readProjectConfig, readRecoveryTransaction, readState, type FeatureState } from "../core/state-store.js";
 import { readTraceability } from "../core/traceability-store.js";
 import { readReviewLedger } from "../core/review-store.js";
 import { implementationUnitWriteBlock } from "../core/implementation-units.js";
@@ -35,6 +36,9 @@ export function formatPreToolBlock(block: PreToolBlock): string {
 
 const directWriteTools = new Set(["write", "edit", "multiedit", "applypatch", "apply_patch", "patch"]);
 const controlFileNames = new Set(["state.json", "active.json", "project.json", "events.jsonl", "status.md", "状态文档.md", "recovery-transaction.json", "recovery-events.jsonl"]);
+
+/** 拦截消息中的 scratch 引导：临时验证文件放到 protectedRoots 之外的 scratch/，不触发 checkpoint。 */
+const scratchHint = "；临时验证文件请放入 scratch/ 目录";
 
 function toolName(event: HookEvent): string {
   return String(event.tool_name ?? "").toLowerCase();
@@ -157,6 +161,167 @@ function commandWords(segment: string, command: string): string[] | undefined {
   return shellWords(match[1]);
 }
 
+/**
+ * Deliberately narrow heredoc support. `cat` has no output-file option and
+ * `tee` targets are parsed below; broader Unix-filter lists are unsafe because
+ * commands such as `sort -o`, `diff --output`, and `iconv -o` can write files.
+ */
+const heredocDataConsumers = new Set(["cat", "tee"]);
+
+type HeredocDelimiter = { value: string; consumed: number };
+
+/**
+ * Bash quote removal for a heredoc delimiter word: strips matching quotes and
+ * backslash escapes (`<<'END MARK'` → `END MARK`, `<<E\OF` → `EOF`). Inside
+ * double quotes a backslash is special only before $, `, ", \\, or newline.
+ * Returns undefined when the word cannot be resolved statically (unclosed
+ * quotes, trailing backslash, parameter/command expansion), which must fail
+ * closed.
+ */
+function heredocDelimiter(rest: string): HeredocDelimiter | undefined {
+  let word = "";
+  let index = 0;
+  while (index < rest.length && /\s/.test(rest[index])) index += 1;
+  while (index < rest.length) {
+    const char = rest[index];
+    if (char === "'") {
+      const end = rest.indexOf("'", index + 1);
+      if (end < 0) return undefined;
+      word += rest.slice(index + 1, end);
+      index = end + 1;
+      continue;
+    }
+    if (char === '"') {
+      let cursor = index + 1;
+      let inner = "";
+      let closed = false;
+      while (cursor < rest.length) {
+        const current = rest[cursor];
+        if (current === '"') { closed = true; break; }
+        if (current === "\\" && cursor + 1 < rest.length) {
+          const next = rest[cursor + 1];
+          if (["$", "`", "\"", "\\"].includes(next)) {
+            inner += next;
+            cursor += 2;
+            continue;
+          }
+          inner += `\\${next}`;
+          cursor += 2;
+          continue;
+        }
+        inner += current;
+        cursor += 1;
+      }
+      if (!closed) return undefined;
+      word += inner;
+      index = cursor + 1;
+      continue;
+    }
+    if (char === "\\") {
+      if (index + 1 >= rest.length) return undefined;
+      word += rest[index + 1];
+      index += 2;
+      continue;
+    }
+    if (/\s/.test(char)) break;
+    if (char === "$" || char === "`") return undefined;
+    word += char;
+    index += 1;
+  }
+  return word ? { value: word, consumed: index } : undefined;
+}
+
+/**
+ * Finds the first out-of-quotes heredoc opener on a line, skipping arithmetic
+ * substitutions `$(( ... ))` / `(( ... ))` and herestrings `<<<`. An
+ * unparsable delimiter still reports an opener so the caller can fail closed.
+ */
+function findHeredocOpener(line: string): {
+  delimiter: string | undefined;
+  openerIndex: number;
+  openerEndIndex: number;
+  stripTabs: boolean;
+} | undefined {
+  let quote: "'" | '"' | undefined;
+  for (let cursor = 0; cursor < line.length - 1; cursor += 1) {
+    const char = line[cursor];
+    if (quote) {
+      if (char === quote) quote = undefined;
+      continue;
+    }
+    if (char === "'" || char === '"') { quote = char; continue; }
+    if ((char === "$" && line[cursor + 1] === "(" && line[cursor + 2] === "(")
+      || (char === "(" && line[cursor + 1] === "(")) {
+      let depth = 1;
+      cursor += char === "$" ? 2 : 1;
+      while (depth > 0 && cursor + 1 < line.length) {
+        cursor += 1;
+        if (line[cursor] === "(" && line[cursor + 1] === "(") { depth += 1; cursor += 1; }
+        else if (line[cursor] === ")" && line[cursor + 1] === ")") { depth -= 1; cursor += 1; }
+      }
+      continue;
+    }
+    if (char !== "<" || line[cursor + 1] !== "<" || line[cursor + 2] === "<") continue;
+    let restStart = cursor + 2;
+    const stripTabs = line[restStart] === "-";
+    if (stripTabs) restStart += 1;
+    const parsed = heredocDelimiter(line.slice(restStart));
+    return {
+      delimiter: parsed?.value,
+      openerIndex: cursor,
+      openerEndIndex: parsed ? restStart + parsed.consumed : line.length,
+      stripTabs,
+    };
+  }
+  return undefined;
+}
+
+/** The command word that owns a heredoc opener (the last segment before the `<<`). */
+function heredocConsumer(line: string, openerIndex: number): string | undefined {
+  const lastSegment = line.slice(0, openerIndex).split(/[;&|]\s*/).at(-1) ?? "";
+  const withoutEnv = lastSegment.replace(/^(?:\w+=\S+\s+)+/, "");
+  const command = withoutEnv.match(/^\s*(?:command\s+)?([A-Za-z0-9_./-]+)/)?.[1];
+  return command ? path.posix.basename(command) : undefined;
+}
+
+/**
+ * Masks heredoc bodies so their lines cannot be misread as write syntax or
+ * redirect targets. A body is only masked when the owning command is a known
+ * data consumer, the delimiter resolves statically, and the terminator line is
+ * found; any other situation is unsafe and the caller must fail closed. The
+ * opener line keeps its redirects so `cat > target <<'EOF'` still resolves the
+ * real target.
+ */
+function maskHeredocBodies(command: string): { masked: string; unsafe: boolean } {
+  const lines = command.split("\n");
+  const masked = [...lines];
+  let index = 0;
+  while (index < lines.length) {
+    const opener = findHeredocOpener(lines[index]);
+    if (!opener) { index += 1; continue; }
+    const consumer = heredocConsumer(lines[index], opener.openerIndex);
+    if (opener.delimiter === undefined || !consumer || !heredocDataConsumers.has(consumer)) {
+      return { masked: command, unsafe: true };
+    }
+    masked[index] = `${lines[index].slice(0, opener.openerIndex)}${lines[index].slice(opener.openerEndIndex)}`;
+    // Multiple heredocs on one command have interleaved body ordering. Keep the
+    // supported grammar small and fail closed instead of guessing.
+    if (findHeredocOpener(masked[index])) return { masked: command, unsafe: true };
+    let terminatorIndex = -1;
+    for (let candidate = index + 1; candidate < lines.length; candidate += 1) {
+      const candidateLine = opener.stripTabs ? lines[candidate].replace(/^\t+/, "") : lines[candidate];
+      if (candidateLine === opener.delimiter || candidateLine === `${opener.delimiter}\r`) {
+        terminatorIndex = candidate;
+        break;
+      }
+    }
+    if (terminatorIndex < 0) return { masked: command, unsafe: true };
+    for (let body = index + 1; body < terminatorIndex; body += 1) masked[body] = "";
+    index = terminatorIndex + 1;
+  }
+  return { masked: masked.join("\n"), unsafe: false };
+}
+
 /** Parse bash write targets from supported deterministic forms only. */
 export function analyzeBashWriteTargets(command: string): WriteTargetAnalysis {
   const trimmed = command.trim();
@@ -164,21 +329,30 @@ export function analyzeBashWriteTargets(command: string): WriteTargetAnalysis {
   if (/\b(?:sh|bash|zsh)\s+-c\b/.test(trimmed) || /\bxargs\b/.test(trimmed) || /\bapply_patch\b/.test(trimmed)) {
     return { kind: "unresolved", syntax: "unsupported-shell-wrapper" };
   }
-  if (!writeSyntaxHint.test(trimmed)) return { kind: "read-only" };
+  const { masked, unsafe } = maskHeredocBodies(trimmed);
+  // Only proven data heredocs are masked; anything else (unknown consumer,
+  // unresolvable delimiter, unterminated body) fails closed.
+  if (unsafe) return { kind: "unresolved", syntax: "heredoc-unresolved" };
+  if (!writeSyntaxHint.test(masked)) return { kind: "read-only" };
 
-  const segments = trimmed.split(/(?:&&|\|\||;|\n)/).map((part) => part.trim()).filter(Boolean);
+  const segments = masked.split(/(?:&&|\|\||;|\n)/).map((part) => part.trim()).filter(Boolean);
   const targets: string[] = [];
+  let sawDevNull = false;
+  const collect = (token: string) => {
+    if (token === "/dev/null") { sawDevNull = true; return; }
+    targets.push(token);
+  };
   for (const segment of segments) {
     // Drop leading env assignments: FOO=bar cmd
     const withoutEnv = segment.replace(/^(?:\w+=\S+\s+)+/, "");
     if (/\b(?:python|node|ruby|perl)\b/.test(withoutEnv) && !/\bsed\s+-i\b/.test(withoutEnv) && !/\bperl\s+-pi\b/.test(withoutEnv)) {
       if (writeSyntaxHint.test(withoutEnv)) return { kind: "unresolved", syntax: "interpreter-write" };
     }
-    const redirectMatches = [...withoutEnv.matchAll(/(?:^|[^0-9])>{1,2}\s*([^\s|&;]+)/g)];
+    const redirectMatches = [...withoutEnv.matchAll(/(?:^|[^0-9&])>{1,2}\s*([^\s|&;]+)/g)];
     for (const match of redirectMatches) {
       const token = stripQuotes(match[1]);
       if (hasUnresolvedExpansion(token)) return { kind: "unresolved", syntax: "redirect-expansion" };
-      targets.push(token);
+      collect(token);
     }
     const teeIndex = withoutEnv.search(/\btee\b/);
     if (teeIndex >= 0) {
@@ -186,29 +360,29 @@ export function analyzeBashWriteTargets(command: string): WriteTargetAnalysis {
       const words = commandWords(withoutEnv.slice(teeIndex), "tee");
       const paths = words && collectPathOperands(words, 0);
       if (!paths) return { kind: "unresolved", syntax: "tee-args" };
-      targets.push(...paths);
+      for (const path of paths) collect(path);
     }
     const simple = withoutEnv.match(/^(touch|mkdir|rm)\b/);
     if (simple) {
       const words = commandWords(withoutEnv, simple[1]);
       const paths = words && collectPathOperands(words, 0);
       if (!paths) return { kind: "unresolved", syntax: "simple-args" };
-      targets.push(...paths);
+      for (const path of paths) collect(path);
     }
     const moveCopy = withoutEnv.match(/^(mv|cp)\b/);
     if (moveCopy) {
       const words = commandWords(withoutEnv, moveCopy[1]);
       const paths = words && collectPathOperands(words, 0);
       if (!paths || paths.length < 2) return { kind: "unresolved", syntax: "mv-cp-args" };
-      if (moveCopy[1] === "mv") targets.push(...paths);
-      else targets.push(paths.at(-1)!);
+      if (moveCopy[1] === "mv") for (const path of paths) collect(path);
+      else collect(paths.at(-1)!);
     }
     const sed = withoutEnv.match(/^sed\s+(-i\S*)\s+([\s\S]*)$/);
     if (sed) {
       const words = shellWords(sed[2]);
       const paths = words && collectPathOperands(words, 1);
       if (!paths) return { kind: "unresolved", syntax: "sed-args" };
-      targets.push(...paths);
+      for (const path of paths) collect(path);
     }
     const perl = withoutEnv.match(/^perl\s+(-pi\S*)\s+([\s\S]*)$/);
     if (perl) {
@@ -216,11 +390,16 @@ export function analyzeBashWriteTargets(command: string): WriteTargetAnalysis {
       const firstPath = words?.[0] === "-e" ? 2 : 0;
       const paths = words && collectPathOperands(words, firstPath);
       if (!paths) return { kind: "unresolved", syntax: "perl-args" };
-      targets.push(...paths);
+      for (const path of paths) collect(path);
     }
   }
 
-  if (targets.length === 0) return { kind: "unresolved", syntax: "write-syntax-no-target" };
+  if (targets.length === 0) {
+    // All would-be targets were /dev/null, or every remaining write hint lived
+    // inside a masked heredoc body: nothing writes to the repository.
+    if (sawDevNull || masked !== trimmed) return { kind: "read-only" };
+    return { kind: "unresolved", syntax: "write-syntax-no-target" };
+  }
   return { kind: "resolved", targets };
 }
 
@@ -312,12 +491,15 @@ function classifyTarget(
 ): PreToolBlock | undefined {
   const relative = projectRelative(root, target);
   if (!relative) {
-    return { code: "DEV_FLOW_WRITE_TARGET_UNRESOLVED", recoveryHint: "Use a project-relative path that resolves inside the repository" };
+    return {
+      code: "DEV_FLOW_WRITE_TARGET_UNRESOLVED",
+      recoveryHint: "请使用能解析到仓库内的项目相对路径（验证日志请写入项目内，例如 vitest.log）",
+    };
   }
   if (isControlPath(relative)) {
     return {
       code: "DEV_FLOW_STATE_MUTATION_FORBIDDEN",
-      recoveryHint: "Workflow state is MCP-only; edit registered artifacts or use doctor/recovery for corrupt state",
+      recoveryHint: "工作流状态仅能通过 MCP 变更；请编辑已登记资产，或对损坏状态使用 doctor/recovery",
     };
   }
   if (isDevFlowPath(relative)) {
@@ -326,19 +508,19 @@ function classifyTarget(
     if (relative.startsWith(`.dev-flow/features/${workflow.featureId}/`) && relative.endsWith(".md")) {
       return {
         code: "DEV_FLOW_ARTIFACT_NOT_REGISTERED",
-        recoveryHint: "Scaffold the artifact via MCP first, then edit and record it",
+        recoveryHint: "请先通过 MCP scaffold 该资产，编辑后登记",
       };
     }
     return {
       code: "DEV_FLOW_STATE_MUTATION_FORBIDDEN",
-      recoveryHint: "Only registered non-status artifacts for the active feature may be edited",
+      recoveryHint: "仅可编辑 active feature 已登记的非 status Markdown 资产",
     };
   }
   const needsApproval = ["risk-minimal", "standard-m", "light-l", "standard-l"].includes(workflow.route ?? "");
   if (needsApproval && !workflow.approvalConfirmed && isProtected(root, target, workflow.protectedRoots)) {
     return {
       code: "DEV_FLOW_IMPLEMENTATION_APPROVAL_REQUIRED",
-      recoveryHint: "Target is under a protected root; finish the route and wait for implementation approval",
+      recoveryHint: `目标位于受保护根目录；请完成路线步骤并等待实现批准（计划依据变更会使批准作废，需重新确认）${scratchHint}`,
     };
   }
   if (workflow.state && isProtected(root, target, workflow.protectedRoots)) {
@@ -348,24 +530,64 @@ function classifyTarget(
     if (block?.code === "IMPLEMENTATION_UNIT_REQUIRED") {
       return {
         code: "DEV_FLOW_IMPLEMENTATION_UNIT_REQUIRED",
-        recoveryHint: "Begin the next rollback unit via dev_flow_begin_implementation_unit before writing protected files",
+        recoveryHint: "请先通过 dev_flow_begin_implementation_unit 开始下一个回撤单元，再写 protected 文件",
       };
     }
     if (block?.code === "IMPLEMENTATION_UNIT_OUT_OF_SCOPE") {
       const scope = (block.details.fileScope as string[] | undefined) ?? [];
       return {
         code: "DEV_FLOW_IMPLEMENTATION_UNIT_OUT_OF_SCOPE",
-        recoveryHint: `Active rollback unit ${block.details.unitId} covers only: ${scope.join(", ") || "(no current scope)"}`,
+        recoveryHint: `当前回撤单元 ${block.details.unitId} 仅覆盖：${scope.join(", ") || "(当前无 scope)"}；移动/重命名需把源与目标路径都加入 file_scope 并重登记；临时验证文件请放 scratch/`,
       };
     }
   }
   return undefined;
 }
 
+/** 从事件账本推导实现批准是否因计划依据变更而作废（返回最近作废的资产 kind）。 */
+async function revokedImplementationApprovalHint(root: string, featureId: string): Promise<string | undefined> {
+  const events = await readFeatureEvents(root, featureId);
+  let lastConfirmedIndex = -1;
+  for (let index = events.length - 1; index >= 0; index--) {
+    const event = events[index];
+    const data = event.data as { gate?: string };
+    if ((event.type === "gate-confirmed" || event.type === "gate-interaction-resolved") && data.gate === "implementation_approval") {
+      lastConfirmedIndex = index;
+      break;
+    }
+  }
+  if (lastConfirmedIndex < 0) return undefined;
+  const basis = gateBasisArtifacts.implementation_approval;
+  for (let index = events.length - 1; index >= lastConfirmedIndex; index--) {
+    const event = events[index];
+    const data = event.data as { kind?: string; invalidationReason?: unknown };
+    if ((event.type === "artifact-recorded" || event.type === "artifact-recorded-with-trace")
+      && data.kind !== undefined && basis.includes(data.kind)
+      && data.invalidationReason) {
+      return data.kind;
+    }
+  }
+  return undefined;
+}
+
+async function augmentApprovalBlock(
+  root: string,
+  workflow: ActiveWorkflow,
+  block: PreToolBlock,
+): Promise<PreToolBlock> {
+  if (block.code !== "DEV_FLOW_IMPLEMENTATION_APPROVAL_REQUIRED") return block;
+  const revokedKind = await revokedImplementationApprovalHint(root, workflow.featureId);
+  if (!revokedKind) return block;
+  return {
+    ...block,
+    recoveryHint: `计划依据（${revokedKind}）已在实现批准后变更，批准已作废；请先完成相关步骤并重新确认实现批准后再写 protected 文件${scratchHint}`,
+  };
+}
+
 function unreadableBlock(reason: string): PreToolBlock {
   return {
     code: "DEV_FLOW_WORKFLOW_STATE_UNREADABLE",
-    recoveryHint: `Active workflow cannot be read safely (${reason}); run dev_flow_doctor and recover if corrupt`,
+    recoveryHint: `无法安全读取活动工作流（${reason}）；请运行 dev_flow_doctor，损坏时使用 recover 恢复`,
   };
 }
 
@@ -421,7 +643,7 @@ export async function preToolBlock(root: string, event: HookEvent): Promise<PreT
   if (toolName(event) === "bash" && classifyGitCommand(command) === "write" && !workflow.logicComplete) {
     return {
       code: "DEV_FLOW_GIT_GUARD",
-      recoveryHint: "Feature is not logic-complete; finish verify, feature-check, and finalize before git writes",
+      recoveryHint: "功能尚未 logic-complete；请先完成 verify、feature-check 与 finalize 再进行 git 写入",
     };
   }
 
@@ -431,12 +653,12 @@ export async function preToolBlock(root: string, event: HookEvent): Promise<PreT
     if (analysis.kind === "unresolved") {
       return {
         code: "DEV_FLOW_WRITE_TARGET_UNRESOLVED",
-        recoveryHint: "Split into deterministic write commands or use MCP artifact tools; do not mix unresolved shell writes",
+        recoveryHint: "请拆分确定性的写命令或使用 MCP 资产工具；验证日志请写入项目内相对路径（例如 vitest.log），勿混用未解析的 shell 写入",
       };
     }
     for (const target of analysis.targets) {
       const block = classifyTarget(root, target, workflow);
-      if (block) return block;
+      if (block) return augmentApprovalBlock(root, workflow, block);
     }
     return undefined;
   }
@@ -445,12 +667,12 @@ export async function preToolBlock(root: string, event: HookEvent): Promise<PreT
   if (!targets.length) {
     return {
       code: "DEV_FLOW_IMPLEMENTATION_APPROVAL_REQUIRED",
-      recoveryHint: "Patch has no parseable targets; denied conservatively until implementation approval",
+      recoveryHint: "补丁无可解析目标；在实现批准前保守拒绝",
     };
   }
   for (const target of targets) {
     const block = classifyTarget(root, target, workflow);
-    if (block) return block;
+    if (block) return augmentApprovalBlock(root, workflow, block);
   }
   return undefined;
 }

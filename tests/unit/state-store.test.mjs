@@ -16,7 +16,10 @@ test("enforces one active feature, paused creation, switch, abandon and CAS", as
     await assert.rejects(() => store.startFeature(root, { level: "XS", topology: "local", host: "codex", featureId: "b" }), /ACTIVE_FEATURE_CONFLICT/);
     const paused = await store.startFeature(root, { level: "XS", topology: "local", host: "codex", featureId: "b", activation: "paused" });
     assert.equal(paused.lifecycle, "paused");
-    await store.switchActive(root, "a", "b", "handoff");
+    const switched = await store.switchActive(root, "a", "b", "handoff");
+    assert.equal(switched.featureId, "b");
+    assert.equal(switched.lifecycle, "active");
+    assert.equal(switched.revision, 1);
     assert.equal((await store.readState(root, "a")).lifecycle, "paused");
     const active = await store.readState(root, "b"); assert.equal(active.lifecycle, "active");
     await assert.rejects(() => store.mutate(root, "b", 0, "test", () => {}), /STATE_REVISION_CONFLICT/);

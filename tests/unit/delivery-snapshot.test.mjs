@@ -89,6 +89,40 @@ test("protected roots are canonicalized before implementation files are validate
   }
 });
 
+test("implementation registration accepts existing files and Git-tracked deletions", async () => {
+  const existingRoot = await createGitRoot("dev-flow-snapshot-existence-ok-");
+  try {
+    let state = await startXs(existingRoot);
+    state = await checks.recordStep(existingRoot, "f", state.revision, "implementation", { files: ["src/app.js"] });
+    assert.equal(state.steps.implementation.status, "satisfied");
+  } finally {
+    await rm(existingRoot, { recursive: true, force: true });
+  }
+
+  // 删除场景必须在首次（唯一一次）登记前删文件：已关闭的步骤无法再次登记。
+  const deletedRoot = await createGitRoot("dev-flow-snapshot-existence-rm-");
+  try {
+    let state = await startXs(deletedRoot);
+    await rm(path.join(deletedRoot, "src", "app.js"));
+    state = await checks.recordStep(deletedRoot, "f", state.revision, "implementation", { files: ["src/app.js"] });
+    assert.equal(state.steps.implementation.status, "satisfied");
+  } finally {
+    await rm(deletedRoot, { recursive: true, force: true });
+  }
+
+  const missingRoot = await createGitRoot("dev-flow-snapshot-existence-missing-");
+  try {
+    const state = await startXs(missingRoot);
+    await assert.rejects(
+      () => checks.recordStep(missingRoot, "f", state.revision, "implementation", { files: ["src/never-created.js"] }),
+      (error) => error.code === "INVALID_IMPLEMENTATION_FILE"
+        && /纯路径/.test(error.details.recoveryHint),
+    );
+  } finally {
+    await rm(missingRoot, { recursive: true, force: true });
+  }
+});
+
 test("implementation evidence accepts only normalized paths inside protected roots", async () => {
   const root = await createGitRoot("dev-flow-snapshot-paths-");
   try {

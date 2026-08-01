@@ -11,7 +11,7 @@
 - **1.7.0+** 原生 gate/grill 控件与一次性文本回退返回统一交互结果；审批依据更新会撤销旧批准；浏览器协助仅为非阻塞建议，money 行为命令仍强制；需要决策和成功完成时发送一次 best-effort 通知
 - **1.8.0+** grill 移除固定题数上限与 `grill_question_limit` 字段；grillme 先产出完整决策树清单供用户批准/合并/裁剪，每轮报告剩余，收敛由用户显式确认裁决；XS/S 等无需求澄清环节的路线收到 `missing-or-unclear` / `documented-unconfirmed` 时 `dev_flow_classify` 返回 warning
 - **1.9.0+** 「合并剩余」机器层加固：`dev_flow_request_grill_decision` 自动注入 `merge-remaining` 选项（原生选择或 fallback token），一次确认当前题与剩余全部问题；requirements/grillme 收尾规则强化「resolve 后立即推进下一题」
-- **1.9.0+** `dev_flow_record_artifact_with_trace` 原子登记 Trace source，`dev_flow_get_traceability` 只读查看 pointer/ledger/blocker；snapshot 与 state pointer 都是 MCP 控制文件，generated status 仅由 Core 更新，standard L 以 `dev_flow_status` 为准
+- **1.10.0+** `dev_flow_record_artifact_with_trace` 原子登记 Trace source，`dev_flow_get_traceability` 只读查看 pointer/ledger/blocker；snapshot 与 state pointer 都是 MCP 控制文件，generated status 仅由 Core 更新，standard L 以 `dev_flow_status` 为准
 - 技能 id 为短名（如 `task`、`plan`）；斜杠为 `/dev-flow:task`；description 保留 `df-*` / `dev-flow-*` 作匹配兼容  
 
 ## Windows 系统提醒

@@ -69,6 +69,35 @@ async function startMoneyRisk(root, projectConfig) {
   return checks.recordStep(root, "f", state.revision, "code_review", { reviewType: "code" });
 }
 
+test("implementation files must exist on disk and files accepts only plain paths", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "dev-flow-existence-"));
+  try {
+    // 只完成 locate，implementation 保持 pending，失败后可重新登记
+    await mkdir(path.join(root, "src"));
+    await writeFile(path.join(root, "src", "app.js"), "export const x = 1;\n");
+    await store.initProject(root, config);
+    let state = await store.startFeature(root, { featureId: "f", host: "codex", level: "XS", topology: "local" });
+    state = await checks.recordStep(root, "f", state.revision, "locate", {});
+    assert.equal(state.steps.implementation, undefined);
+    await assert.rejects(
+      () => checks.recordStep(root, "f", state.revision, "implementation", { files: ["src/app.js (新增)"] }),
+      (error) => error.code === "INVALID_IMPLEMENTATION_FILE"
+        && /纯路径/.test(error.details.recoveryHint),
+    );
+    const stateAfterDecorated = await store.readState(root, "f");
+    assert.equal(stateAfterDecorated.revision, state.revision);
+    assert.equal(stateAfterDecorated.steps.implementation, undefined);
+    await assert.rejects(
+      () => checks.recordStep(root, "f", state.revision, "implementation", { files: ["src/missing.js"] }),
+      (error) => error.code === "INVALID_IMPLEMENTATION_FILE",
+    );
+    state = await checks.recordStep(root, "f", state.revision, "implementation", { files: ["src/app.js"] });
+    assert.equal(state.steps.implementation.status, "satisfied");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("verification retains failed attempts and never inherits manual acceptance", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "dev-flow-verify-"));
   try {
