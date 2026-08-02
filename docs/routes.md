@@ -11,6 +11,20 @@
 | light L | 实施计划 → 实现 → 代码审查 → 验证 → 完成 | `实施计划.md` |
 | standard L | 需求对齐 → 实施计划（内嵌独立审查）→ 实现 → 代码审查 → 验证 → 完成 | `需求文档.md`、`实施计划.md` |
 
+## 默认义务与审查角色
+
+| 路线 | 默认义务 | 默认审查角色 |
+| --- | --- | --- |
+| XS / S | checkpoint | 无；风险事实可追加 review、verification、rollback 或 approval |
+| light M | checkpoint | 无；风险事实可追加 review |
+| standard M | approval、checkpoint、review | requirements-coverage、architecture-testability |
+| light L | approval、checkpoint、rollback | 无计划批次；planning 需提交 `rollback-strategy` 证据 |
+| standard L | approval、checkpoint、review、rollback | requirements-coverage、architecture-testability、rollback-operability |
+
+`workflowCapabilities` 表示 Core/宿主支持的能力，不等于当前路线已经满足的义务；实际是否阻塞以 `dev_flow_next` 的 `obligations` 为准。风险标签只基于用户需求和仓库事实追加义务，不使用业务案例名单分级。
+
+风险覆盖层不会创建第二条路线：Core 会在现有路线最合适的阶段返回 `risk-review`、安全边界、回滚或领域验证等证据要求；完成该阶段证据后，相关义务自动变为 `satisfied`。完成前如果仍有义务未满足，`dev_flow_finalize` 会返回 `OBLIGATIONS_INCOMPLETE`，并列出可恢复的义务清单。
+
 ## 事实分级与需求澄清
 
 分类依据必须包含 `scopeFacts`、`topologyFacts`、`uncertaintyFacts`、`riskFacts` 和 `decisionRefs`。能从仓库、文档、测试或工具查明的事实不得询问用户；只有用户拥有的边界、优先级和取舍才进入决策台账。任何阶段都可以按需调用 `grillme`，但不会因为调用过它而自动升级路线。
@@ -23,7 +37,8 @@
 - 控制文件仍由 Core 管理；未解析的影响标记为 `impact-unresolved`，不伪称越权。
 - 验证失败保留当前单元和失败尝试；有进展则自动修复，无进展或达到上限才等待用户。
 - 实际 diff 与计划不一致时生成 drift report；只有实质偏航、重大风险取舍或恢复路径耗尽才向用户确认。
+- 连续在同一工作区启动多个 feature 时，启动瞬间已存在的受保护目录脏文件仍归属前一 feature；如需串行开发，请先提交或隔离工作区。`dev_flow_finalize` 会以 `DELIVERY_FILE_PREEXISTING_DIRTY` 阻止把这类文件误纳入当前交付快照。
 
-内部的 review、Trace、checkpoint、rollback、feature-check 都是 Core 义务或只读投影，不再作为重复的用户路线步骤。v2 不迁移旧状态；doctor 会报告遗留状态并建议在 1.10 完成/放弃后重新开始。
+内部的 review、Trace、checkpoint、rollback、feature-check 都是 Core 义务或只读投影，不再作为重复的用户路线步骤。Standard 路线的单元依赖顺序由 Core 编排；模型不应把它扩展成第二条用户路线。v2 不迁移旧状态；doctor 会报告遗留状态并建议在 1.10 完成/放弃后重新开始。
 
 机器权威：`plugins/dev-flow/policy/contract.json`。运行 `npm test` 验证合同、单元、路线和跨宿主交接。

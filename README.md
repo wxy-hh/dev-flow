@@ -165,7 +165,7 @@ claude plugin list
 请用 Dev Flow 的 MCP 工具 dev_flow_init_project 初始化当前仓库：
 - 检测包管理器与常用脚本
 - 生成 .dev-flow/project.json
-- protected roots 设为业务源码目录（如 src）
+- protected roots 设为所有需要归属、指纹、checkpoint 与交付的 feature-owned 目录（例如 src、tests、配置或脚本目录；临时日志和构建输出不要加入）
 - enforcement 使用 strict
 - 登记 unit/lint 等验证命令（按本项目真实脚本填写）
 ```
@@ -178,6 +178,8 @@ claude plugin list
 ```
 
 未执行本步时，**不能** `dev_flow_start`。
+
+需要用户确认的 grill/approval 交互依赖宿主 hooks 捕获提示与回复事件；若宿主尚未信任或加载 hooks，Core 会拒绝无来源的确认，而不是绕过审计。请先按上面的宿主提示完成信任，再重试当前交互。
 
 #### 3. 自检
 

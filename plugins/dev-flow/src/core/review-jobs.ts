@@ -103,6 +103,16 @@ function currentBatch(ledger: ReviewLedger, batchId: string): ReviewBatch {
   return batch!;
 }
 
+/** Keep the review obligation in lock-step with the immutable batch ledger. */
+function satisfyCompletedReviewObligation(
+  obligations: FeatureState["obligations"],
+  batch: ReviewBatch,
+): FeatureState["obligations"] {
+  return batch.progress === "complete"
+    ? satisfyObligations(obligations, ["review"])
+    : obligations;
+}
+
 function cloneLedger(ledger: ReviewLedger, stateRevision: number, batches: ReviewBatch[]): ReviewLedger {
   return {
     ...ledger,
@@ -639,7 +649,10 @@ export async function submitReviewJob(
     const pointer = await writeReviewSnapshot(root, cloneLedger(ledger, nextStateRevision, batches));
     result = { batch: submitted.batch, idempotent: false };
     return {
-      mutate: (draft) => { draft.review = pointer; },
+      mutate: (draft) => {
+        draft.review = pointer;
+        draft.obligations = satisfyCompletedReviewObligation(draft.obligations, submitted.batch);
+      },
       eventData: {
         batchId,
         jobId,
@@ -792,9 +805,7 @@ export async function completeReviewSampling(
     return {
       mutate: (draft) => {
         draft.review = pointer;
-        if (submitted.batch.progress === "complete") {
-          draft.obligations = satisfyObligations(draft.obligations, ["review"]);
-        }
+        draft.obligations = satisfyCompletedReviewObligation(draft.obligations, submitted.batch);
       },
       eventData: { batchId, jobId, requestSha256: attempt.requestSha256, payloadSha256: submitted.payloadSha256 },
     };

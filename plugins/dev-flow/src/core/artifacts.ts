@@ -145,6 +145,12 @@ export async function recordArtifactWithTrace(
   let eventData: Record<string, unknown> = { kind: artifactKind };
   return mutatePrepared(root, id, expectedRevision, "artifact-recorded-with-trace", async (current, nextStateRevision) => {
     if (current.lifecycle !== "active") throw new DevFlowError("INVALID_LIFECYCLE", "only active features can register artifacts");
+    if (!traceEnforcementRequired(current.route, current.workflowCapabilities)) {
+      throw new DevFlowError("TRACE_NOT_ENFORCED", `${artifactKind} does not use Trace registration on ${current.route}`, {
+        route: current.route,
+        recoveryHint: "当前路线不强制 Trace；请改用 dev_flow_record_artifact 登记该文档",
+      });
+    }
     assertManualRegistrationAllowed(current, artifactKind, true);
     const artifact = current.artifacts[artifactKind];
     if (!artifact) throw new DevFlowError("MISSING_REQUIRED_ARTIFACT", artifactKind);

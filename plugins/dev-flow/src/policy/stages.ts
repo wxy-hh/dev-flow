@@ -13,12 +13,31 @@ export function stagesForRoute(route: RouteId): readonly string[] {
   return routeStages[route];
 }
 
+/** Derive the user-visible stage from lifecycle and route evidence. */
+export function effectiveStage(state: {
+  route?: RouteId;
+  mode?: "intake" | "routed";
+  currentStage?: string;
+  lifecycle?: string;
+  steps?: Record<string, { status?: string } | undefined>;
+}): string {
+  if (state.mode === "intake" || !state.route) return "intake";
+  if (state.lifecycle === "finalized") return "complete";
+  const stages = stagesForRoute(state.route);
+  if (state.steps) {
+    const pending = stages.find((stage) => state.steps?.[stage]?.status !== "satisfied");
+    if (pending) return pending;
+  }
+  return state.currentStage ?? stages[0];
+}
+
 export function deriveStageCapabilities(state: {
   route?: RouteId;
   mode?: "intake" | "routed";
   currentStage?: string;
   obligations?: ClassificationObligation[];
   lifecycle?: string;
+  steps?: Record<string, { status?: string } | undefined>;
 }): StageCapabilityView {
   if (state.mode === "intake" || !state.route) {
     return {
@@ -29,8 +48,17 @@ export function deriveStageCapabilities(state: {
       obligations: [],
     };
   }
-  const stage = state.currentStage ?? stagesForRoute(state.route)[0];
+  const stage = effectiveStage(state);
   const obligations = (state.obligations ?? []).map(({ id, kind, status, reason }) => ({ id, kind, status, reason }));
+  if (stage === "complete") {
+    return {
+      stage,
+      activity: "complete",
+      allowedActions: ["read", "refresh-status"],
+      completionCriteria: ["feature-finalized"],
+      obligations,
+    };
+  }
   const allowedActions = stage === "requirements_alignment"
     ? ["read", "clarify-requirements", "record-decision", "record-trace"]
     : stage === "planning"

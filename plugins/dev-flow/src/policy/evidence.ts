@@ -26,6 +26,7 @@ export function requiredEvidenceForStep(
     const effectiveRoute = routeDefinitionForFeature(route, workflowCapabilities);
     if (effectiveRoute.generatedArtifacts?.includes("plan-review")) required.fields.reviewBatch = true;
     else required.fields.reviewType = "plan";
+    if (route === "light-l") addChecks(required.checks, ["rollback-strategy"]);
   }
   if (step === "code_review") required.fields.reviewType = "code";
 
@@ -33,9 +34,22 @@ export function requiredEvidenceForStep(
     required.fields.reviewDepth = "full";
   }
 
+  // Risk overlays use one explicit evidence check at the first review-capable
+  // point. This is a contract obligation, not another user-visible route.
+  const riskReviewTarget = orderedSteps.includes("code_review")
+    ? "code_review"
+    : orderedSteps.includes("planning")
+      ? "planning"
+      : orderedSteps.includes("verification") ? "verification" : undefined;
+  if (riskReviewTarget === step && riskLabels.length) addChecks(required.checks, ["risk-review"]);
+
   if (risk.checks.some((check) => check.includes("security"))) {
-    const target = orderedSteps.includes("code_review") ? "code_review" : "planning";
-    if (step === target) addChecks(required.checks, ["security"]);
+    const target = orderedSteps.includes("code_review")
+      ? "code_review"
+      : orderedSteps.includes("planning")
+        ? "planning"
+        : orderedSteps.includes("verification") ? "verification" : undefined;
+    if (step === target) addChecks(required.checks, risk.checks.filter((check) => check.includes("security")));
   }
 
   const rollbackChecks = risk.checks.filter((check) => check === "rollback" || check === "full-rollback");

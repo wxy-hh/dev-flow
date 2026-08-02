@@ -12,6 +12,7 @@ import type { VerificationCommand } from "./project-config.js";
 import { assertCurrentStep, currentOpenStep } from "./step-order.js";
 import { recordRepairAttempt, startRepairLoop, markRepairCompleted } from "./repair-loop.js";
 import { satisfyObligations } from "../policy/obligations.js";
+import { reviewEnforcementRequired } from "../policy/contract.js";
 
 const run = promisify(execFile);
 
@@ -285,6 +286,15 @@ export async function runVerification(
       };
       if (state.repair) state.repair = markRepairCompleted(state.repair);
       state.obligations = satisfyObligations(state.obligations, ["verification"]);
+      if (state.classification.riskLabels.length && !reviewEnforcementRequired(state.route, state.workflowCapabilities)) {
+        state.obligations = satisfyObligations(state.obligations, ["review"]);
+      }
+      if (state.classification.riskLabels.includes("irreversible_consequence")) {
+        state.obligations = satisfyObligations(state.obligations, ["rollback"]);
+      }
+      // Keep the persisted cache aligned with the route-derived public stage.
+      // The steps remain the source of truth for ordering.
+      state.currentStage = "finalize";
     } else {
       const signature = `${exitCode}:${createHash("sha256").update(output.join("\n")).digest("hex").slice(0, 16)}`;
       state.repair = recordRepairAttempt(state.repair ?? startRepairLoop(), signature, output.slice(-3));

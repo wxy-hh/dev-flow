@@ -145,20 +145,6 @@ export async function nextAction(root: string, id: string): Promise<NextAction> 
   }
   const action = deriveNext(toDerivedState(state, await verificationIsStale(root, state)));
 
-  // A rollback can stale the review batch while planning evidence remains
-  // satisfied and implementation becomes the derived route step. Review is
-  // still a prerequisite of beginning a replacement unit, so derive its
-  // recovery action before exposing the implementation lifecycle.
-  if (action.kind === "run-step" && (action.step === "planning" || action.step === "implementation")) {
-    const reviewAction = await reviewPlanAction(root, state);
-    if (reviewAction) return reviewAction;
-    if (action.step === "planning") {
-      // A complete ledger is necessary but not sufficient: the generated
-      // projection is a registered artifact and must still be readable/current.
-      await assertCurrentReviewProjection(root, state);
-    }
-  }
-
   if (action.kind === "run-step" || action.kind === "present-human-gate") {
     const definition = routeDefinitionForFeature(state.route, state.workflowCapabilities);
     const requiredNow = [
@@ -167,6 +153,21 @@ export async function nextAction(root: string, id: string): Promise<NextAction> 
     ];
     const missing = requiredNow.find((artifact) => !state.artifacts[artifact]);
     if (missing) return { kind: "scaffold-artifact", step: missing };
+  }
+
+  // A rollback can stale the review batch while planning evidence remains
+  // satisfied and implementation becomes the derived route step. Review is
+  // still a prerequisite of beginning a replacement unit. Artifact
+  // scaffolding must happen first so the immutable review basis always
+  // includes the current implementation plan.
+  if (action.kind === "run-step" && (action.step === "planning" || action.step === "implementation")) {
+    const reviewAction = await reviewPlanAction(root, state);
+    if (reviewAction) return reviewAction;
+    if (action.step === "planning") {
+      // A complete ledger is necessary but not sufficient: the generated
+      // projection is a registered artifact and must still be readable/current.
+      await assertCurrentReviewProjection(root, state);
+    }
   }
 
   // Check trace gate before unit lifecycle derivation — corrupted or stale

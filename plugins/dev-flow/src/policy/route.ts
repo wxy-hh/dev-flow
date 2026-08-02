@@ -116,19 +116,14 @@ export function selectRoute(input: ClassificationInput): ReturnType<typeof selec
 }
 
 export function deriveRiskRequirements(riskLabels: RiskLabel[]): DerivedRiskRequirements {
-  const basis: ClassificationBasis = {
-    scopeFacts: ["derived from classification facts"],
-    topologyFacts: ["derived from classification facts"],
-    uncertaintyFacts: [],
-    riskFacts: Object.fromEntries(riskLabels.map((label) => [label, ["derived from classification facts"]])) as Partial<Record<RiskLabel, string[]>>,
-    decisionRefs: [],
-  };
-  const obligations = deriveObligations("xs", basis);
   const checks = new Set<string>();
   const verification = new Set<DerivedRiskRequirements["verification"][number]>();
-  for (const obligation of obligations) {
-    if (obligation.kind === "review" || obligation.kind === "rollback") checks.add(obligation.reason);
-    for (const kind of obligation.verificationKinds ?? []) if (kind !== "targeted") verification.add(kind);
+  for (const label of riskLabels) {
+    const enhancement = contract.riskEnhancements[label];
+    if (!enhancement) continue;
+    checks.add("risk-review");
+    for (const check of enhancement.checks) checks.add(check);
+    verification.add(enhancement.verification);
   }
   return { checks: [...checks].sort(), verification: [...verification].sort() };
 }

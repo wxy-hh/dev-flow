@@ -22,17 +22,20 @@ function frontMatter(context: ArtifactTemplateContext, kind: string, grillStatus
 
 function requirementsTemplate(context: ArtifactTemplateContext): string {
   const grillStatus = context.requirementsState === "provided-confirmed" ? "not_required" : "pending";
-  return `${frontMatter(context, "requirements", grillStatus)}# 需求\n\n## 范围\n\n## 目标\n\n## 非目标\n\n## 验收条件\n\n<!-- dev-flow:id=REQ-001 kind=requirement -->\n### REQ-001：需求\n\n- 描述：\n\n<!-- dev-flow:id=AC-001 kind=acceptance-criterion -->\n#### AC-001：验收条件（parent: REQ-001）\n\n- 验收条件：\n\n## 决策记录\n\n| ID | 问题 | 决策 | 来源 | 影响 |\n| --- | --- | --- | --- | --- |\n\n## 开放问题\n\n- 无\n`;
+  const grillTransition = grillStatus === "pending"
+    ? "<!-- grill 状态转换：pending → in_progress 时，在 front matter 的 dev_flow 下添加 grill_question_id: G-001 与 grill_response_hint: \"等待用户回答\"；完成后将状态改为 complete 并删除这两个字段。 -->\n\n"
+    : "";
+  return `${frontMatter(context, "requirements", grillStatus)}${grillTransition}# 需求\n\n## 范围\n\n## 目标\n\n## 非目标\n\n## 验收条件\n\n<!-- dev-flow:id=REQ-001 kind=requirement -->\n### REQ-001：需求\n\n- 描述：\n\n<!-- dev-flow:id=AC-001 kind=acceptance-criterion -->\n#### AC-001：验收条件（parent: REQ-001）\n\n- 验收条件：\n\n## 决策记录\n\n| ID | 问题 | 决策 | 来源 | 影响 |\n| --- | --- | --- | --- | --- |\n\n## 开放问题\n\n- 无\n`;
 }
 
 function implementationPlanTemplate(context: ArtifactTemplateContext): string {
   const rollback = ["standard-m", "standard-l"].includes(context.route)
-    ? "\n<!-- dev-flow:id=RU-001 kind=rollback -->\n### RU-001：回撤单元\n\n- tasks: TASK-001\n- depends_on: []\n- file_scope:\n- covers: REQ-001\n- forward_verification: unit\n- rollback_verification: unit\n"
+    ? "\n<!-- dev-flow:id=RU-001 kind=rollback -->\n### RU-001：回撤单元\n\n- tasks: [TASK-001]\n- depends_on: []\n- file_scope: []\n- covers: [REQ-001]\n- forward_verification: [unit]\n- rollback_verification: [unit]\n"
     : "";
   const test = ["standard-m", "standard-l"].includes(context.route)
     ? "\n<!-- dev-flow:id=TEST-001 kind=test -->\n### TEST-001：验证场景（verifies: AC-001）\n\n- 验证方法：\n"
     : "";
-  return `${frontMatter(context, "implementation-plan")}# 实现计划\n\n<!-- dev-flow:id=TASK-001 kind=task -->\n### TASK-001：实现任务\n\n- covers: REQ-001\n- rollback_unit: RU-001\n${test}${rollback}`;
+  return `${frontMatter(context, "implementation-plan")}# 实现计划\n\n<!-- dev-flow:id=TASK-001 kind=task -->\n### TASK-001：实现任务\n\n- covers: [REQ-001]\n- rollback_unit: RU-001\n${test}${rollback}`;
 }
 
 function coverageMatrixTemplate(context: ArtifactTemplateContext): string {
@@ -40,7 +43,7 @@ function coverageMatrixTemplate(context: ArtifactTemplateContext): string {
 }
 
 function rollbackUnitsTemplate(context: ArtifactTemplateContext): string {
-  return `${frontMatter(context, "rollback-units")}# 回撤单元\n\n<!-- dev-flow:id=RU-001 kind=rollback -->\n### RU-001：回撤单元\n\n- tasks: TASK-001\n- depends_on: []\n- file_scope:\n- covers: REQ-001\n- forward_verification: unit\n- rollback_verification: unit\n`;
+  return `${frontMatter(context, "rollback-units")}# 回撤单元\n\n<!-- dev-flow:id=RU-001 kind=rollback -->\n### RU-001：回撤单元\n\n- tasks: [TASK-001]\n- depends_on: []\n- file_scope: []\n- covers: [REQ-001]\n- forward_verification: [unit]\n- rollback_verification: [unit]\n`;
 }
 
 export function renderArtifactTemplate(

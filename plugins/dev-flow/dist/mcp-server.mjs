@@ -1,4 +1,4 @@
-/* dev-flow 2.0.0; built from source, deterministic build */
+/* dev-flow 2.0.1; built from source, deterministic build */
 
 // plugins/dev-flow/src/mcp/server.ts
 import readline from "node:readline";
@@ -189,7 +189,8 @@ function frontMatter(context, kind, grillStatus) {
 }
 function requirementsTemplate(context) {
   const grillStatus = context.requirementsState === "provided-confirmed" ? "not_required" : "pending";
-  return `${frontMatter(context, "requirements", grillStatus)}# \u9700\u6C42
+  const grillTransition = grillStatus === "pending" ? '<!-- grill \u72B6\u6001\u8F6C\u6362\uFF1Apending \u2192 in_progress \u65F6\uFF0C\u5728 front matter \u7684 dev_flow \u4E0B\u6DFB\u52A0 grill_question_id: G-001 \u4E0E grill_response_hint: "\u7B49\u5F85\u7528\u6237\u56DE\u7B54"\uFF1B\u5B8C\u6210\u540E\u5C06\u72B6\u6001\u6539\u4E3A complete \u5E76\u5220\u9664\u8FD9\u4E24\u4E2A\u5B57\u6BB5\u3002 -->\n\n' : "";
+  return `${frontMatter(context, "requirements", grillStatus)}${grillTransition}# \u9700\u6C42
 
 ## \u8303\u56F4
 
@@ -220,14 +221,14 @@ function requirementsTemplate(context) {
 `;
 }
 function implementationPlanTemplate(context) {
-  const rollback = ["standard-m", "standard-l"].includes(context.route) ? "\n<!-- dev-flow:id=RU-001 kind=rollback -->\n### RU-001\uFF1A\u56DE\u64A4\u5355\u5143\n\n- tasks: TASK-001\n- depends_on: []\n- file_scope:\n- covers: REQ-001\n- forward_verification: unit\n- rollback_verification: unit\n" : "";
+  const rollback = ["standard-m", "standard-l"].includes(context.route) ? "\n<!-- dev-flow:id=RU-001 kind=rollback -->\n### RU-001\uFF1A\u56DE\u64A4\u5355\u5143\n\n- tasks: [TASK-001]\n- depends_on: []\n- file_scope: []\n- covers: [REQ-001]\n- forward_verification: [unit]\n- rollback_verification: [unit]\n" : "";
   const test = ["standard-m", "standard-l"].includes(context.route) ? "\n<!-- dev-flow:id=TEST-001 kind=test -->\n### TEST-001\uFF1A\u9A8C\u8BC1\u573A\u666F\uFF08verifies: AC-001\uFF09\n\n- \u9A8C\u8BC1\u65B9\u6CD5\uFF1A\n" : "";
   return `${frontMatter(context, "implementation-plan")}# \u5B9E\u73B0\u8BA1\u5212
 
 <!-- dev-flow:id=TASK-001 kind=task -->
 ### TASK-001\uFF1A\u5B9E\u73B0\u4EFB\u52A1
 
-- covers: REQ-001
+- covers: [REQ-001]
 - rollback_unit: RU-001
 ${test}${rollback}`;
 }
@@ -246,12 +247,12 @@ function rollbackUnitsTemplate(context) {
 <!-- dev-flow:id=RU-001 kind=rollback -->
 ### RU-001\uFF1A\u56DE\u64A4\u5355\u5143
 
-- tasks: TASK-001
+- tasks: [TASK-001]
 - depends_on: []
-- file_scope:
-- covers: REQ-001
-- forward_verification: unit
-- rollback_verification: unit
+- file_scope: []
+- covers: [REQ-001]
+- forward_verification: [unit]
+- rollback_verification: [unit]
 `;
 }
 function renderArtifactTemplate(context, kind) {
@@ -557,19 +558,14 @@ function selectRoute(input) {
   });
 }
 function deriveRiskRequirements(riskLabels) {
-  const basis = {
-    scopeFacts: ["derived from classification facts"],
-    topologyFacts: ["derived from classification facts"],
-    uncertaintyFacts: [],
-    riskFacts: Object.fromEntries(riskLabels.map((label) => [label, ["derived from classification facts"]])),
-    decisionRefs: []
-  };
-  const obligations = deriveObligations("xs", basis);
   const checks = /* @__PURE__ */ new Set();
   const verification = /* @__PURE__ */ new Set();
-  for (const obligation of obligations) {
-    if (obligation.kind === "review" || obligation.kind === "rollback") checks.add(obligation.reason);
-    for (const kind of obligation.verificationKinds ?? []) if (kind !== "targeted") verification.add(kind);
+  for (const label of riskLabels) {
+    const enhancement = contract.riskEnhancements[label];
+    if (!enhancement) continue;
+    checks.add("risk-review");
+    for (const check of enhancement.checks) checks.add(check);
+    verification.add(enhancement.verification);
   }
   return { checks: [...checks].sort(), verification: [...verification].sort() };
 }
@@ -626,7 +622,8 @@ function isWithinProtectedRoot(file, protectedRoots) {
 function assertImplementationFilesInProtectedRoots(files, protectedRoots) {
   if (files.some((file) => !isWithinProtectedRoot(file, protectedRoots))) {
     throw new DevFlowError("INVALID_IMPLEMENTATION_FILE", "implementation files must be inside configured protectedRoots", {
-      protectedRoots
+      protectedRoots,
+      recoveryHint: "\u5B9E\u73B0\u8BC1\u636E\u53EA\u767B\u8BB0 feature-owned \u4E14\u4F4D\u4E8E protectedRoots \u7684\u6587\u4EF6\uFF1B\u6D4B\u8BD5\u3001\u65E5\u5FD7\u548C\u9A8C\u8BC1\u4EA7\u7269\u8BF7\u653E\u5165 verification evidence\uFF0C\u6216\u5148\u628A\u786E\u5C5E\u4EA4\u4ED8\u8303\u56F4\u7684\u76EE\u5F55\u52A0\u5165 protectedRoots"
     });
   }
 }
@@ -2687,7 +2684,7 @@ async function startFeature(root2, input, options = {}) {
         decisionLedger: [],
         blockingFindings: [],
         logicComplete: false,
-        lastUpdatedBy: { host: input.host, pluginVersion: "2.0.0" }
+        lastUpdatedBy: { host: input.host, pluginVersion: "2.0.1" }
       };
       validateFeatureState(state);
       await options.fault?.("before-state-commit");
@@ -2778,7 +2775,7 @@ async function recordDecision(root2, id, expectedRevision, question, factRefs = 
     const ledger = draft.decisionLedger ?? [];
     if (ledger.some((candidate) => candidate.id === decision.id)) return;
     draft.decisionLedger = [...ledger, decision];
-    draft.lastUpdatedBy = { host, pluginVersion: "2.0.0" };
+    draft.lastUpdatedBy = { host, pluginVersion: "2.0.1" };
   }, { decisionId: decision.id });
 }
 async function resolveRecordedDecision(root2, id, expectedRevision, decisionId, evidence, conclusion, host = "codex") {
@@ -2789,7 +2786,7 @@ async function resolveRecordedDecision(root2, id, expectedRevision, decisionId, 
     const next = [...ledger];
     next[index] = resolveDecision(next[index], evidence, conclusion);
     draft.decisionLedger = next;
-    draft.lastUpdatedBy = { host, pluginVersion: "2.0.0" };
+    draft.lastUpdatedBy = { host, pluginVersion: "2.0.1" };
   }, { decisionId });
 }
 async function mutate(root2, id, expectedRevision, operation, mutator, eventData = {}) {
@@ -3885,6 +3882,12 @@ async function recordArtifactWithTrace(root2, id, expectedRevision, artifactKind
   let eventData = { kind: artifactKind };
   return mutatePrepared(root2, id, expectedRevision, "artifact-recorded-with-trace", async (current, nextStateRevision) => {
     if (current.lifecycle !== "active") throw new DevFlowError("INVALID_LIFECYCLE", "only active features can register artifacts");
+    if (!traceEnforcementRequired(current.route, current.workflowCapabilities)) {
+      throw new DevFlowError("TRACE_NOT_ENFORCED", `${artifactKind} does not use Trace registration on ${current.route}`, {
+        route: current.route,
+        recoveryHint: "\u5F53\u524D\u8DEF\u7EBF\u4E0D\u5F3A\u5236 Trace\uFF1B\u8BF7\u6539\u7528 dev_flow_record_artifact \u767B\u8BB0\u8BE5\u6587\u6863"
+      });
+    }
     assertManualRegistrationAllowed(current, artifactKind, true);
     const artifact = current.artifacts[artifactKind];
     if (!artifact) throw new DevFlowError("MISSING_REQUIRED_ARTIFACT", artifactKind);
@@ -3951,14 +3954,17 @@ function requiredEvidenceForStep(route, riskLabels, step, workflowCapabilities) 
     const effectiveRoute2 = routeDefinitionForFeature(route, workflowCapabilities);
     if (effectiveRoute2.generatedArtifacts?.includes("plan-review")) required.fields.reviewBatch = true;
     else required.fields.reviewType = "plan";
+    if (route === "light-l") addChecks(required.checks, ["rollback-strategy"]);
   }
   if (step === "code_review") required.fields.reviewType = "code";
   if (step === "code_review" && risk.checks.includes("full-code-review")) {
     required.fields.reviewDepth = "full";
   }
+  const riskReviewTarget = orderedSteps.includes("code_review") ? "code_review" : orderedSteps.includes("planning") ? "planning" : orderedSteps.includes("verification") ? "verification" : void 0;
+  if (riskReviewTarget === step && riskLabels.length) addChecks(required.checks, ["risk-review"]);
   if (risk.checks.some((check) => check.includes("security"))) {
-    const target = orderedSteps.includes("code_review") ? "code_review" : "planning";
-    if (step === target) addChecks(required.checks, ["security"]);
+    const target = orderedSteps.includes("code_review") ? "code_review" : orderedSteps.includes("planning") ? "planning" : orderedSteps.includes("verification") ? "verification" : void 0;
+    if (step === target) addChecks(required.checks, risk.checks.filter((check) => check.includes("security")));
   }
   const rollbackChecks = risk.checks.filter((check) => check === "rollback" || check === "full-rollback");
   if (rollbackChecks.length) {
@@ -4045,13 +4051,13 @@ function parseGrillFrontMatter(contents) {
   if (fields.grill_response_hint) result.responseHint = fields.grill_response_hint;
   if (status === "in_progress" && (!result.questionId || !result.responseHint)) {
     throw new DevFlowError("GRILL_STATUS_INVALID", "in_progress grill requires grill_question_id and grill_response_hint", {
-      recoveryHint: "\u8BF7\u8BBE\u7F6E\u5F53\u524D\u9898\u53F7\u4E0E\u56DE\u590D\u63D0\u793A\u3001\u767B\u8BB0\u9700\u6C42\u6587\u6863\u540E\u518D\u8BE2\u95EE\u7528\u6237"
+      recoveryHint: '\u8BF7\u5728 dev_flow \u4E0B\u8865\u5145 grill_question_id: G-001 \u4E0E grill_response_hint: "\u7B49\u5F85\u7528\u6237\u56DE\u7B54"\uFF0C\u767B\u8BB0\u9700\u6C42\u6587\u6863\u540E\u518D\u8BE2\u95EE\u7528\u6237'
     });
   }
   if (status === "complete" || status === "not_required") {
     if (result.questionId || result.responseHint) {
       throw new DevFlowError("GRILL_STATUS_INVALID", "complete/not_required grill must not retain current-question fields", {
-        recoveryHint: "grill \u5B8C\u6210\u540E\u8BF7\u6E05\u9664\u5F53\u524D\u9898\u5B57\u6BB5"
+        recoveryHint: "\u8BF7\u5220\u9664 dev_flow.grill_question_id \u4E0E dev_flow.grill_response_hint\uFF0C\u518D\u767B\u8BB0\u9700\u6C42\u6587\u6863\uFF1B\u5B8C\u6210\u6001\u793A\u4F8B\uFF1Agrill_status: complete"
       });
     }
   }
@@ -4106,7 +4112,7 @@ async function requestGrillDecision(root2, id, expectedRevision, input) {
       question: input.question,
       options: withMergeRemaining(input.options)
     });
-    draft.lastUpdatedBy = { host: input.host, pluginVersion: "2.0.0" };
+    draft.lastUpdatedBy = { host: input.host, pluginVersion: "2.0.1" };
   }, () => ({ questionId: input.questionId, interactionId: interaction?.id, options: input.options }));
   if (!interaction) throw new DevFlowError("INTERACTION_NOT_CREATED", target);
   return { state, interaction: toPublicInteraction(interaction) };
@@ -4144,7 +4150,7 @@ async function resolveGrillDecision(root2, id, expectedRevision, interactionId, 
         next[index] = resolveDecision(next[index], input.source === "elicitation" ? input.comment ?? "\u7528\u6237\u9009\u62E9" : input.userReply, response2.action);
         draft.decisionLedger = next;
       }
-      draft.lastUpdatedBy = { host, pluginVersion: "2.0.0" };
+      draft.lastUpdatedBy = { host, pluginVersion: "2.0.1" };
     }, { interactionId, mode: "intake" });
     if (!response2) throw new DevFlowError("INTERACTION_NOT_RESOLVED", interactionId);
     return { state: state2, interaction: toPublicInteraction(getInteraction(state2, interactionId)), response: response2 };
@@ -4165,7 +4171,7 @@ async function resolveGrillDecision(root2, id, expectedRevision, interactionId, 
   let response;
   const state = await mutate(root2, id, expectedRevision, "grill-decision-resolved", (draft) => {
     response = input.source === "elicitation" ? resolveNativeInteraction(draft, interactionId, input.action, input.comment, host) : resolveTokenInteraction(draft, interactionId, input.userReply, host, promptEventId);
-    draft.lastUpdatedBy = { host, pluginVersion: "2.0.0" };
+    draft.lastUpdatedBy = { host, pluginVersion: "2.0.1" };
   }, () => ({ interactionId, response }));
   if (!response) throw new DevFlowError("INTERACTION_NOT_RESOLVED", interactionId);
   return { state, interaction: toPublicInteraction(getInteraction(state, interactionId)), response };
@@ -4411,11 +4417,18 @@ async function runVerification(root2, id, expectedRevision, host, commandIds, ma
       };
       if (state.repair) state.repair = markRepairCompleted(state.repair);
       state.obligations = satisfyObligations(state.obligations, ["verification"]);
+      if (state.classification.riskLabels.length && !reviewEnforcementRequired(state.route, state.workflowCapabilities)) {
+        state.obligations = satisfyObligations(state.obligations, ["review"]);
+      }
+      if (state.classification.riskLabels.includes("irreversible_consequence")) {
+        state.obligations = satisfyObligations(state.obligations, ["rollback"]);
+      }
+      state.currentStage = "finalize";
     } else {
       const signature = `${exitCode}:${createHash11("sha256").update(output.join("\n")).digest("hex").slice(0, 16)}`;
       state.repair = recordRepairAttempt(state.repair ?? startRepairLoop(), signature, output.slice(-3));
     }
-    state.lastUpdatedBy = { host, pluginVersion: "2.0.0" };
+    state.lastUpdatedBy = { host, pluginVersion: "2.0.1" };
   });
 }
 async function readVerificationFreshness(root2, state) {
@@ -4469,6 +4482,9 @@ function currentBatch2(ledger, batchId) {
   if (!batch) invalid3("REVIEW_BATCH_NOT_FOUND", "review batch does not exist", { batchId });
   if (batch.validity !== "current") invalid3("REVIEW_BATCH_STALE", "review batch is stale", { batchId });
   return batch;
+}
+function satisfyCompletedReviewObligation(obligations, batch) {
+  return batch.progress === "complete" ? satisfyObligations(obligations, ["review"]) : obligations;
 }
 function cloneLedger(ledger, stateRevision, batches) {
   return {
@@ -4902,6 +4918,7 @@ async function submitReviewJob(root2, id, expectedRevision, batchId, jobId, capa
     return {
       mutate: (draft) => {
         draft.review = pointer;
+        draft.obligations = satisfyCompletedReviewObligation(draft.obligations, submitted.batch);
       },
       eventData: {
         batchId,
@@ -5026,9 +5043,7 @@ async function completeReviewSampling(root2, id, expectedRevision, batchId, jobI
     return {
       mutate: (draft) => {
         draft.review = pointer;
-        if (submitted.batch.progress === "complete") {
-          draft.obligations = satisfyObligations(draft.obligations, ["review"]);
-        }
+        draft.obligations = satisfyCompletedReviewObligation(draft.obligations, submitted.batch);
       },
       eventData: { batchId, jobId, requestSha256: attempt.requestSha256, payloadSha256: submitted.payloadSha256 }
     };
@@ -5265,8 +5280,40 @@ function assertRequiredEvidence(step, required, evidence) {
   }
   throw new DevFlowError("RISK_EVIDENCE_INCOMPLETE", `${step} evidence is incomplete`, details);
 }
+function assertRecordableStep(state, step) {
+  if (state.lifecycle !== "active") {
+    throw new DevFlowError("INVALID_LIFECYCLE", "only active features can record steps");
+  }
+  const route = routeDefinitionForFeature(state.route, state.workflowCapabilities);
+  if (["verification", "feature_check", "finalize"].includes(step) || !route.orderedSteps.includes(step)) {
+    const recoveryHint = step === "verification" ? "\u8BF7\u8C03\u7528 dev_flow_verify" : step === "feature_check" ? "\u8BF7\u8C03\u7528 dev_flow_feature_check" : step === "finalize" ? "\u8BF7\u8C03\u7528 dev_flow_finalize" : "\u8BF7\u4F7F\u7528\u5F53\u524D\u8DEF\u7EBF\u5141\u8BB8\u7684 record_step \u9636\u6BB5";
+    throw new DevFlowError("INVALID_STEP", step, { recoveryHint });
+  }
+  assertCurrentStep(state, step);
+}
+function satisfyStepObligations(state, route, step) {
+  if (step === "planning" && (state.route === "light-l" || state.route === "standard-l")) {
+    state.obligations = satisfyObligations(state.obligations, ["rollback"]);
+  }
+  const riskReviewTarget = route.orderedSteps.includes("code_review") ? "code_review" : route.orderedSteps.includes("planning") ? "planning" : route.orderedSteps.includes("verification") ? "verification" : void 0;
+  if (step === riskReviewTarget && state.classification.riskLabels.length > 0) {
+    if (!reviewEnforcementRequired(state.route, state.workflowCapabilities)) {
+      state.obligations = satisfyObligations(state.obligations, ["review"]);
+    }
+    if (state.classification.riskLabels.includes("irreversible_consequence")) {
+      state.obligations = satisfyObligations(state.obligations, ["rollback"]);
+    }
+  }
+}
 async function recordStep(root2, id, expectedRevision, step, evidence) {
   let normalizedEvidence = evidence;
+  const initial = await readState(root2, id);
+  if (initial.revision !== expectedRevision) {
+    throw new DevFlowError("STATE_REVISION_CONFLICT", "state revision changed", {
+      currentRevision: initial.revision
+    });
+  }
+  assertRecordableStep(initial, step);
   if (step === "implementation") {
     const files = implementationFiles(evidence);
     const config = await readProjectConfig(root2);
@@ -5278,14 +5325,8 @@ async function recordStep(root2, id, expectedRevision, step, evidence) {
     };
   }
   const next = await mutate(root2, id, expectedRevision, "step-recorded", async (state) => {
-    if (state.lifecycle !== "active") {
-      throw new DevFlowError("INVALID_LIFECYCLE", "only active features can record steps");
-    }
+    assertRecordableStep(state, step);
     const route = routeDefinitionForFeature(state.route, state.workflowCapabilities);
-    if (["verification", "feature_check", "finalize"].includes(step) || !route.orderedSteps.includes(step)) {
-      throw new DevFlowError("INVALID_STEP", step);
-    }
-    assertCurrentStep(state, step);
     await assertRequirementsGrillSatisfied(root2, id, state);
     await assertTraceGateCurrent(root2, state, step);
     if (step === "implementation" && state.schemaVersion !== 2 && checkpointsEnforcementRequired(state.route, state.workflowCapabilities)) {
@@ -5303,6 +5344,7 @@ async function recordStep(root2, id, expectedRevision, step, evidence) {
       assertRequiredEvidence(step, required, normalizedEvidence);
     }
     state.steps[step] = { status: "satisfied", evidence: normalizedEvidence };
+    satisfyStepObligations(state, route, step);
     const next2 = route.orderedSteps.find((candidate) => state.steps[candidate]?.status !== "satisfied");
     state.currentStage = next2;
   });
@@ -5398,12 +5440,23 @@ async function finalize(root2, id, expectedRevision) {
     if (route.featureCheckRequired && (!state.featureCheck.passed || state.featureCheck.fingerprint !== state.businessFingerprint)) {
       throw new DevFlowError("FEATURE_CHECK_REQUIRED", "feature check is required");
     }
+    const requiredKinds = /* @__PURE__ */ new Set(["approval", "checkpoint", "verification"]);
+    for (const obligation of state.obligations ?? []) {
+      if (["review", "rollback"].includes(obligation.kind)) requiredKinds.add(obligation.kind);
+    }
+    const pending = (state.obligations ?? []).filter((obligation) => requiredKinds.has(obligation.kind) && obligation.status !== "satisfied").map(({ id: id2, kind, status, reason }) => ({ id: id2, kind, status, reason }));
+    if (pending.length) {
+      throw new DevFlowError("OBLIGATIONS_INCOMPLETE", "required workflow obligations are not satisfied", {
+        obligations: pending,
+        recoveryHint: "\u8BF7\u6309 dev_flow_next \u8FD4\u56DE\u7684\u95E8\u7981\u5B8C\u6210\u786E\u8BA4\u3001\u5BA1\u67E5\u3001\u9A8C\u8BC1\u6216\u56DE\u64A4\u7B56\u7565\u540E\u91CD\u8BD5\u5B8C\u6210"
+      });
+    }
     snapshot = await createDeliverySnapshot(root2, id, state, config);
     if (snapshot) state.deliverySnapshot = snapshot;
     state.logicComplete = true;
     state.lifecycle = "finalized";
     state.steps.finalize = { status: "satisfied" };
-    state.currentStage = void 0;
+    state.currentStage = "complete";
   }, () => snapshot ? { deliverySnapshot: snapshot } : {});
 }
 
@@ -5628,7 +5681,7 @@ async function resolveApprovalResponse(root2, id, expectedRevision, interactionI
     } else {
       throw new DevFlowError("INTERACTION_ACTION_INVALID", response.action);
     }
-    state.lastUpdatedBy = { host, pluginVersion: "2.0.0" };
+    state.lastUpdatedBy = { host, pluginVersion: "2.0.1" };
   }, () => ({ approval, interactionId, response }));
 }
 async function resolveApprovalElicitation(root2, id, expectedRevision, interactionId, action, comment, host) {
@@ -5704,7 +5757,7 @@ async function confirmApproval(root2, id, expectedRevision, approval, userReply,
     };
     clearInteractionsForTarget(state, `approval:${selectedApproval}`);
     state.obligations = satisfyObligations(state.obligations, ["approval"]);
-    state.lastUpdatedBy = { host, pluginVersion: "2.0.0" };
+    state.lastUpdatedBy = { host, pluginVersion: "2.0.1" };
   }, { approval: selectedApproval });
 }
 
@@ -5849,13 +5902,6 @@ async function nextAction(root2, id) {
     return openDecisions.length ? { kind: "intake", activity: "resolve-decision", reason: `${openDecisions.length} \u4E2A\u51B3\u7B56\u4ECD\u5F85\u7528\u6237\u786E\u8BA4` } : { kind: "intake", activity: "investigate", reason: "\u8BFB\u53D6\u9700\u6C42\u3001\u4EE3\u7801\u3001\u6587\u6863\u548C\u6D4B\u8BD5\uFF0C\u751F\u6210 classificationBasis \u540E\u9501\u5B9A\u8DEF\u7EBF" };
   }
   const action = deriveNext(toDerivedState(state, await verificationIsStale(root2, state)));
-  if (action.kind === "run-step" && (action.step === "planning" || action.step === "implementation")) {
-    const reviewAction = await reviewPlanAction(root2, state);
-    if (reviewAction) return reviewAction;
-    if (action.step === "planning") {
-      await assertCurrentReviewProjection(root2, state);
-    }
-  }
   if (action.kind === "run-step" || action.kind === "present-human-gate") {
     const definition = routeDefinitionForFeature(state.route, state.workflowCapabilities);
     const requiredNow = [
@@ -5864,6 +5910,13 @@ async function nextAction(root2, id) {
     ];
     const missing = requiredNow.find((artifact) => !state.artifacts[artifact]);
     if (missing) return { kind: "scaffold-artifact", step: missing };
+  }
+  if (action.kind === "run-step" && (action.step === "planning" || action.step === "implementation")) {
+    const reviewAction = await reviewPlanAction(root2, state);
+    if (reviewAction) return reviewAction;
+    if (action.step === "planning") {
+      await assertCurrentReviewProjection(root2, state);
+    }
   }
   const traceStep = traceStepForAction(action);
   if (traceStep) {
@@ -6158,17 +6211,6 @@ async function checkpointImplementationUnit(root2, id, expectedRevision, unitId,
   const baseline = await readCheckpointBaseline(root2, id, unitId);
   const after = await snapshotProtectedRoots(root2, config.protectedRoots);
   const records = diffSnapshots(baseline.files, after);
-  for (const record of records) {
-    for (const changedPath of [record.path, ...record.renamedFrom ? [record.renamedFrom] : []]) {
-      if (!pathWithinFileScope(changedPath, node.fileScope)) {
-        throw new DevFlowError("IMPLEMENTATION_UNIT_OUT_OF_SCOPE", "checkpoint found changes outside the rollback unit fileScope", {
-          unitId,
-          path: changedPath,
-          fileScope: [...node.fileScope]
-        });
-      }
-    }
-  }
   const sequence = await nextCheckpointSequence(root2, id);
   const checkpointId = `CP-${String(sequence).padStart(3, "0")}`;
   const rollbackUnitId = unit.unitId;
@@ -6853,7 +6895,7 @@ async function resolveRollbackGateResponse(root2, featureId, expectedRevision, i
     } else {
       throw new DevFlowError("INTERACTION_ACTION_INVALID", response.action);
     }
-    state.lastUpdatedBy = { host, pluginVersion: "2.0.0" };
+    state.lastUpdatedBy = { host, pluginVersion: "2.0.1" };
   }, () => ({ gate: "rollback-confirmation", interactionId, response }));
 }
 async function resolveRollbackGateElicitation(root2, featureId, expectedRevision, interactionId, action, comment, host) {
@@ -7653,6 +7695,16 @@ var routeStages = Object.freeze({
 function stagesForRoute(route) {
   return routeStages[route];
 }
+function effectiveStage(state) {
+  if (state.mode === "intake" || !state.route) return "intake";
+  if (state.lifecycle === "finalized") return "complete";
+  const stages = stagesForRoute(state.route);
+  if (state.steps) {
+    const pending = stages.find((stage) => state.steps?.[stage]?.status !== "satisfied");
+    if (pending) return pending;
+  }
+  return state.currentStage ?? stages[0];
+}
 function deriveStageCapabilities(state) {
   if (state.mode === "intake" || !state.route) {
     return {
@@ -7663,8 +7715,17 @@ function deriveStageCapabilities(state) {
       obligations: []
     };
   }
-  const stage = state.currentStage ?? stagesForRoute(state.route)[0];
+  const stage = effectiveStage(state);
   const obligations = (state.obligations ?? []).map(({ id, kind, status, reason }) => ({ id, kind, status, reason }));
+  if (stage === "complete") {
+    return {
+      stage,
+      activity: "complete",
+      allowedActions: ["read", "refresh-status"],
+      completionCriteria: ["feature-finalized"],
+      obligations
+    };
+  }
   const allowedActions = stage === "requirements_alignment" ? ["read", "clarify-requirements", "record-decision", "record-trace"] : stage === "planning" ? ["read", "write-plan", "review-plan", "record-trace"] : stage === "implementation" ? ["read", "write", "edit", "run-verification", "repair-current-unit"] : stage === "code_review" ? ["read", "review-code", "repair-current-unit", "record-trace"] : stage === "verification" ? ["read", "run-verification", "repair-current-unit"] : stage === "finalize" ? ["read", "finalize", "refresh-status"] : ["read", "run-stage-action", "refresh-status"];
   const pendingApproval = obligations.some((obligation) => obligation.kind === "approval" && obligation.status !== "satisfied");
   return {
@@ -9337,7 +9398,7 @@ async function call(name, a, connection2) {
     case "dev_flow_enable_windows_notifications":
       return enableWindowsNotifications({ nodeExecutable: process.execPath });
     case "dev_flow_doctor":
-      return collectDoctorReport(root, pluginRoot, "2.0.0", tools);
+      return collectDoctorReport(root, pluginRoot, "2.0.1", tools);
     case "dev_flow_recover_corrupt_feature":
       return recoverCorruptFeature(root, {
         featureId: a.featureId,
@@ -9361,7 +9422,7 @@ async function dispatchRequest(message) {
       connection.configure(message.params?.capabilities);
       protocolResult(message.id, {
         protocolVersion: message.params?.protocolVersion || "2024-11-05",
-        serverInfo: { name: "dev-flow", version: "2.0.0" },
+        serverInfo: { name: "dev-flow", version: "2.0.1" },
         capabilities: { tools: {} },
         instructions: "Classify before starting. Read dev_flow_next for the current stage, activity, allowed action categories, completion criteria, obligations, and any required attention; choose suitable equivalent tools within that contract. A dynamically derived approval opens a pending interaction: present its natural-language hint to the user; grill questions may be answered with A/B/C or the option name. One-time reply tokens are a last-resort fallback only when the user cannot answer naturally. Use dev_flow_init_project before start."
       });

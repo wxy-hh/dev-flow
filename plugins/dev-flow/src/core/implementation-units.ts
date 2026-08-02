@@ -2,7 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { checkpointsEnforcementRequired, reviewEnforcementRequired } from "../policy/contract.js";
 import { canonicalReviewValueJson } from "./review-store.js";
 import type { RollbackNode, TraceabilityLedger } from "../policy/traceability.js";
-import { implementationUnitForRollbackNode, pathWithinFileScope, type ImplementationUnitState } from "../policy/rollback.js";
+import { implementationUnitForRollbackNode, type ImplementationUnitState } from "../policy/rollback.js";
 import { DevFlowError } from "./errors.js";
 import { assertArtifactCurrent } from "./artifacts.js";
 import { captureUnitBaseline } from "./checkpoints.js";
@@ -12,6 +12,7 @@ import { mutate, readProjectConfig, type FeatureState } from "./state-store.js";
 import { currentOpenStep } from "./step-order.js";
 import { assertTraceGateCurrent } from "./traceability-gates.js";
 import { confirmedApproval } from "./approval-basis.js";
+import { readTraceability } from "./traceability-store.js";
 
 const digest = (value: string) => createHash("sha256").update(value).digest("hex");
 
@@ -22,6 +23,32 @@ export interface ImplementationUnitWriteBlock {
 
 function currentRollbackNodes(ledger: TraceabilityLedger | undefined): RollbackNode[] {
   return Object.values(ledger?.nodes ?? {}).filter((node): node is RollbackNode => node.kind === "rollback" && node.status === "current");
+}
+
+/**
+ * Prepare the first unit lazily for a protected implementation write. Host
+ * hooks call this immediately before classifying a write, so a normal write
+ * after the one execution approval does not fail merely because the model did
+ * not issue the internal begin action first. The unit remains Core-owned and
+ * dependencies are still enforced by beginImplementationUnit.
+ */
+export async function ensureActiveImplementationUnit(
+  root: string,
+  id: string,
+  state: FeatureState,
+): Promise<FeatureState> {
+  if (!checkpointsEnforcementRequired(state.route, state.workflowCapabilities)
+    || currentOpenStep(state) !== "implementation"
+    || !confirmedApproval(state)
+    || (state.implementationUnits ?? []).some((unit) => unit.status === "active")) return state;
+  const ledger = await readTraceability(root, state);
+  const nodes = currentRollbackNodes(ledger).sort((a, b) => a.id.localeCompare(b.id));
+  const statusByUnit = new Map((state.implementationUnits ?? []).map((unit) => [unit.unitId, unit.status]));
+  const ready = nodes.find((node) =>
+    statusByUnit.get(node.id) !== "checkpointed"
+    && node.dependsOn.every((dependency) => statusByUnit.get(dependency) === "checkpointed"));
+  if (!ready) return state;
+  return beginImplementationUnit(root, id, state.revision, ready.id);
 }
 
 /**
@@ -42,7 +69,7 @@ export function implementationUnitBasisHash(state: FeatureState): string {
 export function implementationUnitWriteBlock(
   state: FeatureState,
   ledger: TraceabilityLedger | undefined,
-  relativePath: string,
+  _relativePath: string,
 ): ImplementationUnitWriteBlock | undefined {
   if (!checkpointsEnforcementRequired(state.route, state.workflowCapabilities)) return undefined;
   if (currentOpenStep(state) !== "implementation") return undefined;
@@ -59,15 +86,12 @@ export function implementationUnitWriteBlock(
     // Fail closed: an active unit without a current rollback definition can never legitimize a write.
     return {
       code: "IMPLEMENTATION_UNIT_OUT_OF_SCOPE",
-      details: { unitId: active.unitId, fileScope: [], path: relativePath },
+      details: { unitId: active.unitId, fileScope: [], path: _relativePath },
     };
   }
-  if (!pathWithinFileScope(relativePath, node.fileScope)) {
-    return {
-      code: "IMPLEMENTATION_UNIT_OUT_OF_SCOPE",
-      details: { unitId: active.unitId, fileScope: [...node.fileScope], path: relativePath },
-    };
-  }
+  // fileScope is anticipated scope, not a write-time allowlist. The actual
+  // changed paths are audited at checkpoint time so ordinary equivalent
+  // writes do not fail because a plan omitted a supplemental file.
   return undefined;
 }
 

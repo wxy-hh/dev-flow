@@ -1,4 +1,4 @@
-import { routeDefinitionForFeature, checkpointsEnforcementRequired } from "../policy/contract.js";
+import { routeDefinitionForFeature, checkpointsEnforcementRequired, reviewEnforcementRequired } from "../policy/contract.js";
 import {
   missingRequiredEvidence,
   requiredEvidenceForStep,
@@ -22,6 +22,7 @@ import { readTraceability } from "./traceability-store.js";
 import { invalidateStaleVerification } from "./verification.js";
 import { assertReviewComplete } from "./review-jobs.js";
 import { captureAutomaticCheckpoint } from "./auto-checkpoint.js";
+import { satisfyObligations } from "../policy/obligations.js";
 
 function assertRequiredEvidence(step: string, required: RequiredEvidence, evidence: unknown): void {
   const missing = missingRequiredEvidence(required, evidence);
@@ -33,6 +34,51 @@ function assertRequiredEvidence(step: string, required: RequiredEvidence, eviden
   throw new DevFlowError("RISK_EVIDENCE_INCOMPLETE", `${step} evidence is incomplete`, details);
 }
 
+function assertRecordableStep(state: FeatureState, step: string): void {
+  if (state.lifecycle !== "active") {
+    throw new DevFlowError("INVALID_LIFECYCLE", "only active features can record steps");
+  }
+  const route = routeDefinitionForFeature(state.route, state.workflowCapabilities);
+  if (["verification", "feature_check", "finalize"].includes(step)
+    || !route.orderedSteps.includes(step)) {
+    const recoveryHint = step === "verification"
+      ? "请调用 dev_flow_verify"
+      : step === "feature_check"
+        ? "请调用 dev_flow_feature_check"
+        : step === "finalize"
+          ? "请调用 dev_flow_finalize"
+          : "请使用当前路线允许的 record_step 阶段";
+    throw new DevFlowError("INVALID_STEP", step, { recoveryHint });
+  }
+  assertCurrentStep(state, step);
+}
+
+function satisfyStepObligations(state: FeatureState, route: ReturnType<typeof routeDefinitionForFeature>, step: string): void {
+  // L's plan is the rollback strategy obligation. The standard L trace gate
+  // has already validated its rollback graph before this point; light L uses
+  // the registered plan as its intentionally lighter evidence boundary.
+  if (step === "planning" && (state.route === "light-l" || state.route === "standard-l")) {
+    state.obligations = satisfyObligations(state.obligations, ["rollback"]);
+  }
+  // Risk review is a single explicit evidence check on light/XS/S routes. A
+  // standard route keeps the independent multi-role review batch as its sole
+  // review completion source.
+  const riskReviewTarget = route.orderedSteps.includes("code_review")
+    ? "code_review"
+    : route.orderedSteps.includes("planning")
+      ? "planning"
+      : route.orderedSteps.includes("verification") ? "verification" : undefined;
+  if (step === riskReviewTarget
+    && state.classification.riskLabels.length > 0) {
+    if (!reviewEnforcementRequired(state.route, state.workflowCapabilities)) {
+      state.obligations = satisfyObligations(state.obligations, ["review"]);
+    }
+    if (state.classification.riskLabels.includes("irreversible_consequence")) {
+      state.obligations = satisfyObligations(state.obligations, ["rollback"]);
+    }
+  }
+}
+
 export async function recordStep(
   root: string,
   id: string,
@@ -41,6 +87,13 @@ export async function recordStep(
   evidence: unknown,
 ): Promise<FeatureState> {
   let normalizedEvidence = evidence;
+  const initial = await readState(root, id);
+  if (initial.revision !== expectedRevision) {
+    throw new DevFlowError("STATE_REVISION_CONFLICT", "state revision changed", {
+      currentRevision: initial.revision,
+    });
+  }
+  assertRecordableStep(initial, step);
   if (step === "implementation") {
     const files = implementationFiles(evidence);
     const config = await readProjectConfig(root);
@@ -54,15 +107,8 @@ export async function recordStep(
     };
   }
   const next = await mutate(root, id, expectedRevision, "step-recorded", async (state) => {
-    if (state.lifecycle !== "active") {
-      throw new DevFlowError("INVALID_LIFECYCLE", "only active features can record steps");
-    }
+    assertRecordableStep(state, step);
     const route = routeDefinitionForFeature(state.route, state.workflowCapabilities);
-    if (["verification", "feature_check", "finalize"].includes(step)
-      || !route.orderedSteps.includes(step)) {
-      throw new DevFlowError("INVALID_STEP", step);
-    }
-    assertCurrentStep(state, step);
     await assertRequirementsGrillSatisfied(root, id, state);
     await assertTraceGateCurrent(root, state, step);
     if (step === "implementation" && state.schemaVersion !== 2 && checkpointsEnforcementRequired(state.route, state.workflowCapabilities)) {
@@ -81,6 +127,7 @@ export async function recordStep(
       assertRequiredEvidence(step, required, normalizedEvidence);
     }
     state.steps[step] = { status: "satisfied", evidence: normalizedEvidence };
+    satisfyStepObligations(state, route, step);
     const next = route.orderedSteps.find((candidate) => state.steps[candidate]?.status !== "satisfied");
     state.currentStage = next;
   });
@@ -192,11 +239,24 @@ export async function finalize(
       && (!state.featureCheck.passed || state.featureCheck.fingerprint !== state.businessFingerprint)) {
       throw new DevFlowError("FEATURE_CHECK_REQUIRED", "feature check is required");
     }
+    const requiredKinds = new Set(["approval", "checkpoint", "verification"]);
+    for (const obligation of state.obligations ?? []) {
+      if (["review", "rollback"].includes(obligation.kind)) requiredKinds.add(obligation.kind);
+    }
+    const pending = (state.obligations ?? [])
+      .filter((obligation) => requiredKinds.has(obligation.kind) && obligation.status !== "satisfied")
+      .map(({ id, kind, status, reason }) => ({ id, kind, status, reason }));
+    if (pending.length) {
+      throw new DevFlowError("OBLIGATIONS_INCOMPLETE", "required workflow obligations are not satisfied", {
+        obligations: pending,
+        recoveryHint: "请按 dev_flow_next 返回的门禁完成确认、审查、验证或回撤策略后重试完成",
+      });
+    }
     snapshot = await createDeliverySnapshot(root, id, state, config);
     if (snapshot) state.deliverySnapshot = snapshot;
     state.logicComplete = true;
     state.lifecycle = "finalized";
     state.steps.finalize = { status: "satisfied" };
-    state.currentStage = undefined;
+    state.currentStage = "complete";
   }, () => snapshot ? { deliverySnapshot: snapshot } : {});
 }

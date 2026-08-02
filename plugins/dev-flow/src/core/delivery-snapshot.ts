@@ -65,6 +65,7 @@ export function assertImplementationFilesInProtectedRoots(files: string[], prote
   if (files.some((file) => !isWithinProtectedRoot(file, protectedRoots))) {
     throw new DevFlowError("INVALID_IMPLEMENTATION_FILE", "implementation files must be inside configured protectedRoots", {
       protectedRoots,
+      recoveryHint: "实现证据只登记 feature-owned 且位于 protectedRoots 的文件；测试、日志和验证产物请放入 verification evidence，或先把确属交付范围的目录加入 protectedRoots",
     });
   }
 }

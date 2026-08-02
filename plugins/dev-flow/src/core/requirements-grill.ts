@@ -98,13 +98,13 @@ export function parseGrillFrontMatter(contents: string): GrillFrontMatter {
   if (fields.grill_response_hint) result.responseHint = fields.grill_response_hint;
   if (status === "in_progress" && (!result.questionId || !result.responseHint)) {
     throw new DevFlowError("GRILL_STATUS_INVALID", "in_progress grill requires grill_question_id and grill_response_hint", {
-      recoveryHint: "请设置当前题号与回复提示、登记需求文档后再询问用户",
+      recoveryHint: "请在 dev_flow 下补充 grill_question_id: G-001 与 grill_response_hint: \"等待用户回答\"，登记需求文档后再询问用户",
     });
   }
   if (status === "complete" || status === "not_required") {
     if (result.questionId || result.responseHint) {
       throw new DevFlowError("GRILL_STATUS_INVALID", "complete/not_required grill must not retain current-question fields", {
-        recoveryHint: "grill 完成后请清除当前题字段",
+        recoveryHint: "请删除 dev_flow.grill_question_id 与 dev_flow.grill_response_hint，再登记需求文档；完成态示例：grill_status: complete",
       });
     }
   }

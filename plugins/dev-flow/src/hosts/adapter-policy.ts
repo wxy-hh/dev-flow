@@ -4,7 +4,8 @@ import { classifyGitCommand } from "../core/git-policy.js";
 import { readActive, readFeatureEvents, readProjectConfig, readRecoveryTransaction, readState, type FeatureState } from "../core/state-store.js";
 import { readTraceability } from "../core/traceability-store.js";
 import { readReviewLedger } from "../core/review-store.js";
-import { implementationUnitWriteBlock } from "../core/implementation-units.js";
+import { ensureActiveImplementationUnit, implementationUnitWriteBlock } from "../core/implementation-units.js";
+import { currentOpenStep } from "../core/step-order.js";
 import { judgeWrite } from "../core/write-policy.js";
 
 /** Host adapters never mint review attestations or assurance; those enter only via MCP/Core. */
@@ -521,12 +522,28 @@ function classifyTarget(
     const decision = judgeWrite({ mode: "intake", controlPath: false, protectedPath: isProtected(root, target, workflow.protectedRoots), impactResolved: false });
     if (decision.decision === "block") return { code: "DEV_FLOW_IMPLEMENTATION_APPROVAL_REQUIRED", recoveryHint: "请先完成 intake 调查并锁定基础路线" };
   }
-  if (workflow.state?.mode === "routed" && workflow.state.currentStage === "implementation" && isProtected(root, target, workflow.protectedRoots)) {
+  if (workflow.state?.mode === "routed" && currentOpenStep(workflow.state) === "implementation" && isProtected(root, target, workflow.protectedRoots)) {
     const approvalPending = workflow.state.obligations?.some((obligation) => obligation.kind === "approval" && obligation.status !== "satisfied") ?? false;
     if (approvalPending && !workflow.approvalConfirmed) {
       return {
         code: "DEV_FLOW_IMPLEMENTATION_APPROVAL_REQUIRED",
         recoveryHint: `目标位于受保护根目录；请完成当前执行确认义务后再写入${scratchHint}`,
+      };
+    }
+    // Checkpoint-enforced routes need a live unit baseline before the first
+    // protected write. Scope membership itself is audited at checkpoint time;
+    // it is deliberately not a write-time allowlist.
+    const unitBlock = implementationUnitWriteBlock(workflow.state, workflow.ledger, projectRelative(root, target)!);
+    if (unitBlock?.code === "IMPLEMENTATION_UNIT_REQUIRED") {
+      return {
+        code: "DEV_FLOW_IMPLEMENTATION_UNIT_REQUIRED",
+        recoveryHint: "Core 尚未准备当前回撤单元；请自动重试 dev_flow_begin_implementation_unit 后再写入 protected 文件",
+      };
+    }
+    if (unitBlock?.code === "IMPLEMENTATION_UNIT_OUT_OF_SCOPE") {
+      return {
+        code: "DEV_FLOW_IMPLEMENTATION_UNIT_OUT_OF_SCOPE",
+        recoveryHint: "当前回撤单元在 Trace 中已失效；请刷新状态并修复或重新登记当前 Trace 后再写入",
       };
     }
     const decision = judgeWrite({ mode: "routed", stage: "implementation", controlPath: false, protectedPath: true, impactResolved: true });
@@ -543,12 +560,13 @@ function classifyTarget(
       };
     }
     if (block?.code === "IMPLEMENTATION_UNIT_OUT_OF_SCOPE") {
-      const scope = (block.details.fileScope as string[] | undefined) ?? [];
       return {
         code: "DEV_FLOW_IMPLEMENTATION_UNIT_OUT_OF_SCOPE",
-        recoveryHint: `当前回撤单元 ${block.details.unitId} 仅覆盖：${scope.join(", ") || "(当前无 scope)"}；移动/重命名需把源与目标路径都加入 file_scope 并重登记；临时验证文件请放 scratch/`,
+        recoveryHint: "当前回撤单元在 Trace 中已失效；请刷新状态并修复或重新登记当前 Trace 后再写入",
       };
     }
+    // Anticipated fileScope drift is reported by the checkpoint auditor, not
+    // rejected by the host write hook.
   }
   return undefined;
 }
@@ -645,8 +663,27 @@ export async function preToolBlock(root: string, event: HookEvent): Promise<PreT
     return undefined;
   }
 
-  const { workflow } = loaded;
+  let { workflow } = loaded;
   const command = typeof event.tool_input?.command === "string" ? event.tool_input.command : "";
+
+  // Starting the first internal rollback unit is safe to do lazily at the
+  // write boundary. It keeps the unit/checkpoint contract intact while
+  // avoiding a user-visible failure for a model that proceeds directly from
+  // approval to its first ordinary file write.
+  const prepareImplementationWrite = async (targets: string[]): Promise<void> => {
+    if (!workflow.state || currentOpenStep(workflow.state) !== "implementation"
+      || !targets.some((target) => isProtected(root, target, workflow.protectedRoots))) return;
+    try {
+      const prepared = await ensureActiveImplementationUnit(root, workflow.featureId, workflow.state);
+      if (prepared.revision !== workflow.state.revision) {
+        const refreshed = await loadActiveWorkflow(root);
+        if (refreshed.kind === "ready") workflow = refreshed.workflow;
+      }
+    } catch {
+      // classifyTarget emits the stable unit-required recovery code below;
+      // transient preparation failures must not turn a hook into a crash.
+    }
+  };
 
   if (toolName(event) === "bash" && classifyGitCommand(command) === "write" && !workflow.logicComplete) {
     return {
@@ -664,6 +701,7 @@ export async function preToolBlock(root: string, event: HookEvent): Promise<PreT
         recoveryHint: "请拆分确定性的写命令或使用 MCP 资产工具；验证日志请写入项目内相对路径（例如 vitest.log），勿混用未解析的 shell 写入",
       };
     }
+    await prepareImplementationWrite(analysis.targets);
     for (const target of analysis.targets) {
       const block = classifyTarget(root, target, workflow);
       if (block) return augmentApprovalBlock(root, workflow, block);
@@ -678,6 +716,7 @@ export async function preToolBlock(root: string, event: HookEvent): Promise<PreT
       recoveryHint: "补丁无可解析目标；在实现批准前保守拒绝",
     };
   }
+  await prepareImplementationWrite(targets);
   for (const target of targets) {
     const block = classifyTarget(root, target, workflow);
     if (block) return augmentApprovalBlock(root, workflow, block);

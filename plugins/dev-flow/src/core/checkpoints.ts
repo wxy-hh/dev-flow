@@ -4,7 +4,6 @@ import path from "node:path";
 import { checkpointsEnforcementRequired } from "../policy/contract.js";
 import {
   parseCheckpointManifest,
-  pathWithinFileScope,
   type CheckpointFileRecord,
   type CheckpointManifest,
   type CheckpointVerificationAttempt,
@@ -267,9 +266,10 @@ export interface CheckpointOptions {
 
 /**
  * Confirms an active unit: diffs the protected roots against the begin-time
- * baseline, enforces the unit fileScope on the authoritative file system,
+ * baseline, records the complete actual file set for drift/audit analysis,
  * runs forward verification, persists blobs plus the manifest, and only then
- * commits the unit transition in the same state CAS.
+ * commits the unit transition in the same state CAS. fileScope is an
+ * anticipated scope, not a write-time allowlist.
  */
 export async function checkpointImplementationUnit(
   root: string,
@@ -309,17 +309,10 @@ export async function checkpointImplementationUnit(
   const baseline = await readCheckpointBaseline(root, id, unitId);
   const after = await snapshotProtectedRoots(root, config.protectedRoots);
   const records = diffSnapshots(baseline.files, after);
-  for (const record of records) {
-    for (const changedPath of [record.path, ...(record.renamedFrom ? [record.renamedFrom] : [])]) {
-      if (!pathWithinFileScope(changedPath, node.fileScope)) {
-        throw new DevFlowError("IMPLEMENTATION_UNIT_OUT_OF_SCOPE", "checkpoint found changes outside the rollback unit fileScope", {
-          unitId,
-          path: changedPath,
-          fileScope: [...node.fileScope],
-        });
-      }
-    }
-  }
+  // fileScope is anticipated scope. The complete actual file set is retained
+  // in the checkpoint manifest and surfaced through drift analysis; a missing
+  // anticipated path must not turn an otherwise valid atomic implementation
+  // unit into a dead end.
 
   const sequence = await nextCheckpointSequence(root, id);
   const checkpointId = `CP-${String(sequence).padStart(3, "0")}`;
