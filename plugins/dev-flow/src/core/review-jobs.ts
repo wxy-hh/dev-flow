@@ -13,6 +13,7 @@ import {
   type ReviewIdentityVerifier,
 } from "../policy/review.js";
 import { DevFlowError } from "./errors.js";
+import { normalizeUnicode } from "./path-normalization.js";
 import { fingerprintProtectedRoots } from "./fingerprint.js";
 import { mutatePrepared, readState, type FeatureState } from "./state-store.js";
 import {
@@ -25,6 +26,7 @@ import {
 } from "./review-store.js";
 import { readProjectConfigSnapshot, readTraceability } from "./traceability-store.js";
 import { assertCurrentReviewProjection } from "./review-projection.js";
+import { satisfyObligations } from "../policy/obligations.js";
 import {
   createInteraction,
   findInteractionForTarget,
@@ -112,7 +114,10 @@ function cloneLedger(ledger: ReviewLedger, stateRevision: number, batches: Revie
 }
 
 function reviewArtifactKinds(state: FeatureState): typeof basisArtifactKinds[number][] {
-  return basisArtifactKinds.filter((kind) => kind !== "rollback-units" || state.route === "standard-l");
+  // The implementation plan is the only editable source for the execution
+  // graph. Coverage/rollback entries remain supported as legacy evidence but
+  // are omitted from new review bases when no standalone artifact exists.
+  return basisArtifactKinds.filter((kind) => Boolean(state.artifacts[kind]));
 }
 
 async function deriveReviewInput(root: string, state: FeatureState): Promise<DerivedReviewInput> {
@@ -151,7 +156,7 @@ async function deriveReviewInput(root: string, state: FeatureState): Promise<Der
       .sort((left, right) => left.id.localeCompare(right.id)),
   };
   // Content fingerprint of protected roots at basis capture time. Batch create and
-  // pre-record plan_review gates must see live drift; post-record revalidation is
+  // pre-record planning gates must see live drift; post-record revalidation is
   // handled separately so implementation may mutate those same paths.
   const protectedRootsFingerprint = await fingerprintProtectedRoots(root, config.protectedRoots);
   const basis: ReviewBasis = {
@@ -266,8 +271,9 @@ function assertAttestationUnique(
 }
 
 function safePackagePath(value: string): boolean {
-  return value.length > 0 && value === value.trim() && !path.posix.isAbsolute(value) && !value.includes("\\")
-    && path.posix.normalize(value) === value && !value.split("/").includes("..");
+  const normalized = normalizeUnicode(value);
+  return normalized.length > 0 && normalized === normalized.trim() && !path.posix.isAbsolute(normalized) && !normalized.includes("\\")
+    && path.posix.normalize(normalized) === normalized && !normalized.split("/").includes("..");
 }
 
 function validScopeManifest(value: unknown): value is { protectedRoots: string[]; rollbackFileScopes: string[] } {
@@ -304,7 +310,10 @@ function assertFindingScope(
   resolutions: ReviewFindingResolutionInput[],
 ): void {
   const allowed = [...new Set([...manifest.protectedRoots, ...manifest.rollbackFileScopes])];
-  const inManifest = (value: string) => safePackagePath(value) && allowed.some((scope) => scope === "." || value === scope || value.startsWith(`${scope}/`));
+  const inManifest = (value: string) => {
+    const normalized = normalizeUnicode(value);
+    return safePackagePath(normalized) && allowed.some((scope) => scope === "." || normalized === scope || normalized.startsWith(`${scope}/`));
+  };
   for (const finding of findings) {
     if (finding.severity === "blocking" && !finding.evidence.length) invalid("REVIEW_FINDING_EVIDENCE_REQUIRED", "blocking finding requires evidence");
     if (finding.targets.some((target) => !inManifest(target)) || finding.evidence.some((evidence) => !inManifest(evidence.path))) {
@@ -465,6 +474,23 @@ interface SubmittedReviewJob {
   payloadSha256: string;
 }
 
+function normalizeReviewCompletion(parsed: ReturnType<typeof parseReviewJobCompletion>): ReturnType<typeof parseReviewJobCompletion> {
+  return {
+    ...parsed,
+    findings: parsed.findings.map((finding) => ({
+      ...finding,
+      targets: finding.targets.map(normalizeUnicode),
+      evidence: finding.evidence.map((evidence) => ({ ...evidence, path: normalizeUnicode(evidence.path) })),
+    })),
+    ...(parsed.resolutions ? {
+      resolutions: parsed.resolutions.map((resolution) => ({
+        ...resolution,
+        evidence: resolution.evidence.map((evidence) => ({ ...evidence, path: normalizeUnicode(evidence.path) })),
+      })),
+    } : {}),
+  };
+}
+
 async function submitParsedReviewJob(
   root: string,
   featureId: string,
@@ -476,7 +502,8 @@ async function submitParsedReviewJob(
   samplingAttempt?: ReviewSamplingAttempt,
   hostAttestation?: ReviewAgentAttestation,
 ): Promise<SubmittedReviewJob> {
-  if (parsed.findings.some((finding) => finding.category !== job.role)) {
+  const normalizedParsed = normalizeReviewCompletion(parsed);
+  if (normalizedParsed.findings.some((finding) => finding.category !== job.role)) {
     invalid("REVIEW_FINDING_ROLE_MISMATCH", "a job may only submit findings for its assigned review role", { jobId: job.jobId, role: job.role });
   }
   if (samplingAttempt && hostAttestation) {
@@ -488,10 +515,10 @@ async function submitParsedReviewJob(
     invalid("REVIEW_INTEGRITY_FAILED", "review package scope manifest is invalid", { jobId: job.jobId });
   }
   const manifest = reviewPackage.scopeManifest;
-  assertFindingScope(manifest, parsed.findings, parsed.resolutions ?? []);
+  assertFindingScope(manifest, normalizedParsed.findings, normalizedParsed.resolutions ?? []);
   const dispositions = { ...batch.dispositions };
   const resolvedIds = new Set<string>();
-  for (const resolution of parsed.resolutions ?? []) {
+  for (const resolution of normalizedParsed.resolutions ?? []) {
     if (resolvedIds.has(resolution.findingId)) invalid("REVIEW_RESOLUTION_DUPLICATE", "a finding may be resolved only once per successor batch", { findingId: resolution.findingId });
     const source = ledger.batches
       .filter((candidate) => candidate.batchId !== batch.batchId)
@@ -513,8 +540,8 @@ async function submitParsedReviewJob(
     };
     resolvedIds.add(resolution.findingId);
   }
-  const payloadSha256 = digest(canonicalReviewValueJson(parsed));
-  const findings: ReviewFinding[] = dedupeFindings(parsed.findings).map((finding) => ({
+  const payloadSha256 = digest(canonicalReviewValueJson(normalizedParsed));
+  const findings: ReviewFinding[] = dedupeFindings(normalizedParsed.findings).map((finding) => ({
     ...finding,
     findingId: `F-${randomUUID()}`,
     jobId: job.jobId,
@@ -535,9 +562,9 @@ async function submitParsedReviewJob(
     ...(samplingAttempts ? { samplingAttempts } : {}),
     submission: {
       payloadSha256,
-      coverageSummary: parsed.coverageSummary,
+      coverageSummary: normalizedParsed.coverageSummary,
       findings,
-      resolutions: parsed.resolutions ?? [],
+      resolutions: normalizedParsed.resolutions ?? [],
       submittedAt: completedAt,
       ...(samplingAttempt ? {
         samplingProvenance: {
@@ -763,7 +790,12 @@ export async function completeReviewSampling(
     ));
     result = { batch: submitted.batch };
     return {
-      mutate: (draft) => { draft.review = pointer; },
+      mutate: (draft) => {
+        draft.review = pointer;
+        if (submitted.batch.progress === "complete") {
+          draft.obligations = satisfyObligations(draft.obligations, ["review"]);
+        }
+      },
       eventData: { batchId, jobId, requestSha256: attempt.requestSha256, payloadSha256: submitted.payloadSha256 },
     };
   });
@@ -809,8 +841,8 @@ function riskBinding(interaction: UserInteraction): { batchId: string; findingId
 }
 
 function planReviewBoundToBatch(state: FeatureState, batch: ReviewBatch): boolean {
-  const evidence = state.steps.plan_review?.evidence as { batchId?: unknown; basisHash?: unknown } | undefined;
-  return state.steps.plan_review?.status === "satisfied"
+  const evidence = state.steps.planning?.evidence as { batchId?: unknown; basisHash?: unknown } | undefined;
+  return state.steps.planning?.status === "satisfied"
     && evidence?.batchId === batch.batchId
     && evidence?.basisHash === batch.basisHash;
 }
@@ -823,7 +855,7 @@ async function currentBatchWithBasis(
   const ledger = await readReviewLedger(root, state);
   const batch = ledger.batches.find((candidate) => candidate.validity === "current");
   if (!batch) invalid("REVIEW_BATCH_REQUIRED", "a current review batch is required");
-  // Once plan_review has bound this exact batch, later protected-root implementation
+  // Once planning has bound this exact batch, later protected-root implementation
   // edits must not invent a new live basis; verification freshness owns that drift.
   const requireLiveBasis = options.requireLiveBasis ?? !planReviewBoundToBatch(state, batch!);
   if (requireLiveBasis) {

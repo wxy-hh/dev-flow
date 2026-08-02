@@ -18,10 +18,14 @@ import type {
 import type { TraceSourceBlock } from "./traceability-anchors.js";
 import { DevFlowError } from "./errors.js";
 import { isSafeFileScopePattern } from "../policy/rollback.js";
+import { normalizeUnicode } from "./path-normalization.js";
 
 export const ALLOWED_TRACE_KINDS = {
   requirements: ["requirement", "acceptance-criterion"],
-  "implementation-plan": ["task", "rollback"],
+  // The implementation plan is the single editable source for the execution
+  // graph. Coverage and rollback projections are derived from these nodes;
+  // they are not additional user-maintained route documents.
+  "implementation-plan": ["task", "test", "rollback"],
   "coverage-matrix": ["test"],
   "rollback-units": ["rollback"],
 } as const;
@@ -91,6 +95,9 @@ function assertNoDuplicate(values: string[], field: string, id: string): void {
 
 function assertSafeFileScope(fileScope: string[], id: string, persisted = false): void {
   for (const pattern of fileScope) {
+    if (persisted && pattern !== normalizeUnicode(pattern)) {
+      invalid("persisted rollback fileScope must use Unicode NFC", { id, field: "fileScope", pattern });
+    }
     if (!isSafeFileScopePattern(pattern)) {
       invalid(persisted ? "persisted rollback fileScope is unsafe" : "rollback fileScope is unsafe", { id, field: "fileScope", pattern });
     }
@@ -134,6 +141,15 @@ export function validateTraceDelta(value: unknown): asserts value is TraceDelta 
     if (ids.has(node.id)) invalid("Trace delta declares an ID more than once", { id: node.id });
     ids.add(node.id);
   }
+}
+
+/** Normalize path-bearing trace fields without weakening the safety contract. */
+function normalizeTraceDelta(value: TraceDelta): TraceDelta {
+  return {
+    nodes: value.nodes.map((node) => node.kind === "rollback"
+      ? { ...node, fileScope: node.fileScope.map(normalizeUnicode) }
+      : node),
+  };
 }
 
 function currentNodes(nodes: Record<string, TraceNode>): TraceNode[] {
@@ -212,9 +228,6 @@ function assertArtifactDeltaContract(input: ApplyTraceDeltaInput): void {
   const has = (kind: TraceNodeInput["kind"]) => input.delta.nodes.some((node) => node.kind === kind);
   if (input.artifactKind === "implementation-plan" && input.route === "standard-m" && (!has("task") || !has("rollback"))) {
     invalid("standard M implementation plans require both tasks and rollback units");
-  }
-  if (input.artifactKind === "implementation-plan" && input.route === "standard-l" && has("rollback")) {
-    invalid("standard L implementation plans cannot declare rollback units");
   }
   if (input.artifactKind === "rollback-units" && input.route !== "standard-l") invalid("rollback-units are only valid for standard L");
   for (const node of input.delta.nodes) {
@@ -428,38 +441,39 @@ export function emptyTraceabilityLedger(featureId: string, stateRevision: number
 }
 
 export function applyTraceDelta(input: ApplyTraceDeltaInput): TraceabilityLedger {
-  validateTraceDelta(input.delta);
-  assertArtifactDeltaContract(input);
-  const sourceBlocks = assertSourceBlocks(input);
-  const nodes = structuredClone(input.current.nodes) as Record<string, TraceNode>;
+  const effectiveInput = { ...input, delta: normalizeTraceDelta(input.delta) };
+  validateTraceDelta(effectiveInput.delta);
+  assertArtifactDeltaContract(effectiveInput);
+  const sourceBlocks = assertSourceBlocks(effectiveInput);
+  const nodes = structuredClone(effectiveInput.current.nodes) as Record<string, TraceNode>;
   const changed = new Set<string>();
-  for (const node of input.delta.nodes) {
+  for (const node of effectiveInput.delta.nodes) {
     const previous = nodes[node.id];
     if (previous?.status === "tombstoned") invalid("tombstoned IDs cannot be reused", { id: node.id });
-    const next = sourceFor(input, node, sourceBlocks.get(node.id)!);
-    if (previous && previous.sourceArtifact !== input.artifactKind) invalid("node ID already belongs to a different source artifact", { id: node.id });
+    const next = sourceFor(effectiveInput, node, sourceBlocks.get(node.id)!);
+    if (previous && previous.sourceArtifact !== effectiveInput.artifactKind) invalid("node ID already belongs to a different source artifact", { id: node.id });
     // Delta nodes are rebound as current; only dependents outside this replacement become stale.
     if (previous && (previous.sourceBlockSha256 !== next.sourceBlockSha256 || nodeMeaning(previous) !== inputMeaning(node))) changed.add(node.id);
     nodes[node.id] = next;
   }
-  const inputIds = new Set(input.delta.nodes.map((node) => node.id));
+  const inputIds = new Set(effectiveInput.delta.nodes.map((node) => node.id));
   for (const node of Object.values(nodes)) {
-    if (node.sourceArtifact !== input.artifactKind || inputIds.has(node.id) || node.status === "tombstoned") continue;
+    if (node.sourceArtifact !== effectiveInput.artifactKind || inputIds.has(node.id) || node.status === "tombstoned") continue;
     node.status = "tombstoned"; changed.add(node.id);
   }
   // Protect the full replacement set so co-registered unchanged blocks stay current.
   downstream(nodes, changed, inputIds);
   const ledger: TraceabilityLedger = {
     schemaVersion: 1,
-    featureId: input.current.featureId,
-    revision: input.current.revision + 1,
-    stateRevision: input.nextStateRevision,
-    projectConfigSha256: input.projectConfigSha256,
+    featureId: effectiveInput.current.featureId,
+    revision: effectiveInput.current.revision + 1,
+    stateRevision: effectiveInput.nextStateRevision,
+    projectConfigSha256: effectiveInput.projectConfigSha256,
     nodes,
     edges: deriveTraceEdges(nodes),
     summary: traceSummary(nodes),
   };
-  validateTraceGraph(ledger, input.route, "partial");
+  validateTraceGraph(ledger, effectiveInput.route, "partial");
   return ledger;
 }
 
@@ -491,10 +505,10 @@ export function assertTraceabilityComplete(ledger: TraceabilityLedger, route: Ro
 
 export function assertTraceSliceCurrent(ledger: TraceabilityLedger, route: RouteId, step: string, currentProjectConfigSha256: string): void {
   assertConfigCurrent(ledger, currentProjectConfigSha256);
-  const completeSteps = new Set(["plan_review", "implementation_approval", "implementation", "feature_check", "finalize"]);
+  const completeSteps = new Set(["planning", "implementation", "feature_check", "finalize"]);
   if (completeSteps.has(step)) return assertTraceabilityComplete(ledger, route, currentProjectConfigSha256);
   const requirements: TraceNode["kind"][] = ["requirement", "acceptance-criterion"];
-  if (["requirements", "requirement_confirmation"].includes(step)) {
+  if (["requirements"].includes(step)) {
     requireCurrentKinds(ledger, [...requirements]);
     try { validateTraceGraph(ledger, route, "partial"); }
     catch (error) { if (error instanceof DevFlowError) sliceError("TRACE_SLICE_INCOMPLETE", error.message, error.details); throw error; }

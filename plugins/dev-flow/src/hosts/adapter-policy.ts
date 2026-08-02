@@ -1,10 +1,11 @@
 import path from "node:path";
-import { gateBasisArtifacts } from "../core/gate-basis.js";
+import { approvalBasisArtifacts, confirmedApproval } from "../core/approval-basis.js";
 import { classifyGitCommand } from "../core/git-policy.js";
 import { readActive, readFeatureEvents, readProjectConfig, readRecoveryTransaction, readState, type FeatureState } from "../core/state-store.js";
 import { readTraceability } from "../core/traceability-store.js";
 import { readReviewLedger } from "../core/review-store.js";
 import { implementationUnitWriteBlock } from "../core/implementation-units.js";
+import { judgeWrite } from "../core/write-policy.js";
 
 /** Host adapters never mint review attestations or assurance; those enter only via MCP/Core. */
 
@@ -54,7 +55,7 @@ function projectRelative(root: string, target: string): string | undefined {
   const absolute = path.resolve(root, target);
   const relative = path.relative(root, absolute);
   if (relative === "" || relative.startsWith("..") || path.isAbsolute(relative)) return undefined;
-  return relative.split(path.sep).join("/");
+  return relative.split(path.sep).join("/").normalize("NFC");
 }
 
 function isProtected(root: string, target: string, protectedRoots: string[]): boolean {
@@ -467,7 +468,7 @@ async function loadActiveWorkflow(root: string): Promise<
     allowedArtifacts.add(relative);
   }
 
-  const approvalConfirmed = (state.humanGates.implementation_approval as { status?: string } | undefined)?.status === "confirmed";
+  const approvalConfirmed = Boolean(confirmedApproval(state));
 
   return {
     kind: "ready",
@@ -516,12 +517,20 @@ function classifyTarget(
       recoveryHint: "仅可编辑 active feature 已登记的非 status Markdown 资产",
     };
   }
-  const needsApproval = ["risk-minimal", "standard-m", "light-l", "standard-l"].includes(workflow.route ?? "");
-  if (needsApproval && !workflow.approvalConfirmed && isProtected(root, target, workflow.protectedRoots)) {
-    return {
-      code: "DEV_FLOW_IMPLEMENTATION_APPROVAL_REQUIRED",
-      recoveryHint: `目标位于受保护根目录；请完成路线步骤并等待实现批准（计划依据变更会使批准作废，需重新确认）${scratchHint}`,
-    };
+  if (workflow.state?.mode === "intake") {
+    const decision = judgeWrite({ mode: "intake", controlPath: false, protectedPath: isProtected(root, target, workflow.protectedRoots), impactResolved: false });
+    if (decision.decision === "block") return { code: "DEV_FLOW_IMPLEMENTATION_APPROVAL_REQUIRED", recoveryHint: "请先完成 intake 调查并锁定基础路线" };
+  }
+  if (workflow.state?.mode === "routed" && workflow.state.currentStage === "implementation" && isProtected(root, target, workflow.protectedRoots)) {
+    const approvalPending = workflow.state.obligations?.some((obligation) => obligation.kind === "approval" && obligation.status !== "satisfied") ?? false;
+    if (approvalPending && !workflow.approvalConfirmed) {
+      return {
+        code: "DEV_FLOW_IMPLEMENTATION_APPROVAL_REQUIRED",
+        recoveryHint: `目标位于受保护根目录；请完成当前执行确认义务后再写入${scratchHint}`,
+      };
+    }
+    const decision = judgeWrite({ mode: "routed", stage: "implementation", controlPath: false, protectedPath: true, impactResolved: true });
+    if (decision.decision !== "block") return undefined;
   }
   if (workflow.state && isProtected(root, target, workflow.protectedRoots)) {
     // Hooks delegate to the one Core judgment; they only map its codes.
@@ -550,19 +559,18 @@ async function revokedImplementationApprovalHint(root: string, featureId: string
   let lastConfirmedIndex = -1;
   for (let index = events.length - 1; index >= 0; index--) {
     const event = events[index];
-    const data = event.data as { gate?: string };
-    if ((event.type === "gate-confirmed" || event.type === "gate-interaction-resolved") && data.gate === "implementation_approval") {
+    const data = event.data as { approval?: string };
+    if ((event.type === "approval-confirmed" || event.type === "approval-interaction-resolved") && typeof data.approval === "string" && data.approval.startsWith("approval:")) {
       lastConfirmedIndex = index;
       break;
     }
   }
   if (lastConfirmedIndex < 0) return undefined;
-  const basis = gateBasisArtifacts.implementation_approval;
   for (let index = events.length - 1; index >= lastConfirmedIndex; index--) {
     const event = events[index];
     const data = event.data as { kind?: string; invalidationReason?: unknown };
     if ((event.type === "artifact-recorded" || event.type === "artifact-recorded-with-trace")
-      && data.kind !== undefined && basis.includes(data.kind)
+      && data.kind !== undefined && approvalBasisArtifacts.includes(data.kind)
       && data.invalidationReason) {
       return data.kind;
     }

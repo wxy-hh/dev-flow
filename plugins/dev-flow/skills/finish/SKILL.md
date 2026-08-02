@@ -1,8 +1,6 @@
 ---
 name: finish
-description: Git 写入前完成 feature 收尾。触发：收尾、finish、finalize、完成分支、df-finish、dev-flow-finish。当 dev_flow_next 返回 finalize 时使用。
+description: 完成验证与 finalize，生成交付快照。
 ---
 
-仅使用 Dev Flow MCP。调用 `dev_flow_status` / `dev_flow_next`；仅当返回 `finalize` 时使用 `dev_flow_finalize`。
-
-若 progress 显示 verification stale、机器验证失败、requiredEvidence 未满足或 feature-check 未通过，停止并回到相应步骤；不得假装浏览器验收已完成。浏览器/用户签收是可选审计信息，缺失、拒绝或未回复都不阻塞 finalize。finalize 会校验 implementation 登记的文件清单并生成交付快照；只有 logic-complete 后才可考虑 Git 写入。
+只在 `dev_flow_next` 的 stage 为 finalize 且能力合同允许时调用 finalize。Finalize 会重新校验实际 diff、验证新鲜度、风险义务、审查结论和交付快照；失败时按 RecoveryAction 修复并继续，不假装完成。只有 logic-complete 后才允许 Git 写入。

@@ -19,6 +19,7 @@ export function traceDeltaFor(kind, route) {
     return {
       nodes: [
         { kind: "task", id: "TASK-001", covers: ["REQ-001", "AC-001"], rollbackUnit: "RU-001" },
+        { kind: "test", id: "TEST-001", verifies: ["AC-001"] },
         {
           kind: "rollback", id: "RU-001", tasks: ["TASK-001"], dependsOn: [], fileScope: ["src"], covers: ["REQ-001", "AC-001"],
           forwardVerification: ["unit"], rollbackVerification: ["unit"],
@@ -27,7 +28,16 @@ export function traceDeltaFor(kind, route) {
     };
   }
   if (kind === "implementation-plan" && route === "standard-l") {
-    return { nodes: [{ kind: "task", id: "TASK-001", covers: ["REQ-001", "AC-001"], rollbackUnit: "RU-001" }] };
+    return {
+      nodes: [
+        { kind: "task", id: "TASK-001", covers: ["REQ-001", "AC-001"], rollbackUnit: "RU-001" },
+        { kind: "test", id: "TEST-001", verifies: ["AC-001"] },
+        {
+          kind: "rollback", id: "RU-001", tasks: ["TASK-001"], dependsOn: [], fileScope: ["src"], covers: ["REQ-001", "AC-001"],
+          forwardVerification: ["unit"], rollbackVerification: ["unit"],
+        },
+      ],
+    };
   }
   if (kind === "coverage-matrix") return { nodes: [{ kind: "test", id: "TEST-001", verifies: ["AC-001"] }] };
   if (kind === "rollback-units" && route === "standard-l") {

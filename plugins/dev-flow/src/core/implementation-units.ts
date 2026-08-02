@@ -11,6 +11,7 @@ import { assertReviewComplete } from "./review-jobs.js";
 import { mutate, readProjectConfig, type FeatureState } from "./state-store.js";
 import { currentOpenStep } from "./step-order.js";
 import { assertTraceGateCurrent } from "./traceability-gates.js";
+import { confirmedApproval } from "./approval-basis.js";
 
 const digest = (value: string) => createHash("sha256").update(value).digest("hex");
 
@@ -30,7 +31,7 @@ function currentRollbackNodes(ledger: TraceabilityLedger | undefined): RollbackN
 export function implementationUnitBasisHash(state: FeatureState): string {
   return digest(canonicalReviewValueJson({
     traceability: state.traceability,
-    approval: state.humanGates.implementation_approval ?? null,
+    approval: confirmedApproval(state)?.record ?? null,
   }));
 }
 
@@ -45,8 +46,7 @@ export function implementationUnitWriteBlock(
 ): ImplementationUnitWriteBlock | undefined {
   if (!checkpointsEnforcementRequired(state.route, state.workflowCapabilities)) return undefined;
   if (currentOpenStep(state) !== "implementation") return undefined;
-  const approval = state.humanGates.implementation_approval as { status?: string } | undefined;
-  if (approval?.status !== "confirmed") return undefined;
+  if (!confirmedApproval(state)) return undefined;
   const active = (state.implementationUnits ?? []).find((unit) => unit.status === "active");
   if (!active) {
     return {
@@ -90,14 +90,15 @@ export async function beginImplementationUnit(
     if (currentOpenStep(state) !== "implementation") {
       throw new DevFlowError("STEP_OUT_OF_ORDER", "begin requires the implementation step", { expected: currentOpenStep(state) });
     }
-    const approval = state.humanGates.implementation_approval as { status?: string } | undefined;
-    if (approval?.status !== "confirmed") {
+    if (!confirmedApproval(state)) {
       throw new DevFlowError("DEV_FLOW_IMPLEMENTATION_APPROVAL_REQUIRED", "implementation approval must be confirmed before beginning a unit");
     }
     const ledger = await assertTraceGateCurrent(root, state, "implementation");
     // "Basis current" also means every registered trace artifact still matches
     // its recorded SHA-256; the ledger alone only tracks semantic staleness.
-    for (const kind of ["requirements", "implementation-plan", "coverage-matrix", ...(state.route === "standard-l" ? ["rollback-units"] : [])]) {
+    // Coverage and rollback projections are derived from the implementation
+    // plan trace delta; only editable source artifacts need an integrity check.
+    for (const kind of ["requirements", "implementation-plan"]) {
       await assertArtifactCurrent(root, id, state, kind);
     }
     if (reviewEnforcementRequired(state.route, state.workflowCapabilities)) {

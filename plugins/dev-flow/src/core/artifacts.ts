@@ -5,7 +5,7 @@ import { reviewEnforcementRequired, routeDefinitionForFeature, traceEnforcementR
 import type { TraceArtifactKind, TraceDelta } from "../policy/traceability.js";
 import { renderArtifactTemplate } from "./artifact-templates.js";
 import { DevFlowError } from "./errors.js";
-import { gatesInvalidatedByArtifact } from "./gate-basis.js";
+import { approvalIds } from "./approval-basis.js";
 import { mutate, mutatePrepared, readState, type FeatureState, type PreparedMutationOptions } from "./state-store.js";
 import { currentOpenStep } from "./step-order.js";
 import { parseTraceSourceBlocks } from "./traceability-anchors.js";
@@ -13,40 +13,27 @@ import { applyTraceDelta } from "./traceability.js";
 import { readProjectConfigSnapshot, readTraceabilityForArtifactReplacement, type TraceStoreOptions, writeTraceSnapshot } from "./traceability-store.js";
 import { clearInteractionsByKind, clearInteractionsForTarget } from "./user-interactions.js";
 import { prepareReviewInvalidation } from "./review-store.js";
+import { reopenObligations } from "../policy/obligations.js";
+import { normalizeUnicode } from "./path-normalization.js";
 
 const names: Record<string, string> = {
-  status: "状态文档.md",
-  "risk-card": "风险文档.md",
   requirements: "需求文档.md",
-  "implementation-plan": "计划文档.md",
-  "coverage-matrix": "覆盖矩阵文档.md",
-  "boundary-card": "边界文档.md",
-  "rollback-safety": "回滚安全文档.md",
-  verification: "验证文档.md",
-  "rollback-units": "回滚单元文档.md",
-  "plan-review": "计划审核文档.md",
-  "code-review": "代码审核文档.md",
+  "implementation-plan": "实施计划.md",
 };
 const hash = (value: string) => createHash("sha256").update(value).digest("hex");
 const featureDirectory = (root: string, id: string) => path.join(root, ".dev-flow", "features", id);
-const traceArtifactKinds = new Set(["requirements", "implementation-plan", "coverage-matrix", "rollback-units"]);
-const traceArtifactKindList = new Set<TraceArtifactKind>(["requirements", "implementation-plan", "coverage-matrix", "rollback-units"]);
+const traceArtifactKinds = new Set(["requirements", "implementation-plan"]);
+const traceArtifactKindList = new Set<TraceArtifactKind>(["requirements", "implementation-plan"]);
 
 interface ArtifactInvalidation {
-  gates: string[];
   /** The source step remains satisfied; every later step is invalidated. */
   afterStep?: string;
 }
 
 /** The sole mapping from editable evidence to approvals and dependent workflow state. */
 const artifactInvalidations: Record<string, ArtifactInvalidation> = {
-  requirements: { gates: ["requirement_confirmation", "implementation_approval"], afterStep: "requirements" },
-  "implementation-plan": { gates: ["implementation_approval"], afterStep: "implementation_plan" },
-  "coverage-matrix": { gates: ["implementation_approval"], afterStep: "coverage_review" },
-  "rollback-units": { gates: ["implementation_approval"], afterStep: "rollback_unit" },
-  "risk-card": { gates: ["implementation_approval"] },
-  "boundary-card": { gates: ["implementation_approval"] },
-  "rollback-safety": { gates: ["implementation_approval"] },
+  requirements: { afterStep: "requirements_alignment" },
+  "implementation-plan": { afterStep: "planning" },
 };
 
 export interface RecordArtifactWithTraceOptions {
@@ -58,7 +45,7 @@ function template(state: FeatureState, id: string, kind: string): string {
   if (traceArtifactKinds.has(kind)) {
     return renderArtifactTemplate({ featureId: id, route: state.route, requirementsState: state.classification.requirements }, kind);
   }
-  return `---\ndev_flow:\n  schema_version: 1\n  feature_id: ${id}\n  route: ${state.route}\n  kind: ${kind}\n---\n\n# ${kind}\n\n`;
+  return `---\ndev_flow:\n  schema_version: 2\n  feature_id: ${id}\n  route: ${state.route}\n  kind: ${kind}\n---\n\n# ${kind}\n\n`;
 }
 
 function effectiveRoute(state: FeatureState) {
@@ -84,18 +71,16 @@ function assertManualRegistrationAllowed(state: FeatureState, kind: string, trac
 }
 
 function invalidateArtifactDependents(state: FeatureState, kind: string, reason: "artifact-changed" | "trace-changed"): void {
-  const rule = artifactInvalidations[kind] ?? { gates: gatesInvalidatedByArtifact(kind) };
-  for (const gate of new Set([...rule.gates, ...gatesInvalidatedByArtifact(kind)])) {
-    delete state.humanGates[gate];
-    delete state.steps[gate];
-    clearInteractionsForTarget(state, `gate:${gate}`);
+  const rule = artifactInvalidations[kind] ?? {};
+  for (const approval of approvalIds(state)) {
+    delete state.humanGates[approval];
+    clearInteractionsForTarget(state, `approval:${approval}`);
   }
   if (rule.afterStep) {
     const ordered = effectiveRoute(state).orderedSteps;
     const sourceIndex = ordered.indexOf(rule.afterStep);
     for (const step of ordered.slice(sourceIndex + 1)) {
       delete state.steps[step];
-      clearInteractionsForTarget(state, `gate:${step}`);
     }
   }
   if (kind === "requirements") clearInteractionsByKind(state, "grill");
@@ -103,6 +88,7 @@ function invalidateArtifactDependents(state: FeatureState, kind: string, reason:
   delete state.steps.feature_check;
   state.logicComplete = false;
   delete state.steps.finalize;
+  state.obligations = reopenObligations(state.obligations, ["approval"]);
   // Keep the precise causal reason in the mutation event rather than state schema.
   void reason;
 }
@@ -110,7 +96,7 @@ function invalidateArtifactDependents(state: FeatureState, kind: string, reason:
 export async function assertArtifactCurrent(root: string, id: string, state: FeatureState, kind: string): Promise<string> {
   const artifact = state.artifacts[kind];
   if (!artifact) throw new DevFlowError("MISSING_REQUIRED_ARTIFACT", kind);
-  const contents = await readFile(path.join(featureDirectory(root, id), artifact.path), "utf8");
+  const contents = await readFile(path.join(featureDirectory(root, id), normalizeUnicode(artifact.path)), "utf8");
   if (hash(contents) !== artifact.sha256) throw new DevFlowError("ARTIFACT_INTEGRITY_FAILED", kind);
   return contents;
 }
@@ -126,7 +112,7 @@ export async function scaffoldArtifact(root: string, id: string, expectedRevisio
     ? [...(route.artifactSteps?.[currentStep] ?? []), ...(route.generatedArtifactSteps?.[currentStep] ?? [])]
     : [];
   if (!requiredNow.includes(kind)) throw new DevFlowError("ARTIFACT_OUT_OF_ORDER", `${kind} is not required by ${currentStep ?? "a pending step"}`, { expectedStep: currentStep });
-  const filename = names[kind]; if (!filename) throw new DevFlowError("INVALID_ARTIFACT", "unknown artifact kind"); const target = path.join(featureDirectory(root, id), filename);
+  const filename = names[kind] ? normalizeUnicode(names[kind]) : undefined; if (!filename) throw new DevFlowError("INVALID_ARTIFACT", "unknown artifact kind"); const target = path.join(featureDirectory(root, id), filename);
   const content = template(state, id, kind); await writeFile(target, content, { flag: "wx" }).catch(async (error) => { if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error; });
   const contents = await readFile(target, "utf8"); return mutate(root, id, expectedRevision, "artifact-scaffolded", (current) => { current.artifacts[kind] = { path: filename, sha256: hash(contents) }; });
 }
@@ -135,9 +121,9 @@ export async function recordArtifact(root: string, id: string, expectedRevision:
   const state = await readState(root, id);
   assertManualRegistrationAllowed(state, kind, false);
   const artifact = state.artifacts[kind]; if (!artifact) throw new DevFlowError("MISSING_REQUIRED_ARTIFACT", kind);
-  const contents = await readFile(path.join(featureDirectory(root, id), artifact.path), "utf8"); const checksum = hash(contents);
+  const contents = await readFile(path.join(featureDirectory(root, id), normalizeUnicode(artifact.path)), "utf8"); const checksum = hash(contents);
   return mutate(root, id, expectedRevision, "artifact-recorded", (current) => {
-    current.artifacts[kind] = { ...artifact, sha256: checksum };
+    current.artifacts[kind] = { ...artifact, path: normalizeUnicode(artifact.path), sha256: checksum };
     invalidateArtifactDependents(current, kind, "artifact-changed");
   }, { kind, invalidationReason: "artifact-changed" });
 }
@@ -162,7 +148,7 @@ export async function recordArtifactWithTrace(
     assertManualRegistrationAllowed(current, artifactKind, true);
     const artifact = current.artifacts[artifactKind];
     if (!artifact) throw new DevFlowError("MISSING_REQUIRED_ARTIFACT", artifactKind);
-    const contents = await readFile(path.join(featureDirectory(root, id), artifact.path), "utf8");
+    const contents = await readFile(path.join(featureDirectory(root, id), normalizeUnicode(artifact.path)), "utf8");
     const artifactSha256 = hash(contents);
     const sourceBlocks = parseTraceSourceBlocks(contents);
     const { config, sha256: projectConfigSha256 } = await readProjectConfigSnapshot(root);

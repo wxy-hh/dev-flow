@@ -12,7 +12,7 @@ const artifacts = await loadSource("plugins/dev-flow/src/core/artifacts.ts");
 const checks = await loadSource("plugins/dev-flow/src/core/feature-check.ts");
 const checkpoints = await loadSource("plugins/dev-flow/src/core/checkpoints.ts");
 const verification = await loadSource("plugins/dev-flow/src/core/verification.ts");
-const gates = await loadSource("plugins/dev-flow/src/core/human-gates.ts");
+const gates = await loadSource("plugins/dev-flow/src/core/approval-interactions.ts");
 const next = await loadSource("plugins/dev-flow/src/core/next.ts");
 const reviewJobs = await loadSource("plugins/dev-flow/src/core/review-jobs.ts");
 const reviewStore = await loadSource("plugins/dev-flow/src/core/review-store.ts");
@@ -92,8 +92,8 @@ async function completeReviewJobs(root, featureId, state, batch, options = {}) {
 
 async function satisfyHumanGate(root, featureId, state, step, options = {}) {
   await assertNext(root, featureId, { kind: "present-human-gate", step });
-  const current = await gates.presentGate(root, featureId, state.revision, step);
-  const reply = step === "requirement_confirmation" ? "确认需求" : "批准实现";
+  const current = await gates.presentApproval(root, featureId, state.revision, step);
+  const reply = "批准实现";
   const eventId = `${step}-prompt-${current.revision}`;
   const host = options.gateHosts?.[step] ?? options.host ?? "claude";
   await store.recordHostEvent(root, {
@@ -102,7 +102,7 @@ async function satisfyHumanGate(root, featureId, state, step, options = {}) {
     host,
     text: reply,
   });
-  return gates.confirmGate(
+  return gates.confirmApproval(
     root,
     featureId,
     current.revision,
@@ -118,7 +118,7 @@ async function materializeScaffold(root, featureId, state, kind, requirementsSta
   if (!current.artifacts[kind]) {
     current = await artifacts.scaffoldArtifact(root, featureId, current.revision, kind);
   }
-  if (TRACE_KINDS.has(kind)) {
+  if (TRACE_KINDS.has(kind) && ["standard-m", "standard-l"].includes(current.route)) {
     return registerTraceFixture({
       root,
       featureId,
@@ -239,6 +239,7 @@ async function driveUntil(root, featureId, state, options = {}) {
         continue;
       }
       if (action.step === "verification") {
+        if (options.beforeVerification) await options.beforeVerification(root, current);
         current = await verification.runVerification(root, featureId, current.revision, options.host ?? "claude");
         continue;
       }
@@ -250,7 +251,9 @@ async function driveUntil(root, featureId, state, options = {}) {
       );
       if (action.step === "implementation") {
         const files = options.implementationFiles ?? { "src/main.js": "export const m = 1;\n" };
-        if (!contract.checkpointsEnforcementRequired(current.route, current.workflowCapabilities)) {
+        if (options.beforeImplementation) {
+          await options.beforeImplementation(root, current);
+        } else if (!contract.checkpointsEnforcementRequired(current.route, current.workflowCapabilities)) {
           for (const [file, contents] of Object.entries(files)) {
             await mkdir(path.dirname(path.join(root, file)), { recursive: true });
             await writeFile(path.join(root, file), contents);

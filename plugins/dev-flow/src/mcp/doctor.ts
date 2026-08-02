@@ -213,7 +213,7 @@ export async function collectDoctorReport(root: string, pluginRoot: string, vers
     pointerPresent: boolean;
     orphanSnapshots: string[];
   } | undefined;
-  if (traceState) {
+  if (traceState && traceState.mode !== "intake") {
     const enforced = traceEnforcementRequired(traceState.route, traceState.workflowCapabilities);
     const orphanSnapshots = await listOrphanTraceSnapshots(root, traceState);
     trace = { enforced, pointerPresent: Boolean(traceState.traceability), orphanSnapshots };
@@ -251,7 +251,7 @@ export async function collectDoctorReport(root: string, pluginRoot: string, vers
     pointerPresent: boolean;
     orphanSnapshots: string[];
   } | undefined;
-  if (traceState) {
+  if (traceState && traceState.mode !== "intake") {
     const enforced = reviewEnforcementRequired(traceState.route, traceState.workflowCapabilities);
     const orphanSnapshots = await listOrphanReviewSnapshots(root, traceState);
     review = { enforced, pointerPresent: Boolean(traceState.review), orphanSnapshots };
@@ -301,6 +301,20 @@ export async function collectDoctorReport(root: string, pluginRoot: string, vers
   const invalidJson = (await Promise.all(jsonFiles.map(async (file) => !(await validJson(file))))).some(Boolean);
   add(invalidJson ? "PLUGIN_WIRING_INVALID" : "PLUGIN_WIRING_VALID", invalidJson ? "error" : "ok", invalidJson ? "a manifest, MCP file, or hook file is not valid JSON" : "plugin manifest, MCP and hook wiring parse successfully");
 
+  const legacyFeatures: string[] = [];
+  try {
+    const directory = path.join(root, ".dev-flow", "features");
+    const entries = await readdir(directory, { withFileTypes: true });
+    for (const entry of entries.filter((candidate) => candidate.isDirectory())) {
+      try {
+        const raw = JSON.parse(await readFile(path.join(directory, entry.name, "state.json"), "utf8")) as { schemaVersion?: unknown; lifecycle?: unknown };
+        if (raw.schemaVersion === 1 && raw.lifecycle !== "finalized" && raw.lifecycle !== "abandoned") legacyFeatures.push(entry.name);
+      } catch { /* corrupt features are already surfaced above */ }
+    }
+  } catch { /* no feature directory means there is nothing to upgrade */ }
+  const v2Ready = legacyFeatures.length === 0;
+  add(v2Ready ? "V2_READY" : "V2_NOT_READY", v2Ready ? "ok" : "warning", v2Ready ? "没有未完成的 v1 feature，可以使用 schema v2" : `仍有未完成的 v1 feature: ${legacyFeatures.join(", ")}`, v2Ready ? undefined : "先在 1.10 完成或放弃这些 feature，再使用 v2；doctor 不自动迁移或 abandon");
+
   return {
     version, root, pluginRoot, tools, project, activeFeature, corruptFeature, corruptActivePointer,
     recoveryTransaction: recoveryTxn ?? null,
@@ -308,6 +322,8 @@ export async function collectDoctorReport(root: string, pluginRoot: string, vers
     trace: trace ?? null,
     review: review ?? null,
     mcp: { server: "running", configuration: !invalidJson },
+    v2Ready,
+    legacyFeatures,
     diagnostics,
   };
 }

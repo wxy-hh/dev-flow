@@ -22,7 +22,7 @@ export function requiredEvidenceForStep(
   const orderedSteps = routeDefinition(route).orderedSteps;
   const risk = deriveRiskRequirements(riskLabels);
 
-  if (step === "plan_review") {
+  if (step === "planning") {
     const effectiveRoute = routeDefinitionForFeature(route, workflowCapabilities);
     if (effectiveRoute.generatedArtifacts?.includes("plan-review")) required.fields.reviewBatch = true;
     else required.fields.reviewType = "plan";
@@ -33,18 +33,14 @@ export function requiredEvidenceForStep(
     required.fields.reviewDepth = "full";
   }
 
-  if (risk.checks.includes("security")) {
-    const target = orderedSteps.includes("risk_controls") ? "risk_controls" : "code_review";
+  if (risk.checks.some((check) => check.includes("security"))) {
+    const target = orderedSteps.includes("code_review") ? "code_review" : "planning";
     if (step === target) addChecks(required.checks, ["security"]);
   }
 
   const rollbackChecks = risk.checks.filter((check) => check === "rollback" || check === "full-rollback");
   if (rollbackChecks.length) {
-    const target = orderedSteps.includes("risk_controls")
-      ? "risk_controls"
-      : orderedSteps.includes("rollback_safety")
-        ? "rollback_safety"
-        : "rollback_unit";
+    const target = orderedSteps.includes("planning") ? "planning" : "verification";
     if (step === target) addChecks(required.checks, rollbackChecks);
   }
 

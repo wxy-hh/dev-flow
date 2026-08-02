@@ -3,8 +3,9 @@ import { access, mkdir, open, readdir, readFile, rename, rm, rmdir, writeFile } 
 import { hostname } from "node:os";
 import path from "node:path";
 import { normalizeWorkflowCapabilities, reviewEnforcementRequired, routeDefinition, routeDefinitionForFeature, traceEnforcementRequired } from "../policy/contract.js";
-import { selectRoute } from "../policy/route.js";
-import { SUPPORTED_WORKFLOW_CAPABILITIES, type Classification, type ClassificationInput, type RouteId, type WorkflowCapabilities } from "../policy/types.js";
+import { selectBaseRoute, selectRoute } from "../policy/route.js";
+import { deriveObligations } from "../policy/obligations.js";
+import { SUPPORTED_WORKFLOW_CAPABILITIES, type Classification, type ClassificationBasis, type ClassificationFacts, type ClassificationInput, type ClassificationObligation, type DecisionRecord, type RouteId, type WorkflowCapabilities } from "../policy/types.js";
 import type { TraceabilityPointer } from "../policy/traceability.js";
 import type { ReviewPointer } from "../policy/review.js";
 import type { ImplementationUnitState } from "../policy/rollback.js";
@@ -17,13 +18,20 @@ import { inspectCurrentTrace } from "./traceability-gates.js";
 import { readProjectConfigSnapshot, writeTraceSnapshot } from "./traceability-store.js";
 import { emptyReviewLedger, prepareReviewInvalidation, writeReviewSnapshot } from "./review-store.js";
 import { prepareReviewProjection } from "./review-projection.js";
+import { createDecision, resolveDecision } from "./decision-ledger.js";
+import type { RepairState } from "./repair-loop.js";
+import { approvalIds } from "./approval-basis.js";
+import { normalizeUnicode } from "./path-normalization.js";
 
 export type Lifecycle = "active" | "paused" | "finalized" | "abandoned";
 export interface FeatureState {
-  schemaVersion: 1; featureId: string; revision: number; lifecycle: Lifecycle; route: RouteId; classification: Classification;
+  schemaVersion: 2; mode: "intake" | "routed"; featureId: string; revision: number; lifecycle: Lifecycle; route: RouteId; classification: Classification;
+  objective?: string; investigationSummary?: string; classificationBasis?: ClassificationBasis; obligations?: ClassificationObligation[]; decisionLedger?: DecisionRecord[]; currentStage?: string; repair?: RepairState;
+  /** Core-owned automatic checkpoint summaries for v2 implementation boundaries. */
+  checkpoints?: Array<{ checkpointId: string; stage: string; capturedAt: string; fingerprint: string; files: string[]; basisHash: string }>;
   scope: { inScope: string[]; outOfScope: string[] }; steps: Record<string, { status: "pending" | "satisfied"; evidence?: unknown }>;
   humanGates: Record<string, unknown>; artifacts: Record<string, { path: string; sha256: string }>; verification: { attempts: unknown[]; satisfiedByAttemptId?: number; verifiedFingerprint?: string };
-  /** Optional so v1 state written before interactive controls remains readable. */
+  /** Interactive controls are retained as a projection of the decision ledger. */
   interactions?: Record<string, unknown>;
   /** Optional so active features written before traceability capabilities remain readable. */
   workflowCapabilities?: WorkflowCapabilities;
@@ -83,9 +91,36 @@ function validateImplementationUnits(units: unknown): asserts units is Implement
 }
 export function validateFeatureState(value: unknown): asserts value is FeatureState {
   const state = value as Partial<FeatureState>;
-  if (state?.schemaVersion !== 1) throw new DevFlowError("UNSUPPORTED_STATE_SCHEMA", "only state schema v1 is supported");
-  if (typeof state.featureId !== "string" || !state.featureId || !Number.isInteger(state.revision) || (state.revision ?? -1) < 0 || !lifecycles.has(state.lifecycle as Lifecycle) || !routeDefinition(state.route as RouteId) || !state.classification || !state.scope || !Array.isArray(state.scope.inScope) || !Array.isArray(state.scope.outOfScope) || !state.steps || !state.humanGates || !state.artifacts || !state.verification || !Array.isArray(state.verification.attempts) || (state.interactions !== undefined && (typeof state.interactions !== "object" || state.interactions === null || Array.isArray(state.interactions))) || !state.featureCheck || !Array.isArray(state.blockingFindings) || typeof state.logicComplete !== "boolean" || !state.lastUpdatedBy) {
-    throw new DevFlowError("INVALID_STATE_SCHEMA", "state is not a valid v1 feature state");
+  if ((state as { schemaVersion?: unknown }).schemaVersion === 1) throw new DevFlowError("LEGACY_STATE_UNSUPPORTED", "feature state schema v1 is no longer supported", { recoveryHint: "Use the 1.10 doctor to finish or abandon the feature, then start it again under v2" });
+  if (state?.schemaVersion !== 2) throw new DevFlowError("UNSUPPORTED_STATE_SCHEMA", "only state schema v2 is supported");
+  if (state.mode !== "intake" && state.mode !== "routed") throw new DevFlowError("INVALID_STATE_SCHEMA", "state mode must be intake or routed");
+  if (typeof state.featureId !== "string" || !state.featureId || !Number.isInteger(state.revision) || (state.revision ?? -1) < 0 || !lifecycles.has(state.lifecycle as Lifecycle) || !state.scope || !Array.isArray(state.scope.inScope) || !Array.isArray(state.scope.outOfScope) || !state.steps || !state.humanGates || !state.artifacts || !state.verification || !Array.isArray(state.verification.attempts) || (state.interactions !== undefined && (typeof state.interactions !== "object" || state.interactions === null || Array.isArray(state.interactions))) || !state.featureCheck || !Array.isArray(state.blockingFindings) || typeof state.logicComplete !== "boolean" || !state.lastUpdatedBy) {
+    throw new DevFlowError("INVALID_STATE_SCHEMA", "state is not a valid v2 feature state");
+  }
+  if (state.mode === "intake") {
+    if (state.route !== undefined || state.classification !== undefined || state.classificationBasis !== undefined || state.obligations !== undefined) {
+      throw new DevFlowError("INVALID_STATE_SCHEMA", "intake state cannot contain route or classification fields");
+    }
+    if (state.decisionLedger !== undefined && (!Array.isArray(state.decisionLedger) || state.decisionLedger.some((decision) => !decision || typeof decision.id !== "string"))) {
+      throw new DevFlowError("INVALID_STATE_SCHEMA", "decisionLedger is invalid");
+    }
+    return;
+  }
+  if (!state.route || !routeDefinition(state.route as RouteId) || !state.classification || !state.classificationBasis || !Array.isArray(state.obligations)) {
+    throw new DevFlowError("INVALID_STATE_SCHEMA", "routed v2 state requires classification facts and obligations");
+  }
+  if (state.repair !== undefined && (typeof state.repair !== "object" || !["active", "stalled", "waiting-user", "completed"].includes(state.repair.status) || !Array.isArray(state.repair.attempts) || !Number.isInteger(state.repair.maxAttempts) || state.repair.maxAttempts < 1)) {
+    throw new DevFlowError("INVALID_STATE_SCHEMA", "repair state is invalid");
+  }
+  if (state.checkpoints !== undefined && (!Array.isArray(state.checkpoints) || state.checkpoints.some((checkpoint) => {
+    const item = checkpoint as { checkpointId?: unknown; stage?: unknown; capturedAt?: unknown; fingerprint?: unknown; files?: unknown; basisHash?: unknown };
+    return !item || typeof item.checkpointId !== "string" || !/^AUTO-[0-9a-f-]{10,}$/.test(item.checkpointId)
+      || typeof item.stage !== "string" || typeof item.capturedAt !== "string"
+      || typeof item.fingerprint !== "string" || !/^[a-f0-9]{64}$/.test(item.fingerprint)
+      || !Array.isArray(item.files) || item.files.some((file) => typeof file !== "string")
+      || typeof item.basisHash !== "string" || !/^[a-f0-9]{64}$/.test(item.basisHash);
+  }))) {
+    throw new DevFlowError("INVALID_STATE_SCHEMA", "automatic checkpoints are invalid");
   }
   if (state.workflowCapabilities !== undefined) {
     try { normalizeWorkflowCapabilities(state.workflowCapabilities); }
@@ -160,7 +195,10 @@ export function validateScopeInput(scope: unknown): { inScope: string[]; outOfSc
       recoveryHint: "Fix scope.inScope/outOfScope then call dev_flow_start again",
     });
   }
-  return { inScope: value.inScope as string[], outOfScope: value.outOfScope as string[] };
+  return {
+    inScope: (value.inScope as string[]).map(normalizeUnicode),
+    outOfScope: (value.outOfScope as string[]).map(normalizeUnicode),
+  };
 }
 
 const delay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -305,7 +343,9 @@ export async function startFeature(
     const active = await readActive(root);
     const lifecycle = input.activation ?? "active";
     if (lifecycle === "active" && active) throw new DevFlowError("ACTIVE_FEATURE_CONFLICT", "an active feature already exists");
-    const { classification, route } = selectRoute(input);
+    const objective = typeof input.objective === "string" && input.objective.trim().length > 0
+      ? input.objective.trim()
+      : "未命名需求";
     const project = await readProjectConfig(root);
     const startBusinessFingerprint = await fingerprintProtectedRoots(root, project.protectedRoots);
     const deliveryBaseline = await captureDeliveryBaseline(root, project.protectedRoots);
@@ -315,25 +355,13 @@ export async function startFeature(
     try {
       await mkdir(directory, { recursive: true });
       const workflowCapabilities = normalizeWorkflowCapabilities(SUPPORTED_WORKFLOW_CAPABILITIES);
-      const state: FeatureState = {
-        schemaVersion: 1, featureId: id, revision: 0, lifecycle, route, classification, scope, steps: {}, humanGates: {}, artifacts: {},
-        verification: { attempts: [] }, interactions: {}, workflowCapabilities, featureCheck: {}, startBusinessFingerprint, deliveryBaseline, blockingFindings: [], logicComplete: false,
+      const state = {
+        schemaVersion: 2, mode: "intake", featureId: id, revision: 0, lifecycle, objective, scope, steps: {}, humanGates: {}, artifacts: {},
+        verification: { attempts: [] }, interactions: {}, workflowCapabilities, checkpoints: [], featureCheck: {}, startBusinessFingerprint, deliveryBaseline, decisionLedger: [], blockingFindings: [], logicComplete: false,
         lastUpdatedBy: { host: input.host, pluginVersion: __DEV_FLOW_VERSION__ },
-      };
-      if (traceEnforcementRequired(route, workflowCapabilities)) {
-        const configSnapshot = await readProjectConfigSnapshot(root);
-        state.traceability = await writeTraceSnapshot(
-          root,
-          emptyTraceabilityLedger(id, 0, configSnapshot.sha256),
-          options.snapshotFault ? { fault: options.snapshotFault } : {},
-        );
-      }
-      if (reviewEnforcementRequired(route, workflowCapabilities)) {
-        state.review = await writeReviewSnapshot(root, emptyReviewLedger(id, 0));
-        // Store the immutable, content-addressed projection before state.json
-        // points at it. A failed write leaves this new feature uncommitted.
-        await prepareReviewProjection(root, state);
-      }
+      } as unknown as FeatureState;
+      // v2 always starts in intake. Classification is an explicit, atomic
+      // lock after repository investigation and user-owned decisions converge.
       validateFeatureState(state);
       await options.fault?.("before-state-commit");
       await writeAtomic(statePath(root, id), state);
@@ -344,7 +372,7 @@ export async function startFeature(
       try { await options.fault?.("after-state-commit"); } catch { failures.push("after-state-commit"); }
       try {
         await options.fault?.("before-event");
-        await appendEvent(root, id, state.revision, "started", { lifecycle, route });
+        await appendEvent(root, id, state.revision, "started", { lifecycle, mode: state.mode, objective });
       } catch { failures.push("event"); }
       if (lifecycle === "active") {
         try {
@@ -367,6 +395,97 @@ export async function startFeature(
     }
   } finally { await release(); }
 }
+
+export async function lockClassification(
+  root: string,
+  id: string,
+  expectedRevision: number,
+  facts: ClassificationFacts,
+): Promise<FeatureState> {
+  const selected = selectBaseRoute(facts);
+  if (selected.contradictions.length) {
+    throw new DevFlowError("CLASSIFICATION_CONTRADICTION", "classification facts contain unresolved contradictions", { contradictions: selected.contradictions });
+  }
+  const release = await lock(root, id, "lock-classification");
+  try {
+    const current = await readState(root, id);
+    if (current.revision !== expectedRevision) throw new DevFlowError("STATE_REVISION_CONFLICT", "state revision changed", { currentRevision: current.revision });
+    if (current.mode !== "intake") throw new DevFlowError("CLASSIFICATION_ALREADY_LOCKED", "classification is already locked");
+    const decisionRefs = new Set(facts.decisionRefs);
+    const openDecisions = (current.decisionLedger ?? []).filter((decision) => decision.status === "open" && (decisionRefs.has(decision.id) || decisionRefs.size === 0));
+    if (openDecisions.length) throw new DevFlowError("OPEN_CLASSIFICATION_DECISIONS", "classification-affecting decisions remain open", { decisionIds: openDecisions.map((decision) => decision.id), recoveryHint: "Resolve the listed decisions with grillme, then retry lock" });
+    const project = await readProjectConfig(root);
+    const capabilities = normalizeWorkflowCapabilities(SUPPORTED_WORKFLOW_CAPABILITIES);
+    return mutatePreparedLocked(root, id, expectedRevision, "classification-locked", async (_current, nextRevision) => {
+      const definition = routeDefinitionForFeature(selected.route, capabilities);
+      const traceability = traceEnforcementRequired(selected.route, capabilities)
+        ? await writeTraceSnapshot(root, emptyTraceabilityLedger(id, nextRevision, (await readProjectConfigSnapshot(root)).sha256))
+        : undefined;
+      const review = reviewEnforcementRequired(selected.route, capabilities)
+        ? await writeReviewSnapshot(root, emptyReviewLedger(id, nextRevision))
+        : undefined;
+      return { mutate: (draft) => {
+        draft.schemaVersion = 2;
+        draft.mode = "routed";
+        draft.route = selected.route;
+        draft.classification = selected.classification;
+        draft.classificationBasis = selected.classificationBasis;
+        draft.obligations = selected.obligations;
+        draft.currentStage = definition.orderedSteps[0];
+        draft.workflowCapabilities = capabilities;
+        draft.steps = Object.fromEntries(definition.orderedSteps.map((step) => [step, { status: "pending" as const }]));
+        draft.humanGates = {};
+        draft.artifacts = {};
+        draft.verification = { attempts: [] };
+        draft.featureCheck = {};
+        draft.logicComplete = false;
+        if (traceability) draft.traceability = traceability;
+        if (review) draft.review = review;
+        // Keep this read so a future project policy change cannot silently alter
+        // the basis between preview and lock.
+        void project;
+      } };
+    });
+  } finally { await release(); }
+}
+
+export async function recordDecision(
+  root: string,
+  id: string,
+  expectedRevision: number,
+  question: string,
+  factRefs: string[] = [],
+  host: "claude" | "codex" = "codex",
+): Promise<FeatureState> {
+  const decision = createDecision(question, factRefs);
+  return mutate(root, id, expectedRevision, "decision-opened", (draft) => {
+    const ledger = draft.decisionLedger ?? [];
+    if (ledger.some((candidate) => candidate.id === decision.id)) return;
+    draft.decisionLedger = [...ledger, decision];
+    draft.lastUpdatedBy = { host, pluginVersion: __DEV_FLOW_VERSION__ };
+  }, { decisionId: decision.id });
+}
+
+export async function resolveRecordedDecision(
+  root: string,
+  id: string,
+  expectedRevision: number,
+  decisionId: string,
+  evidence: string,
+  conclusion: string,
+  host: "claude" | "codex" = "codex",
+): Promise<FeatureState> {
+  return mutate(root, id, expectedRevision, "decision-resolved", (draft) => {
+    const ledger = draft.decisionLedger ?? [];
+    const index = ledger.findIndex((decision) => decision.id === decisionId);
+    if (index < 0) throw new DevFlowError("DECISION_NOT_FOUND", decisionId);
+    const next = [...ledger];
+    next[index] = resolveDecision(next[index], evidence, conclusion);
+    draft.decisionLedger = next;
+    draft.lastUpdatedBy = { host, pluginVersion: __DEV_FLOW_VERSION__ };
+  }, { decisionId });
+}
+
 export async function mutate(
   root: string,
   id: string,
@@ -1139,7 +1258,7 @@ function applyRouteTransition(state: FeatureState, selected: { classification: C
     previousArtifacts.has(kind) && nextArtifacts.has(kind)));
   const retainedSteps: FeatureState["steps"] = {};
   for (const step of nextDefinition.orderedSteps) {
-    if (["requirement_confirmation", "implementation_approval", "feature_check", "finalize", "verification"].includes(step)) break;
+    if (["feature_check", "finalize", "verification"].includes(step)) break;
     if (state.steps[step]?.status !== "satisfied") break;
     retainedSteps[step] = state.steps[step];
   }
@@ -1166,14 +1285,15 @@ async function implementationApprovalWasPresented(root: string, id: string): Pro
     });
   }
   for (const event of events) {
-    if (event.type !== "gate-presented" && event.type !== "gate-confirmed") continue;
-    const gate = (event.data as { gate?: unknown } | undefined)?.gate;
-    if (typeof gate !== "string") {
-      throw new DevFlowError("RECLASSIFICATION_HISTORY_UNREADABLE", "a historical gate event has no gate identity", {
+    if (event.type !== "approval-presented" && event.type !== "approval-confirmed") continue;
+    const approval = (event.data as { approvalId?: unknown; approval?: unknown } | undefined)?.approvalId
+      ?? (event.data as { approval?: unknown } | undefined)?.approval;
+    if (typeof approval !== "string") {
+      throw new DevFlowError("RECLASSIFICATION_HISTORY_UNREADABLE", "a historical approval event has no obligation identity", {
         recoveryHint: "Finish the current standard route or abandon and restart; old ambiguous gate history cannot downgrade",
       });
     }
-    if (gate === "implementation_approval") return true;
+    if (approval.startsWith("approval:")) return true;
   }
   return false;
 }
@@ -1258,9 +1378,12 @@ export async function reclassifyFeature(
         recoveryHint: "Finish the current standard route or abandon and restart",
       });
     }
-    const approval = draft.humanGates.implementation_approval as { status?: string } | undefined;
-    if (historicalApproval || approval?.status === "pending" || approval?.status === "returned" || approval?.status === "confirmed") {
-      throw new DevFlowError("RECLASSIFICATION_DOWNGRADE_FORBIDDEN", "implementation_approval already presented or confirmed", {
+    const approvalPresented = approvalIds(draft).some((approvalId) => {
+      const record = draft.humanGates[approvalId] as { status?: string } | undefined;
+      return record?.status === "pending" || record?.status === "returned" || record?.status === "confirmed";
+    });
+    if (historicalApproval || approvalPresented) {
+      throw new DevFlowError("RECLASSIFICATION_DOWNGRADE_FORBIDDEN", "approval obligation already presented or confirmed", {
         recoveryHint: "Finish the current standard route or abandon and restart",
       });
     }

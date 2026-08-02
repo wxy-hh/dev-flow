@@ -29,6 +29,7 @@ import {
 } from "./state-store.js";
 import { readProjectConfigSnapshot, readTraceability } from "./traceability-store.js";
 import { runVerificationCommand } from "./verification.js";
+import { approvalIds } from "./approval-basis.js";
 import {
   clearInteractionsForTarget,
   createInteraction,
@@ -358,6 +359,7 @@ export async function previewRollback(root: string, featureId: string, targetChe
 
 /** Read-only rollback summary for StatusView; conflicts are reported, never thrown. */
 export async function rollbackChainView(root: string, state: FeatureState): Promise<RollbackChainView> {
+  if (state.mode === "intake") return { enforced: false, chain: [], validTargets: [], conflicts: [] };
   if (!checkpointsEnforcementRequired(state.route, state.workflowCapabilities)) {
     return { enforced: false, chain: [], validTargets: [], conflicts: [] };
   }
@@ -1361,8 +1363,13 @@ async function commitRollbackState(root: string, featureId: string, journal: Rol
         delete earliest.startedFingerprint;
         delete earliest.beginNonce;
         if (!basisKept) {
-          delete draft.humanGates.implementation_approval;
-          clearInteractionsForTarget(draft, "gate:implementation_approval");
+          for (const approvalId of approvalIds(draft)) {
+            delete draft.humanGates[approvalId];
+            clearInteractionsForTarget(draft, `approval:${approvalId}`);
+          }
+          draft.obligations = (draft.obligations ?? []).map((obligation) => obligation.kind === "approval"
+            ? { ...obligation, status: "pending" as const }
+            : obligation);
         }
         // Units registered after the checkpoints (an amended plan) join as pending.
         const basisHash = implementationUnitBasisHash(draft);

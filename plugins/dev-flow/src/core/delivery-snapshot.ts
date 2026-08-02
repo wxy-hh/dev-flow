@@ -4,6 +4,7 @@ import { lstat, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { promisify } from "node:util";
 import { DevFlowError } from "./errors.js";
+import { normalizeProjectPath, normalizeUnicode } from "./path-normalization.js";
 import type { ProjectConfig } from "./project-config.js";
 import type { FeatureState } from "./state-store.js";
 
@@ -45,8 +46,8 @@ function nulItems(value: string): string[] {
 }
 
 function normalizePath(value: string): string {
-  const slashPath = value.replaceAll("\\\\", "/");
-  const normalized = path.posix.normalize(slashPath);
+  const slashPath = normalizeUnicode(value).replaceAll("\\", "/");
+  const normalized = normalizeProjectPath(slashPath);
   if (!normalized || path.posix.isAbsolute(normalized) || normalized.startsWith("../")
     || normalized === ".." || normalized.startsWith(".dev-flow/") || normalized !== slashPath) {
     throw new DevFlowError("INVALID_IMPLEMENTATION_FILE", "implementation files must be normalized project-relative protected paths", {

@@ -1,5 +1,6 @@
 import path from "node:path";
 import { DevFlowError } from "./errors.js";
+import { normalizeProjectPath } from "./path-normalization.js";
 
 export interface VerificationCommand { id: string; command: string; args: string[]; cwd: string }
 export interface ProjectConfig {
@@ -15,8 +16,7 @@ function relativeDirectory(value: string): boolean {
 
 function normalizedRelativeDirectory(value: string): string | undefined {
   if (!relativeDirectory(value)) return undefined;
-  const slashPath = value.replaceAll("\\\\", "/");
-  const normalized = path.posix.normalize(slashPath).replace(/\/+$/u, "");
+  const normalized = normalizeProjectPath(value).replace(/\/+$/u, "");
   return normalized || undefined;
 }
 

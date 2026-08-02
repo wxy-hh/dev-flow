@@ -21,6 +21,7 @@ import { assertTraceGateCurrent } from "./traceability-gates.js";
 import { readTraceability } from "./traceability-store.js";
 import { invalidateStaleVerification } from "./verification.js";
 import { assertReviewComplete } from "./review-jobs.js";
+import { captureAutomaticCheckpoint } from "./auto-checkpoint.js";
 
 function assertRequiredEvidence(step: string, required: RequiredEvidence, evidence: unknown): void {
   const missing = missingRequiredEvidence(required, evidence);
@@ -52,19 +53,19 @@ export async function recordStep(
       files,
     };
   }
-  return mutate(root, id, expectedRevision, "step-recorded", async (state) => {
+  const next = await mutate(root, id, expectedRevision, "step-recorded", async (state) => {
     if (state.lifecycle !== "active") {
       throw new DevFlowError("INVALID_LIFECYCLE", "only active features can record steps");
     }
     const route = routeDefinitionForFeature(state.route, state.workflowCapabilities);
-    if (["requirement_confirmation", "implementation_approval", "verification", "feature_check", "finalize"].includes(step)
+    if (["verification", "feature_check", "finalize"].includes(step)
       || !route.orderedSteps.includes(step)) {
       throw new DevFlowError("INVALID_STEP", step);
     }
     assertCurrentStep(state, step);
     await assertRequirementsGrillSatisfied(root, id, state);
     await assertTraceGateCurrent(root, state, step);
-    if (step === "implementation" && checkpointsEnforcementRequired(state.route, state.workflowCapabilities)) {
+    if (step === "implementation" && state.schemaVersion !== 2 && checkpointsEnforcementRequired(state.route, state.workflowCapabilities)) {
       await assertImplementationUnitsComplete(root, state);
     }
     const required = requiredEvidenceForStep(
@@ -80,7 +81,16 @@ export async function recordStep(
       assertRequiredEvidence(step, required, normalizedEvidence);
     }
     state.steps[step] = { status: "satisfied", evidence: normalizedEvidence };
+    const next = route.orderedSteps.find((candidate) => state.steps[candidate]?.status !== "satisfied");
+    state.currentStage = next;
   });
+  if (next.schemaVersion === 2 && next.currentStage === "implementation" && !next.checkpoints?.length) {
+    return captureAutomaticCheckpoint(root, id, next.revision, "implementation", "implementation-entry");
+  }
+  if (step === "implementation" && next.schemaVersion === 2 && next.checkpoints?.length) {
+    return captureAutomaticCheckpoint(root, id, next.revision, "implementation", "implementation-complete");
+  }
+  return next;
 }
 
 async function assertImplementationUnitsComplete(root: string, state: FeatureState): Promise<void> {
@@ -187,5 +197,6 @@ export async function finalize(
     state.logicComplete = true;
     state.lifecycle = "finalized";
     state.steps.finalize = { status: "satisfied" };
+    state.currentStage = undefined;
   }, () => snapshot ? { deliverySnapshot: snapshot } : {});
 }

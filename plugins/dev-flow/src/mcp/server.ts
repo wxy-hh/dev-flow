@@ -4,11 +4,10 @@ import path from "node:path";
 import { recordArtifact, recordArtifactWithTrace, scaffoldArtifact } from "../core/artifacts.js";
 import { DevFlowError } from "../core/errors.js";
 import { featureCheck, finalize, recordStep } from "../core/feature-check.js";
-import { confirmGate, presentGate, resolveGateElicitation, resolveGateToken } from "../core/human-gates.js";
+import { confirmApproval, presentApproval, resolveApprovalElicitation, resolveApprovalToken } from "../core/approval-interactions.js";
 import {
-  initProject, startFeature, abandonFeature, reclassifyFeature, switchActive, recoverCorruptFeature, readState,
+  initProject, startFeature, lockClassification, recordDecision, resolveRecordedDecision, abandonFeature, reclassifyFeature, switchActive, recoverCorruptFeature, readState,
 } from "../core/state-store.js";
-import { nextAction } from "../core/next.js";
 import { readStatusView } from "../core/status.js";
 import { beginImplementationUnit } from "../core/implementation-units.js";
 import { checkpointImplementationUnit } from "../core/checkpoints.js";
@@ -49,12 +48,12 @@ const formElicitationEnabled = process.env.DEV_FLOW_ELICITATION_FORM === "1";
 const moduleDirectory = path.dirname(fileURLToPath(import.meta.url));
 const pluginRoot = path.basename(moduleDirectory) === "dist" ? path.resolve(moduleDirectory, "..") : path.resolve(moduleDirectory, "../..");
 const tools = [
-  "dev_flow_init_project", "dev_flow_classify", "dev_flow_start", "dev_flow_status", "dev_flow_next",
+  "dev_flow_init_project", "dev_flow_classify", "dev_flow_start", "dev_flow_lock_classification", "dev_flow_record_decision", "dev_flow_resolve_decision", "dev_flow_status", "dev_flow_next",
   "dev_flow_switch_active", "dev_flow_scaffold_artifact", "dev_flow_record_artifact", "dev_flow_record_step",
   "dev_flow_record_artifact_with_trace", "dev_flow_get_traceability",
   "dev_flow_create_review_batch", "dev_flow_get_review_job", "dev_flow_claim_review_job", "dev_flow_submit_review_job", "dev_flow_sample_review_job",
   "dev_flow_present_review_risk_acceptance", "dev_flow_resolve_review_risk_acceptance",
-  "dev_flow_present_gate", "dev_flow_confirm_gate", "dev_flow_reclassify", "dev_flow_verify",
+  "dev_flow_present_approval", "dev_flow_confirm_approval", "dev_flow_reclassify", "dev_flow_verify",
   "dev_flow_respond_interaction", "dev_flow_request_grill_decision", "dev_flow_resolve_grill_decision",
   "dev_flow_feature_check", "dev_flow_finalize", "dev_flow_abandon", "dev_flow_enable_windows_notifications", "dev_flow_doctor",
   "dev_flow_begin_implementation_unit", "dev_flow_checkpoint_implementation_unit", "dev_flow_preview_rollback",
@@ -73,6 +72,13 @@ const featureMutation = (extra: Record<string, unknown> = {}) => object(
 );
 
 const riskLabelsSchema = { type: "array", items: { enum: allowedRiskLabels }, uniqueItems: true };
+const classificationBasisSchema = object(["scopeFacts", "topologyFacts", "uncertaintyFacts", "riskFacts", "decisionRefs"], {
+  scopeFacts: { type: "array", items: string },
+  topologyFacts: { type: "array", items: string },
+  uncertaintyFacts: { type: "array", items: string },
+  riskFacts: { type: "object", additionalProperties: { type: "array", items: string } },
+  decisionRefs: { type: "array", items: string },
+});
 const traceArtifactKinds = ["requirements", "implementation-plan", "coverage-matrix", "rollback-units"] as const;
 const traceId = (prefix: string) => ({ type: "string", pattern: `^${prefix}-[0-9]{3,}$` });
 const stringArray = { type: "array", minItems: 1, items: string };
@@ -155,29 +161,44 @@ const toolSchemas: Record<string, { description: string; inputSchema: Record<str
       execution: { enum: ["light", "standard"] },
       requirements: { enum: ["missing-or-unclear", "documented-unconfirmed", "provided-confirmed"] },
       riskLabels: riskLabelsSchema,
+      classificationBasis: classificationBasisSchema,
       acceptanceAssistSuggested: { type: "boolean", description: "Offer optional browser/user acceptance help; never blocks the route." },
       manualAcceptanceRequired: { type: "boolean" },
     }),
     annotations: { readOnlyHint: true },
   },
   dev_flow_start: {
-    description: "Create a classified feature.",
-    inputSchema: object(["level", "topology"], {
-      level: { enum: ["XS", "S", "M", "L"] },
-      topology: { enum: ["local", "shared-contract", "multi-chain", "coordinated-rollback"] },
-      execution: { enum: ["light", "standard"] },
-      requirements: { enum: ["missing-or-unclear", "documented-unconfirmed", "provided-confirmed"] },
-      riskLabels: riskLabelsSchema,
-      acceptanceAssistSuggested: { type: "boolean", description: "Offer optional browser/user acceptance help; never blocks the route." },
-      manualAcceptanceRequired: { type: "boolean" },
+    description: "Create an unclassified intake feature.",
+    inputSchema: object(["featureId", "objective"], {
+      objective: string,
       featureId: string,
       activation: { enum: ["active", "paused"] },
       scope: scopeSchema,
       host: { enum: ["claude", "codex"] },
     }),
   },
+  dev_flow_lock_classification: {
+    description: "Atomically lock a classification after intake decisions are resolved.",
+    inputSchema: featureMutation({ classification: object(["level", "topology"], {
+      level: { enum: ["XS", "S", "M", "L"] },
+      topology: { enum: ["local", "shared-contract", "multi-chain", "coordinated-rollback"] },
+      execution: { enum: ["light", "standard"] },
+      requirements: { enum: ["missing-or-unclear", "documented-unconfirmed", "provided-confirmed"] },
+      riskLabels: riskLabelsSchema,
+      ...classificationBasisSchema.properties,
+      acceptanceAssistSuggested: { type: "boolean" },
+    })}),
+  },
+  dev_flow_record_decision: {
+    description: "Record one unresolved user-owned decision in the shared ledger.",
+    inputSchema: featureMutation({ question: string, factRefs: { type: "array", items: string }, host: { enum: ["claude", "codex"] } }),
+  },
+  dev_flow_resolve_decision: {
+    description: "Resolve one decision with normalized user evidence and conclusion.",
+    inputSchema: featureMutation({ decisionId: string, evidence: string, conclusion: string, host: { enum: ["claude", "codex"] } }),
+  },
   dev_flow_status: { description: "Read one feature StatusView (state + progress).", inputSchema: object(["featureId"], { featureId: string }), annotations: { readOnlyHint: true } },
-  dev_flow_next: { description: "Return the unique allowed next action.", inputSchema: object(["featureId"], { featureId: string }), annotations: { readOnlyHint: true } },
+  dev_flow_next: { description: "Return the current stage capability contract and any required attention.", inputSchema: object(["featureId"], { featureId: string }), annotations: { readOnlyHint: true } },
   dev_flow_switch_active: { description: "Atomically hand off the single active feature.", inputSchema: object(["fromFeatureId", "toFeatureId", "reason"], { fromFeatureId: string, toFeatureId: string, reason: string }) },
   dev_flow_scaffold_artifact: { description: "Create only the current route artifact. For editable artifacts, read the registered path before editing, then record it. Generated status artifacts are read-only: scaffold them and continue with the requested step; do not edit or record them.", inputSchema: featureMutation({ kind: string }) },
   dev_flow_record_artifact: { description: "Register an edited route artifact.", inputSchema: featureMutation({ kind: string }) },
@@ -257,11 +278,11 @@ const toolSchemas: Record<string, { description: string; inputSchema: Record<str
     description: "Execute a confirmed rollback as a resumable file transaction. Rolls back to the target checkpoint, undoing all later units in reverse order.",
     inputSchema: object(["featureId", "expectedRevision", "targetCheckpointId"], { featureId: string, expectedRevision: integer, targetCheckpointId: string }),
   },
-  dev_flow_present_gate: { description: "Present a strict human gate.", inputSchema: featureMutation({ gate: { enum: ["requirement_confirmation", "implementation_approval"] } }) },
-  dev_flow_confirm_gate: {
-    description: "Confirm a presented gate with later user evidence.",
+  dev_flow_present_approval: { description: "Present one Core-derived approval obligation.", inputSchema: featureMutation({ approvalId: string }) },
+  dev_flow_confirm_approval: {
+    description: "Confirm one presented approval obligation with later user evidence.",
     inputSchema: featureMutation({
-      gate: { enum: ["requirement_confirmation", "implementation_approval"] },
+      approvalId: string,
       userReply: string,
       promptEventId: string,
       turnBoundaryEventId: string,
@@ -269,7 +290,7 @@ const toolSchemas: Record<string, { description: string; inputSchema: Record<str
     }),
   },
   dev_flow_respond_interaction: {
-    description: "Resolve the current gate through its one-time text-token fallback.",
+    description: "Resolve the current approval or recovery interaction through its one-time text-token fallback.",
     inputSchema: featureMutation({
       interactionId: string,
       userReply: string,
@@ -482,7 +503,7 @@ function interactionEnvelope(
   };
 }
 
-/** Human gates must expose the exact preview that their basis hash commits to. */
+/** Rollback confirmations expose the exact preview that their basis hash commits to. */
 function rollbackGateMessage(preview: RollbackPreview): string {
   const files = preview.filePlan.map((action) => `${action.action === "restore" ? "恢复" : "删除"} ${action.path}`);
   const verification = preview.verificationCommands.map((command) => command.command);
@@ -670,8 +691,17 @@ async function call(name: string, a: any, connection: McpConnection) {
       };
     }
     case "dev_flow_start": return startFeature(root, { ...a, host: a.host ?? "codex" });
+    case "dev_flow_lock_classification": {
+      const classification = a.classification as Record<string, unknown>;
+      const { level, topology, execution, requirements, riskLabels, acceptanceAssistSuggested, scopeFacts, topologyFacts, uncertaintyFacts, riskFacts, decisionRefs } = classification;
+      return lockClassification(root, a.featureId, a.expectedRevision, {
+        level, topology, ...(execution ? { execution } : {}), ...(requirements ? { requirements } : {}),
+        ...(riskLabels ? { riskLabels } : {}), ...(acceptanceAssistSuggested !== undefined ? { acceptanceAssistSuggested } : {}),
+        scopeFacts, topologyFacts, uncertaintyFacts, riskFacts, decisionRefs,
+      } as any);
+    }
     case "dev_flow_status": return readStatusView(root, a.featureId);
-    case "dev_flow_next": return nextAction(root, a.featureId);
+    case "dev_flow_next": return (await readStatusView(root, a.featureId)).stageCapabilities;
     case "dev_flow_switch_active": return switchActive(root, a.fromFeatureId, a.toFeatureId, a.reason);
     case "dev_flow_scaffold_artifact": return scaffoldArtifact(root, a.featureId, a.expectedRevision, a.kind);
     case "dev_flow_record_artifact": return recordArtifact(root, a.featureId, a.expectedRevision, a.kind);
@@ -746,9 +776,15 @@ async function call(name: string, a: any, connection: McpConnection) {
           batchId: a.batchId,
           jobId: a.jobId,
           causeCode: code,
-        });
-      }
+      });
     }
+    }
+    case "dev_flow_record_decision": return recordDecision(
+      root, a.featureId, a.expectedRevision, a.question, a.factRefs ?? [], a.host ?? "codex",
+    );
+    case "dev_flow_resolve_decision": return resolveRecordedDecision(
+      root, a.featureId, a.expectedRevision, a.decisionId, a.evidence, a.conclusion, a.host ?? "codex",
+    );
     case "dev_flow_present_review_risk_acceptance": {
       assertReviewMutationInput(a, "dev_flow_present_review_risk_acceptance", [], ["findingIds"]);
       if (!Array.isArray(a.findingIds) || !a.findingIds.length || a.findingIds.some((findingId) => typeof findingId !== "string" || !findingId)) {
@@ -810,28 +846,26 @@ async function call(name: string, a: any, connection: McpConnection) {
       const result = await executeRollback(root, a.featureId, a.expectedRevision, a.targetCheckpointId);
       return { outcome: result.outcome, state: result.state, transactionId: result.transaction.transactionId };
     }
-    case "dev_flow_present_gate": {
-      const presentation = await presentGate(root, a.featureId, a.expectedRevision, a.gate);
-      emitAttentionNotification({ kind: "decision-required", featureId: a.featureId, decision: a.gate });
+    case "dev_flow_present_approval": {
+      const presentation = await presentApproval(root, a.featureId, a.expectedRevision, a.approvalId);
+      emitAttentionNotification({ kind: "decision-required", featureId: a.featureId, decision: "approval", approvalId: a.approvalId });
       const selection = await connection.elicit(
-        presentation.gateInteraction,
-        a.gate === "requirement_confirmation"
-          ? "请确认当前需求，或提出需要修改的意见。"
-          : "请确认当前实现计划，或提出需要修改的意见。",
+        presentation.approvalInteraction,
+        "请确认当前执行摘要，或提出需要修改的意见。",
       );
-      if (!selection) return interactionEnvelope(presentation, presentation.gateInteraction, "pending");
-      const state = await resolveGateElicitation(
-        root, a.featureId, presentation.revision, presentation.gateInteraction.id,
+      if (!selection) return interactionEnvelope(presentation, presentation.approvalInteraction, "pending");
+      const state = await resolveApprovalElicitation(
+        root, a.featureId, presentation.revision, presentation.approvalInteraction.id,
         selection.action, selection.comment, a.host ?? "codex",
       );
       return interactionEnvelope(
         state,
-        presentation.gateInteraction,
+        presentation.approvalInteraction,
         selection.action,
-        interactionResponse(state, presentation.gateInteraction.id),
+        interactionResponse(state, presentation.approvalInteraction.id),
       );
     }
-    case "dev_flow_confirm_gate": return confirmGate(root, a.featureId, a.expectedRevision, a.gate, a.userReply, { promptEventId: a.promptEventId, turnBoundaryEventId: a.turnBoundaryEventId }, a.host ?? "codex");
+    case "dev_flow_confirm_approval": return confirmApproval(root, a.featureId, a.expectedRevision, a.approvalId, a.userReply, { promptEventId: a.promptEventId, turnBoundaryEventId: a.turnBoundaryEventId }, a.host ?? "codex");
     case "dev_flow_respond_interaction": {
       const interaction = getInteraction(await readState(root, a.featureId), a.interactionId);
       if (interaction.kind === "rollback-confirmation") {
@@ -842,7 +876,7 @@ async function call(name: string, a: any, connection: McpConnection) {
         const response = interactionResponse(state, a.interactionId);
         return interactionEnvelope(state, toPublicInteraction(getInteraction(state, a.interactionId)), response?.action ?? "resolved", response);
       }
-      const state = await resolveGateToken(
+      const state = await resolveApprovalToken(
         root, a.featureId, a.expectedRevision, a.interactionId, a.userReply,
         { promptEventId: a.promptEventId, turnBoundaryEventId: a.turnBoundaryEventId }, a.host ?? "codex",
       );
@@ -916,7 +950,7 @@ async function dispatchRequest(message: { id?: unknown; method?: string; params?
         protocolVersion: message.params?.protocolVersion || "2024-11-05",
         serverInfo: { name: "dev-flow", version: __DEV_FLOW_VERSION__ },
         capabilities: { tools: {} },
-        instructions: "Classify before starting. Call dev_flow_next and execute exactly one returned action. A presented human gate opens as a pending interaction: present the natural-language hint from replyHint to the user (HUMAN GATE: reply 确认 to confirm or 修改需求: <意见> to request changes; grill: reply A/B/C or the option name). One-time reply tokens are a last-resort fallback only when the user cannot answer naturally. Use dev_flow_init_project before start.",
+        instructions: "Classify before starting. Read dev_flow_next for the current stage, activity, allowed action categories, completion criteria, obligations, and any required attention; choose suitable equivalent tools within that contract. A dynamically derived approval opens a pending interaction: present its natural-language hint to the user; grill questions may be answered with A/B/C or the option name. One-time reply tokens are a last-resort fallback only when the user cannot answer naturally. Use dev_flow_init_project before start.",
       });
       return;
     }

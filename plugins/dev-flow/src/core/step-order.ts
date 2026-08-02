@@ -10,9 +10,9 @@ export function assertCurrentStep(state: FeatureState, step: string): void {
   if (currentOpenStep(state) !== step) throw new DevFlowError("STEP_OUT_OF_ORDER", `${step} is not the current route step`, { expected: currentOpenStep(state) });
 }
 
-export function artifactsRequiredBeforeGate(state: FeatureState, gate: string): string[] {
+export function artifactsRequiredBeforeApproval(state: FeatureState, stage: string): string[] {
   const definition = routeDefinitionForFeature(state.route, state.workflowCapabilities);
-  const index = definition.orderedSteps.indexOf(gate);
+  const index = definition.orderedSteps.indexOf(stage);
   const required = [...new Set(definition.orderedSteps.slice(0, index).flatMap((step) => [
     ...(definition.artifactSteps?.[step] ?? []),
     ...(definition.generatedArtifactSteps?.[step] ?? []),

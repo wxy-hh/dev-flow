@@ -10,7 +10,69 @@ export type RiskLabel =
   | "availability"
   | "critical_correctness"
   | "irreversible_consequence";
-export type RouteId = "xs" | "s" | "risk-minimal" | "light-m" | "standard-m" | "light-l" | "standard-l";
+/** The only base routes in v2. Risk never creates another route. */
+export type RouteId = "xs" | "s" | "light-m" | "standard-m" | "light-l" | "standard-l";
+
+export type RiskObligationKind = "review" | "verification" | "rollback" | "approval" | "checkpoint";
+export type ObligationStatus = "pending" | "satisfied" | "stale";
+
+export interface ClassificationBasis {
+  scopeFacts: string[];
+  topologyFacts: string[];
+  uncertaintyFacts: string[];
+  riskFacts: Partial<Record<RiskLabel, string[]>>;
+  decisionRefs: string[];
+}
+
+export interface ClassificationFacts extends ClassificationBasis {
+  level: Level;
+  topology: Topology;
+  execution?: Execution;
+  requirements?: RequirementsState;
+  riskLabels?: RiskLabel[];
+  acceptanceAssistSuggested?: boolean;
+}
+
+export interface ClassificationObligation {
+  id: string;
+  kind: RiskObligationKind;
+  source: "route" | "risk" | "topology" | "uncertainty";
+  basisHash: string;
+  status: ObligationStatus;
+  reason: string;
+  roles?: string[];
+  verificationKinds?: VerificationKind[];
+}
+
+export interface StageCapabilityView {
+  stage: string;
+  activity: string;
+  allowedActions: string[];
+  completionCriteria: string[];
+  obligations: Array<Pick<ClassificationObligation, "id" | "kind" | "status" | "reason">>;
+  recoveryAction?: RecoveryAction;
+  attention?: { reason: string; required: true };
+}
+
+export type RecoveryAction =
+  | { kind: "retry"; reason: string }
+  | { kind: "refresh-status"; reason: string }
+  | { kind: "use-equivalent-operation"; reason: string }
+  | { kind: "repair-current-unit"; reason: string }
+  | { kind: "revise-plan"; reason: string }
+  | { kind: "reclassify"; reason: string }
+  | { kind: "ask-user"; reason: string; facts: string[]; impact: string; recommendation: string };
+
+export interface DecisionRecord {
+  id: string;
+  question: string;
+  status: "open" | "resolved" | "merged" | "dismissed";
+  evidence?: string;
+  conclusion?: string;
+  factRefs?: string[];
+  mergedInto?: string;
+  dismissedReason?: string;
+}
 
 export interface WorkflowCapabilities {
   trace: 0 | 1;
@@ -34,11 +96,14 @@ export const SUPPORTED_WORKFLOW_CAPABILITIES: WorkflowCapabilities = Object.free
 });
 
 export interface ClassificationInput {
-  level: Level;
-  topology: Topology;
+  level?: Level;
+  topology?: Topology;
   execution?: Execution;
   requirements?: RequirementsState;
   riskLabels?: RiskLabel[];
+  classificationBasis?: ClassificationBasis;
+  objective?: string;
+  scope?: { inScope: string[]; outOfScope: string[] };
   /** Suggest browser/user acceptance assistance without making it a route condition. */
   acceptanceAssistSuggested?: boolean;
   /** @deprecated Compatibility input; new state never persists this field. */
@@ -52,6 +117,7 @@ export interface Classification {
   requirements?: RequirementsState;
   riskLabels: RiskLabel[];
   acceptanceAssistSuggested: boolean;
+  classificationBasis?: ClassificationBasis;
 }
 
 export interface RouteDefinition {
@@ -153,28 +219,32 @@ export interface StepSnapshot {
 }
 
 export interface DeriveState {
-  schemaVersion: 1;
+  schemaVersion: 2;
   lifecycle: "active" | "paused" | "finalized" | "abandoned";
   route: RouteId;
   steps: Record<string, StepSnapshot | undefined>;
+  obligations?: ClassificationObligation[];
   blockingFindings?: Array<{ blocking: boolean }>;
   classificationViolatesTopology?: boolean;
   verificationFresh?: boolean;
   featureCheckFresh?: boolean;
   logicComplete?: boolean;
+  repair?: { status: "active" | "stalled" | "waiting-user" | "completed"; recoveryAction?: RecoveryAction };
 }
 
 export type NextAction =
   | { kind: "done" }
+  | { kind: "intake"; activity: "investigate" | "resolve-decision" | "lock-classification"; reason: string }
   | { kind: "stop"; reason: "reclassification-required" | "resolve-blocking-findings" }
+  | { kind: "waiting-user"; reason: string; recoveryAction: RecoveryAction }
   | { kind: "present-human-gate"; step: string }
   | { kind: "wait-human-gate"; step: string }
   | { kind: "scaffold-artifact"; step: string }
   /** Core owns the batch lifecycle before a review-enforced plan review can run. */
-  | { kind: "create-review-batch"; step: "plan_review" }
+  | { kind: "create-review-batch"; step: "planning" }
   | {
       kind: "review-jobs-pending";
-      step: "plan_review";
+      step: "planning";
       batchId: string;
       jobs: Array<{ jobId: string; role: ReviewRole; reviewDepth: ReviewDepth; status: "pending" | "claimed" | "sampling" | "submitted" }>;
     }

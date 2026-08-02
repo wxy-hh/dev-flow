@@ -11,3 +11,10 @@ test("rejects invalid project configuration", () => {
   assert.throws(() => validateProjectConfig({ ...valid, protectedRoots: ["../src"] }), /INVALID_PROJECT_CONFIG/);
   assert.throws(() => validateProjectConfig({ ...valid, verification: { ...valid.verification, commands: [{ ...valid.verification.commands[0], cwd: "/tmp" }] } }), /INVALID_PROJECT_CONFIG/);
 });
+
+test("canonicalizes decomposed Unicode in protected roots", () => {
+  const config = structuredClone(valid);
+  config.protectedRoots = ["src/需求a\u0301"];
+  assert.doesNotThrow(() => validateProjectConfig(config));
+  assert.deepEqual(config.protectedRoots, ["src/需求á"]);
+});

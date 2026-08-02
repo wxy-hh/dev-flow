@@ -1,6 +1,8 @@
 import { assertArtifactCurrent } from "./artifacts.js";
 import { DevFlowError } from "./errors.js";
 import { mutate, readFeatureEvents, readState, type FeatureState } from "./state-store.js";
+import { resolveDecision } from "./decision-ledger.js";
+import { decisionBasisHash } from "../policy/obligations.js";
 import {
   createInteraction,
   findInteractionForTarget,
@@ -129,6 +131,25 @@ export async function requestGrillDecision(
   if (initial.revision !== expectedRevision) {
     throw new DevFlowError("STATE_REVISION_CONFLICT", "state revision changed", { currentRevision: initial.revision });
   }
+  if (initial.mode === "intake") {
+    const target = `grill:${input.questionId}`;
+    const existing = findInteractionForTarget(initial, target);
+    if (existing) return { state: initial, interaction: toPublicInteraction(existing) };
+    let interaction: ReturnType<typeof createInteraction> | undefined;
+    const state = await mutate(root, id, expectedRevision, "intake-decision-presented", (draft) => {
+      interaction = createInteraction(draft, {
+        kind: "grill",
+        target,
+        basisHash: decisionBasisHash({ objective: draft.objective, questionId: input.questionId }),
+        question: input.question,
+        options: withMergeRemaining(input.options),
+      });
+      const ledger = draft.decisionLedger ?? [];
+      if (!ledger.some((decision) => decision.id === input.questionId)) ledger.push({ id: input.questionId, question: input.question, status: "open" });
+    }, { questionId: input.questionId, mode: "intake" });
+    if (!interaction) throw new DevFlowError("INTERACTION_NOT_CREATED", target);
+    return { state, interaction: toPublicInteraction(interaction) };
+  }
   const grill = await currentGrillQuestion(root, id, initial);
   if (grill.questionId !== input.questionId) {
     throw new DevFlowError("GRILL_QUESTION_MISMATCH", input.questionId, { expectedQuestionId: grill.questionId });
@@ -191,6 +212,23 @@ async function resolveGrillDecision(
   }
   const interaction = getInteraction(initial, interactionId);
   if (interaction.kind !== "grill" || interaction.status !== "pending") throw new DevFlowError("INTERACTION_NOT_PENDING", interactionId);
+  if (initial.mode === "intake") {
+    let response: InteractionResponse | undefined;
+    const state = await mutate(root, id, expectedRevision, "intake-decision-resolved", (draft) => {
+      response = input.source === "elicitation"
+        ? resolveNativeInteraction(draft, interactionId, input.action, input.comment, host)
+        : resolveTokenInteraction(draft, interactionId, input.userReply, host, "intake");
+      const index = (draft.decisionLedger ?? []).findIndex((decision) => decision.id === interaction.target.slice("grill:".length));
+      if (index >= 0 && response) {
+        const next = [...(draft.decisionLedger ?? [])];
+        next[index] = resolveDecision(next[index], input.source === "elicitation" ? (input.comment ?? "用户选择") : input.userReply, response.action);
+        draft.decisionLedger = next;
+      }
+      draft.lastUpdatedBy = { host, pluginVersion: __DEV_FLOW_VERSION__ };
+    }, { interactionId, mode: "intake" });
+    if (!response) throw new DevFlowError("INTERACTION_NOT_RESOLVED", interactionId);
+    return { state, interaction: toPublicInteraction(getInteraction(state, interactionId)), response };
+  }
   const grill = await currentGrillQuestion(root, id, initial);
   if (interaction.target !== `grill:${grill.questionId}` || interaction.basisHash !== initial.artifacts.requirements.sha256) {
     throw new DevFlowError("GRILL_BASIS_CHANGED", interactionId, { recoveryHint: "需求文档已变更，请重新登记后请求新的决策" });

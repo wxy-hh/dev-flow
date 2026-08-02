@@ -10,13 +10,13 @@ Dev Flow 是面向 **Claude Code** 与 **Codex CLI** 的预构建双宿主插件
 
 更细的契约见 [路线说明](docs/routes.md)、[架构](docs/architecture.md)、[发布](docs/publishing.md)。
 
-## Traceability（1.10.0+）
+## v2 可追溯性（2.0.0+）
 
-标准 M/L 的 requirements、implementation plan、coverage matrix 与 standard L rollback units 通过 `dev_flow_record_artifact_with_trace` 原子登记；`dev_flow_get_traceability` 只读查看 pointer、ledger、summary 与 blocker。Markdown 只用于叙述，内容寻址 snapshot 才是事实层，state pointer 是提交点。不要直接写 `.dev-flow/features/*/traceability/**`。
+标准 M/L 的需求与实施计划通过 `dev_flow_record_artifact_with_trace` 原子登记；`dev_flow_get_traceability` 只读查看 pointer、ledger、summary 与 blocker。Markdown 只用于叙述，内容寻址 snapshot 才是事实层，state pointer 是提交点。不要直接写 `.dev-flow/features/*/traceability/**`。
 
 generated status 只由 Core scaffold/refresh；standard L 没有 status 文件，应读取 `dev_flow_status`。
 
-**Review 2a / 4B**：新 standard M/L feature 使用不可变 review batch 与 Core 生成的只读 `plan-review` 投影。默认保证等级为 `multi-perspective`（多角色完成 ≠ 已证明多代理）。可选服务端采样可升至 `independent-sampling`；可选宿主 subagent attestation 最多 `multi-agent-attested`（不是 verified）。`review: 0` 的既有 feature 继续旧 plan-review artifact/evidence。Checkpoints（`checkpoints: 1`）1.7.0+ 在 standard M/L 启用：implementation 通过 rollback unit 管理受保护文件写入权限与内容地址检查点，提供回撤预览。回撤执行（`rollbackExecution: 1`）增加确认门禁与可续办事务回撤，doctor 报告 open transaction。checkpoint 是 unit 级实现期恢复，finalize 的 delivery snapshot / feature 级反向 patch 仍是交付层回退证据，二者不可互相替代。
+**Review 2a / 4B**：新 standard M/L feature 使用不可变 review batch 与 Core 生成的只读 `plan-review` 投影。默认保证等级为 `multi-perspective`（多角色完成 ≠ 已证明多代理）。可选服务端采样可升至 `independent-sampling`；可选宿主 subagent attestation 最多 `multi-agent-attested`（不是 verified）。v2 的 checkpoint 由 Core 在所有路线的实现边界自动捕获：XS/S 使用单一基线，light M 默认单元，M/L 按事实和可验证切片增加边界，不要求 agent 手动推进。回撤执行仍走既有事务日志和显式恢复确认；checkpoint 是实现期恢复，finalize 的 delivery snapshot / feature 级反向 patch 仍是交付层回退证据，二者不可互相替代。
 
 ---
 
@@ -191,14 +191,14 @@ claude plugin list
 
 ```text
 用 /dev-flow:task（或：用 Dev Flow 开始任务）：
-功能是 ……；请先 classify 再 start。
+功能是 ……；请先创建 intake，再调查事实、classify 并锁定分类。
 ```
 
 之后固定习惯：
 
-1. 先 **`dev_flow_next`**，只执行返回的**一个**动作。  
-2. HUMAN GATE：展示后**停止**，等用户原话，再 `dev_flow_confirm_gate`（不可同回合确认）。  
-3. 需要 feature-check 的路线：检查通过后再 finalize。  
+1. 先 `dev_flow_start` 创建 intake，再用 `dev_flow_classify` 预览并用 `dev_flow_lock_classification` 原子锁定事实分类。
+2. 按 `dev_flow_next` 返回的阶段能力推进；阶段内等价操作可以自由安排，不必为每个工具动作停下来确认。
+3. 动态 approval obligation、重大偏航、未解决 blocking finding 或不可恢复错误才需要用户决策；展示后等待用户下一条消息，再确认或修改。
 4. **logic-complete 之前**，hooks 会拦截 Git 写操作（add/commit/push 等）。
 
 #### 5. 日常与收尾
@@ -223,7 +223,7 @@ claude plugin list
 
 ### 宿主基线
 
-v1 经 release-smoke 验证的最低组合：
+2.0 经 release-smoke 验证的最低组合：
 
 | 组件 | 版本 |
 |------|------|
@@ -237,7 +237,7 @@ v1 经 release-smoke 验证的最低组合：
 npm run test:host-e2e
 ```
 
-日常 `npm test` 会跳过该层，仍覆盖全路线、资产、门禁与 adapter。
+日常 `npm test` 会跳过该层，仍覆盖全路线、资产、义务与 adapter；发布前另跑 `npm run test:host-e2e`。
 
 ---
 
@@ -246,14 +246,14 @@ npm run test:host-e2e
 1. 按上文完成 **插件安装**（user 或 project）。  
 2. 在业务仓调用 **`dev_flow_init_project`** → 得到 `.dev-flow/project.json`。  
 3. **`dev_flow_doctor`** 确认健康。  
-4. **`/dev-flow:task`** 分类并 `start`。  
-5. 始终跟随 **`dev_flow_next`**；HUMAN GATE present 成功后停等用户下一条消息，并使用 status 给出的整句批准词。
-6. feature-check（若需要）→ finalize；logic-complete 后才 Git 写。
+4. **`/dev-flow:task`** 创建 intake，调查事实并记录用户决策。
+5. `dev_flow_classify` 预览、`dev_flow_lock_classification` 锁定；随后始终参考 `dev_flow_next` 的阶段能力。
+6. 所有路线由 Core 自动捕获实现 checkpoint；approval obligation 或真实偏航需要用户决策时才停等确认，最后 finalize；logic-complete 后才 Git 写。
 
-需求确认不等于需求拷问：标准 M/L 的 `missing-or-unclear` 与 `documented-unconfirmed` 会在 `requirements` 步骤内先进入 `grillme`；只有 `grill_status: complete` 且 requirements 已登记，才能展示需求确认门禁。`provided-confirmed` 默认不自动拷问，但可显式调用 `/dev-flow:grillme`。
+需求确认不等于需求拷问：需求不清晰时先停留在 intake，`grillme` 只收敛用户拥有的决策并写入 Decision Ledger；不要求先生成需求文档。明确事实可直接锁定分类，`provided-confirmed` 也仍可显式调用 `/dev-flow:grillme`。
 
 **1.3.0+ 等待与恢复**：`dev_flow_status` 返回 `progress`（当前步骤、是否等人、Q-id/gate 提示），不会修改 revision；用户说「继续」时先 status，再按 wait 提示回复——合法等待不是失败。损坏的 active state 用 `dev_flow_doctor` + `dev_flow_recover_corrupt_feature`（备份 abandon）；若 pointer 本身损坏，必须使用 doctor 给出的 `activeSha256`、目标 feature 与证据续办，禁止手改 `.dev-flow`。agent 只能编辑 MCP 已登记的 artifact；控制文件仅 MCP 可写。同 level 的 `standard → light` 可在用户明确要求、无 protected-root 变更、且实现门禁从未展示时 `dev_flow_reclassify`（需 `userEvidence`）。
-**1.4.0+ 可发现证据**：classify/start 的 `riskLabels` schema 直接列出合同标签；classify 返回派生 checks/kinds；next/status 在当前动作上给出 `requiredEvidence`，status 同时报告 verification 的 missing/fresh/stale。风险 checks 在 risk-minimal、light-L、standard-M/L 中一致强制。明确人工/UI 验收在 verification 阶段完成：可保存浏览器证据，缺少浏览器时允许用户按场景书面签收，但不得冒充 browser pass。
+**2.0 事实覆盖层**：分类依据必须来自仓库事实与决策台账；风险只增加 review、verification、rollback、checkpoint 或 approval 义务，不创建额外路线。实现期普通写入按真实影响审计，控制路径继续拒绝；验证失败保留工作并进入 repair loop，有进展自动修复，连续无进展才请求用户。
 
 项目侧状态（示意）：
 
@@ -273,15 +273,14 @@ npm run test:host-e2e
 
 **规模与风险独立**：风险标签**不抬高** level，只加强该路线内的证据；拓扑不满足时**拒绝启动**并建议级别，不静默升级。
 
-| 路线 | 何时（简要） | 主要步骤 | 强制 Markdown | feature-check |
+| 路线 | 何时（简要） | 主要阶段 | 强制 Markdown |
 |------|----------------|----------|---------------|---------------|
-| **XS** | 局部、local、无风险 | 定位 → 实现 → 验证 | 无 | 否 |
-| **S** | 单模块、local、无风险 | 边界 → 实现 → 验证 → 自审 | 无 | 否 |
-| **risk-minimal** | XS/S 或 light M 且带风险标签 | 风险卡 → 控制项 → **实现批准** → 实现 → 代码审查 → 验证 | status、risk-card | **是** |
-| **light M** | M + light + 无风险 | 边界/短计划 → 实现 → 代码审查 → 验证 | 无（审查为步骤，不强制独立 md） | 否 |
-| **standard M** | M + standard + 需求状态 | 需求（含强制 grill 子流程）→ **需求确认** → 计划 → 覆盖 → 回撤 → 计划审查 → **实现批准** → 实现 → 代码审查 → 验证 | requirements、plan、status、coverage | **是** |
-| **light L** | L + light | 边界卡 → 回撤/安全 → **实现批准** → 实现 → 代码审查 → 验证 | boundary、rollback-safety、verification | **是** |
-| **standard L** | L + standard + 需求状态 | 与标准 M 同骨架，含强制 grill 子流程，证据/独立资产更全 | 需求/计划/覆盖/回撤/计划审查/代码审查/验证 | **是** |
+| **XS** | 局部、local | 定位 → 实现 → 验证 → 收尾 | 无 |
+| **S** | 单模块、local | 边界 → 实现 → 验证 → 收尾 | 无 |
+| **light M** | M + light | 计划 → 实现 → 代码审查 → 验证 → 收尾 | 无 |
+| **standard M** | M + standard | 需求对齐 → 计划 → 实现 → 代码审查 → 验证 → 收尾 | `需求文档.md`、`实施计划.md` |
+| **light L** | L + light | 计划 → 实现 → 代码审查 → 验证 → 收尾 | `实施计划.md` |
+| **standard L** | L + standard | 需求对齐 → 计划 → 实现 → 代码审查 → 验证 → 收尾 | `需求文档.md`、`实施计划.md` |
 
 分类顺序固定为 topology → 具体风险后果 → light/standard 未决策程度 → standard requirements。范围、接口、回滚和验收均已锁定时优先 light；multi-chain 仍为 L，但可使用 light-L。风险标签以 [`policy/contract.json`](plugins/dev-flow/policy/contract.json) 和 `dev_flow_classify` / `dev_flow_start` 的 MCP schema 为唯一权威；禁止堆叠“相关”标签或发明领域标签。
 
@@ -291,7 +290,7 @@ npm run test:host-e2e
 - standard M/L：**必须** `requirements`：`missing-or-unclear` / `documented-unconfirmed` / `provided-confirmed`  
 - 拓扑：`local` 最低 XS；`shared-contract` 最低 M；`multi-chain` / `coordinated-rollback` 必须 L  
 
-完整步骤名、资产 kind、`plan_review`≠`code_review` 等以 [docs/routes.md](docs/routes.md) 与 `plugins/dev-flow/policy/contract.json` 为准。
+完整步骤名、资产 kind、`planning`≠`code_review` 等以 [docs/routes.md](docs/routes.md) 与 `plugins/dev-flow/policy/contract.json` 为准。
 
 ---
 
@@ -305,24 +304,23 @@ description 仍保留 `df-*`、`dev-flow-*` 旧名作匹配兼容。
 | 开任务 / 分类 | `task` | `/dev-flow:task` | `df-task`、`dev-flow-task` | classify + `dev_flow_start` |
 | 状态 / 接力 | `status` | `/dev-flow:status` | `df-status`、`dev-flow-status` | 只读 status / next |
 | 诊断 | `doctor` | `/dev-flow:doctor` | `df-doctor`、`dev-flow-doctor` | `dev_flow_doctor` |
-| 需求采集与登记 | `requirements` | `/dev-flow:requirements` | `df-requirements`、`dev-flow-requirements` | `requirements` / `requirement_confirmation` |
+| 需求采集与登记 | `requirements` | `/dev-flow:requirements` | `df-requirements`、`dev-flow-requirements` | `requirements` / `requirements_alignment` |
 | 需求/方案逐题拷问 | `grillme` | `/dev-flow:grillme` | `df-grillme`、`dev-flow-grillme` | requirements 内 grill 子流程 |
-| 风险审查 | `risk-review` | `/dev-flow:risk-review` | `df-risk-review`、`dev-flow-risk-review` | risk 相关 step |
 | 写计划 | `plan` | `/dev-flow:plan` | `df-plan`、`dev-flow-plan` | plan 相关 step |
 | 覆盖审查 | `coverage-review` | `/dev-flow:coverage-review` | `df-coverage-review`… | coverage |
 | 回撤安全 | `rollback-safety` | `/dev-flow:rollback-safety` | `df-rollback-safety`… | rollback / safety |
-| 计划审查 | `plan-review` | `/dev-flow:plan-review` | `df-plan-review`… | `plan_review` |
+| 计划审查 | `plan-review` | `/dev-flow:plan-review` | `df-plan-review`… | `planning` |
 | 实现 | `implement` | `/dev-flow:implement` | `df-implement`… | `implementation` |
 | 代码审查 | `code-review` | `/dev-flow:code-review` | `df-code-review`… | `code_review` |
 | 验证 | `verify` | `/dev-flow:verify` | `df-verify`… | `verification` |
 | 完备检查 | `feature-check` | `/dev-flow:feature-check` | `df-feature-check`… | `feature-check` |
 | 收尾 | `finish` | `/dev-flow:finish` | `df-finish`… | `finalize` |
 
-`requirements` 是需求链唯一编排者与 MCP 写入者；`grillme` 只做逐题压测（可写 `requirements.md` 的 Decision Log / Open Questions / `grill_status`，**禁止** mutation/gate）。触发词含 grillme、拷问、压测方案等。
+`requirements` 是需求链唯一编排者与 MCP 写入者；`grillme` 只做逐题压测（可写需求草稿的 Decision Log / Open Questions / `grill_status`，**禁止** mutation/gate）。触发词含 grillme、拷问、压测方案等。执行批准不是固定阶段，而是当 approval obligation 仍待确认且实现前置条件满足时动态呈现的一次用户决策。
 
-**工作流命中不依赖技能长名**：状态机只认 MCP（`dev_flow_next` 返回的 step / tool）。技能 description 同时写明对应 step（如 `plan_review`、`code_review`、`implementation`），保证模型按 next 动作选对技能。
+**工作流命中不依赖技能长名**：状态机只认 MCP（`dev_flow_next` 返回的 stage、能力类别、完成条件和义务）。技能 description 同时写明对应 stage（如 `planning`、`code_review`、`implementation`），模型可在能力合同内选择等价工具。
 
-状态只通过 MCP（如 `dev_flow_start`、`dev_flow_next`、`dev_flow_confirm_gate`、`dev_flow_finalize` 等）变更。
+状态只通过 MCP（如 `dev_flow_start`、`dev_flow_next`、`dev_flow_confirm_approval`、`dev_flow_finalize` 等）变更。
 
 ---
 

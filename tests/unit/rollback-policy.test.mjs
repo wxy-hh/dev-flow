@@ -44,6 +44,11 @@ test("fileScope patterns use one canonical safe relative-path contract", () => {
   }
 });
 
+test("fileScope matching treats decomposed and composed Unicode as the same path", () => {
+  assert.equal(rollback.pathWithinFileScope("src/需求a\u0301.js", ["src/需求á.js"]), true);
+  assert.equal(rollback.pathWithinFileScope("src/其他.js", ["src/需求á.js"]), false);
+});
+
 test("implementationUnitForRollbackNode derives isomorphic pending units from standard M and L rollback nodes", () => {
   const basisHash = sha("d");
   assert.deepEqual(rollback.implementationUnitForRollbackNode(standardMNode, basisHash), {

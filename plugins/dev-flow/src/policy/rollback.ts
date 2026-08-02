@@ -105,7 +105,7 @@ const FILE_MODE = /^[0-7]{3,4}$/;
  * entire subtree. Unsafe patterns never match (fail closed).
  */
 export function pathWithinFileScope(path: string, fileScope: string[]): boolean {
-  return fileScope.some((pattern) => scopePatternMatches(pattern, path));
+  return fileScope.some((pattern) => scopePatternMatches(pattern.normalize("NFC"), path.normalize("NFC")));
 }
 
 /**

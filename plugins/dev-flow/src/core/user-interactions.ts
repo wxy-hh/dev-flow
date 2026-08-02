@@ -2,7 +2,7 @@ import { randomBytes, randomUUID } from "node:crypto";
 import { DevFlowError } from "./errors.js";
 import type { FeatureState } from "./state-store.js";
 
-export type InteractionKind = "gate" | "grill" | "risk-acceptance" | "rollback-confirmation";
+export type InteractionKind = "approval" | "grill" | "risk-acceptance" | "rollback-confirmation";
 export type InteractionSource = "elicitation" | "text-token";
 
 /** 比较用归一化：trim + 折叠连续空白 + 小写。仅用于匹配比较，存储始终保留原始输入。 */
@@ -240,7 +240,7 @@ export function resolveTokenInteraction(
   if (interaction.status !== "pending") throw new DevFlowError("INTERACTION_ALREADY_RESOLVED", interactionId);
   let match: { option: InteractionOption; comment?: string } | undefined;
   if (phraseAction) {
-    // 自然语言批准词映射（仅 HUMAN GATE 交互由调用方传入）：跳过一次性 token 匹配，
+    // 自然语言批准词映射（仅 approval 交互由调用方传入）：跳过一次性 token 匹配，
     // 直接按批准词对应的选项构造响应；溯源（promptEventId 绑定）与存储仍走 text-token 路径。
     match = { option: optionFor(interaction, phraseAction) };
   } else if ((match = matchNaturalOption(interaction, userReply))) {
@@ -261,7 +261,7 @@ export function resolveTokenInteraction(
   }
   if (!match) {
     throw new DevFlowError("INTERACTION_TOKEN_MISMATCH", "response does not match the current one-time interaction token", {
-      recoveryHint: "请原样复制提示中展示的一次性回复整行并发送，勿添加空格、前缀或标点；HUMAN GATE 也可直接输入批准词（如“确认需求”）",
+      recoveryHint: "请原样复制提示中展示的一次性回复整行并发送，勿添加空格、前缀或标点；approval 也可直接输入批准词（如“确认需求”）",
     });
   }
   const normalizedComment = validateComment(match.option, match.comment);
@@ -304,15 +304,12 @@ export function toPublicInteraction(interaction: UserInteraction): PublicInterac
  * token 行保留在 PublicInteraction.fallback 中，仅在用户无法自然选择时由 skill 引导作为兜底展示。
  */
 export function fallbackHint(interaction: UserInteraction): string {
-  if (interaction.kind === "gate") {
+  if (interaction.kind === "approval") {
     const confirm = interaction.options.find((option) => option.id === "confirm");
     const changes = interaction.options.find((option) => option.id === "request-changes");
-    const gate = interaction.target.replace("gate:", "");
-    const verb = gate === "requirement_confirmation" ? "确认需求" : "批准实现";
-    const editWord = gate === "requirement_confirmation" ? "修改需求" : "修改计划";
     const parts: string[] = [];
-    if (confirm) parts.push(`✅ 如需${verb}，直接回复：${confirm.label}（或「确认」）`);
-    if (changes) parts.push(`✏️ 如需调整，请回复：${editWord}: <补充你的修改意见>`);
+    if (confirm) parts.push(`✅ 如需确认开始执行，直接回复：${confirm.label}（或「确认」）`);
+    if (changes) parts.push(`✏️ 如需调整，请回复：修改计划: <补充你的修改意见>`);
     return parts.join("；");
   }
   const lines = [interaction.question ?? "请选择方案："];

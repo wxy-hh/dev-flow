@@ -1,8 +1,6 @@
 ---
 name: feature-check
-description: 确定性完备性检查。触发：完备性检查、feature-check、能不能收尾、df-feature-check、dev-flow-feature-check。当 dev_flow_next 返回 feature-check 时使用。
+description: 在 finalize 前执行 Core 自动完备性检查。
 ---
 
-仅使用 Dev Flow MCP。调用 `dev_flow_status` / `dev_flow_next`；仅当返回 `feature-check` 时调用 `dev_flow_feature_check`。
-
-检查 progress.requiredEvidence 与已存 verification evidence；不得编造或追补过去步骤 evidence。若 requirements/plan/boundary 明确要求人工/UI 验收，但 manualAcceptance 或已登记 verification narrative 缺失，则停止并返回 verify Skill，不调用 feature-check。Core 不新增 UI 关键词解析或 UI gate。
+2.0 中 feature-check 已并入 finalize 的 Core 完整性校验，不是用户可见路线步骤。通常只需读取 `dev_flow_next` 的 finalize 能力并调用对应 MCP；不要编造 evidence、手动关闭义务或为常规检查发通知。验证 stale、偏航或未解决 blocking finding 时按恢复动作处理。

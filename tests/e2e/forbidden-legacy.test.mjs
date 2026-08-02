@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { existsSync, readdirSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
@@ -44,6 +44,32 @@ test("prebuilt plugin entry points are present", () => {
     assert.equal(existsSync(path.join(root, "plugins", "dev-flow", "dist", name)), true, name);
   }
 });
+
+test("v2 runtime surfaces contain no removed route or gate vocabulary", () => {
+  const scanRoots = [
+    path.join(root, "plugins", "dev-flow", "src"),
+    path.join(root, "plugins", "dev-flow", "policy"),
+    path.join(root, "plugins", "dev-flow", "skills"),
+    path.join(root, "docs", "routes.md"),
+    path.join(root, "docs", "architecture.md"),
+    path.join(root, "README.md"),
+  ];
+  const forbidden = /risk-minimal|risk_review|risk_controls|risk-card|requirement_confirmation|implementation_approval|execution_approval|dev_flow_present_gate|dev_flow_confirm_gate|gate-approval|gate-basis/g;
+  const hits = [];
+  for (const target of scanRoots) {
+    const files = target.endsWith(".md") ? [target] : (existsSync(target) ? listPaths(target).filter((file) => !requireDirectory(file)) : []);
+    for (const file of files) {
+      const content = readFileSync(file, "utf8");
+      if (forbidden.test(content)) hits.push(path.relative(root, file));
+      forbidden.lastIndex = 0;
+    }
+  }
+  assert.deepEqual(hits, []);
+});
+
+function requireDirectory(file) {
+  try { return statSync(file).isDirectory(); } catch { return false; }
+}
 
 test("prebuilt plugin bundles are release assets rather than ignored build output", () => {
   const result = spawnSync("git", ["check-ignore", "plugins/dev-flow/dist/mcp-server.mjs"], { encoding: "utf8" });

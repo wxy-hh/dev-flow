@@ -11,6 +11,7 @@ const run = promisify(execFile);
 const store = await loadSource("plugins/dev-flow/src/core/state-store.ts");
 const checks = await loadSource("plugins/dev-flow/src/core/feature-check.ts");
 const verification = await loadSource("plugins/dev-flow/src/core/verification.ts");
+const delivery = await loadSource("plugins/dev-flow/src/core/delivery-snapshot.ts");
 const config = {
   schemaVersion: 1,
   verification: { commands: [{ id: "pass", command: "node", args: ["-e", "process.exit(0)"], cwd: "." }], behaviorCommands: [] },
@@ -87,6 +88,12 @@ test("protected roots are canonicalized before implementation files are validate
   } finally {
     await rm(root, { recursive: true, force: true });
   }
+});
+
+test("implementation paths use NFC across Chinese, decomposed Unicode, and Windows separators", () => {
+  const decomposed = "src/需求a\u0301.js";
+  const composed = "src/需求á.js";
+  assert.deepEqual(delivery.implementationFiles({ files: [decomposed, "src\\配置\\入口.js"] }), ["src/配置/入口.js", composed]);
 });
 
 test("implementation registration accepts existing files and Git-tracked deletions", async () => {

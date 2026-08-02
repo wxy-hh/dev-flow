@@ -1,5 +1,16 @@
 import { contract } from "./contract.js";
-import type { Classification, ClassificationInput, DerivedRiskRequirements, Level, RouteId, Topology } from "./types.js";
+import { decisionBasisHash, deriveObligations } from "./obligations.js";
+import type {
+  Classification,
+  ClassificationBasis,
+  ClassificationFacts,
+  ClassificationInput,
+  DerivedRiskRequirements,
+  Level,
+  RiskLabel,
+  RouteId,
+  Topology,
+} from "./types.js";
 import { normalizeClassification, PolicyError } from "./validation.js";
 
 const levelRank: Record<Level, number> = { XS: 0, S: 1, M: 2, L: 3 };
@@ -18,42 +29,108 @@ export function assertTopologyLevel(classification: Classification): void {
   }
 }
 
-export function selectRoute(input: ClassificationInput): { classification: Classification; route: RouteId; warning?: string } {
-  const classification = normalizeClassification(input);
-  assertTopologyLevel(classification);
-  const { level, execution, requirements, riskLabels } = classification;
-
-  let route: RouteId;
-  if (level === "XS" || level === "S") {
-    if (execution) throw new PolicyError("EXECUTION_NOT_ALLOWED", "XS/S do not accept execution");
-    route = riskLabels.length ? "risk-minimal" : (level.toLowerCase() as RouteId);
-  } else {
-    if (!execution) throw new PolicyError("EXECUTION_REQUIRED", "M/L require execution");
-    if (level === "M" && execution === "light") {
-      route = riskLabels.length ? "risk-minimal" : "light-m";
-    } else if (level === "L" && execution === "light") {
-      route = "light-l";
-    } else {
-      if (!requirements) throw new PolicyError("REQUIREMENTS_REQUIRED", "standard M/L require requirements state");
-      route = level === "M" ? "standard-m" : "standard-l";
-    }
-  }
-
-  // 无需求澄清环节的路线（非 standard M/L）收到不清晰需求时，提示分类可能失误；仅提示，不强制升级。
-  const warning =
-    requirements && requirements !== "provided-confirmed" && route !== "standard-m" && route !== "standard-l"
-      ? `需求状态为 ${requirements}，但 ${route} 路线无需求澄清环节；建议升级 M + standard 或先向用户澄清后重新分类`
-      : undefined;
-  return { classification, route, ...(warning ? { warning } : {}) };
+function defaultBasis(input: ClassificationInput): ClassificationBasis {
+  const riskLabels = input.riskLabels ?? [];
+  const facts = input.classificationBasis;
+  return facts ?? {
+    scopeFacts: input.scope ? [...input.scope.inScope, ...input.scope.outOfScope] : [],
+    topologyFacts: [input.topology ?? ""].filter(Boolean),
+    uncertaintyFacts: input.requirements === "provided-confirmed" ? [] : [input.requirements ?? "requirements-not-confirmed"],
+    // Labels without explicit evidence are deliberately rejected below.
+    riskFacts: {},
+    decisionRefs: [],
+  };
 }
 
-export function deriveRiskRequirements(riskLabels: Classification["riskLabels"]): DerivedRiskRequirements {
+function validateBasis(basis: ClassificationBasis, riskLabels: RiskLabel[]): void {
+  for (const key of ["scopeFacts", "topologyFacts", "uncertaintyFacts", "decisionRefs"] as const) {
+    if (!Array.isArray(basis[key]) || basis[key].some((item) => typeof item !== "string" || item.trim().length === 0)) {
+      throw new PolicyError("CLASSIFICATION_BASIS_INVALID", `${key} must be a list of non-empty fact strings`);
+    }
+  }
+  if (!basis.riskFacts || typeof basis.riskFacts !== "object" || Array.isArray(basis.riskFacts)) {
+    throw new PolicyError("CLASSIFICATION_BASIS_INVALID", "riskFacts must be an object keyed by risk label");
+  }
+  for (const label of riskLabels) {
+    const facts = basis.riskFacts[label];
+    if (!Array.isArray(facts) || facts.length === 0 || facts.some((fact) => typeof fact !== "string" || fact.trim().length === 0)) {
+      throw new PolicyError("RISK_BASIS_REQUIRED", `risk label ${label} has no factual basis`, { label });
+    }
+  }
+}
+
+/** Pure v2 resolver. Risk facts can add obligations but can never change route. */
+export function selectBaseRoute(input: ClassificationFacts): {
+  classification: Classification;
+  route: RouteId;
+  classificationBasis: ClassificationBasis;
+  obligations: ReturnType<typeof deriveObligations>;
+  contradictions: string[];
+} {
+  const classification = normalizeClassification(input);
+  const basis = input;
+  validateBasis(basis, classification.riskLabels);
+  assertTopologyLevel(classification);
+  const contradictions: string[] = [];
+  if (classification.level === "XS" || classification.level === "S") {
+    if (classification.execution) contradictions.push("XS/S 不允许指定 execution");
+  } else if (!classification.execution) {
+    contradictions.push("M/L 必须指定 execution");
+  }
+  if (classification.level === "M" && classification.execution === "light") return {
+    classification: { ...classification, classificationBasis: basis }, route: "light-m", classificationBasis: basis,
+    obligations: deriveObligations("light-m", basis), contradictions,
+  };
+  if (classification.level === "L" && classification.execution === "light") return {
+    classification: { ...classification, classificationBasis: basis }, route: "light-l", classificationBasis: basis,
+    obligations: deriveObligations("light-l", basis), contradictions,
+  };
+  const route = classification.level === "XS" ? "xs"
+    : classification.level === "S" ? "s"
+      : classification.level === "M" ? "standard-m" : "standard-l";
+  if ((route === "standard-m" || route === "standard-l") && !classification.requirements) {
+    contradictions.push("standard M/L 需要 requirements 状态；可在 lock 前由决策台账补齐");
+  }
+  return {
+    classification: { ...classification, classificationBasis: basis },
+    route,
+    classificationBasis: basis,
+    obligations: deriveObligations(route, basis),
+    contradictions,
+  };
+}
+
+/** Compatibility-shaped entry point used by MCP; it now resolves only base routes. */
+export function selectRoute(input: ClassificationInput): ReturnType<typeof selectBaseRoute> {
+  if (input.level === undefined || input.topology === undefined) throw new PolicyError("CLASSIFICATION_FACTS_REQUIRED", "level and topology facts are required before route selection");
+  const basis = defaultBasis(input);
+  return selectBaseRoute({
+    ...basis,
+    level: input.level,
+    topology: input.topology,
+    ...(input.execution ? { execution: input.execution } : {}),
+    ...(input.requirements ? { requirements: input.requirements } : {}),
+    ...(input.riskLabels ? { riskLabels: input.riskLabels } : {}),
+    ...(input.acceptanceAssistSuggested !== undefined ? { acceptanceAssistSuggested: input.acceptanceAssistSuggested } : {}),
+  });
+}
+
+export function deriveRiskRequirements(riskLabels: RiskLabel[]): DerivedRiskRequirements {
+  const basis: ClassificationBasis = {
+    scopeFacts: ["derived from classification facts"],
+    topologyFacts: ["derived from classification facts"],
+    uncertaintyFacts: [],
+    riskFacts: Object.fromEntries(riskLabels.map((label) => [label, ["derived from classification facts"]])) as Partial<Record<RiskLabel, string[]>>,
+    decisionRefs: [],
+  };
+  const obligations = deriveObligations("xs", basis);
   const checks = new Set<string>();
   const verification = new Set<DerivedRiskRequirements["verification"][number]>();
-  for (const label of riskLabels) {
-    const enhancement = contract.riskEnhancements[label];
-    enhancement.checks.forEach((check) => checks.add(check));
-    verification.add(enhancement.verification);
+  for (const obligation of obligations) {
+    if (obligation.kind === "review" || obligation.kind === "rollback") checks.add(obligation.reason);
+    for (const kind of obligation.verificationKinds ?? []) if (kind !== "targeted") verification.add(kind);
   }
   return { checks: [...checks].sort(), verification: [...verification].sort() };
 }
+
+export { decisionBasisHash };

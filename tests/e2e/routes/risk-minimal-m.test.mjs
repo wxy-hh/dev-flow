@@ -1,1 +1,0 @@
-import test from "node:test"; import { runRoute } from "../../helpers/route-flow.mjs"; test("risk M", () => runRoute({ level: "M", topology: "shared-contract", execution: "light", riskLabels: ["external"] }, "risk-minimal"));

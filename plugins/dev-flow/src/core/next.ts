@@ -14,15 +14,18 @@ import { assertCurrentReviewProjection } from "./review-projection.js";
 function toDerivedState(state: FeatureState, verificationStale: boolean) {
   const steps: Record<string, { status: "pending" | "satisfied"; artifactReady?: boolean }> = { ...state.steps };
   if (verificationStale) steps.verification = { status: "pending" };
-  for (const gate of ["requirement_confirmation", "implementation_approval"]) {
-    const snapshot = state.humanGates[gate] as { status?: string } | undefined;
-    if (snapshot?.status === "pending" || snapshot?.status === "returned") steps[gate] = { status: "pending", artifactReady: true };
+  for (const [approvalId, snapshot] of Object.entries(state.humanGates)) {
+    const value = snapshot as { status?: string };
+    if (approvalId.startsWith("approval:") && (value.status === "pending" || value.status === "returned")) {
+      steps[approvalId] = { status: "pending", artifactReady: true };
+    }
   }
   return {
     schemaVersion: state.schemaVersion,
     lifecycle: state.lifecycle,
     route: state.route,
     steps,
+    obligations: state.obligations,
     blockingFindings: state.blockingFindings,
     verificationFresh: !verificationStale && Boolean(
       state.verification.verifiedFingerprint
@@ -33,6 +36,7 @@ function toDerivedState(state: FeatureState, verificationStale: boolean) {
       && state.featureCheck.fingerprint === state.businessFingerprint,
     ),
     logicComplete: state.logicComplete,
+    repair: state.repair,
   } as const;
 }
 
@@ -61,7 +65,12 @@ function enrichFeatureCheck(state: FeatureState): NextAction {
 }
 
 function traceStepForAction(action: NextAction): string | undefined {
-  if (action.kind === "run-step" || action.kind === "present-human-gate") return action.step;
+  if (action.kind === "run-step") {
+    if (action.step === "requirements_alignment") return "requirements";
+    if (action.step === "planning") return "implementation_plan";
+    return action.step;
+  }
+  if (action.kind === "present-human-gate") return action.step.startsWith("approval:") ? "implementation_plan" : action.step;
   if (action.kind === "feature-check") return "feature_check";
   if (action.kind === "finalize") return "finalize";
   return undefined;
@@ -75,11 +84,11 @@ async function reviewPlanAction(root: string, state: FeatureState): Promise<Next
   if (!reviewEnforcementRequired(state.route, state.workflowCapabilities)) return undefined;
   const ledger = await readReviewLedger(root, state);
   const batch = ledger.batches.find((candidate) => candidate.validity === "current");
-  if (!batch) return { kind: "create-review-batch", step: "plan_review" };
+  if (!batch) return { kind: "create-review-batch", step: "planning" };
   if (batch.progress !== "complete") {
     return {
       kind: "review-jobs-pending",
-      step: "plan_review",
+      step: "planning",
       batchId: batch.batchId,
       jobs: batch.jobs.map(({ jobId, role, reviewDepth, status }) => ({ jobId, role, reviewDepth, status })),
     };
@@ -90,12 +99,12 @@ async function reviewPlanAction(root: string, state: FeatureState): Promise<Next
   } catch (error) {
     const code = (error as { code?: unknown }).code;
     if (code === "REVIEW_BASIS_STALE" || code === "REVIEW_BATCH_REQUIRED") {
-      return { kind: "create-review-batch", step: "plan_review" };
+      return { kind: "create-review-batch", step: "planning" };
     }
     if (code === "REVIEW_BLOCKING_FINDINGS" || code === "REVIEW_BATCH_INCOMPLETE") {
       return {
         kind: "review-jobs-pending",
-        step: "plan_review",
+        step: "planning",
         batchId: batch.batchId,
         jobs: batch.jobs.map(({ jobId, role, reviewDepth, status }) => ({ jobId, role, reviewDepth, status })),
       };
@@ -128,16 +137,22 @@ async function unitLifecycleAction(root: string, state: FeatureState): Promise<N
 
 export async function nextAction(root: string, id: string): Promise<NextAction> {
   const state = await readState(root, id);
+  if (state.mode === "intake") {
+    const openDecisions = (state.decisionLedger ?? []).filter((decision) => decision.status === "open");
+    return openDecisions.length
+      ? { kind: "intake", activity: "resolve-decision", reason: `${openDecisions.length} 个决策仍待用户确认` }
+      : { kind: "intake", activity: "investigate", reason: "读取需求、代码、文档和测试，生成 classificationBasis 后锁定路线" };
+  }
   const action = deriveNext(toDerivedState(state, await verificationIsStale(root, state)));
 
-  // A rollback can stale the review batch while plan_review evidence remains
+  // A rollback can stale the review batch while planning evidence remains
   // satisfied and implementation becomes the derived route step. Review is
   // still a prerequisite of beginning a replacement unit, so derive its
   // recovery action before exposing the implementation lifecycle.
-  if (action.kind === "run-step" && (action.step === "plan_review" || action.step === "implementation")) {
+  if (action.kind === "run-step" && (action.step === "planning" || action.step === "implementation")) {
     const reviewAction = await reviewPlanAction(root, state);
     if (reviewAction) return reviewAction;
-    if (action.step === "plan_review") {
+    if (action.step === "planning") {
       // A complete ledger is necessary but not sufficient: the generated
       // projection is a registered artifact and must still be readable/current.
       await assertCurrentReviewProjection(root, state);

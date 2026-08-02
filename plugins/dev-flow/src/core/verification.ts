@@ -1,4 +1,5 @@
 import { execFile } from "node:child_process";
+import { createHash } from "node:crypto";
 import path from "node:path";
 import { promisify } from "node:util";
 import { deriveRiskRequirements } from "../policy/route.js";
@@ -9,6 +10,8 @@ import { assertRequirementsGrillSatisfied } from "./requirements-grill.js";
 import { mutate, readFeatureEvents, readProjectConfig, readState, type FeatureState } from "./state-store.js";
 import type { VerificationCommand } from "./project-config.js";
 import { assertCurrentStep, currentOpenStep } from "./step-order.js";
+import { recordRepairAttempt, startRepairLoop, markRepairCompleted } from "./repair-loop.js";
+import { satisfyObligations } from "../policy/obligations.js";
 
 const run = promisify(execFile);
 
@@ -280,6 +283,11 @@ export async function runVerification(
           ...(manualAcceptance ? { manualAcceptance } : {}),
         },
       };
+      if (state.repair) state.repair = markRepairCompleted(state.repair);
+      state.obligations = satisfyObligations(state.obligations, ["verification"]);
+    } else {
+      const signature = `${exitCode}:${createHash("sha256").update(output.join("\n")).digest("hex").slice(0, 16)}`;
+      state.repair = recordRepairAttempt(state.repair ?? startRepairLoop(), signature, output.slice(-3));
     }
     state.lastUpdatedBy = { host, pluginVersion: __DEV_FLOW_VERSION__ };
   });

@@ -165,6 +165,15 @@ test("delta validation rejects unsafe rollback fileScope patterns before graph r
   assert.doesNotThrow(() => trace.validateTraceDelta({ nodes: [rollback(["."])] }));
 });
 
+test("trace registration persists rollback paths in NFC", () => {
+  const current = requirementsLedger();
+  const next = trace.applyTraceDelta(deltaInput(current, "implementation-plan", [
+    { kind: "task", id: "TASK-001", covers: ["AC-001"], rollbackUnit: "RU-001" },
+    { kind: "rollback", id: "RU-001", tasks: ["TASK-001"], dependsOn: [], fileScope: ["src/需求a\u0301.js"], covers: ["REQ-001"], forwardVerification: ["unit"], rollbackVerification: ["unit"] },
+  ]));
+  assert.deepEqual(next.nodes["RU-001"].fileScope, ["src/需求á.js"]);
+});
+
 test("graph validation rejects every missing or asymmetric Task to RU relationship", () => {
   const requirements = requirementsLedger();
   assert.throws(

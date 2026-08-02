@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { readdir, readFile, lstat } from "node:fs/promises";
 import path from "node:path";
 import { DevFlowError } from "./errors.js";
+import { normalizeProjectPath } from "./path-normalization.js";
 
 const ignored = new Set([".git", ".dev-flow", "node_modules"]);
 
@@ -14,7 +15,7 @@ async function collect(root: string, relative: string, files: string[]): Promise
   }
   for (const entry of entries.sort((a, b) => a.name.localeCompare(b.name))) {
     if (ignored.has(entry.name)) continue;
-    const child = path.join(relative, entry.name);
+    const child = normalizeProjectPath(path.join(relative, entry.name));
     const target = path.join(root, child);
     const metadata = await lstat(target);
     if (metadata.isSymbolicLink()) throw new DevFlowError("UNSAFE_PROTECTED_ROOT", `symbolic link is not allowed: ${child}`);

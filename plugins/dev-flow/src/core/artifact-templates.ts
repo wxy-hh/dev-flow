@@ -10,7 +10,7 @@ function frontMatter(context: ArtifactTemplateContext, kind: string, grillStatus
   return [
     "---",
     "dev_flow:",
-    "  schema_version: 1",
+    "  schema_version: 2",
     `  feature_id: ${context.featureId}`,
     `  route: ${context.route}`,
     `  kind: ${kind}`,
@@ -26,10 +26,13 @@ function requirementsTemplate(context: ArtifactTemplateContext): string {
 }
 
 function implementationPlanTemplate(context: ArtifactTemplateContext): string {
-  const rollback = context.route === "standard-m"
+  const rollback = ["standard-m", "standard-l"].includes(context.route)
     ? "\n<!-- dev-flow:id=RU-001 kind=rollback -->\n### RU-001：回撤单元\n\n- tasks: TASK-001\n- depends_on: []\n- file_scope:\n- covers: REQ-001\n- forward_verification: unit\n- rollback_verification: unit\n"
     : "";
-  return `${frontMatter(context, "implementation-plan")}# 实现计划\n\n<!-- dev-flow:id=TASK-001 kind=task -->\n### TASK-001：实现任务\n\n- covers: REQ-001\n- rollback_unit: RU-001\n${rollback}`;
+  const test = ["standard-m", "standard-l"].includes(context.route)
+    ? "\n<!-- dev-flow:id=TEST-001 kind=test -->\n### TEST-001：验证场景（verifies: AC-001）\n\n- 验证方法：\n"
+    : "";
+  return `${frontMatter(context, "implementation-plan")}# 实现计划\n\n<!-- dev-flow:id=TASK-001 kind=task -->\n### TASK-001：实现任务\n\n- covers: REQ-001\n- rollback_unit: RU-001\n${test}${rollback}`;
 }
 
 function coverageMatrixTemplate(context: ArtifactTemplateContext): string {

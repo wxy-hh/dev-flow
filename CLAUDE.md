@@ -88,7 +88,7 @@ Marketplace 元数据：根 `.claude-plugin/marketplace.json`、`.agents/plugins
 四层职责严格分离（详见 `docs/architecture.md`）：
 
 1. **Skills**：理解任务、写内容、**只通过 MCP** 推进；禁止直接改 `.dev-flow` 状态文件  
-2. **MCP**（`src/mcp/server.ts` → 打包为 `dist/mcp-server.mjs`）：classify、`deriveNext`、状态事务、资产校验、HUMAN GATE、feature-check、finalize、doctor 等  
+2. **MCP**（`src/mcp/server.ts` → 打包为 `dist/mcp-server.mjs`）：classify、`deriveNext`、状态事务、资产校验、动态 approval、feature-check、finalize、doctor 等
 3. **Host adapters**（`claude-adapter` / `codex-adapter`）：SessionStart / UserPromptSubmit / Pre·PostToolUse / Stop 归一化；**绝不**自行推进工作流状态  
 4. **项目状态**（业务仓 `.dev-flow/`）：跨宿主配置与 active feature；**禁止**存宿主专属绝对安装路径  
 
@@ -126,28 +126,25 @@ Marketplace 元数据：根 `.claude-plugin/marketplace.json`、`.agents/plugins
 
 ## 路线与合同（核心概念）
 
-- **唯一**路线选择器：`dev_flow_classify`  
-- 规模与风险 **独立**：拓扑决定最低规模；风险只加证据义务，**不**静默改 level  
-- 机器权威：`plugins/dev-flow/policy/contract.json`（`docs/routes.md` 与其一致性由 `tests/unit/routes-doc.test.mjs` 核对）  
-- 主要路线 id：`xs`、`s`、`risk-minimal`、`light-m`、`standard-m`、`light-l`、`standard-l`  
-- `plan_review` 与 `code_review` 证据不兼容，不可互替  
-- standard M/L **必须** feature-check；XS/S 与 light M **不**强制  
-- HUMAN GATE：仅接受 status `replyHint` 整句批准词；present 后必须等用户下一条消息，不可同回合确认  
-- reclassify：升严始终允许；降级仅同 level 的 **standard → light**（有严格前置条件，见 routes 文档）  
+- **唯一**路线选择器：`dev_flow_classify`；入口先进入 intake，读取代码、文档、测试和用户事实后再锁定路线。
+- 规模与风险 **独立**：拓扑决定最低规模；风险只叠加审查、验证、回滚、检查点或确认义务，不创建第二条路线。
+- 机器权威：`plugins/dev-flow/policy/contract.json`（六条基础路线为 `xs`、`s`、`light-m`、`standard-m`、`light-l`、`standard-l`）。
+- standard M/L 的计划审查由独立 review batch 驱动；同一义务只呈现一个用户门禁。
+- 检查点由 Core 在实现边界自动捕获；只有明确进入恢复流程时才暴露回滚操作。
+- Hooks 仅阻断越界写入、控制面文件修改、未满足的事实/义务或真实漂移；等价实现方式不会因为命令写法不同而被拦截。
 
-### grill 子流程（1.1.0+）
+### grill 子流程（2.0）
 
-- **不**新增独立 route step / MCP tool / HUMAN GATE  
-- `requirements` Skill：唯一编排与 MCP 写入  
-- `grillme` Skill：逐题拷问；可写 `requirements.md` 的 Decision Log / Open Questions / `grill_status`；**禁止** mutation/gate  
-- `missing-or-unclear` / `documented-unconfirmed` 须 `grill_status: complete` 后才能 `recordStep(requirements)` / present 需求确认门禁  
+- 用户可随时手动调用 `grillme`；dev-flow intake 或执行中出现真实需求边界时也应调用。
+- 先查仓库事实，再提出最少但高价值的问题；问题可无限轮次，直到影响目标、范围或验收的决策收敛。
+- 决策写入 decision ledger；不要求一定生成需求文档，锁定路线前只要求事实依据和影响决策已收敛。
 
 ### Hooks 门禁要点
 
-- logic-complete **之前**拒绝 Git 写（add/commit/push 等）  
-- `implementation_approval` 未确认前，拒绝 protected roots 上的 Write/Edit/MultiEdit/apply_patch  
-- 仅允许编辑 active feature **已登记** 的非 status Markdown；控制文件始终拒绝  
-- active state 损坏时 fail closed；恢复用 `dev_flow_recover_corrupt_feature`  
+- logic-complete **之前**拒绝 Git 写（add/commit/push 等）。
+- intake/控制面/恢复事务写入始终拒绝；实现阶段允许等价的受保护业务文件写入。
+- 计划/代码审查、验证、检查点或确认仅在路线合同和事实义务要求时触发。
+- active state 损坏时 fail closed；恢复用 `dev_flow_recover_corrupt_feature`。
 
 ## Traceability（追溯账本，分支进行中）
 

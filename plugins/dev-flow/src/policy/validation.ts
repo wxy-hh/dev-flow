@@ -15,8 +15,8 @@ const levels: Level[] = ["XS", "S", "M", "L"];
 const topologies: Topology[] = ["local", "shared-contract", "multi-chain", "coordinated-rollback"];
 
 export function normalizeClassification(input: ClassificationInput): Classification {
-  if (!levels.includes(input.level)) throw new PolicyError("INVALID_LEVEL", "level is invalid");
-  if (!topologies.includes(input.topology)) throw new PolicyError("INVALID_TOPOLOGY", "topology is invalid");
+  if (!input.level || !levels.includes(input.level)) throw new PolicyError("INVALID_LEVEL", "level is invalid");
+  if (!input.topology || !topologies.includes(input.topology)) throw new PolicyError("INVALID_TOPOLOGY", "topology is invalid");
   if (input.execution && input.execution !== "light" && input.execution !== "standard") {
     throw new PolicyError("INVALID_EXECUTION", "execution is invalid");
   }
@@ -45,5 +45,6 @@ export function normalizeClassification(input: ClassificationInput): Classificat
     // The former hard requirement remains a compatibility input only. Browser/user
     // acceptance is advisory and never changes a route's ability to finalize.
     acceptanceAssistSuggested: input.acceptanceAssistSuggested === true || input.manualAcceptanceRequired === true,
+    ...(input.classificationBasis ? { classificationBasis: input.classificationBasis } : {}),
   };
 }

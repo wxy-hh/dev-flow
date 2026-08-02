@@ -18,7 +18,7 @@ interface ContractShape {
 
 export const contract = contractJson as ContractShape;
 
-if (contract.schemaVersion !== 1) {
+if (contract.schemaVersion !== 2) {
   throw new Error(`unsupported contract schema ${String(contract.schemaVersion)}`);
 }
 
@@ -108,10 +108,6 @@ export function routeDefinitionForFeature(
 ): RouteDefinition {
   const definition = cloneRouteDefinition(routeDefinition(route));
   const normalized = normalizeWorkflowCapabilities(capabilities);
-
-  if (route === "risk-minimal" || route === "standard-m") {
-    moveArtifactToGenerated(definition, "status");
-  }
 
   for (const transition of definition.artifactTransitions ?? []) {
     if (normalized[transition.capability] === 1) {

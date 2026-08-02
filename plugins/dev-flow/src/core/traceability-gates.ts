@@ -19,6 +19,13 @@ export interface TraceGateInspection {
   blocker?: TraceBlocker;
 }
 
+/** Map user-facing workflow stages to the persisted Trace slice they consume. */
+export function traceSliceForWorkflowStep(step: string): string {
+  if (step === "requirements_alignment") return "requirements";
+  if (step === "planning") return "implementation_plan";
+  return step;
+}
+
 export function traceIsEnforced(state: FeatureState): boolean {
   return traceEnforcementRequired(state.route, state.workflowCapabilities);
 }
@@ -47,17 +54,18 @@ function blockerFor(step: string, error: unknown): TraceBlocker {
 /** Reads and checks one stage slice; all Trace-aware Core entry points share this path. */
 export async function inspectTraceGate(root: string, state: FeatureState, step: string): Promise<TraceGateInspection> {
   if (!traceIsEnforced(state)) return { enforced: false };
+  const traceStep = traceSliceForWorkflowStep(step);
   let ledger: TraceabilityLedger | undefined;
   try {
     ledger = await readTraceability(root, state);
     const { sha256 } = await readProjectConfigSnapshot(root);
-    assertTraceSliceCurrent(ledger, state.route, step, sha256);
+    assertTraceSliceCurrent(ledger, state.route, traceStep, sha256);
     return { enforced: true, ledger, effectiveSummary: ledger.summary };
   } catch (error) {
     return {
       enforced: true,
       ...(ledger ? { ledger, effectiveSummary: ledger.summary } : {}),
-      blocker: blockerFor(step, error),
+      blocker: blockerFor(traceStep, error),
     };
   }
 }
