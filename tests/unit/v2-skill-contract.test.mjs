@@ -17,3 +17,12 @@ test("distributed skills describe the internal review and feature-check contract
   assert.match(codeReview, /code_review/);
   assert.match(routes, /rollback-operability/);
 });
+
+test("intake and status skills surface the classification level/route to the user", async () => {
+  const task = await text("plugins/dev-flow/skills/task/SKILL.md");
+  const status = await text("plugins/dev-flow/skills/status/SKILL.md");
+  // 锁定分类后必须用可见文本声明级别与路线，不能只留在 MCP 返回里
+  assert.match(task, /锁定成功后必须用可见文本向用户声明本次分级/);
+  assert.match(task, /route/);
+  assert.match(status, /分类锁定结果（含 level、route）/);
+});

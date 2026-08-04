@@ -12,7 +12,8 @@ description: 启动 Dev Flow 2.0 任务并进入 intake。触发：开任务、�
 3. 只有必须由用户决定的边界才调用 `grillme`；问题和答案通过 decision ledger 记录。能从仓库查明的事实不提问。
 4. 优先用含 `classificationBasis.signals` 的推荐模式调用 `dev_flow_classify` 做纯预览，操作者核实 reasons 后再 lock；兼容模式仍需检查矛盾和风险依据，没有事实依据的 risk label 不得提交。
 5. 所有影响分类的 decision 已 resolved/merged 后，调用 `dev_flow_lock_classification`。锁定失败时按 recoveryHint 处理，不手改状态。
-6. 之后反复读取 `dev_flow_next` 返回的 stage、allowedActions、completionCriteria 和 obligations，在能力合同内选择等价工具；不要把返回值理解为只能执行一个动作。Core 只验证语义结果。
+6. 锁定成功后必须用可见文本向用户声明本次分级：level、route、topology、execution，以及该路线的门禁强度（XS/S/light M 无人工门禁；standard M 及以上有计划审查、执行确认）。级别只存在于 MCP 返回或内部推理不算完成——用户应在流程开始时知道当前任务走的路线与后续义务。
+7. 之后反复读取 `dev_flow_next` 返回的 stage、allowedActions、completionCriteria 和 obligations，在能力合同内选择等价工具；不要把返回值理解为只能执行一个动作。Core 只验证语义结果。
 
 ## 分级原则
 
