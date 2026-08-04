@@ -13,7 +13,7 @@ npm run test:host-e2e
 - **版本权威**：根目录 `package.json#version`。  
 - 改版本后执行 `npm run version:sync`，再 `npm run build`，把预构建的 `plugins/dev-flow/dist/` **与源码一并提交**。  
 - 消费方**从不**对插件包执行 `npm install`。
-- **2.0.0 必须原子发布**：Core、Skills、测试、文档、manifest 与预构建 `dist/` 必须属于同一发布候选，不得只升级 Skills 或只带旧 dist。2.0 使用 schema v2 硬切换，不提供 v1 状态迁移执行器。
+- **每次发布必须原子发布**：Core、Skills、测试、文档、manifest 与预构建 `dist/` 必须属于同一发布候选，不得只升级 Skills 或只带旧 dist。2.0 使用 schema v2 硬切换，不提供 v1 状态迁移执行器。
 - Claude、Codex 与双向跨宿主回放是 marketplace 发布阻断项；中间提交可以合入主分支，但不得单独发布。发布前必须以真实宿主输出填写对应的 2.0 回放记录；自动化 host-E2E 仅作佐证，不能代填人工/UI 回放。
 
 ## 用户安装（仅原生宿主）
@@ -40,5 +40,5 @@ codex plugin add dev-flow@dev-flow-marketplace
 1. 完成 Core、Skills、测试与文档，并跑完类型检查、单测、validate、host-e2e 与双向跨宿主回放
 2. 最后执行 `version:sync`、`build` 与产物一致性检查
 3. 提交源码与 `dist/`
-4. push `main`，打 tag（如 `v2.0.0`）
+4. push `main`，打 tag（如 `v3.0.1`）
 5. 跑 `release-smoke`，通过后再发布 marketplace

@@ -56,4 +56,4 @@ verification 失败保留当前工作，不自动丢弃或静默 rollback。Repa
 
 Host adapter 对普通实现写入只做语义审计；intake、`.dev-flow` 控制文件、开放恢复事务和 Git 写入继续拒绝。无法解析写入影响时报告 `impact unresolved`，不冒充路线或 approval 错误。宿主支持矩阵只有 Claude Code（manifest+MCP+claude-hook）与 Codex CLI（manifest+MCP+codex-hook）；其他 MCP 客户端未支持，直连仅诊断，不具备写入守卫与可信用户证据。模型代决、手工调 hook、仅 MCP happy path、`doctor` 静态检查都不是兼容证据。`dev_flow_doctor` 只读报告损坏状态、开放恢复事务、遗留 v1 feature、插件接线和 bundle 完整性，并给出可执行 recovery action。
 
-发布包包含 `dist/mcp-server.mjs`、`dist/claude-hook.mjs`、`dist/codex-hook.mjs`，版本由根 `package.json` 统一同步；2.0.0 发布前必须通过 schema、路线、跨宿主和构建检查。
+发布包包含 `dist/mcp-server.mjs`、`dist/claude-hook.mjs`、`dist/codex-hook.mjs`，版本由根 `package.json` 统一同步；发布前必须通过 schema、路线、跨宿主和构建检查。

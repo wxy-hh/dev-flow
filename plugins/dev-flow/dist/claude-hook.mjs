@@ -1,4 +1,4 @@
-/* dev-flow 3.0.0; built from source, deterministic build */
+/* dev-flow 3.0.1; built from source, deterministic build */
 
 // plugins/dev-flow/src/hosts/claude-adapter.ts
 import { lstat as lstat2 } from "node:fs/promises";
