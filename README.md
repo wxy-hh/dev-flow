@@ -134,7 +134,8 @@ claude plugin marketplace remove dev-flow-marketplace
 ```bash
 claude plugin marketplace update
 # 或指定 marketplace 名
-claude plugin update dev-flow@dev-flow-marketplace
+claude plugin update dev-flow@dev-flow-marketplace(用户级)
+claude plugin update dev-flow@dev-flow-marketplace --scope project(项目级)
 ```
 
 升级后 **新开会话** 或 `/reload-plugins`。  

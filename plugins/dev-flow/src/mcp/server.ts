@@ -204,7 +204,7 @@ const toolSchemas: Record<string, { description: string; inputSchema: Record<str
   dev_flow_init_project: { description: "Create strict project configuration.", inputSchema: object(["config"], { config: { type: "object" } }) },
   dev_flow_classify: {
     description: "Pure route classification.",
-    inputSchema: { oneOf: [
+    inputSchema: { type: "object", oneOf: [
       object(["classificationBasis"], { classificationBasis: recommendedClassificationBasisSchema }),
       object(["level", "topology"], {
         level: { enum: ["XS", "S", "M", "L"] },
