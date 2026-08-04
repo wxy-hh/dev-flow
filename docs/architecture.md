@@ -20,6 +20,8 @@ Dev Flow 2.0 是一个同时服务 Claude Code 与 Codex CLI 的本地插件。�
 - `features/<id>/state.json`：schema v2 原子状态；
 - `features/<id>/events.jsonl`：追加式事件账本。
 
+受保护根目录枚举在 Git worktree 中以 `git ls-files --cached --others --exclude-standard` 为权威语义，因此嵌套 `.gitignore`、global excludes 和 tracked-but-ignored 文件都按 Git 结果处理；Git worktree 枚举失败会 fail closed，不静默递归回退。非 Git 目录才使用递归回退，并继续排除 `.git/.dev-flow/node_modules`。`protectedRootsExclude` 在两种模式的枚举结果上统一优先过滤；受保护根中的 symbolic link 一律拒绝。
+
 Feature 先处于 `mode: intake`，保存 objective、scope、调查摘要和 Decision Ledger；只有分类事实完整、影响分类的决策已解决后，`lockClassification` 才以 CAS 写入 `mode: routed`、基础路线、classificationBasis、obligations 和初始 stages。读取到 schema v1 立即返回 `LEGACY_STATE_UNSUPPORTED`，没有迁移执行器。
 
 所有 mutation 使用进程锁、revision CAS、fsync 和原子 rename。失败不得关闭阶段、消费用户事件或移动未提交 pointer。
@@ -40,7 +42,7 @@ Trace、review、coverage、rollback 和 verification 是 Core 结构化投影�
 
 ## Review 与 grillme
 
-standard M 默认执行 requirements-coverage 与 architecture-testability 审查；L 额外覆盖 rollback-operability。审查基于不可变 planning snapshot 创建独立 role jobs，blocking finding 必须在 planning 阶段闭合，warning/note 不阻塞。`multi-perspective` 只表示多个角色完成，不夸大为已验证的多代理身份。
+standard M/L 默认执行 requirements-coverage、architecture-testability 与 rollback-operability 审查。审查基于不可变 planning snapshot 创建独立 role jobs，blocking finding 必须在 planning 阶段闭合，warning/note 不阻塞。`multi-perspective` 只表示多个角色完成，不夸大为已验证的多代理身份。
 
 `grillme` 可独立调用，也可在任何阶段针对真实决策缺口调用。能通过仓库或工具查明的事实不提问；问题必须包含事实、冲突、选项和推荐。问答结果写入 Decision Ledger，需求文档不是必须的前置条件。
 
@@ -52,6 +54,6 @@ verification 失败保留当前工作，不自动丢弃或静默 rollback。Repa
 
 ## Hooks、诊断与发布
 
-Host adapter 对普通实现写入只做语义审计；intake、`.dev-flow` 控制文件、开放恢复事务和 Git 写入继续拒绝。无法解析写入影响时报告 `impact unresolved`，不冒充路线或 approval 错误。`dev_flow_doctor` 只读报告损坏状态、开放恢复事务、遗留 v1 feature、插件接线和 bundle 完整性，并给出可执行 recovery action。
+Host adapter 对普通实现写入只做语义审计；intake、`.dev-flow` 控制文件、开放恢复事务和 Git 写入继续拒绝。无法解析写入影响时报告 `impact unresolved`，不冒充路线或 approval 错误。宿主支持矩阵只有 Claude Code（manifest+MCP+claude-hook）与 Codex CLI（manifest+MCP+codex-hook）；其他 MCP 客户端未支持，直连仅诊断，不具备写入守卫与可信用户证据。模型代决、手工调 hook、仅 MCP happy path、`doctor` 静态检查都不是兼容证据。`dev_flow_doctor` 只读报告损坏状态、开放恢复事务、遗留 v1 feature、插件接线和 bundle 完整性，并给出可执行 recovery action。
 
 发布包包含 `dist/mcp-server.mjs`、`dist/claude-hook.mjs`、`dist/codex-hook.mjs`，版本由根 `package.json` 统一同步；2.0.0 发布前必须通过 schema、路线、跨宿主和构建检查。

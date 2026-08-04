@@ -15,6 +15,11 @@ export const approvalPhrases: readonly string[] = [
   "批准实现",
   "同意实现",
   "开始实现",
+  "开始执行",
+  "确认开始执行",
+  "同意开始执行",
+  "批准执行",
+  "同意执行",
   "approved",
   "LGTM",
 ];

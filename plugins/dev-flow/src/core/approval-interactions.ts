@@ -114,9 +114,17 @@ function confirmationEventIds(value: unknown): string[] {
 
 type HostEventRecord = { revision: number; type: string; at: string; data: unknown };
 
-function hostEventRecord(events: HostEventRecord[], eventId: string): HostEventRecord | undefined {
-  return events.find((item) => item.type === "host-event"
+function hostEventRecord(events: HostEventRecord[], eventId: string, expectedHost?: "claude" | "codex"): HostEventRecord | undefined {
+  const record = events.find((item) => item.type === "host-event"
     && (item.data as { eventId?: string }).eventId === eventId);
+  if (record && expectedHost && (record.data as { host?: unknown }).host !== expectedHost) {
+    throw new DevFlowError("HOST_EVENT_HOST_MISMATCH", "host event belongs to a different host", {
+      expectedHost,
+      actualHost: (record.data as { host?: unknown }).host,
+      eventId,
+    });
+  }
+  return record;
 }
 
 function assertApprovalEvidenceTiming(
@@ -160,17 +168,19 @@ function resolveProvenance(
   approval: ApprovalId,
   userReply: string,
   provenance: ApprovalConfirmation,
+  host: "claude" | "codex",
 ): ApprovalConfirmation {
   if (provenance.promptEventId || provenance.turnBoundaryEventId) return provenance;
 
   const current = state.humanGates[approval] as { presentedAt?: string; presentedRevision?: number } | undefined;
   const consumed = new Set(Object.values(state.humanGates).flatMap(confirmationEventIds));
   const match = [...events].reverse().find((item) => {
-    const event = item.data as { eventId?: unknown; type?: unknown; text?: unknown; at?: unknown };
+    const event = item.data as { eventId?: unknown; type?: unknown; text?: unknown; at?: unknown; host?: unknown };
     return item.type === "host-event"
       && typeof event.eventId === "string"
       && !consumed.has(event.eventId)
       && event.type === "user-prompt"
+      && event.host === host
       && normalizeReplyText(String(event.text ?? "")) === normalizeReplyText(userReply)
       && item.revision > (current?.presentedRevision ?? state.revision)
       && typeof current?.presentedAt === "string"
@@ -202,17 +212,18 @@ function assertTokenEvidence(
   approval: ApprovalId,
   userReply: string,
   provenance: ApprovalConfirmation,
+  host: "claude" | "codex",
 ): ApprovalConfirmation {
-  const resolved = resolveProvenance(events, state, approval, userReply, provenance);
+  const resolved = resolveProvenance(events, state, approval, userReply, provenance, host);
   const current = state.humanGates[approval] as { presentedRevision?: number; presentedAt?: string } | undefined;
   if (resolved.promptEventId) {
-    const eventRecord = hostEventRecord(events, resolved.promptEventId);
+    const eventRecord = hostEventRecord(events, resolved.promptEventId, host);
     const event = eventRecord?.data as { type?: string; text?: string; at?: string } | undefined;
     assertApprovalEvidenceTiming(eventRecord, event, current, "请在确认呈现后的后续回合提交一次性回复或批准词");
     assertApprovalPromptEvidence(event, userReply, "请原样传递捕获到的用户回复文本（空格与大小写差异会自动归一化）");
   }
   if (resolved.turnBoundaryEventId) {
-    const eventRecord = hostEventRecord(events, resolved.turnBoundaryEventId);
+    const eventRecord = hostEventRecord(events, resolved.turnBoundaryEventId, host);
     const event = eventRecord?.data as { type?: string; text?: string; at?: string } | undefined;
     assertApprovalEvidenceTiming(eventRecord, event, current, "请在确认呈现后的后续回合提交一次性回复或批准词");
     assertApprovalTurnBoundaryEvidence(event);
@@ -236,7 +247,7 @@ async function resolveApprovalResponse(
   const approval = approvalFromInteraction(initial, interactionId);
   const events = input.source === "text-token" ? await readFeatureEvents(root, id) : [];
   const provenance = input.source === "text-token"
-    ? assertTokenEvidence(events, initial, approval, input.userReply, input.provenance)
+    ? assertTokenEvidence(events, initial, approval, input.userReply, input.provenance, host)
     : undefined;
   let response: InteractionResponse | undefined;
   return mutate(root, id, expectedRevision, "approval-interaction-resolved", async (state) => {
@@ -352,7 +363,7 @@ export async function confirmApproval(
   }
   const currentState = await readState(root, id);
   const events = await readFeatureEvents(root, id);
-  const resolvedProvenance = resolveProvenance(events, currentState, selectedApproval, userReply, provenance);
+  const resolvedProvenance = resolveProvenance(events, currentState, selectedApproval, userReply, provenance, host);
   const eventIds = [
     ...(resolvedProvenance.promptEventId ? [resolvedProvenance.promptEventId] : []),
     ...(resolvedProvenance.turnBoundaryEventId ? [resolvedProvenance.turnBoundaryEventId] : []),
@@ -381,13 +392,13 @@ export async function confirmApproval(
     // Each event id is validated against its own event type and timing; a
     // prompt id must be a user-prompt and a turn-boundary id must be a boundary.
     if (resolvedProvenance.promptEventId) {
-      const eventRecord = hostEventRecord(events, resolvedProvenance.promptEventId);
+      const eventRecord = hostEventRecord(events, resolvedProvenance.promptEventId, host);
       const event = eventRecord?.data as { type?: string; text?: string; at?: string } | undefined;
       assertApprovalEvidenceTiming(eventRecord, event, current, "请在确认呈现后的后续回合提交确认");
       assertApprovalPromptEvidence(event, userReply, "请原样传递捕获到的用户回复文本（空格与大小写差异会自动归一化）");
     }
     if (resolvedProvenance.turnBoundaryEventId) {
-      const eventRecord = hostEventRecord(events, resolvedProvenance.turnBoundaryEventId);
+      const eventRecord = hostEventRecord(events, resolvedProvenance.turnBoundaryEventId, host);
       const event = eventRecord?.data as { type?: string; text?: string; at?: string } | undefined;
       assertApprovalEvidenceTiming(eventRecord, event, current, "请在确认呈现后的后续回合提交确认");
       assertApprovalTurnBoundaryEvidence(event, "请使用已捕获的回合边界事件或后续用户回复");

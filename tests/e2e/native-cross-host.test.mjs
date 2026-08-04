@@ -25,8 +25,9 @@ async function finishLightL(startServer, finishServer, approvalHook, starter, fi
     state = await mcpCall(finishServer, fixture.root, "dev_flow_scaffold_artifact", { featureId: "handoff", expectedRevision: state.revision, kind: "implementation-plan" });
     state = await mcpCall(finishServer, fixture.root, "dev_flow_record_artifact", { featureId: "handoff", expectedRevision: state.revision, kind: "implementation-plan" });
     state = await mcpCall(finishServer, fixture.root, "dev_flow_record_step", { featureId: "handoff", expectedRevision: state.revision, step: "planning", evidence: { reviewType: "plan" } });
-    const approvalId = state.obligations.find((obligation) => obligation.kind === "approval" && obligation.status !== "satisfied").id;
-    state = await mcpCall(finishServer, fixture.root, "dev_flow_present_approval", { featureId: "handoff", expectedRevision: state.revision, approvalId });
+    const beforeApproval = await mcpCall(finishServer, fixture.root, "dev_flow_status", { featureId: "handoff" });
+    const approvalId = beforeApproval.obligations.find((obligation) => obligation.kind === "approval" && obligation.status !== "satisfied").id;
+    state = await mcpCall(finishServer, fixture.root, "dev_flow_present_approval", { featureId: "handoff", expectedRevision: state.revision, approvalId, host: finisher });
     const promptEventId = `${finisher}-approval`;
     assert.deepEqual(await invokeHook(approvalHook, fixture.root, { hook_event_name: "UserPromptSubmit", event_id: promptEventId, prompt: "批准实现" }), { continue: true });
     state = await mcpCall(finishServer, fixture.root, "dev_flow_confirm_approval", { featureId: "handoff", expectedRevision: state.revision, approvalId, userReply: "批准实现", promptEventId, host: finisher });
@@ -39,8 +40,9 @@ async function finishLightL(startServer, finishServer, approvalHook, starter, fi
     state = await mcpCall(finishServer, fixture.root, "dev_flow_verify", { featureId: "handoff", expectedRevision: state.revision, commandIds: ["unit"], host: finisher });
     state = await mcpCall(finishServer, fixture.root, "dev_flow_finalize", { featureId: "handoff", expectedRevision: state.revision });
     assert.equal(state.logicComplete, true);
-    assert.ok(state.deliverySnapshot);
-    assert.equal(state.lastUpdatedBy.host, finisher);
+    const finalStatus = await mcpCall(finishServer, fixture.root, "dev_flow_status", { featureId: "handoff" });
+    assert.ok(finalStatus.deliverySnapshot);
+    assert.equal(finalStatus.lastUpdatedBy.host, finisher);
   } finally { await fixture.dispose(); }
 }
 

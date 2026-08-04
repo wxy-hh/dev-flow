@@ -29,6 +29,9 @@ export function requiredEvidenceForStep(
     if (route === "light-l") addChecks(required.checks, ["rollback-strategy"]);
   }
   if (step === "code_review") required.fields.reviewType = "code";
+  if (step === "implementation" && workflowCapabilities?.checkpoints === 1) {
+    required.fields.files = "protected-root-paths";
+  }
 
   if (step === "code_review" && risk.checks.includes("full-code-review")) {
     required.fields.reviewDepth = "full";
@@ -92,6 +95,10 @@ export function missingRequiredEvidence(
   // A caller cannot supply batch/basis/assurance strings to satisfy this.
   // Task 4 replaces this placeholder with Core-owned batch validation.
   if (required.fields.reviewBatch !== undefined) missing.fields.reviewBatch = true;
+  if (required.fields.files !== undefined
+    && (!Array.isArray(supplied.files) || supplied.files.some((file) => typeof file !== "string" || !file.trim()))) {
+    missing.fields.files = required.fields.files;
+  }
 
   const suppliedChecks = Array.isArray(supplied.checks)
     ? supplied.checks.filter((value): value is string => typeof value === "string")

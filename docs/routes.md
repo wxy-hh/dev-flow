@@ -17,7 +17,7 @@
 | --- | --- | --- |
 | XS / S | checkpoint | 无；风险事实可追加 review、verification、rollback 或 approval |
 | light M | checkpoint | 无；风险事实可追加 review |
-| standard M | approval、checkpoint、review | requirements-coverage、architecture-testability |
+| standard M | approval、checkpoint、review | requirements-coverage、architecture-testability、rollback-operability |
 | light L | approval、checkpoint、rollback | 无计划批次；planning 需提交 `rollback-strategy` 证据 |
 | standard L | approval、checkpoint、review、rollback | requirements-coverage、architecture-testability、rollback-operability |
 
@@ -27,7 +27,7 @@
 
 ## 事实分级与需求澄清
 
-分类依据必须包含 `scopeFacts`、`topologyFacts`、`uncertaintyFacts`、`riskFacts` 和 `decisionRefs`。能从仓库、文档、测试或工具查明的事实不得询问用户；只有用户拥有的边界、优先级和取舍才进入决策台账。任何阶段都可以按需调用 `grillme`，但不会因为调用过它而自动升级路线。
+分类依据必须包含 `scopeFacts`、`topologyFacts`、`uncertaintyFacts`、`riskFacts` 和 `decisionRefs`。推荐模式还包含结构化 `signals`；推荐结果仅供操作者参考，signals 必须由操作者根据仓库调查提供，最终 lock 仍由操作者负责。能从仓库、文档、测试或工具查明的事实不得询问用户；只有用户拥有的边界、优先级和取舍才进入决策台账。任何阶段都可以按需调用 `grillme`，但不会因为调用过它而自动升级路线。
 
 风险标签必须有对应事实依据。`security`、`money`、`critical_correctness` 和不可逆后果默认增加确认与审查义务；`data`、`external`、`availability` 增加相应验证/恢复义务。相同 basis 只产生一次决策，basis 变化才重新确认；执行确认是按义务动态呈现的单一门禁，不是固定路线阶段。
 
@@ -39,6 +39,6 @@
 - 实际 diff 与计划不一致时生成 drift report；只有实质偏航、重大风险取舍或恢复路径耗尽才向用户确认。
 - 连续在同一工作区启动多个 feature 时，启动瞬间已存在的受保护目录脏文件仍归属前一 feature；如需串行开发，请先提交或隔离工作区。`dev_flow_finalize` 会以 `DELIVERY_FILE_PREEXISTING_DIRTY` 阻止把这类文件误纳入当前交付快照。
 
-内部的 review、Trace、checkpoint、rollback、feature-check 都是 Core 义务或只读投影，不再作为重复的用户路线步骤。Standard 路线的单元依赖顺序由 Core 编排；模型不应把它扩展成第二条用户路线。v2 不迁移旧状态；doctor 会报告遗留状态并建议在 1.10 完成/放弃后重新开始。
+standard M 的“独立审查”指 planning 内部的 plan-review jobs；`code_review` 阶段的 code review 只通过 `record_step(reviewType: "code")` 记录轻量证据，不能互相顶替。内部的 review、Trace、checkpoint、rollback、feature-check 都是 Core 义务或只读投影，不再作为重复的用户路线步骤。Standard 路线的单元依赖顺序由 Core 编排；模型不应把它扩展成第二条用户路线。v2 不迁移旧状态；doctor 会报告遗留状态并建议在 1.10 完成/放弃后重新开始。
 
 机器权威：`plugins/dev-flow/policy/contract.json`。运行 `npm test` 验证合同、单元、路线和跨宿主交接。

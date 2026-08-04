@@ -1,6 +1,53 @@
 import { decisionBasisHash } from "../policy/obligations.js";
 import type { ClassificationBasis, ClassificationObligation } from "../policy/types.js";
 import type { FeatureState } from "./state-store.js";
+import { effectiveStage } from "../policy/stages.js";
+
+export interface FeatureMutationSummary {
+  featureId: string;
+  revision: number;
+  mode: "intake" | "routed";
+  lifecycle: FeatureState["lifecycle"];
+  route?: FeatureState["route"];
+  stage: string;
+  logicComplete: boolean;
+  obligations: { pending: number; satisfied: number; stale: number };
+  counters: {
+    checkpoints: number;
+    unitsDone: number;
+    unitsTotal: number;
+    openInteractions: number;
+    blockingFindings: number;
+  };
+}
+
+/** Compact mutation response; full state remains available through status. */
+export function buildFeatureMutationSummary(state: FeatureState): FeatureMutationSummary {
+  const obligations = state.obligations ?? [];
+  const units = state.implementationUnits ?? [];
+  const interactions = Object.values(state.interactions ?? {});
+  return {
+    featureId: state.featureId,
+    revision: state.revision,
+    mode: state.mode,
+    lifecycle: state.lifecycle,
+    ...(state.mode === "routed" ? { route: state.route } : {}),
+    stage: effectiveStage(state),
+    logicComplete: state.logicComplete,
+    obligations: {
+      pending: obligations.filter((obligation) => obligation.status === "pending").length,
+      satisfied: obligations.filter((obligation) => obligation.status === "satisfied").length,
+      stale: obligations.filter((obligation) => obligation.status === "stale").length,
+    },
+    counters: {
+      checkpoints: state.checkpoints?.length ?? 0,
+      unitsDone: units.filter((unit) => unit.status === "checkpointed" || unit.status === "rolled_back").length,
+      unitsTotal: units.length,
+      openInteractions: interactions.filter((interaction) => (interaction as { status?: unknown }).status === "pending").length,
+      blockingFindings: state.blockingFindings.filter((finding) => finding.blocking).length,
+    },
+  };
+}
 
 /**
  * A compact, Core-owned view of the facts that make an execution decision

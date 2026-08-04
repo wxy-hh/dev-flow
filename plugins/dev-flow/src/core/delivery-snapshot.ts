@@ -7,6 +7,7 @@ import { DevFlowError } from "./errors.js";
 import { normalizeProjectPath, normalizeUnicode } from "./path-normalization.js";
 import type { ProjectConfig } from "./project-config.js";
 import type { FeatureState } from "./state-store.js";
+import { pathWithinFileScope } from "../policy/rollback.js";
 
 const run = promisify(execFile);
 
@@ -158,15 +159,15 @@ function statusPaths(value: string): string[] {
   return [...paths].sort();
 }
 
-async function dirtyPaths(root: string, protectedRoots: string[]): Promise<string[]> {
-  const output = await git(root, ["status", "--porcelain=v1", "-z", "--untracked-files=all", "--", ...protectedRoots]);
-  return statusPaths(output);
+async function dirtyPaths(root: string, config: Pick<ProjectConfig, "protectedRoots" | "protectedRootsExclude">): Promise<string[]> {
+  const output = await git(root, ["status", "--porcelain=v1", "-z", "--untracked-files=all", "--", ...config.protectedRoots]);
+  return statusPaths(output).filter((file) => !config.protectedRootsExclude?.some((pattern) => pathWithinFileScope(file, [pattern])));
 }
 
-export async function captureDeliveryBaseline(root: string, protectedRoots: string[]): Promise<DeliveryBaseline> {
+export async function captureDeliveryBaseline(root: string, config: Pick<ProjectConfig, "protectedRoots" | "protectedRootsExclude">): Promise<DeliveryBaseline> {
   try {
     const gitHead = (await git(root, ["rev-parse", "HEAD"])).trim();
-    return { gitHead, dirtyPaths: await dirtyPaths(root, protectedRoots) };
+    return { gitHead, dirtyPaths: await dirtyPaths(root, config) };
   } catch (error) {
     if (error instanceof DevFlowError && error.code === "DELIVERY_SNAPSHOT_GIT_REQUIRED") {
       return { dirtyPaths: [] };
@@ -226,7 +227,7 @@ export async function createDeliverySnapshot(
     });
   }
 
-  const currentDirty = await dirtyPaths(root, config.protectedRoots);
+  const currentDirty = await dirtyPaths(root, config);
   const unexpected = currentDirty.filter((file) => !initialDirty.has(file) && !files.includes(file));
   if (unexpected.length) {
     throw new DevFlowError("DELIVERY_FILE_UNREGISTERED", "protected changes are not registered in implementation evidence", {

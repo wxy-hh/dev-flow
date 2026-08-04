@@ -69,7 +69,10 @@
         "command": { "type": "string", "minLength": 1 },
         "status": { "enum": ["passed", "failed"] },
         "startedAt": { "type": "string", "format": "date-time" },
-        "completedAt": { "type": "string", "format": "date-time" }
+        "completedAt": { "type": "string", "format": "date-time" },
+        "phase": { "enum": ["preflight", "forward"] },
+        "cwd": { "type": "string", "minLength": 1 },
+        "outputTail": { "type": "string", "maxLength": 4000 }
       }
     },
     "checkpointVerificationCommand": {

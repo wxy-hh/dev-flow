@@ -126,6 +126,19 @@ async function grillWait(root: string, state: FeatureState, action: NextAction):
     });
   }
   const grill = parseGrillFrontMatter(contents);
+  const pending = Object.values(state.interactions ?? {}).find((value) => {
+    const interaction = value as { kind?: string; status?: string };
+    return interaction.kind === "grill" && interaction.status === "pending";
+  }) as { target?: string } | undefined;
+  if (pending?.target?.startsWith("grill:")) {
+    const interaction = findInteractionForTarget(state, pending.target);
+    if (interaction) return {
+      kind: "grill",
+      questionId: pending.target.slice("grill:".length),
+      responseHint: fallbackHint(interaction),
+      interaction: toPublicInteraction(interaction),
+    };
+  }
   if (grill.status !== "in_progress") return { kind: "none" };
   const interaction = findInteractionForTarget(state, `grill:${grill.questionId!}`);
   return {
@@ -250,7 +263,7 @@ async function driftStatus(root: string, state: FeatureState): Promise<DriftRepo
   const checkpoint = state.checkpoints?.at(-1);
   if (state.mode === "intake" || !checkpoint) return undefined;
   const config = await readProjectConfig(root);
-  const actual = (await snapshotProtectedRoots(root, config.protectedRoots)).map((file) => file.path);
+  const actual = (await snapshotProtectedRoots(root, config)).map((file) => file.path);
   const anticipated = checkpoint.files;
   const changed = actual.length !== anticipated.length || actual.some((file, index) => file !== anticipated[index]);
   if (!changed) return undefined;

@@ -14,11 +14,12 @@ import type {
   TraceNodeInput,
   TraceSummary,
   TraceabilityLedger,
+  VerificationCommandRef,
 } from "../policy/traceability.js";
 import type { TraceSourceBlock } from "./traceability-anchors.js";
 import { DevFlowError } from "./errors.js";
 import { isSafeFileScopePattern } from "../policy/rollback.js";
-import { normalizeUnicode } from "./path-normalization.js";
+import { normalizeProjectPath, normalizeUnicode } from "./path-normalization.js";
 
 export const ALLOWED_TRACE_KINDS = {
   requirements: ["requirement", "acceptance-criterion"],
@@ -83,6 +84,28 @@ function isStringArray(value: unknown, allowEmpty = false): value is string[] {
     && value.every((item) => typeof item === "string" && item.length > 0);
 }
 
+function isSafeCommandCwd(value: unknown): value is string {
+  return typeof value === "string" && value.length > 0 && !value.startsWith("/")
+    && !/^[A-Za-z]:[\\/]/.test(value) && !value.split(/[\\/]+/).includes("..");
+}
+
+function isVerificationCommandRef(value: unknown): value is VerificationCommandRef {
+  if (typeof value === "string") return value.length > 0;
+  if (!isRecord(value) || Object.keys(value).some((key) => !["command", "args", "cwd"].includes(key))
+    || typeof value.command !== "string" || !value.command.trim()
+    || (value.args !== undefined && (!Array.isArray(value.args) || value.args.some((arg) => typeof arg !== "string")))
+    || (value.cwd !== undefined && !isSafeCommandCwd(value.cwd))) return false;
+  return true;
+}
+
+function isVerificationCommandArray(value: unknown): value is VerificationCommandRef[] {
+  return Array.isArray(value) && value.length > 0 && value.every(isVerificationCommandRef);
+}
+
+function verificationCommandKey(value: VerificationCommandRef): string {
+  return typeof value === "string" ? `id:${value}` : `inline:${JSON.stringify(value)}`;
+}
+
 function assertId(kind: TraceNodeInput["kind"], id: unknown): asserts id is TraceId {
   if (typeof id !== "string" || !new RegExp(`^${idPrefix[kind]}-[0-9]{3,}$`).test(id)) {
     invalid("node ID does not match its kind", { kind, id });
@@ -124,8 +147,17 @@ function validateNodeInput(value: unknown): asserts value is TraceNodeInput {
   if (kind === "rollback") {
     const rollback = value as unknown as Extract<TraceNodeInput, { kind: "rollback" }>;
     for (const [field, allowEmpty] of [["tasks", false], ["dependsOn", true], ["fileScope", false], ["covers", false], ["forwardVerification", false], ["rollbackVerification", false]] as const) {
-      if (!isStringArray(value[field], allowEmpty)) invalid("rollback relationship must be a string array", { field, id: value.id });
-      assertNoDuplicate(value[field], field, value.id as string);
+      const relationship = field === "forwardVerification" || field === "rollbackVerification"
+        ? value[field]
+        : value[field];
+      if (field === "forwardVerification" || field === "rollbackVerification") {
+        if (!isVerificationCommandArray(relationship)) invalid("rollback verification must be a non-empty command array", { field, id: value.id });
+        const keys = (relationship as VerificationCommandRef[]).map(verificationCommandKey);
+        assertNoDuplicate(keys, field, value.id as string);
+      } else {
+        if (!isStringArray(relationship, allowEmpty)) invalid("rollback relationship must be a string array", { field, id: value.id });
+        assertNoDuplicate(relationship as string[], field, value.id as string);
+      }
     }
     for (const id of rollback.tasks) assertId("task", id);
     for (const id of rollback.dependsOn) assertId("rollback", id);
@@ -147,8 +179,22 @@ export function validateTraceDelta(value: unknown): asserts value is TraceDelta 
 function normalizeTraceDelta(value: TraceDelta): TraceDelta {
   return {
     nodes: value.nodes.map((node) => node.kind === "rollback"
-      ? { ...node, fileScope: node.fileScope.map(normalizeUnicode) }
+      ? {
+          ...node,
+          fileScope: node.fileScope.map(normalizeUnicode),
+          forwardVerification: node.forwardVerification.map(normalizeVerificationCommandRef),
+          rollbackVerification: node.rollbackVerification.map(normalizeVerificationCommandRef),
+        }
       : node),
+  };
+}
+
+function normalizeVerificationCommandRef(value: VerificationCommandRef): VerificationCommandRef {
+  if (typeof value === "string") return value;
+  return {
+    command: value.command,
+    ...(value.args ? { args: [...value.args] } : {}),
+    ...(value.cwd ? { cwd: normalizeProjectPath(value.cwd) } : {}),
   };
 }
 
@@ -182,8 +228,8 @@ function sourceFor(input: ApplyTraceDeltaInput, node: TraceNodeInput, source: Tr
       dependsOn: [...node.dependsOn],
       fileScope: [...node.fileScope],
       covers: [...node.covers],
-      forwardVerification: [...node.forwardVerification],
-      rollbackVerification: [...node.rollbackVerification],
+       forwardVerification: node.forwardVerification.map(normalizeVerificationCommandRef),
+       rollbackVerification: node.rollbackVerification.map(normalizeVerificationCommandRef),
       sourceArtifact: input.artifactKind as "implementation-plan" | "rollback-units",
       verificationConfigSha256: input.projectConfigSha256,
     };
@@ -233,8 +279,8 @@ function assertArtifactDeltaContract(input: ApplyTraceDeltaInput): void {
   for (const node of input.delta.nodes) {
     if (node.kind !== "rollback") continue;
     if (!["implementation-plan", "rollback-units"].includes(input.artifactKind)) invalid("rollback node has an invalid source artifact");
-    if (node.forwardVerification.some((id) => !input.verificationCommandIds.includes(id))
-      || node.rollbackVerification.some((id) => !input.verificationCommandIds.includes(id))) {
+    if ([...node.forwardVerification, ...node.rollbackVerification].some((ref) =>
+      typeof ref === "string" && !input.verificationCommandIds.includes(ref))) {
       invalid("rollback verification references an unknown command ID", { id: node.id });
     }
   }
@@ -339,7 +385,11 @@ function assertPersistedNode(
   }
   if (kind === "rollback") {
     for (const [field, allowEmpty] of [["tasks", false], ["dependsOn", true], ["fileScope", false], ["covers", false], ["forwardVerification", false], ["rollbackVerification", false]] as const) {
-      if (!isStringArray(value[field], allowEmpty)) invalid("persisted rollback field is invalid", { id: recordId, field });
+      if (field === "forwardVerification" || field === "rollbackVerification") {
+        if (!isVerificationCommandArray(value[field])) invalid("persisted rollback verification field is invalid", { id: recordId, field });
+      } else if (!isStringArray(value[field], allowEmpty)) {
+        invalid("persisted rollback field is invalid", { id: recordId, field });
+      }
     }
     if (value.sourceArtifact !== "implementation-plan" && value.sourceArtifact !== "rollback-units") {
       invalid("persisted rollback has an invalid sourceArtifact", { id: recordId });

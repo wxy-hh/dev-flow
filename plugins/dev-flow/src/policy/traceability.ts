@@ -17,6 +17,14 @@ export type TraceArtifactKind =
   | "coverage-matrix"
   | "rollback-units";
 
+export interface InlineVerificationCommand {
+  command: string;
+  args?: string[];
+  cwd?: string;
+}
+
+export type VerificationCommandRef = string | InlineVerificationCommand;
+
 export interface TraceSource {
   sourceArtifact: TraceArtifactKind;
   sourceSha256: string;
@@ -56,8 +64,8 @@ export interface RollbackNode extends TraceSource {
   dependsOn: RollbackId[];
   fileScope: string[];
   covers: Array<RequirementId | AcceptanceCriterionId>;
-  forwardVerification: string[];
-  rollbackVerification: string[];
+  forwardVerification: VerificationCommandRef[];
+  rollbackVerification: VerificationCommandRef[];
   sourceArtifact: "implementation-plan" | "rollback-units";
   verificationConfigSha256: string;
 }
@@ -90,8 +98,8 @@ export type TraceNodeInput =
       dependsOn: RollbackId[];
       fileScope: string[];
       covers: Array<RequirementId | AcceptanceCriterionId>;
-      forwardVerification: string[];
-      rollbackVerification: string[];
+       forwardVerification: VerificationCommandRef[];
+       rollbackVerification: VerificationCommandRef[];
     };
 
 export interface TraceDelta {

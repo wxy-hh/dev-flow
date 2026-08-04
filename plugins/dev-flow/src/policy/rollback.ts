@@ -1,4 +1,4 @@
-import type { RollbackId, RollbackNode } from "./traceability.js";
+import type { RollbackId, RollbackNode, VerificationCommandRef } from "./traceability.js";
 
 /**
  * Phase-3 checkpoint domain: runtime lifecycle for rollback units plus the
@@ -45,6 +45,10 @@ export interface CheckpointVerificationAttempt {
   status: "passed" | "failed";
   startedAt: string;
   completedAt: string;
+  /** New manifests distinguish environment preflight from unit regression. */
+  phase?: "preflight" | "forward";
+  cwd?: string;
+  outputTail?: string;
 }
 
 export interface CheckpointVerificationCommand {
@@ -186,6 +190,16 @@ function isNonEmptyStringArray(value: unknown): value is string[] {
   return Array.isArray(value) && value.length > 0 && value.every(isNonEmptyString);
 }
 
+function isVerificationCommandArray(value: unknown): value is VerificationCommandRef[] {
+  return Array.isArray(value) && value.length > 0 && value.every((item) => {
+    if (isNonEmptyString(item)) return true;
+    if (!isRecord(item) || typeof item.command !== "string" || !item.command.trim()
+      || (item.args !== undefined && (!Array.isArray(item.args) || item.args.some((arg) => typeof arg !== "string")))
+      || (item.cwd !== undefined && (typeof item.cwd !== "string" || !item.cwd || item.cwd.startsWith("/") || item.cwd.split(/[\\/]+/).includes("..")))) return false;
+    return true;
+  });
+}
+
 function hasOnlyKeys(value: Record<string, unknown>, keys: readonly string[]): boolean {
   return Object.keys(value).every((key) => keys.includes(key));
 }
@@ -205,8 +219,8 @@ export function implementationUnitForRollbackNode(node: RollbackNode, basisHash:
     || !isRollbackId(node.id)
     || !isNonEmptyStringArray(node.tasks)
     || !isNonEmptyStringArray(node.fileScope)
-    || !isNonEmptyStringArray(node.forwardVerification)
-    || !isNonEmptyStringArray(node.rollbackVerification)
+    || !isVerificationCommandArray(node.forwardVerification)
+    || !isVerificationCommandArray(node.rollbackVerification)
     || node.status !== "current") {
     invalid("rollback node is missing fields required to open an implementation unit");
   }
@@ -301,7 +315,7 @@ function parseFileRecord(value: unknown, index: number): CheckpointFileRecord {
 
 function parseVerificationAttempt(value: unknown, index: number): CheckpointVerificationAttempt {
   if (!isRecord(value)
-    || !hasOnlyKeys(value, ["attemptId", "commandId", "command", "status", "startedAt", "completedAt"])
+    || !hasOnlyKeys(value, ["attemptId", "commandId", "command", "status", "startedAt", "completedAt", "phase", "cwd", "outputTail"])
     || !isNonEmptyString(value.attemptId)
     || !isNonEmptyString(value.commandId)
     || !isNonEmptyString(value.command)
@@ -310,6 +324,11 @@ function parseVerificationAttempt(value: unknown, index: number): CheckpointVeri
     || !isTimestamp(value.completedAt)) {
     invalid(`checkpoint verification attempt ${index} has an invalid shape`);
   }
+  if ((value.phase !== undefined && value.phase !== "preflight" && value.phase !== "forward")
+    || (value.cwd !== undefined && !isNonEmptyString(value.cwd))
+    || (value.outputTail !== undefined && typeof value.outputTail !== "string")) {
+    invalid(`checkpoint verification attempt ${index} has invalid diagnostics`);
+  }
   return {
     attemptId: value.attemptId,
     commandId: value.commandId,
@@ -317,6 +336,9 @@ function parseVerificationAttempt(value: unknown, index: number): CheckpointVeri
     status: value.status,
     startedAt: value.startedAt,
     completedAt: value.completedAt,
+    ...(value.phase !== undefined ? { phase: value.phase } : {}),
+    ...(value.cwd !== undefined ? { cwd: value.cwd } : {}),
+    ...(value.outputTail !== undefined ? { outputTail: value.outputTail } : {}),
   };
 }
 

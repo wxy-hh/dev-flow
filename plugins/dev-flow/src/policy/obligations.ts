@@ -63,7 +63,7 @@ export function deriveObligations(
     add(output, "approval", "route", "该路线需要一次合并的执行确认", { route }, ["execution"]);
   }
   if (route === "standard-m" || route === "standard-l") {
-    add(output, "review", "route", "该路线需要独立计划审查", { route }, ["requirements-coverage", "architecture-testability"]);
+    add(output, "review", "route", "该路线需要独立计划审查", { route }, ["requirements-coverage", "architecture-testability", "rollback-operability"]);
   }
   if (route === "light-l" || route === "standard-l") {
     add(output, "rollback", "route", "L 路线需要可操作的回滚策略", { route }, ["rollback-operability"]);

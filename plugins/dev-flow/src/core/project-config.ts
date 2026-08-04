@@ -3,11 +3,17 @@ import { DevFlowError } from "./errors.js";
 import { normalizeProjectPath } from "./path-normalization.js";
 
 export interface VerificationCommand { id: string; command: string; args: string[]; cwd: string }
+export interface VerificationConfig {
+  commands: VerificationCommand[];
+  behaviorCommands: string[];
+  preflightCommands?: string[];
+}
 export interface ProjectConfig {
   schemaVersion: 1;
-  verification: { commands: VerificationCommand[]; behaviorCommands: string[] };
+  verification: VerificationConfig;
   enforcement: { mode: "strict"; gitWriteRequiresLogicComplete: true; oneActiveFeature: true; requireExplicitHumanReply: true };
   protectedRoots: string[];
+  protectedRootsExclude?: string[];
 }
 
 function relativeDirectory(value: string): boolean {
@@ -34,6 +40,13 @@ export function validateProjectConfig(value: unknown): asserts value is ProjectC
     throw new DevFlowError("INVALID_PROJECT_CONFIG", "protectedRoots must be project-relative non-.dev-flow directories");
   }
   config.protectedRoots = protectedRoots as string[];
+  if (config.protectedRootsExclude !== undefined) {
+    if (!Array.isArray(config.protectedRootsExclude)
+      || config.protectedRootsExclude.some((pattern) => typeof pattern !== "string" || !relativeDirectory(pattern))) {
+      throw new DevFlowError("INVALID_PROJECT_CONFIG", "protectedRootsExclude must contain non-empty relative glob patterns without ..");
+    }
+    config.protectedRootsExclude = config.protectedRootsExclude.map((pattern) => normalizeProjectPath(pattern));
+  }
   const commands = config.verification?.commands;
   if (!Array.isArray(commands) || !commands.length) throw new DevFlowError("INVALID_PROJECT_CONFIG", "at least one verification command is required");
   const ids = new Set<string>();
@@ -46,4 +59,9 @@ export function validateProjectConfig(value: unknown): asserts value is ProjectC
   if (!Array.isArray(behaviorCommands) || behaviorCommands.some((id) => !ids.has(id))) {
     throw new DevFlowError("INVALID_PROJECT_CONFIG", "behaviorCommands must reference configured command ids");
   }
+  const preflightCommands = config.verification?.preflightCommands;
+  if (preflightCommands !== undefined && (!Array.isArray(preflightCommands) || preflightCommands.some((id) => typeof id !== "string" || !ids.has(id)))) {
+    throw new DevFlowError("INVALID_PROJECT_CONFIG", "preflightCommands must reference configured command ids");
+  }
+  if (preflightCommands && config.verification) config.verification.preflightCommands = [...new Set(preflightCommands)];
 }

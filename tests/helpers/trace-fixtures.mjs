@@ -119,5 +119,6 @@ export async function registerTraceFixture({ root, featureId, state, kind, delta
     anchors.parseTraceSourceBlocks(after).map(({ id }) => id).sort(),
     traceDelta.nodes.map(({ id }) => id).sort(),
   );
-  return artifacts.recordArtifactWithTrace(root, featureId, current.revision, kind, traceDelta);
+  const result = await artifacts.recordArtifactWithTrace(root, featureId, current.revision, kind, traceDelta);
+  return result.state;
 }

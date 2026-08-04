@@ -347,8 +347,8 @@ export async function startFeature(
       ? input.objective.trim()
       : "未命名需求";
     const project = await readProjectConfig(root);
-    const startBusinessFingerprint = await fingerprintProtectedRoots(root, project.protectedRoots);
-    const deliveryBaseline = await captureDeliveryBaseline(root, project.protectedRoots);
+    const startBusinessFingerprint = await fingerprintProtectedRoots(root, project);
+    const deliveryBaseline = await captureDeliveryBaseline(root, project);
     const directory = path.join(features(root), id);
     const existedBefore = await pathExists(directory);
     let stateCommitted = false;
@@ -455,7 +455,7 @@ export async function recordDecision(
   expectedRevision: number,
   question: string,
   factRefs: string[] = [],
-  host: "claude" | "codex" = "codex",
+  host: "claude" | "codex",
 ): Promise<FeatureState> {
   const decision = createDecision(question, factRefs);
   return mutate(root, id, expectedRevision, "decision-opened", (draft) => {
@@ -473,7 +473,7 @@ export async function resolveRecordedDecision(
   decisionId: string,
   evidence: string,
   conclusion: string,
-  host: "claude" | "codex" = "codex",
+  host: "claude" | "codex",
 ): Promise<FeatureState> {
   return mutate(root, id, expectedRevision, "decision-resolved", (draft) => {
     const ledger = draft.decisionLedger ?? [];
@@ -1316,7 +1316,7 @@ export async function reclassifyFeature(
       ? await implementationApprovalWasPresented(root, id)
       : false;
     const project = await readProjectConfig(root);
-    const currentFingerprint = await fingerprintProtectedRoots(root, project.protectedRoots);
+    const currentFingerprint = await fingerprintProtectedRoots(root, project);
     let notice: string | undefined;
     let eventData: unknown = { reason };
     const state = await mutatePreparedLocked(root, id, expectedRevision, "reclassified", async (current, nextStateRevision) => {

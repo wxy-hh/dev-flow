@@ -1,4 +1,4 @@
-/* dev-flow 2.0.1; built from source, deterministic build */
+/* dev-flow 3.0.0; built from source, deterministic build */
 
 // plugins/dev-flow/src/hosts/codex-adapter.ts
 import { lstat as lstat2 } from "node:fs/promises";
@@ -192,14 +192,107 @@ function normalizeProjectPath(value) {
   return path.posix.normalize(normalizeUnicode(value).replaceAll("\\", "/"));
 }
 
+// plugins/dev-flow/src/policy/rollback.ts
+var IMPLEMENTATION_UNIT_TRANSITIONS = Object.freeze({
+  pending: Object.freeze(["active"]),
+  active: Object.freeze(["verified"]),
+  verified: Object.freeze(["checkpointed", "active"]),
+  checkpointed: Object.freeze(["rolled_back"]),
+  rolled_back: Object.freeze(["active"])
+});
+var ROLLBACK_ID = /^RU-[0-9]{3,}$/;
+var SHA256 = /^[0-9a-f]{64}$/;
+function pathWithinFileScope(path13, fileScope) {
+  return fileScope.some((pattern) => scopePatternMatches(pattern.normalize("NFC"), path13.normalize("NFC")));
+}
+function isSafeFileScopePattern(value) {
+  if (typeof value !== "string" || !value || value.trim() !== value) return false;
+  if (value.includes("\\") || value.startsWith("/") || /^[A-Za-z]:/.test(value)) return false;
+  if (value === ".") return true;
+  return value.split("/").every((segment) => segment.length > 0 && segment !== "." && segment !== "..");
+}
+function scopePatternMatches(pattern, target) {
+  if (!isSafeFileScopePattern(pattern) || typeof target !== "string" || !target.trim()) return false;
+  if (target.includes("\\") || target.startsWith("/")) return false;
+  const segments = pattern.split("/");
+  const parts = target.split("/");
+  if (parts.some((part) => part === "..")) return false;
+  if (/[*?]/.test(pattern)) return globSegmentsMatch(segments, parts);
+  if (pattern === ".") return true;
+  return target === pattern || target.startsWith(`${pattern}/`);
+}
+function globSegmentsMatch(pattern, target) {
+  if (pattern.length === 0) return target.length === 0;
+  const [head, ...rest] = pattern;
+  if (head === "**") {
+    if (rest.length === 0) return true;
+    for (let skip = 0; skip <= target.length; skip += 1) {
+      if (globSegmentsMatch(rest, target.slice(skip))) return true;
+    }
+    return false;
+  }
+  if (target.length === 0 || !globSegmentMatches(head, target[0])) return false;
+  return globSegmentsMatch(rest, target.slice(1));
+}
+function globSegmentMatches(pattern, segment) {
+  if (pattern === "") return segment === "";
+  const [head, ...rest] = pattern;
+  if (head === "*") {
+    for (let take = 0; take <= segment.length; take += 1) {
+      if (globSegmentMatches(rest.join(""), segment.slice(take))) return true;
+    }
+    return false;
+  }
+  if (head === "?") return segment.length > 0 && globSegmentMatches(rest.join(""), segment.slice(1));
+  return segment.startsWith(head) && globSegmentMatches(rest.join(""), segment.slice(head.length));
+}
+function invalid(message) {
+  throw new Error(`ROLLBACK_PROTOCOL_INVALID: ${message}`);
+}
+function isRecord(value) {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+function isRollbackId(value) {
+  return typeof value === "string" && ROLLBACK_ID.test(value);
+}
+function isSha256(value) {
+  return typeof value === "string" && SHA256.test(value);
+}
+function isNonEmptyString(value) {
+  return typeof value === "string" && value.trim().length > 0;
+}
+function isNonEmptyStringArray(value) {
+  return Array.isArray(value) && value.length > 0 && value.every(isNonEmptyString);
+}
+function isVerificationCommandArray(value) {
+  return Array.isArray(value) && value.length > 0 && value.every((item) => {
+    if (isNonEmptyString(item)) return true;
+    if (!isRecord(item) || typeof item.command !== "string" || !item.command.trim() || item.args !== void 0 && (!Array.isArray(item.args) || item.args.some((arg) => typeof arg !== "string")) || item.cwd !== void 0 && (typeof item.cwd !== "string" || !item.cwd || item.cwd.startsWith("/") || item.cwd.split(/[\\/]+/).includes(".."))) return false;
+    return true;
+  });
+}
+function implementationUnitForRollbackNode(node, basisHash2) {
+  if (!isRecord(node) || node.kind !== "rollback" || !isRollbackId(node.id) || !isNonEmptyStringArray(node.tasks) || !isNonEmptyStringArray(node.fileScope) || !isVerificationCommandArray(node.forwardVerification) || !isVerificationCommandArray(node.rollbackVerification) || node.status !== "current") {
+    invalid("rollback node is missing fields required to open an implementation unit");
+  }
+  if (!isSha256(basisHash2)) invalid("implementation unit basis hash must be a SHA-256 hex digest");
+  return { unitId: node.id, status: "pending", basisHash: basisHash2 };
+}
+
 // plugins/dev-flow/src/core/delivery-snapshot.ts
 var run = promisify(execFile);
 
 // plugins/dev-flow/src/core/fingerprint.ts
+import { execFile as execFile2 } from "node:child_process";
 import { createHash } from "node:crypto";
 import { readdir, readFile, lstat } from "node:fs/promises";
 import path2 from "node:path";
+import { promisify as promisify2 } from "node:util";
+var runFile = promisify2(execFile2);
 var ignored = /* @__PURE__ */ new Set([".git", ".dev-flow", "node_modules"]);
+function configFor(input) {
+  return Array.isArray(input) ? { protectedRoots: input } : input;
+}
 async function collect(root, relative, files) {
   const absolute = path2.join(root, relative);
   let entries;
@@ -219,11 +312,97 @@ async function collect(root, relative, files) {
     else if (metadata.isFile()) files.push(child);
   }
 }
-async function fingerprintProtectedRoots(root, protectedRoots) {
-  const files = [];
-  for (const item of [...protectedRoots].sort()) await collect(root, item, files);
+async function hasGitMetadata(root) {
+  let current = path2.resolve(root);
+  while (true) {
+    try {
+      await lstat(path2.join(current, ".git"));
+      return true;
+    } catch (error) {
+      if (error.code !== "ENOENT") return true;
+    }
+    const parent = path2.dirname(current);
+    if (parent === current) return false;
+    current = parent;
+  }
+}
+async function gitOutput(root, args) {
+  try {
+    const result = await runFile("git", args, { cwd: root, encoding: "utf8", maxBuffer: 8 * 1024 * 1024 });
+    return String(result.stdout);
+  } catch (error) {
+    throw new DevFlowError("PROTECTED_ROOT_ENUMERATION_FAILED", "Git could not enumerate protected roots", {
+      command: ["git", ...args].join(" "),
+      cause: error instanceof Error ? error.message : String(error)
+    });
+  }
+}
+async function gitFiles(root, protectedRoots) {
+  const hasMetadata = await hasGitMetadata(root);
+  let insideWorktree = false;
+  try {
+    insideWorktree = (await gitOutput(root, ["rev-parse", "--is-inside-work-tree"])).trim() === "true";
+  } catch (error) {
+    if (!hasMetadata) return void 0;
+    throw error;
+  }
+  if (!insideWorktree) return void 0;
+  const output = await gitOutput(root, ["ls-files", "--cached", "--others", "--exclude-standard", "-z", "--", ...protectedRoots]);
+  return output.split("\0").filter(Boolean).map(normalizeProjectPath);
+}
+function withinConfiguredRoot(file, protectedRoots) {
+  return protectedRoots.some((root) => root === "." || file === root || file.startsWith(`${root}/`));
+}
+function applyExcludes(files, excludes) {
+  return files.filter((file) => !excludes?.some((pattern) => pathWithinFileScope(file, [pattern])));
+}
+async function assertProtectedRootsSafe(root, protectedRoots) {
+  for (const relative of protectedRoots) {
+    try {
+      const metadata = await lstat(path2.join(root, relative));
+      if (metadata.isSymbolicLink()) throw new DevFlowError("UNSAFE_PROTECTED_ROOT", `symbolic link is not allowed: ${relative}`);
+    } catch (error) {
+      if (error instanceof DevFlowError) throw error;
+      if (error.code !== "ENOENT") throw error;
+    }
+  }
+}
+async function enumerateProtectedFiles(root, input) {
+  const config = configFor(input);
+  const protectedRoots = [...new Set(config.protectedRoots.map(normalizeProjectPath))].sort();
+  await assertProtectedRootsSafe(root, protectedRoots);
+  const fromGit = await gitFiles(root, protectedRoots);
+  const files = fromGit ?? (() => {
+    const collected = [];
+    return Promise.all(protectedRoots.map((item) => collect(root, item, collected))).then(() => collected);
+  })();
+  const resolved = await files;
+  const unique = [...new Set(resolved.map(normalizeProjectPath).filter((file) => withinConfiguredRoot(file, protectedRoots)))].sort();
+  for (const relative of unique) {
+    let metadata;
+    try {
+      metadata = await lstat(path2.join(root, relative));
+    } catch (error) {
+      if (error.code === "ENOENT") continue;
+      throw error;
+    }
+    if (metadata.isSymbolicLink()) throw new DevFlowError("UNSAFE_PROTECTED_ROOT", `symbolic link is not allowed: ${relative}`);
+  }
+  const present = [];
+  for (const relative of unique) {
+    try {
+      await lstat(path2.join(root, relative));
+      present.push(relative);
+    } catch (error) {
+      if (error.code !== "ENOENT") throw error;
+    }
+  }
+  return applyExcludes(present, config.protectedRootsExclude);
+}
+async function fingerprintProtectedRoots(root, input) {
+  const files = await enumerateProtectedFiles(root, input);
   const digest7 = createHash("sha256");
-  for (const relative of files.sort()) {
+  for (const relative of files) {
     digest7.update(relative);
     digest7.update("\0");
     digest7.update(await readFile(path2.join(root, relative)));
@@ -231,11 +410,10 @@ async function fingerprintProtectedRoots(root, protectedRoots) {
   }
   return digest7.digest("hex");
 }
-async function snapshotProtectedRoots(root, protectedRoots) {
-  const files = [];
-  for (const item of [...protectedRoots].sort()) await collect(root, item, files);
+async function snapshotProtectedRoots(root, input) {
+  const files = await enumerateProtectedFiles(root, input);
   const snapshots = [];
-  for (const relative of files.sort()) {
+  for (const relative of files) {
     const absolute = path2.join(root, relative);
     const metadata = await lstat(absolute);
     snapshots.push({
@@ -271,6 +449,12 @@ function validateProjectConfig(value) {
     throw new DevFlowError("INVALID_PROJECT_CONFIG", "protectedRoots must be project-relative non-.dev-flow directories");
   }
   config.protectedRoots = protectedRoots;
+  if (config.protectedRootsExclude !== void 0) {
+    if (!Array.isArray(config.protectedRootsExclude) || config.protectedRootsExclude.some((pattern) => typeof pattern !== "string" || !relativeDirectory(pattern))) {
+      throw new DevFlowError("INVALID_PROJECT_CONFIG", "protectedRootsExclude must contain non-empty relative glob patterns without ..");
+    }
+    config.protectedRootsExclude = config.protectedRootsExclude.map((pattern) => normalizeProjectPath(pattern));
+  }
   const commands = config.verification?.commands;
   if (!Array.isArray(commands) || !commands.length) throw new DevFlowError("INVALID_PROJECT_CONFIG", "at least one verification command is required");
   const ids = /* @__PURE__ */ new Set();
@@ -283,48 +467,11 @@ function validateProjectConfig(value) {
   if (!Array.isArray(behaviorCommands) || behaviorCommands.some((id) => !ids.has(id))) {
     throw new DevFlowError("INVALID_PROJECT_CONFIG", "behaviorCommands must reference configured command ids");
   }
-}
-
-// plugins/dev-flow/src/policy/rollback.ts
-var IMPLEMENTATION_UNIT_TRANSITIONS = Object.freeze({
-  pending: Object.freeze(["active"]),
-  active: Object.freeze(["verified"]),
-  verified: Object.freeze(["checkpointed", "active"]),
-  checkpointed: Object.freeze(["rolled_back"]),
-  rolled_back: Object.freeze(["active"])
-});
-var ROLLBACK_ID = /^RU-[0-9]{3,}$/;
-var SHA256 = /^[0-9a-f]{64}$/;
-function isSafeFileScopePattern(value) {
-  if (typeof value !== "string" || !value || value.trim() !== value) return false;
-  if (value.includes("\\") || value.startsWith("/") || /^[A-Za-z]:/.test(value)) return false;
-  if (value === ".") return true;
-  return value.split("/").every((segment) => segment.length > 0 && segment !== "." && segment !== "..");
-}
-function invalid(message) {
-  throw new Error(`ROLLBACK_PROTOCOL_INVALID: ${message}`);
-}
-function isRecord(value) {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-function isRollbackId(value) {
-  return typeof value === "string" && ROLLBACK_ID.test(value);
-}
-function isSha256(value) {
-  return typeof value === "string" && SHA256.test(value);
-}
-function isNonEmptyString(value) {
-  return typeof value === "string" && value.trim().length > 0;
-}
-function isNonEmptyStringArray(value) {
-  return Array.isArray(value) && value.length > 0 && value.every(isNonEmptyString);
-}
-function implementationUnitForRollbackNode(node, basisHash2) {
-  if (!isRecord(node) || node.kind !== "rollback" || !isRollbackId(node.id) || !isNonEmptyStringArray(node.tasks) || !isNonEmptyStringArray(node.fileScope) || !isNonEmptyStringArray(node.forwardVerification) || !isNonEmptyStringArray(node.rollbackVerification) || node.status !== "current") {
-    invalid("rollback node is missing fields required to open an implementation unit");
+  const preflightCommands = config.verification?.preflightCommands;
+  if (preflightCommands !== void 0 && (!Array.isArray(preflightCommands) || preflightCommands.some((id) => typeof id !== "string" || !ids.has(id)))) {
+    throw new DevFlowError("INVALID_PROJECT_CONFIG", "preflightCommands must reference configured command ids");
   }
-  if (!isSha256(basisHash2)) invalid("implementation unit basis hash must be a SHA-256 hex digest");
-  return { unitId: node.id, status: "pending", basisHash: basisHash2 };
+  if (preflightCommands && config.verification) config.verification.preflightCommands = [...new Set(preflightCommands)];
 }
 
 // plugins/dev-flow/src/core/traceability.ts
@@ -346,6 +493,17 @@ function isRecord2(value) {
 }
 function isStringArray(value, allowEmpty = false) {
   return Array.isArray(value) && (allowEmpty || value.length > 0) && value.every((item) => typeof item === "string" && item.length > 0);
+}
+function isSafeCommandCwd(value) {
+  return typeof value === "string" && value.length > 0 && !value.startsWith("/") && !/^[A-Za-z]:[\\/]/.test(value) && !value.split(/[\\/]+/).includes("..");
+}
+function isVerificationCommandRef(value) {
+  if (typeof value === "string") return value.length > 0;
+  if (!isRecord2(value) || Object.keys(value).some((key) => !["command", "args", "cwd"].includes(key)) || typeof value.command !== "string" || !value.command.trim() || value.args !== void 0 && (!Array.isArray(value.args) || value.args.some((arg) => typeof arg !== "string")) || value.cwd !== void 0 && !isSafeCommandCwd(value.cwd)) return false;
+  return true;
+}
+function isVerificationCommandArray2(value) {
+  return Array.isArray(value) && value.length > 0 && value.every(isVerificationCommandRef);
 }
 function assertId(kind, id) {
   if (typeof id !== "string" || !new RegExp(`^${idPrefix[kind]}-[0-9]{3,}$`).test(id)) {
@@ -455,7 +613,11 @@ function assertPersistedNode(recordId, value, options) {
   }
   if (kind === "rollback") {
     for (const [field, allowEmpty] of [["tasks", false], ["dependsOn", true], ["fileScope", false], ["covers", false], ["forwardVerification", false], ["rollbackVerification", false]]) {
-      if (!isStringArray(value[field], allowEmpty)) invalid2("persisted rollback field is invalid", { id: recordId, field });
+      if (field === "forwardVerification" || field === "rollbackVerification") {
+        if (!isVerificationCommandArray2(value[field])) invalid2("persisted rollback verification field is invalid", { id: recordId, field });
+      } else if (!isStringArray(value[field], allowEmpty)) {
+        invalid2("persisted rollback field is invalid", { id: recordId, field });
+      }
     }
     if (value.sourceArtifact !== "implementation-plan" && value.sourceArtifact !== "rollback-units") {
       invalid2("persisted rollback has an invalid sourceArtifact", { id: recordId });
@@ -755,8 +917,7 @@ var reviewRoles = [
 ];
 function deriveReviewJobRequirements(route, riskLabels) {
   if (route !== "standard-m" && route !== "standard-l") return [];
-  const roles = ["requirements-coverage", "architecture-testability"];
-  if (route === "standard-l") roles.push("rollback-operability");
+  const roles = ["requirements-coverage", "architecture-testability", "rollback-operability"];
   if (riskLabels.includes("security")) roles.push("security");
   if (riskLabels.some((label) => label === "data" || label === "money" || label === "irreversible_consequence")) {
     roles.push("data-irreversibility");
@@ -1639,9 +1800,9 @@ import { access as access2, mkdir as mkdir5, open as open5, readFile as readFile
 import path9 from "node:path";
 
 // plugins/dev-flow/src/core/verification.ts
-import { execFile as execFile2 } from "node:child_process";
-import { promisify as promisify2 } from "node:util";
-var run2 = promisify2(execFile2);
+import { execFile as execFile3 } from "node:child_process";
+import { promisify as promisify3 } from "node:util";
+var run2 = promisify3(execFile3);
 
 // plugins/dev-flow/src/core/checkpoints.ts
 var digest4 = (value) => createHash7("sha256").update(value).digest("hex");
@@ -1756,7 +1917,7 @@ async function deriveReviewInput(root, state) {
       return scopes;
     }, []).sort((left, right) => left.id.localeCompare(right.id))
   };
-  const protectedRootsFingerprint = await fingerprintProtectedRoots(root, config.protectedRoots);
+  const protectedRootsFingerprint = await fingerprintProtectedRoots(root, config);
   const basis = {
     featureId: state.featureId,
     route: state.route,
@@ -1823,7 +1984,10 @@ async function currentBatchWithBasis(root, state, options = {}) {
   if (requireLiveBasis) {
     const reviewInput = await deriveReviewInput(root, state);
     if (basisHash(reviewInput.basis) !== batch.basisHash) {
-      invalid3("REVIEW_BASIS_STALE", "review batch basis no longer matches current feature state", { batchId: batch.batchId });
+      invalid3("REVIEW_BASIS_STALE", "review batch basis no longer matches current feature state", {
+        batchId: batch.batchId,
+        recoveryHint: "\u91CD\u5EFA\u6279\u6B21\u2192\u91CD\u4EA4 jobs\u2192re-record planning"
+      });
     }
   }
   return { ledger, batch };
@@ -1958,13 +2122,13 @@ async function beginImplementationUnit(root, id, expectedRevision, unitId) {
       throw new DevFlowError("IMPLEMENTATION_UNIT_NOT_PENDING", "rollback unit cannot begin from its current status", { unitId, status: target.status });
     }
     const project = await readProjectConfig(root);
-    const snapshot = await snapshotProtectedRoots(root, project.protectedRoots);
+    const snapshot = await snapshotProtectedRoots(root, project);
     await captureUnitBaseline(root, id, unitId, snapshot);
     delete target.checkpointId;
     target.basisHash = basisHash2;
     target.beginNonce = randomUUID7();
     target.status = "active";
-    target.startedFingerprint = await fingerprintProtectedRoots(root, project.protectedRoots);
+    target.startedFingerprint = await fingerprintProtectedRoots(root, project);
     state.implementationUnits = merged;
   }, { unitId });
 }

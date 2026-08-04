@@ -39,7 +39,7 @@ test("v2 standard M runs one dynamic approval and automatic unit checkpoints", a
   assert.equal(result.state.lifecycle, "finalized");
   assert.equal(Object.keys(result.state.humanGates).filter((id) => id.startsWith("approval:")).length, 1);
   assert.ok((result.state.checkpoints?.length ?? 0) >= 2);
-  assert.deepEqual(result.review.roles, ["requirements-coverage", "architecture-testability"]);
+  assert.deepEqual(result.review.roles, ["requirements-coverage", "architecture-testability", "rollback-operability"]);
 });
 
 test("v2 light L runs the risk overlay without adding a second confirmation route", async () => {

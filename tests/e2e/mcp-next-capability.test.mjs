@@ -18,9 +18,13 @@ test("MCP dev_flow_next returns the public stage capability contract", async () 
   try {
     await mkdir(path.join(root, "src"));
     await mcpCall(server, root, "dev_flow_init_project", { config });
-    await mcpCall(server, root, "dev_flow_start", {
+    const started = await mcpCall(server, root, "dev_flow_start", {
       featureId: "capability", objective: "验证阶段能力合同", scope: { inScope: ["src"], outOfScope: [] }, host: "codex",
     });
+    assert.equal("steps" in started, false);
+    assert.equal(started.mode, "intake");
+    const fullStatus = await mcpCall(server, root, "dev_flow_status", { featureId: "capability" });
+    assert.ok(fullStatus.steps);
     const capability = await mcpCall(server, root, "dev_flow_next", { featureId: "capability" });
     assert.equal(capability.stage, "intake");
     assert.ok(capability.allowedActions.includes("lock-classification"));

@@ -9,4 +9,4 @@ standard M/L 需要 `实施计划.md`，light L 需要该文件，XS/S/light M �
 
 planning 内部自动完成：冻结计划 basis、创建 review batch、按角色审查、修复 blocking findings、生成只读 review 投影。`plan-review` 是 review job/独立技能，不是额外路线步骤；不要求模型手写 `plan-review.md` 或重复确认。
 
-计划中的每个任务必须是可独立验证的行为切片，并说明范围、验收、验证和可恢复策略；不要机械拆成“先写测试再写实现”导致验证死锁。计划事实发生变化时，Core 只使受影响的 review/approval basis 失效。
+计划中的每个任务必须是可独立验证的行为切片，并说明范围、验收、验证和可恢复策略；测试与使其通过的实现默认属于同一 RU，红测试允许作为 RU 内临时状态，不允许成为 checkpoint 边界；forwardVerification 必须在本 RU 与已 checkpoint 依赖状态下通过。不要机械拆成“先写测试再写实现”导致验证死锁。计划事实发生变化时，Core 只使受影响的 review/approval basis 失效。

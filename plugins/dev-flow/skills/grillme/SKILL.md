@@ -11,7 +11,7 @@ description: 先查事实、再高质量澄清用户决策。可独立调用，�
 2. 只询问会改变范围、拓扑、风险、验收、优先级或不可逆取舍的问题。
 3. 每题说明已知事实、冲突/未知、互斥选项、影响和推荐答案；将同一主题的子问题合并。
 4. 没有固定题数上限，直到决策树收敛；用户可以合并剩余问题、裁剪问题或结束访谈。
-5. 工作流模式下通过 `dev_flow_record_decision` 写入 decision ledger；用户回答后用 `dev_flow_resolve_decision` 保存证据和结论。不要自行锁定分类、伪造确认或修改控制文件。
+5. 工作流模式下，需求文档为 current 且 `grill_status: pending` 时直接调用 `dev_flow_request_grill_decision`，Core 会自动 upsert decision ledger；用户回答后用对应 resolve 工具一次 CAS 同步保存 interaction、证据和结论。不要自行锁定分类、伪造确认或修改控制文件。
 
 ## 两种模式
 

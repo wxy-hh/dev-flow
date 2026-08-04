@@ -2,6 +2,22 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "dev-flow/traceability.schema.json",
   "$defs": {
+    "inlineVerificationCommand": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["command"],
+      "properties": {
+        "command": { "type": "string", "minLength": 1 },
+        "args": { "type": "array", "items": { "type": "string" } },
+        "cwd": { "type": "string", "minLength": 1, "pattern": "^(?!/)(?![A-Za-z]:)(?!.*(?:^|/)\\.\\.(?:/|$)).*$" }
+      }
+    },
+    "verificationCommandRef": {
+      "oneOf": [
+        { "type": "string", "minLength": 1 },
+        { "$ref": "#/$defs/inlineVerificationCommand" }
+      ]
+    },
     "traceDelta": {
       "type": "object",
       "additionalProperties": false,
@@ -10,11 +26,58 @@
     },
     "traceNodeInput": {
       "oneOf": [
-        { "type": "object", "additionalProperties": false, "required": ["kind", "id"], "properties": { "kind": { "const": "requirement" }, "id": { "type": "string", "pattern": "^REQ-[0-9]{3,}$" } } },
-        { "type": "object", "additionalProperties": false, "required": ["kind", "id", "parentRequirement"], "properties": { "kind": { "const": "acceptance-criterion" }, "id": { "type": "string", "pattern": "^AC-[0-9]{3,}$" }, "parentRequirement": { "type": "string", "pattern": "^REQ-[0-9]{3,}$" } } },
-        { "type": "object", "additionalProperties": false, "required": ["kind", "id", "covers", "rollbackUnit"], "properties": { "kind": { "const": "task" }, "id": { "type": "string", "pattern": "^TASK-[0-9]{3,}$" }, "covers": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "type": "string", "pattern": "^(REQ|AC)-[0-9]{3,}$" } }, "rollbackUnit": { "type": "string", "pattern": "^RU-[0-9]{3,}$" } } },
-        { "type": "object", "additionalProperties": false, "required": ["kind", "id", "verifies"], "properties": { "kind": { "const": "test" }, "id": { "type": "string", "pattern": "^TEST-[0-9]{3,}$" }, "verifies": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "type": "string", "pattern": "^AC-[0-9]{3,}$" } } } },
-        { "type": "object", "additionalProperties": false, "required": ["kind", "id", "tasks", "dependsOn", "fileScope", "covers", "forwardVerification", "rollbackVerification"], "properties": { "kind": { "const": "rollback" }, "id": { "type": "string", "pattern": "^RU-[0-9]{3,}$" }, "tasks": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "type": "string", "pattern": "^TASK-[0-9]{3,}$" } }, "dependsOn": { "type": "array", "uniqueItems": true, "items": { "type": "string", "pattern": "^RU-[0-9]{3,}$" } }, "fileScope": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "type": "string", "minLength": 1 } }, "covers": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "type": "string", "pattern": "^(REQ|AC)-[0-9]{3,}$" } }, "forwardVerification": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "type": "string", "minLength": 1 } }, "rollbackVerification": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "type": "string", "minLength": 1 } } } }
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "id"],
+          "properties": { "kind": { "const": "requirement" }, "id": { "type": "string", "pattern": "^REQ-[0-9]{3,}$" } }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "id", "parentRequirement"],
+          "properties": {
+            "kind": { "const": "acceptance-criterion" },
+            "id": { "type": "string", "pattern": "^AC-[0-9]{3,}$" },
+            "parentRequirement": { "type": "string", "pattern": "^REQ-[0-9]{3,}$" }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "id", "covers", "rollbackUnit"],
+          "properties": {
+            "kind": { "const": "task" },
+            "id": { "type": "string", "pattern": "^TASK-[0-9]{3,}$" },
+            "covers": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "type": "string", "pattern": "^(REQ|AC)-[0-9]{3,}$" } },
+            "rollbackUnit": { "type": "string", "pattern": "^RU-[0-9]{3,}$" }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "id", "verifies"],
+          "properties": {
+            "kind": { "const": "test" },
+            "id": { "type": "string", "pattern": "^TEST-[0-9]{3,}$" },
+            "verifies": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "type": "string", "pattern": "^AC-[0-9]{3,}$" } }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "id", "tasks", "dependsOn", "fileScope", "covers", "forwardVerification", "rollbackVerification"],
+          "properties": {
+            "kind": { "const": "rollback" },
+            "id": { "type": "string", "pattern": "^RU-[0-9]{3,}$" },
+            "tasks": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "type": "string", "pattern": "^TASK-[0-9]{3,}$" } },
+            "dependsOn": { "type": "array", "uniqueItems": true, "items": { "type": "string", "pattern": "^RU-[0-9]{3,}$" } },
+            "fileScope": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "type": "string", "minLength": 1 } },
+            "covers": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "type": "string", "pattern": "^(REQ|AC)-[0-9]{3,}$" } },
+            "forwardVerification": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "$ref": "#/$defs/verificationCommandRef" } },
+            "rollbackVerification": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "$ref": "#/$defs/verificationCommandRef" } }
+          }
+        }
       ]
     }
   }

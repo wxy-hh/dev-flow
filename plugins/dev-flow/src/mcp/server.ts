@@ -8,16 +8,19 @@ import { confirmApproval, presentApproval, resolveApprovalElicitation, resolveAp
 import {
   initProject, startFeature, lockClassification, recordDecision, resolveRecordedDecision, abandonFeature, reclassifyFeature, switchActive, recoverCorruptFeature, readState,
 } from "../core/state-store.js";
+import type { FeatureState } from "../core/state-store.js";
+import { buildFeatureMutationSummary } from "../core/execution-brief.js";
 import { readStatusView } from "../core/status.js";
 import { beginImplementationUnit } from "../core/implementation-units.js";
 import { checkpointImplementationUnit } from "../core/checkpoints.js";
 import { executeRollback, presentRollbackGate, previewRollback, resolveRollbackGateElicitation, resolveRollbackGateToken, type RollbackPreview } from "../core/rollback.js";
 import { runVerification } from "../core/verification.js";
 import { allowedRiskLabels } from "../policy/contract.js";
-import { deriveRiskRequirements, selectRoute } from "../policy/route.js";
+import { deriveRiskRequirements, recommendClassification, selectRoute } from "../policy/route.js";
 import { collectDoctorReport } from "./doctor.js";
 import { emitAttention } from "./attention.js";
 import { enableWindowsNotifications } from "./windows-notifications.js";
+import { validateToolInput } from "./input-validation.js";
 import { requestGrillDecision, resolveGrillElicitation, resolveGrillToken } from "../core/requirements-grill.js";
 import { validateTraceDelta } from "../core/traceability.js";
 import { inspectCurrentTrace } from "../core/traceability-gates.js";
@@ -29,10 +32,11 @@ import {
   failReviewSampling,
   getReviewJob,
   presentReviewRiskAcceptance,
+  releaseReviewJob,
   resolveReviewRiskAcceptanceToken,
   submitReviewJob,
 } from "../core/review-jobs.js";
-import { parseHostAttestation, parseReviewJobCompletion } from "../policy/review.js";
+import { parseHostAttestation, parseReviewJobCompletion, toPublicReviewJob } from "../policy/review.js";
 import {
   getInteraction,
   interactionResponse,
@@ -51,7 +55,7 @@ const tools = [
   "dev_flow_init_project", "dev_flow_classify", "dev_flow_start", "dev_flow_lock_classification", "dev_flow_record_decision", "dev_flow_resolve_decision", "dev_flow_status", "dev_flow_next",
   "dev_flow_switch_active", "dev_flow_scaffold_artifact", "dev_flow_record_artifact", "dev_flow_record_step",
   "dev_flow_record_artifact_with_trace", "dev_flow_get_traceability",
-  "dev_flow_create_review_batch", "dev_flow_get_review_job", "dev_flow_claim_review_job", "dev_flow_submit_review_job", "dev_flow_sample_review_job",
+  "dev_flow_create_review_batch", "dev_flow_get_review_job", "dev_flow_claim_review_job", "dev_flow_submit_review_job", "dev_flow_sample_review_job", "dev_flow_release_review_job",
   "dev_flow_present_review_risk_acceptance", "dev_flow_resolve_review_risk_acceptance",
   "dev_flow_present_approval", "dev_flow_confirm_approval", "dev_flow_reclassify", "dev_flow_verify",
   "dev_flow_respond_interaction", "dev_flow_request_grill_decision", "dev_flow_resolve_grill_decision",
@@ -66,22 +70,59 @@ const object = (required: string[], properties: Record<string, unknown> = {}) =>
 });
 const string = { type: "string", minLength: 1 };
 const integer = { type: "integer", minimum: 0 };
-const featureMutation = (extra: Record<string, unknown> = {}) => object(
-  ["featureId", "expectedRevision"],
+const featureMutation = (extra: Record<string, unknown> = {}, requiredExtras: string[] = []) => object(
+  ["featureId", "expectedRevision", ...requiredExtras],
   { featureId: string, expectedRevision: integer, ...extra },
 );
 
 const riskLabelsSchema = { type: "array", items: { enum: allowedRiskLabels }, uniqueItems: true };
+const classificationSignalsSchema = object(["impactScope", "sharedContract", "independentChains", "coordinatedRollback", "requirements", "formalControls"], {
+  impactScope: { enum: ["single-location", "single-module", "cross-module"] },
+  sharedContract: { type: "boolean" },
+  independentChains: { type: "integer", minimum: 1 },
+  coordinatedRollback: { type: "boolean" },
+  requirements: { enum: ["missing-or-unclear", "documented-unconfirmed", "provided-confirmed"] },
+  formalControls: { type: "array", items: { enum: ["trace", "independent-review", "multiple-rollback-units"] }, uniqueItems: true },
+});
 const classificationBasisSchema = object(["scopeFacts", "topologyFacts", "uncertaintyFacts", "riskFacts", "decisionRefs"], {
   scopeFacts: { type: "array", items: string },
   topologyFacts: { type: "array", items: string },
   uncertaintyFacts: { type: "array", items: string },
-  riskFacts: { type: "object", additionalProperties: { type: "array", items: string } },
+  riskFacts: { type: "object", propertyNames: { enum: allowedRiskLabels }, additionalProperties: { type: "array", items: string } },
   decisionRefs: { type: "array", items: string },
+  signals: classificationSignalsSchema,
+});
+const recommendedClassificationBasisSchema = object(["scopeFacts", "topologyFacts", "uncertaintyFacts", "riskFacts", "decisionRefs", "signals"], {
+  ...classificationBasisSchema.properties,
+});
+const flatClassificationBasisProperties = {
+  scopeFacts: classificationBasisSchema.properties.scopeFacts,
+  topologyFacts: classificationBasisSchema.properties.topologyFacts,
+  uncertaintyFacts: classificationBasisSchema.properties.uncertaintyFacts,
+  riskFacts: classificationBasisSchema.properties.riskFacts,
+  decisionRefs: classificationBasisSchema.properties.decisionRefs,
+};
+const classificationInputSchema = object(["level", "topology"], {
+  level: { enum: ["XS", "S", "M", "L"] },
+  topology: { enum: ["local", "shared-contract", "multi-chain", "coordinated-rollback"] },
+  execution: { enum: ["light", "standard"] },
+  requirements: { enum: ["missing-or-unclear", "documented-unconfirmed", "provided-confirmed"] },
+  riskLabels: riskLabelsSchema,
+  classificationBasis: classificationBasisSchema,
+  ...flatClassificationBasisProperties,
+  acceptanceAssistSuggested: { type: "boolean" },
 });
 const traceArtifactKinds = ["requirements", "implementation-plan", "coverage-matrix", "rollback-units"] as const;
 const traceId = (prefix: string) => ({ type: "string", pattern: `^${prefix}-[0-9]{3,}$` });
 const stringArray = { type: "array", minItems: 1, items: string };
+const relativeCwd = { type: "string", minLength: 1, pattern: "^(?!/)(?![A-Za-z]:)(?!.*(?:^|/)\\.\\.(?:/|$)).*$" };
+const inlineVerificationCommand = object(["command"], {
+  command: string,
+  args: { type: "array", items: string },
+  cwd: relativeCwd,
+});
+const verificationCommandRef = { oneOf: [string, inlineVerificationCommand] };
+const verificationCommandArray = { type: "array", minItems: 1, uniqueItems: true, items: verificationCommandRef };
 const traceNodeSchemas = [
   object(["kind", "id"], { kind: { const: "requirement" }, id: traceId("REQ") }),
   object(["kind", "id", "parentRequirement"], { kind: { const: "acceptance-criterion" }, id: traceId("AC"), parentRequirement: traceId("REQ") }),
@@ -90,7 +131,7 @@ const traceNodeSchemas = [
   object(["kind", "id", "tasks", "dependsOn", "fileScope", "covers", "forwardVerification", "rollbackVerification"], {
     kind: { const: "rollback" }, id: traceId("RU"), tasks: { type: "array", minItems: 1, items: traceId("TASK") },
     dependsOn: { type: "array", items: traceId("RU") }, fileScope: stringArray, covers: stringArray,
-    forwardVerification: stringArray, rollbackVerification: stringArray,
+    forwardVerification: verificationCommandArray, rollbackVerification: verificationCommandArray,
   }),
 ];
 const traceDeltaSchema = object(["nodes"], {
@@ -132,17 +173,25 @@ const scopeSchema = {
   },
 };
 
-const manualAcceptanceSchema = object(["mode", "source", "scenarios"], {
-  mode: { enum: ["browser", "user-signoff", "code-path-audit"] },
-  source: string,
-  promptEventId: string,
-  userReply: string,
-  scenarios: {
-    type: "array",
-    minItems: 1,
-    items: object(["name", "evidence"], { name: string, evidence: string }),
-  },
-});
+const manualAcceptanceScenarioSchema = {
+  type: "array",
+  minItems: 1,
+  items: object(["name", "evidence"], { name: string, evidence: string }),
+};
+const manualAcceptanceSchema = { oneOf: [
+  object(["mode", "source", "scenarios"], {
+    mode: { enum: ["browser", "code-path-audit"] },
+    source: string,
+    scenarios: manualAcceptanceScenarioSchema,
+  }),
+  object(["mode", "source", "promptEventId", "userReply", "scenarios"], {
+    mode: { const: "user-signoff" },
+    source: string,
+    promptEventId: string,
+    userReply: string,
+    scenarios: manualAcceptanceScenarioSchema,
+  }),
+] };
 
 const interactionOptionSchema = object(["id", "label"], {
   id: string,
@@ -155,21 +204,24 @@ const toolSchemas: Record<string, { description: string; inputSchema: Record<str
   dev_flow_init_project: { description: "Create strict project configuration.", inputSchema: object(["config"], { config: { type: "object" } }) },
   dev_flow_classify: {
     description: "Pure route classification.",
-    inputSchema: object(["level", "topology"], {
-      level: { enum: ["XS", "S", "M", "L"] },
-      topology: { enum: ["local", "shared-contract", "multi-chain", "coordinated-rollback"] },
-      execution: { enum: ["light", "standard"] },
-      requirements: { enum: ["missing-or-unclear", "documented-unconfirmed", "provided-confirmed"] },
-      riskLabels: riskLabelsSchema,
-      classificationBasis: classificationBasisSchema,
-      acceptanceAssistSuggested: { type: "boolean", description: "Offer optional browser/user acceptance help; never blocks the route." },
-      manualAcceptanceRequired: { type: "boolean" },
-    }),
+    inputSchema: { oneOf: [
+      object(["classificationBasis"], { classificationBasis: recommendedClassificationBasisSchema }),
+      object(["level", "topology"], {
+        level: { enum: ["XS", "S", "M", "L"] },
+        topology: { enum: ["local", "shared-contract", "multi-chain", "coordinated-rollback"] },
+        execution: { enum: ["light", "standard"] },
+        requirements: { enum: ["missing-or-unclear", "documented-unconfirmed", "provided-confirmed"] },
+        riskLabels: riskLabelsSchema,
+        classificationBasis: classificationBasisSchema,
+        acceptanceAssistSuggested: { type: "boolean", description: "Offer optional browser/user acceptance help; never blocks the route." },
+        manualAcceptanceRequired: { type: "boolean" },
+      }),
+    ] },
     annotations: { readOnlyHint: true },
   },
   dev_flow_start: {
     description: "Create an unclassified intake feature.",
-    inputSchema: object(["featureId", "objective"], {
+    inputSchema: object(["featureId", "objective", "host"], {
       objective: string,
       featureId: string,
       activation: { enum: ["active", "paused"] },
@@ -179,32 +231,24 @@ const toolSchemas: Record<string, { description: string; inputSchema: Record<str
   },
   dev_flow_lock_classification: {
     description: "Atomically lock a classification after intake decisions are resolved.",
-    inputSchema: featureMutation({ classification: object(["level", "topology"], {
-      level: { enum: ["XS", "S", "M", "L"] },
-      topology: { enum: ["local", "shared-contract", "multi-chain", "coordinated-rollback"] },
-      execution: { enum: ["light", "standard"] },
-      requirements: { enum: ["missing-or-unclear", "documented-unconfirmed", "provided-confirmed"] },
-      riskLabels: riskLabelsSchema,
-      ...classificationBasisSchema.properties,
-      acceptanceAssistSuggested: { type: "boolean" },
-    })}),
+    inputSchema: featureMutation({ classification: classificationInputSchema }, ["classification"]),
   },
   dev_flow_record_decision: {
     description: "Record one unresolved user-owned decision in the shared ledger.",
-    inputSchema: featureMutation({ question: string, factRefs: { type: "array", items: string }, host: { enum: ["claude", "codex"] } }),
+    inputSchema: featureMutation({ question: string, factRefs: { type: "array", items: string }, host: { enum: ["claude", "codex"] } }, ["question", "host"]),
   },
   dev_flow_resolve_decision: {
     description: "Resolve one decision with normalized user evidence and conclusion.",
-    inputSchema: featureMutation({ decisionId: string, evidence: string, conclusion: string, host: { enum: ["claude", "codex"] } }),
+    inputSchema: featureMutation({ decisionId: string, evidence: string, conclusion: string, host: { enum: ["claude", "codex"] } }, ["decisionId", "evidence", "conclusion", "host"]),
   },
   dev_flow_status: { description: "Read one feature StatusView (state + progress).", inputSchema: object(["featureId"], { featureId: string }), annotations: { readOnlyHint: true } },
   dev_flow_next: { description: "Return the current stage capability contract and any required attention.", inputSchema: object(["featureId"], { featureId: string }), annotations: { readOnlyHint: true } },
   dev_flow_switch_active: { description: "Atomically hand off the single active feature.", inputSchema: object(["fromFeatureId", "toFeatureId", "reason"], { fromFeatureId: string, toFeatureId: string, reason: string }) },
-  dev_flow_scaffold_artifact: { description: "Create only the current route artifact. For editable artifacts, read the registered path before editing, then record it. Generated status artifacts are read-only: scaffold them and continue with the requested step; do not edit or record them.", inputSchema: featureMutation({ kind: string }) },
-  dev_flow_record_artifact: { description: "Register an edited route artifact.", inputSchema: featureMutation({ kind: string }) },
+  dev_flow_scaffold_artifact: { description: "Create only the current route artifact. For editable artifacts, read the registered path before editing, then record it. Generated status artifacts are read-only: scaffold them and continue with the requested step; do not edit or record them.", inputSchema: featureMutation({ kind: string }, ["kind"]) },
+  dev_flow_record_artifact: { description: "Register an edited route artifact.", inputSchema: featureMutation({ kind: string }, ["kind"]) },
   dev_flow_record_artifact_with_trace: {
     description: "Atomically register one Trace source artifact and its complete Trace delta.",
-    inputSchema: featureMutation({ kind: { enum: traceArtifactKinds }, traceDelta: traceDeltaSchema }),
+    inputSchema: featureMutation({ kind: { enum: traceArtifactKinds }, traceDelta: traceDeltaSchema }, ["kind", "traceDelta"]),
   },
   dev_flow_get_traceability: {
     description: "Read the current Trace pointer, ledger, effective summary, and current-step blockers.",
@@ -222,7 +266,11 @@ const toolSchemas: Record<string, { description: string; inputSchema: Record<str
   },
   dev_flow_claim_review_job: {
     description: "Claim one current review job using a high-entropy retry key; returns the job capability.",
-    inputSchema: featureMutation({ batchId: string, jobId: string, claimRequestId: string }),
+    inputSchema: featureMutation({ batchId: string, jobId: string, claimRequestId: string }, ["batchId", "jobId", "claimRequestId"]),
+  },
+  dev_flow_release_review_job: {
+    description: "Release the current review job claim back to pending using the same capability; expired claims remain releasable by their holder.",
+    inputSchema: featureMutation({ batchId: string, jobId: string, capability: string }, ["batchId", "jobId", "capability"]),
   },
   dev_flow_submit_review_job: {
     description: "Submit one claimed job's structured completion. Optional host attestation can raise multi-agent-attested only; Core still owns assurance.",
@@ -232,7 +280,7 @@ const toolSchemas: Record<string, { description: string; inputSchema: Record<str
       capability: string,
       completion: reviewCompletionSchema,
       attestation: reviewAttestationSchema,
-    }),
+    }, ["batchId", "jobId", "capability", "completion"]),
   },
   dev_flow_sample_review_job: {
     description: "Ask a sampling-capable MCP client to complete one pending review job. The server owns the one-use request and submits only a validated response.",
@@ -245,7 +293,7 @@ const toolSchemas: Record<string, { description: string; inputSchema: Record<str
   },
   dev_flow_present_review_risk_acceptance: {
     description: "Present a one-time user decision for an exact set of current blocking review findings.",
-    inputSchema: featureMutation({ findingIds: { type: "array", minItems: 1, uniqueItems: true, items: string } }),
+    inputSchema: featureMutation({ findingIds: { type: "array", minItems: 1, uniqueItems: true, items: string } }, ["findingIds"]),
   },
   dev_flow_resolve_review_risk_acceptance: {
     description: "Resolve the one-time risk-acceptance token. Replays are accepted only for the identical prior reply.",
@@ -254,9 +302,9 @@ const toolSchemas: Record<string, { description: string; inputSchema: Record<str
       userReply: string,
       promptEventId: string,
       host: { enum: ["claude", "codex"] },
-    }),
+    }, ["interactionId", "userReply", "promptEventId", "host"]),
   },
-  dev_flow_record_step: { description: "Record the current non-gate route step.", inputSchema: featureMutation({ step: string, evidence: {} }) },
+  dev_flow_record_step: { description: "Record the current non-gate route step.", inputSchema: featureMutation({ step: string, evidence: {} }, ["step", "evidence"]) },
   dev_flow_begin_implementation_unit: {
     description: "Begin the next rollback unit of a checkpoints:1 feature; Core derives basis, scope, and dependency order.",
     inputSchema: object(["featureId", "expectedRevision", "unitId"], { featureId: string, expectedRevision: integer, unitId: traceId("RU") }),
@@ -272,13 +320,13 @@ const toolSchemas: Record<string, { description: string; inputSchema: Record<str
   },
   dev_flow_present_rollback_gate: {
     description: "Present a rollback confirmation gate for a confirmed checkpoint. Requires checkpoints:1 and rollbackExecution:1.",
-    inputSchema: object(["featureId", "expectedRevision", "targetCheckpointId"], { featureId: string, expectedRevision: integer, targetCheckpointId: string }),
+    inputSchema: object(["featureId", "expectedRevision", "targetCheckpointId", "host"], { featureId: string, expectedRevision: integer, targetCheckpointId: string, host: { enum: ["claude", "codex"] } }),
   },
   dev_flow_execute_rollback: {
     description: "Execute a confirmed rollback as a resumable file transaction. Rolls back to the target checkpoint, undoing all later units in reverse order.",
     inputSchema: object(["featureId", "expectedRevision", "targetCheckpointId"], { featureId: string, expectedRevision: integer, targetCheckpointId: string }),
   },
-  dev_flow_present_approval: { description: "Present one Core-derived approval obligation.", inputSchema: featureMutation({ approvalId: string }) },
+  dev_flow_present_approval: { description: "Present one Core-derived approval obligation.", inputSchema: featureMutation({ approvalId: string, host: { enum: ["claude", "codex"] } }, ["approvalId", "host"]) },
   dev_flow_confirm_approval: {
     description: "Confirm one presented approval obligation with later user evidence.",
     inputSchema: featureMutation({
@@ -287,7 +335,7 @@ const toolSchemas: Record<string, { description: string; inputSchema: Record<str
       promptEventId: string,
       turnBoundaryEventId: string,
       host: { enum: ["claude", "codex"] },
-    }),
+    }, ["approvalId", "userReply", "promptEventId", "host"]),
   },
   dev_flow_respond_interaction: {
     description: "Resolve the current approval or recovery interaction through its one-time text-token fallback.",
@@ -297,7 +345,7 @@ const toolSchemas: Record<string, { description: string; inputSchema: Record<str
       promptEventId: string,
       turnBoundaryEventId: string,
       host: { enum: ["claude", "codex"] },
-    }),
+    }, ["interactionId", "userReply", "promptEventId", "host"]),
   },
   dev_flow_request_grill_decision: {
     description: "Present the current grill question as structured choices when the host supports MCP elicitation, otherwise return one-time text replies.",
@@ -306,7 +354,7 @@ const toolSchemas: Record<string, { description: string; inputSchema: Record<str
       question: string,
       options: { type: "array", minItems: 2, maxItems: 8, items: interactionOptionSchema },
       host: { enum: ["claude", "codex"] },
-    }),
+    }, ["questionId", "question", "options", "host"]),
   },
   dev_flow_resolve_grill_decision: {
     description: "Resolve a current grill question through its one-time text-token fallback.",
@@ -315,11 +363,11 @@ const toolSchemas: Record<string, { description: string; inputSchema: Record<str
       userReply: string,
       promptEventId: string,
       host: { enum: ["claude", "codex"] },
-    }),
+    }, ["interactionId", "userReply", "promptEventId", "host"]),
   },
   dev_flow_reclassify: {
     description: "Reclassify route (stricter always; same-level standard→light with userEvidence before implementation).",
-    inputSchema: featureMutation({ classification: { type: "object" }, reason: string, userEvidence: string }),
+    inputSchema: featureMutation({ classification: classificationInputSchema, reason: string, userEvidence: string }, ["classification", "reason"]),
   },
   dev_flow_verify: {
     description: "Run only configured verification commands and optionally record manual acceptance.",
@@ -327,11 +375,11 @@ const toolSchemas: Record<string, { description: string; inputSchema: Record<str
       commandIds: { type: "array", items: string },
       host: { enum: ["claude", "codex"] },
       manualAcceptance: manualAcceptanceSchema,
-    }),
+    }, ["host"]),
   },
   dev_flow_feature_check: { description: "Check route completeness and fresh evidence.", inputSchema: featureMutation() },
   dev_flow_finalize: { description: "Set logic-complete after all obligations pass.", inputSchema: featureMutation() },
-  dev_flow_abandon: { description: "Terminally abandon a non-finalized feature.", inputSchema: featureMutation({ reason: string, userEvidence: string }) },
+  dev_flow_abandon: { description: "Terminally abandon a non-finalized feature.", inputSchema: featureMutation({ reason: string, userEvidence: string }, ["reason", "userEvidence"]) },
   dev_flow_enable_windows_notifications: {
     description: "Explicitly enable per-user Windows Toast notifications for Dev Flow. Does not change feature state.",
     inputSchema: object([]),
@@ -371,10 +419,67 @@ function toolResult(id: unknown, value: unknown) {
   })}\n`);
 }
 
+const readOnlyResponseTools = new Set([
+  "dev_flow_init_project",
+  "dev_flow_classify",
+  "dev_flow_status",
+  "dev_flow_next",
+  "dev_flow_get_traceability",
+  "dev_flow_get_review_job",
+  "dev_flow_preview_rollback",
+  "dev_flow_enable_windows_notifications",
+  "dev_flow_doctor",
+]);
+
+function isFeatureState(value: unknown): value is FeatureState {
+  return Boolean(value && typeof value === "object" && !Array.isArray(value)
+    && (value as { schemaVersion?: unknown }).schemaVersion === 2
+    && typeof (value as { featureId?: unknown }).featureId === "string"
+    && typeof (value as { revision?: unknown }).revision === "number"
+    && typeof (value as { mode?: unknown }).mode === "string");
+}
+
+/** Apply the compact contract only to mutation responses; read-only views stay full. */
+function compactMutationResult(toolName: string, value: unknown): unknown {
+  if (readOnlyResponseTools.has(toolName)) return value;
+  if (isFeatureState(value)) {
+    return {
+      ...buildFeatureMutationSummary(value),
+      ...("reclassifyNotice" in (value as unknown as Record<string, unknown>) ? { reclassifyNotice: (value as unknown as Record<string, unknown>).reclassifyNotice } : {}),
+    };
+  }
+  if (!value || typeof value !== "object" || Array.isArray(value)) return value;
+  const record = value as Record<string, unknown>;
+  if (isFeatureState(record.state)) return { ...record, state: buildFeatureMutationSummary(record.state) };
+  return value;
+}
+
 function failure(id: unknown, error: unknown) {
   const value = error instanceof DevFlowError
+    ? {
+        code: error.code,
+        message: typeof error.details.outputTail === "string"
+          ? `${error.message}\noutputTail:\n${error.details.outputTail.slice(-1_500)}`
+          : error.message,
+        details: error.details,
+      }
+    : { code: "INTERNAL_ERROR", message: error instanceof Error ? error.message : String(error), details: {} };
+  const content = JSON.stringify(value);
+  process.stdout.write(`${JSON.stringify({
+    jsonrpc: "2.0",
+    id,
+    result: {
+      isError: true,
+      content: [{ type: "text", text: content }],
+      structuredContent: value,
+    },
+  })}\n`);
+}
+
+function protocolFailure(id: unknown, error: unknown): void {
+  const value = error instanceof DevFlowError
     ? { code: error.code, message: error.message, details: error.details }
-    : { code: "INTERNAL_ERROR", message: error instanceof Error ? error.message : String(error) };
+    : { code: "INTERNAL_ERROR", message: error instanceof Error ? error.message : String(error), details: {} };
   process.stdout.write(`${JSON.stringify({ jsonrpc: "2.0", id, error: { code: -32000, message: value.message, data: value } })}\n`);
 }
 
@@ -440,13 +545,19 @@ function assertReviewSubmitInput(value: unknown): asserts value is Record<string
   const extras = ["completion", ...(value && typeof value === "object" && !Array.isArray(value) && "attestation" in value ? ["attestation"] : [])];
   assertReviewMutationInput(value, "dev_flow_submit_review_job", ["batchId", "jobId", "capability"], extras);
   try { parseReviewJobCompletion(value.completion); }
-  catch {
-    throw new DevFlowError("INVALID_TOOL_INPUT", "dev_flow_submit_review_job input does not match its schema");
+  catch (error) {
+    throw new DevFlowError("INVALID_TOOL_INPUT", "dev_flow_submit_review_job input does not match its schema", {
+      mutationApplied: false,
+      ...(error instanceof Error ? { cause: error.message } : {}),
+    });
   }
   if (value.attestation !== undefined) {
     try { parseHostAttestation(value.attestation); }
-    catch {
-      throw new DevFlowError("INVALID_TOOL_INPUT", "dev_flow_submit_review_job attestation does not match its schema");
+    catch (error) {
+      throw new DevFlowError("INVALID_TOOL_INPUT", "dev_flow_submit_review_job attestation does not match its schema", {
+        mutationApplied: false,
+        ...(error instanceof Error ? { cause: error.message } : {}),
+      });
     }
   }
 }
@@ -476,10 +587,10 @@ function assertPreviewRollbackInput(value: unknown): asserts value is { featureI
   }
 }
 
-function assertRollbackMutationInput(value: unknown, tool: string): asserts value is Record<string, unknown> & {
+function assertRollbackMutationInput(value: unknown, tool: string, includeHost = false): asserts value is Record<string, unknown> & {
   featureId: string; expectedRevision: number; targetCheckpointId: string;
 } {
-  assertReviewMutationInput(value, tool, ["targetCheckpointId"]);
+  assertReviewMutationInput(value, tool, ["targetCheckpointId"], includeHost ? ["host"] : []);
   if (typeof value.targetCheckpointId !== "string" || !value.targetCheckpointId) {
     throw new DevFlowError("INVALID_TOOL_INPUT", `${tool} input does not match its schema`);
   }
@@ -490,13 +601,13 @@ type ElicitationSelection = { action: string; comment?: string };
 
 /** A consistent result shape for every native or text interaction operation. */
 function interactionEnvelope(
-  state: object,
+  state: FeatureState,
   interaction: PublicInteraction,
   interactionOutcome: string,
   response?: InteractionResponse,
 ) {
   return {
-    ...state,
+    ...buildFeatureMutationSummary(state),
     interaction,
     interactionOutcome,
     ...(response ? { response } : {}),
@@ -523,9 +634,9 @@ function reviewSubmissionEnvelope(
 ) {
   const job = result.batch.jobs.find((candidate) => candidate.jobId === submittedJobId);
   if (!job) throw new DevFlowError("REVIEW_INTEGRITY_FAILED", "submitted review job is missing from its batch", { submittedJobId });
-  const { claim: _claim, ...publicJob } = job;
+   const publicJob = toPublicReviewJob(job);
   return {
-    state: result.state,
+    state: buildFeatureMutationSummary(result.state),
     idempotent: result.idempotent,
     job: publicJob,
     batch: {
@@ -537,6 +648,42 @@ function reviewSubmissionEnvelope(
       executionMode: result.batch.executionMode,
       jobs: result.batch.jobs.map(({ jobId, role, reviewDepth, status }) => ({ jobId, role, reviewDepth, status })),
     },
+  };
+}
+
+const classificationBasisKeys = ["scopeFacts", "topologyFacts", "uncertaintyFacts", "riskFacts", "decisionRefs"] as const;
+
+function stableJson(value: unknown): string {
+  if (value === null || typeof value !== "object") return JSON.stringify(value);
+  if (Array.isArray(value)) return `[${value.map(stableJson).join(",")}]`;
+  return `{${Object.keys(value as Record<string, unknown>).sort().map((key) => `${JSON.stringify(key)}:${stableJson((value as Record<string, unknown>)[key])}`).join(",")}}`;
+}
+
+function normalizeLockClassification(value: Record<string, unknown>): Record<string, unknown> {
+  const nested = value.classificationBasis;
+  const nestedBasis = nested && typeof nested === "object" && !Array.isArray(nested)
+    ? nested as Record<string, unknown>
+    : undefined;
+  const flatBasis = Object.fromEntries(classificationBasisKeys
+    .filter((key) => Object.hasOwn(value, key))
+    .map((key) => [key, value[key]]));
+  if (nestedBasis && Object.keys(flatBasis).length) {
+    const conflicts = classificationBasisKeys.filter((key) => Object.hasOwn(flatBasis, key)
+      && stableJson(flatBasis[key]) !== stableJson(nestedBasis[key]))
+      .map((key) => ({
+        path: `$.classification.classificationBasis.${key}`,
+        nestedValue: nestedBasis[key],
+        flatValue: flatBasis[key],
+      }));
+    if (conflicts.length) {
+      throw new DevFlowError("CLASSIFICATION_BASIS_CONFLICT", "nested and flat classification basis fields disagree", { conflicts });
+    }
+  }
+  const basis = nestedBasis ?? flatBasis;
+  return {
+    ...value,
+    ...basis,
+    ...(Object.keys(basis).length ? { classificationBasis: basis } : {}),
   };
 }
 
@@ -684,20 +831,27 @@ async function call(name: string, a: any, connection: McpConnection) {
   switch (name) {
     case "dev_flow_init_project": return initProject(root, a.config);
     case "dev_flow_classify": {
+      if (a.classificationBasis?.signals) {
+        const preview = recommendClassification(a.classificationBasis);
+        return preview.readyToLock
+          ? { ...preview, riskRequirements: deriveRiskRequirements(preview.classification.riskLabels) }
+          : preview;
+      }
       const selected = selectRoute(a);
       return {
         ...selected,
         riskRequirements: deriveRiskRequirements(selected.classification.riskLabels),
       };
     }
-    case "dev_flow_start": return startFeature(root, { ...a, host: a.host ?? "codex" });
+    case "dev_flow_start": return startFeature(root, { ...a, host: a.host });
     case "dev_flow_lock_classification": {
-      const classification = a.classification as Record<string, unknown>;
+      const classification = normalizeLockClassification(a.classification as Record<string, unknown>);
       const { level, topology, execution, requirements, riskLabels, acceptanceAssistSuggested, scopeFacts, topologyFacts, uncertaintyFacts, riskFacts, decisionRefs } = classification;
       return lockClassification(root, a.featureId, a.expectedRevision, {
         level, topology, ...(execution ? { execution } : {}), ...(requirements ? { requirements } : {}),
         ...(riskLabels ? { riskLabels } : {}), ...(acceptanceAssistSuggested !== undefined ? { acceptanceAssistSuggested } : {}),
         scopeFacts, topologyFacts, uncertaintyFacts, riskFacts, decisionRefs,
+        classificationBasis: classification.classificationBasis,
       } as any);
     }
     case "dev_flow_status": return readStatusView(root, a.featureId);
@@ -732,6 +886,10 @@ async function call(name: string, a: any, connection: McpConnection) {
     case "dev_flow_claim_review_job": {
       assertReviewMutationInput(a, "dev_flow_claim_review_job", ["batchId", "jobId", "claimRequestId"]);
       return claimReviewJob(root, a.featureId, a.expectedRevision, a.batchId as string, a.jobId as string, a.claimRequestId as string);
+    }
+    case "dev_flow_release_review_job": {
+      assertReviewMutationInput(a, "dev_flow_release_review_job", ["batchId", "jobId", "capability"]);
+      return releaseReviewJob(root, a.featureId, a.expectedRevision, a.batchId as string, a.jobId as string, a.capability as string);
     }
     case "dev_flow_submit_review_job": {
       assertReviewSubmitInput(a);
@@ -780,10 +938,10 @@ async function call(name: string, a: any, connection: McpConnection) {
     }
     }
     case "dev_flow_record_decision": return recordDecision(
-      root, a.featureId, a.expectedRevision, a.question, a.factRefs ?? [], a.host ?? "codex",
+      root, a.featureId, a.expectedRevision, a.question, a.factRefs ?? [], a.host,
     );
     case "dev_flow_resolve_decision": return resolveRecordedDecision(
-      root, a.featureId, a.expectedRevision, a.decisionId, a.evidence, a.conclusion, a.host ?? "codex",
+      root, a.featureId, a.expectedRevision, a.decisionId, a.evidence, a.conclusion, a.host,
     );
     case "dev_flow_present_review_risk_acceptance": {
       assertReviewMutationInput(a, "dev_flow_present_review_risk_acceptance", [], ["findingIds"]);
@@ -799,8 +957,8 @@ async function call(name: string, a: any, connection: McpConnection) {
         throw new DevFlowError("INVALID_TOOL_INPUT", "dev_flow_resolve_review_risk_acceptance input does not match its schema");
       }
       const result = await resolveReviewRiskAcceptanceToken(
-        root, a.featureId, a.expectedRevision, a.interactionId as string, a.userReply as string,
-        a.promptEventId as string, (a.host as "claude" | "codex" | undefined) ?? "codex",
+      root, a.featureId, a.expectedRevision, a.interactionId as string, a.userReply as string,
+         a.promptEventId as string, a.host as "claude" | "codex",
       );
       const interaction = toPublicInteraction(getInteraction(result.state, a.interactionId as string));
       return interactionEnvelope(result.state, interaction, result.idempotent ? "accepted" : "resolved", interactionResponse(result.state, a.interactionId as string));
@@ -819,7 +977,7 @@ async function call(name: string, a: any, connection: McpConnection) {
       return previewRollback(root, a.featureId, a.targetCheckpointId);
     }
     case "dev_flow_present_rollback_gate": {
-      assertRollbackMutationInput(a, "dev_flow_present_rollback_gate");
+      assertRollbackMutationInput(a, "dev_flow_present_rollback_gate", true);
       const presentation = await presentRollbackGate(root, a.featureId, a.expectedRevision, a.targetCheckpointId);
       emitAttentionNotification({ kind: "decision-required", featureId: a.featureId, decision: "rollback-confirmation" });
       const selection = await connection.elicit(
@@ -829,7 +987,7 @@ async function call(name: string, a: any, connection: McpConnection) {
       if (!selection) return { ...interactionEnvelope(presentation.state, presentation.interaction, "pending"), preview: presentation.preview };
       const state = await resolveRollbackGateElicitation(
         root, a.featureId, presentation.state.revision, presentation.interaction.id,
-        selection.action, selection.comment, (a.host as "claude" | "codex" | undefined) ?? "codex",
+         selection.action, selection.comment, a.host as "claude" | "codex",
       );
       return {
         ...interactionEnvelope(
@@ -856,7 +1014,7 @@ async function call(name: string, a: any, connection: McpConnection) {
       if (!selection) return interactionEnvelope(presentation, presentation.approvalInteraction, "pending");
       const state = await resolveApprovalElicitation(
         root, a.featureId, presentation.revision, presentation.approvalInteraction.id,
-        selection.action, selection.comment, a.host ?? "codex",
+         selection.action, selection.comment, a.host,
       );
       return interactionEnvelope(
         state,
@@ -865,20 +1023,20 @@ async function call(name: string, a: any, connection: McpConnection) {
         interactionResponse(state, presentation.approvalInteraction.id),
       );
     }
-    case "dev_flow_confirm_approval": return confirmApproval(root, a.featureId, a.expectedRevision, a.approvalId, a.userReply, { promptEventId: a.promptEventId, turnBoundaryEventId: a.turnBoundaryEventId }, a.host ?? "codex");
+    case "dev_flow_confirm_approval": return confirmApproval(root, a.featureId, a.expectedRevision, a.approvalId, a.userReply, { promptEventId: a.promptEventId, turnBoundaryEventId: a.turnBoundaryEventId }, a.host);
     case "dev_flow_respond_interaction": {
       const interaction = getInteraction(await readState(root, a.featureId), a.interactionId);
       if (interaction.kind === "rollback-confirmation") {
         const state = await resolveRollbackGateToken(
           root, a.featureId, a.expectedRevision, a.interactionId, a.userReply,
-          a.host ?? "codex", a.promptEventId,
+           a.host, a.promptEventId,
         );
         const response = interactionResponse(state, a.interactionId);
         return interactionEnvelope(state, toPublicInteraction(getInteraction(state, a.interactionId)), response?.action ?? "resolved", response);
       }
       const state = await resolveApprovalToken(
         root, a.featureId, a.expectedRevision, a.interactionId, a.userReply,
-        { promptEventId: a.promptEventId, turnBoundaryEventId: a.turnBoundaryEventId }, a.host ?? "codex",
+         { promptEventId: a.promptEventId, turnBoundaryEventId: a.turnBoundaryEventId }, a.host,
       );
       const response = interactionResponse(state, a.interactionId);
       return interactionEnvelope(
@@ -893,26 +1051,26 @@ async function call(name: string, a: any, connection: McpConnection) {
         questionId: a.questionId,
         question: a.question,
         options: a.options,
-        host: a.host ?? "codex",
+         host: a.host,
       });
       emitAttentionNotification({ kind: "decision-required", featureId: a.featureId, decision: "grill" });
       const selection = await connection.elicit(result.interaction, result.interaction.question ?? "请选择一个方案。");
       if (!selection) return interactionEnvelope(result.state, result.interaction, "pending");
       const resolved = await resolveGrillElicitation(
         root, a.featureId, result.state.revision, result.interaction.id,
-        selection.action, selection.comment, a.host ?? "codex",
+         selection.action, selection.comment, a.host,
       );
       return interactionEnvelope(resolved.state, resolved.interaction, selection.action, resolved.response);
     }
     case "dev_flow_resolve_grill_decision": {
       const resolved = await resolveGrillToken(
-        root, a.featureId, a.expectedRevision, a.interactionId, a.userReply, a.promptEventId, a.host ?? "codex",
+         root, a.featureId, a.expectedRevision, a.interactionId, a.userReply, a.promptEventId, a.host,
       );
       return interactionEnvelope(resolved.state, resolved.interaction, resolved.response?.action ?? "resolved", resolved.response);
     }
     case "dev_flow_reclassify": return reclassifyFeature(root, a.featureId, a.expectedRevision, a.classification, a.reason, a.userEvidence);
     case "dev_flow_verify": return runVerification(
-      root, a.featureId, a.expectedRevision, a.host ?? "codex", a.commandIds, a.manualAcceptance,
+       root, a.featureId, a.expectedRevision, a.host, a.commandIds, a.manualAcceptance,
     );
     case "dev_flow_feature_check": return featureCheck(root, a.featureId, a.expectedRevision);
     case "dev_flow_finalize": {
@@ -930,7 +1088,7 @@ async function call(name: string, a: any, connection: McpConnection) {
       action: a.action,
       reason: a.reason,
       userEvidence: a.userEvidence,
-      host: a.host ?? "codex",
+       host: a.host,
     });
     default: throw new DevFlowError("UNKNOWN_TOOL", name);
   }
@@ -961,14 +1119,17 @@ async function dispatchRequest(message: { id?: unknown; method?: string; params?
       return;
     }
     if (message.method === "tools/call") {
-      toolResult(message.id, await call(message.params?.name, message.params?.arguments ?? {}, connection));
+      const name = message.params?.name;
+      const arguments_ = message.params?.arguments ?? {};
+      validateToolInput(name, arguments_, toolSchemas);
+      toolResult(message.id, compactMutationResult(name, await call(name, arguments_, connection)));
       return;
     }
     if (message.method === "ping") {
       protocolResult(message.id, {});
       return;
     }
-    failure(message.id, new DevFlowError("UNKNOWN_METHOD", String(message.method ?? "missing method")));
+    protocolFailure(message.id, new DevFlowError("UNKNOWN_METHOD", String(message.method ?? "missing method")));
   } catch (error) {
     if (message?.id !== undefined && message?.id !== null) failure(message.id, error);
   }

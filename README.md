@@ -4,11 +4,23 @@ Dev Flow 是面向 **Claude Code** 与 **Codex CLI** 的预构建双宿主插件
 
 它按**规模（XS/S/M/L）× 拓扑 × 执行方式（light/standard）× 需求状态 × 风险标签**选择路线，只强制该路线所需的步骤与证据；两端共用 `.dev-flow/` 状态，可在 Claude 开任务、Codex 收尾（或反向）。
 
+Dev Flow 的设计初衷不是把每个小任务都变成重流程，而是在任务规模与风险之间保持清晰边界：小任务不过度治理，高风险任务不能轻易越级；工作流规则通过结构化合同、纯策略与可回归测试长期维护，优先复用已有阶段和义务，避免规则随功能增加持续膨胀。
+
 - 安装与升级：仅宿主原生 marketplace / plugin 命令  
 - 流程接口：本地 MCP（Skills 不得手改状态文件）  
 - 不提供：复制安装、升级脚本、旧版迁移、CLAUDE.md 注入、OpenSpec 集成  
 
 更细的契约见 [路线说明](docs/routes.md)、[架构](docs/architecture.md)、[发布](docs/publishing.md)。
+
+## 宿主支持矩阵
+
+| 宿主 | 支持条件 | 证据与守卫 |
+| --- | --- | --- |
+| Claude Code | 支持；需同时安装插件 manifest、MCP 与 `claude-hook.mjs` | 支持写入守卫与可信用户事件 |
+| Codex CLI | 支持；需同时安装插件 manifest、MCP 与 `codex-hook.mjs` | 支持写入守卫与可信用户事件 |
+| 其他 MCP 客户端 | 未支持；直连仅用于诊断 | 不具备写入守卫与可信用户证据 |
+
+不把仅 MCP happy path、模型代决或手工调 hook 当作宿主兼容证据；`doctor` 的静态检查也不等于第三方宿主兼容。新增宿主必须同步更新支持矩阵、manifest、hook 和分发合同测试。
 
 ## v2 可追溯性（2.0.0+）
 
@@ -17,6 +29,8 @@ Dev Flow 是面向 **Claude Code** 与 **Codex CLI** 的预构建双宿主插件
 generated status 只由 Core scaffold/refresh；standard L 没有 status 文件，应读取 `dev_flow_status`。
 
 **Review 2a / 4B**：新 standard M/L feature 使用不可变 review batch 与 Core 生成的只读 `plan-review` 投影。默认保证等级为 `multi-perspective`（多角色完成 ≠ 已证明多代理）。可选服务端采样可升至 `independent-sampling`；可选宿主 subagent attestation 最多 `multi-agent-attested`（不是 verified）。v2 的 checkpoint 由 Core 在所有路线的实现边界自动捕获：XS/S 使用单一基线，light M 默认单元，M/L 按事实和可验证切片增加边界，不要求 agent 手动推进。回撤执行仍走既有事务日志和显式恢复确认；checkpoint 是实现期恢复，finalize 的 delivery snapshot / feature 级反向 patch 仍是交付层回退证据，二者不可互相替代。
+
+3.0 mutation 工具默认返回精简 `FeatureMutationSummary`，不再把完整 `FeatureState` 放进普通 mutation 响应；需要完整状态、完整 review 或 verification attempt 摘要时调用 `dev_flow_status`。review claim 的 capability 只在当前租约内保存并用于 `dev_flow_release_review_job`/重试，不应读取或传播内部 hash。
 
 ---
 

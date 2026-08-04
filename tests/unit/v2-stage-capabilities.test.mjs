@@ -11,9 +11,23 @@ test("intake exposes investigation and lock actions without a route", () => {
 });
 
 test("implementation capability allows equivalent writes and repair", () => {
-  const view = stages.deriveStageCapabilities({ route: "standard-m", mode: "routed", currentStage: "implementation", obligations: [] });
+  const view = stages.deriveStageCapabilities({ route: "standard-m", mode: "routed", currentStage: "implementation", obligations: [], workflowCapabilities: { checkpoints: 1 } });
   assert.ok(view.allowedActions.includes("write"));
   assert.ok(view.allowedActions.includes("repair-current-unit"));
+  assert.equal(view.requiredEvidence.fields.files, "protected-root-paths");
+});
+
+test("pending approval obligations do not imply an immediate approval attention", () => {
+  const view = stages.deriveStageCapabilities({
+    route: "standard-m",
+    mode: "routed",
+    currentStage: "requirements_alignment",
+    lifecycle: "active",
+    steps: { requirements_alignment: { status: "pending" } },
+    obligations: [{ id: "approval:1", kind: "approval", status: "pending", reason: "later" }],
+  });
+
+  assert.equal(view.attention, undefined);
 });
 
 test("stage capability derives verification and terminal stages from lifecycle evidence", () => {

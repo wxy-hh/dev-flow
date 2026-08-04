@@ -164,7 +164,7 @@ export async function beginImplementationUnit(
     }
     const project = await readProjectConfig(root);
     // Preserve begin-time bytes: rollback needs them long after the unit's edits.
-    const snapshot = await snapshotProtectedRoots(root, project.protectedRoots);
+    const snapshot = await snapshotProtectedRoots(root, project);
     await captureUnitBaseline(root, id, unitId, snapshot);
     // A rolled_back unit re-begins as a new incarnation: the historical
     // checkpoint reference and nonce are dropped so its old manifest can never
@@ -173,7 +173,7 @@ export async function beginImplementationUnit(
     target.basisHash = basisHash;
     target.beginNonce = randomUUID();
     target.status = "active";
-    target.startedFingerprint = await fingerprintProtectedRoots(root, project.protectedRoots);
+    target.startedFingerprint = await fingerprintProtectedRoots(root, project);
     state.implementationUnits = merged;
   }, { unitId });
 }

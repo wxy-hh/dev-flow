@@ -36,6 +36,7 @@ export function deriveStageCapabilities(state: {
   mode?: "intake" | "routed";
   currentStage?: string;
   obligations?: ClassificationObligation[];
+  workflowCapabilities?: { checkpoints?: 0 | 1 };
   lifecycle?: string;
   steps?: Record<string, { status?: string } | undefined>;
 }): StageCapabilityView {
@@ -72,16 +73,15 @@ export function deriveStageCapabilities(state: {
             : stage === "finalize"
               ? ["read", "finalize", "refresh-status"]
               : ["read", "run-stage-action", "refresh-status"];
-  const pendingApproval = obligations.some((obligation) => obligation.kind === "approval" && obligation.status !== "satisfied");
   return {
     stage,
     activity: stage,
     allowedActions,
     completionCriteria: [`${stage}-evidence-current`, "no-blocking-obligation"],
     obligations,
-    ...(state.lifecycle === "active" ? {} : { attention: { reason: `feature-${state.lifecycle}`, required: true as const } }),
-    ...(state.lifecycle === "active" && pendingApproval
-      ? { attention: { reason: "approval-required", required: true as const } }
+    ...(stage === "implementation" && state.workflowCapabilities?.checkpoints === 1
+      ? { requiredEvidence: { fields: { files: "protected-root-paths" as const }, checks: [], verificationKinds: [] } }
       : {}),
+    ...(state.lifecycle === "active" ? {} : { attention: { reason: `feature-${state.lifecycle}`, required: true as const } }),
   };
 }

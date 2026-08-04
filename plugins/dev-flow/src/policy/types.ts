@@ -22,7 +22,49 @@ export interface ClassificationBasis {
   uncertaintyFacts: string[];
   riskFacts: Partial<Record<RiskLabel, string[]>>;
   decisionRefs: string[];
+  signals?: ClassificationSignals;
 }
+
+export interface ClassificationSignals {
+  impactScope: "single-location" | "single-module" | "cross-module";
+  sharedContract: boolean;
+  independentChains: number;
+  coordinatedRollback: boolean;
+  requirements: RequirementsState;
+  formalControls: Array<"trace" | "independent-review" | "multiple-rollback-units">;
+}
+
+export interface ClassificationReason {
+  field: string;
+  value: string | number | boolean;
+  basisPaths: string[];
+  message: string;
+}
+
+export interface ClassificationIssue {
+  code: string;
+  path: string;
+  message: string;
+  recoveryHint: string;
+}
+
+export type ClassificationPreview =
+  | {
+      readyToLock: true;
+      classification: Classification;
+      route: RouteId;
+      obligations: ClassificationObligation[];
+      reasons: ClassificationReason[];
+      issues: [];
+    }
+  | {
+      readyToLock: false;
+      classification?: Classification;
+      route?: RouteId;
+      obligations?: ClassificationObligation[];
+      reasons: ClassificationReason[];
+      issues: ClassificationIssue[];
+    };
 
 export interface ClassificationFacts extends ClassificationBasis {
   level: Level;
@@ -50,6 +92,7 @@ export interface StageCapabilityView {
   allowedActions: string[];
   completionCriteria: string[];
   obligations: Array<Pick<ClassificationObligation, "id" | "kind" | "status" | "reason">>;
+  requiredEvidence?: RequiredEvidence;
   recoveryAction?: RecoveryAction;
   attention?: { reason: string; required: true };
 }
@@ -72,6 +115,7 @@ export interface DecisionRecord {
   factRefs?: string[];
   mergedInto?: string;
   dismissedReason?: string;
+  source?: "grill";
 }
 
 export interface WorkflowCapabilities {
@@ -198,6 +242,7 @@ export interface RequiredEvidence {
     reviewDepth?: "full";
     /** Satisfied only by Core after it validates the current review batch. */
     reviewBatch?: true;
+    files?: "protected-root-paths";
   };
   checks: string[];
   verificationKinds: VerificationKind[];

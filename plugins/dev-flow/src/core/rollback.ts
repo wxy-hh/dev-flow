@@ -265,7 +265,14 @@ export async function previewRollback(root: string, featureId: string, targetChe
     });
   }
 
-  const snapshot = await snapshotProtectedRoots(root, config.protectedRoots);
+  const stale = suffix.filter((manifest) => manifest.projectConfigSha256 !== projectConfigSha256);
+  if (stale.length) {
+    throw new DevFlowError("ROLLBACK_BASIS_STALE", "project verification config changed after these checkpoints", {
+      checkpointIds: stale.map((manifest) => manifest.checkpointId),
+    });
+  }
+
+  const snapshot = await snapshotProtectedRoots(root, config);
   const fileScopes = [...new Set(nodes.flatMap((node) => node.fileScope))];
   const baselineFiles = (await readCheckpointBaseline(root, featureId, chain[0].unitId)).files;
   const conflicts = detectChainConflicts(chain, snapshot, fileScopes, baselineFiles);
@@ -275,23 +282,23 @@ export async function previewRollback(root: string, featureId: string, targetChe
     });
   }
 
-  const stale = suffix.filter((manifest) => manifest.projectConfigSha256 !== projectConfigSha256);
-  if (stale.length) {
-    throw new DevFlowError("ROLLBACK_BASIS_STALE", "project verification config changed after these checkpoints", {
-      checkpointIds: stale.map((manifest) => manifest.checkpointId),
-    });
-  }
-
   const undoManifests = [...suffix].reverse();
   const verificationCommands: RollbackVerificationCommand[] = [];
   for (const manifest of undoManifests) {
     const node = nodes.find((candidate) => candidate.id === manifest.unitId);
-    for (const commandId of node?.rollbackVerification ?? []) {
-      const command = config.verification.commands.find((candidate) => candidate.id === commandId);
+    for (const [index, reference] of (node?.rollbackVerification ?? []).entries()) {
+      const command = typeof reference === "string"
+        ? config.verification.commands.find((candidate) => candidate.id === reference)
+        : {
+            id: `inline:${manifest.unitId}:${index}`,
+            command: reference.command,
+            args: [...reference.args ?? []],
+            cwd: reference.cwd ?? ".",
+          };
       if (!command) {
         throw new DevFlowError("TRACE_VERIFICATION_COMMAND_UNKNOWN", "rollback verification command is not configured", {
           unitId: manifest.unitId,
-          commandId,
+          commandId: reference,
         });
       }
       verificationCommands.push({ commandId: command.id, command: commandSummary(command) });
@@ -428,7 +435,7 @@ export async function rollbackChainView(root: string, state: FeatureState): Prom
     };
   }
   const { config } = await readProjectConfigSnapshot(root);
-  const snapshot = await snapshotProtectedRoots(root, config.protectedRoots);
+  const snapshot = await snapshotProtectedRoots(root, config);
   const fileScopes = [...new Set(nodes.flatMap((node) => node.fileScope))];
   let baselineFiles: ProtectedFileSnapshot[] = [];
   if (live.length) {
@@ -605,6 +612,14 @@ async function resolveRollbackGateResponse(
       });
     }
     const event = eventRecord.data as { type?: string; text?: string; at?: string; host?: string };
+
+    if (event.host !== host) {
+      throw new DevFlowError("HOST_EVENT_HOST_MISMATCH", "host event belongs to a different host", {
+        expectedHost: host,
+        actualHost: event.host,
+        eventId: input.promptEventId,
+      });
+    }
 
     // Only user-prompt events represent genuine user input.
     if (event.type !== "user-prompt") {
@@ -851,7 +866,7 @@ async function assertWorkspaceMatchesChainTip(root: string, featureId: string, c
   const nodes = rollbackNodes((await readTraceability(root, state)).nodes);
   const fileScopes = [...new Set(nodes.flatMap((node) => node.fileScope))];
   const baselineFiles = chain.length ? (await readCheckpointBaseline(root, featureId, chain[0].unitId)).files : [];
-  const snapshot = await snapshotProtectedRoots(root, config.protectedRoots);
+  const snapshot = await snapshotProtectedRoots(root, config);
   const conflicts = detectChainConflicts(chain, snapshot, fileScopes, baselineFiles);
   if (conflicts.length) {
     throw new DevFlowError("ROLLBACK_HASH_MISMATCH", "workspace drifted from the confirmed rollback basis; refusing to capture it as the pre-rollback backup", {
@@ -879,7 +894,7 @@ async function captureBackup(
   const manifestFile = path.join(dir, "backup-manifest.json");
   if (await pathExists(manifestFile)) {
     const manifest = await readBackupManifest(manifestFile, journal.transactionId);
-    const current = await snapshotProtectedRoots(root, config.protectedRoots);
+    const current = await snapshotProtectedRoots(root, config);
     const mismatches = snapshotMismatches(manifest.files, current);
     if (mismatches.length) {
       throw new DevFlowError("ROLLBACK_HASH_MISMATCH", "workspace drifted from the recorded rollback backup", { mismatches });
@@ -892,7 +907,7 @@ async function captureBackup(
   await assertWorkspaceMatchesChainTip(root, featureId, config);
   await mkdir(path.join(dir, "files"), { recursive: true });
   await mkdir(path.join(dir, "trash"), { recursive: true });
-  const snapshot = await snapshotProtectedRoots(root, config.protectedRoots);
+  const snapshot = await snapshotProtectedRoots(root, config);
   let first = true;
   for (const file of snapshot) {
     const bytes = await readFile(path.join(root, file.path));
@@ -917,7 +932,7 @@ async function captureBackup(
   // Drift during the capture window is still a basis violation: the manifest
   // must describe the live workspace byte-for-byte before any rename starts.
   // The next resume re-runs this same comparison through the branch above.
-  const captureDrift = snapshotMismatches(manifest.files, await snapshotProtectedRoots(root, config.protectedRoots));
+    const captureDrift = snapshotMismatches(manifest.files, await snapshotProtectedRoots(root, config));
   if (captureDrift.length) {
     throw new DevFlowError("ROLLBACK_HASH_MISMATCH", "protected files changed while capturing the rollback backup", { mismatches: captureDrift });
   }
@@ -1092,12 +1107,19 @@ async function transactionVerificationCommands(
     if (!node) {
       throw new DevFlowError("ROLLBACK_CHAIN_INVALID", "undo unit is not current in the trace graph", { unitId });
     }
-    for (const commandId of node.rollbackVerification) {
-      const command = config.verification.commands.find((candidate) => candidate.id === commandId);
+    for (const [index, reference] of node.rollbackVerification.entries()) {
+      const command = typeof reference === "string"
+        ? config.verification.commands.find((candidate) => candidate.id === reference)
+        : {
+            id: `inline:${unitId}:${index}`,
+            command: reference.command,
+            args: [...reference.args ?? []],
+            cwd: reference.cwd ?? ".",
+          };
       if (!command) {
         throw new DevFlowError("TRACE_VERIFICATION_COMMAND_UNKNOWN", "rollback verification command is not configured", {
           unitId,
-          commandId,
+          commandId: reference,
         });
       }
       plan.push({ unitId, command });
@@ -1193,10 +1215,14 @@ async function runRollbackVerification(
     if (result.exitCode !== 0) {
       throw new DevFlowError("ROLLBACK_VERIFICATION_FAILED", "rollback verification failed; the transaction compensates the workspace", {
         unitId,
+        phase: "rollback",
         commandId: command.id,
+        command: commandSummary(command),
+        cwd: command.cwd,
         attemptId,
         exitCode: result.exitCode,
-        output: result.output.slice(-4_000),
+        outputTail: result.output.slice(-4_000),
+        recoveryHint: "修复回撤验证失败原因后，使用同一事务重试；事务会保留原回撤前备份",
       });
     }
   }
@@ -1205,7 +1231,7 @@ async function runRollbackVerification(
   // write during verification) is a verification failure and compensates from
   // the pre-rollback backup, per the transaction contract.
   const expected = await expectedPlanState(root, featureId, journal);
-  const current = await snapshotProtectedRoots(root, config.protectedRoots);
+  const current = await snapshotProtectedRoots(root, config);
   const mismatches = snapshotMismatches(expected, current);
   if (mismatches.length) {
     const attemptId = await recordVerificationAttempt(root, featureId, journal, {
@@ -1218,11 +1244,19 @@ async function runRollbackVerification(
       startedAt: new Date().toISOString(),
       completedAt: new Date().toISOString(),
     });
-    throw new DevFlowError("ROLLBACK_VERIFICATION_FAILED", "rollback verification changed protected files; the transaction compensates the workspace", {
-      attemptId,
-      mismatches,
-      source: "verification-drift",
-    });
+      throw new DevFlowError("ROLLBACK_VERIFICATION_FAILED", "rollback verification changed protected files; the transaction compensates the workspace", {
+        unitId: null,
+        phase: "rollback",
+        commandId: "drift-guard",
+        command: "protected-root drift guard",
+        cwd: ".",
+        exitCode: 1,
+        outputTail: "protected files differ from the expected rollback state",
+        attemptId,
+        mismatches,
+        source: "verification-drift",
+        recoveryHint: "检查回撤验证是否写入受保护文件，然后恢复到预期回撤状态并重试事务",
+      });
   }
 }
 
@@ -1304,7 +1338,7 @@ async function compensateRollback(
       if (restored === 1) await options.fault?.("during-compensation");
     }
     // Extras (for example verification drift output) move to trash — never unlink.
-    const current = await snapshotProtectedRoots(root, config.protectedRoots);
+    const current = await snapshotProtectedRoots(root, config);
     const expectedPaths = new Set(manifest.files.map((file) => file.path));
     const trash = path.join(dir, "trash");
     for (const file of current) {
@@ -1314,7 +1348,7 @@ async function compensateRollback(
       await rename(path.join(root, file.path), trashFile);
       await fsyncDirectory(path.dirname(path.join(root, file.path)));
     }
-    const after = await snapshotProtectedRoots(root, config.protectedRoots);
+    const after = await snapshotProtectedRoots(root, config);
     const mismatches = snapshotMismatches(manifest.files, after);
     if (mismatches.length) {
       await recordCompensationAttempt(root, featureId, journal, { status: "failed", reason: "mismatch", mismatches, startedAt });

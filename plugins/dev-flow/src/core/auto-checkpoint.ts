@@ -26,8 +26,8 @@ export async function captureAutomaticCheckpoint(
   reason = "stage-boundary",
 ): Promise<FeatureState> {
   const config = await readProjectConfig(root);
-  const files = await snapshotProtectedRoots(root, config.protectedRoots);
-  const fingerprint = await fingerprintProtectedRoots(root, config.protectedRoots);
+  const files = await snapshotProtectedRoots(root, config);
+  const fingerprint = await fingerprintProtectedRoots(root, config);
   const capturedAt = new Date().toISOString();
   const checkpoint: AutomaticCheckpoint = {
     checkpointId: `AUTO-${randomUUID()}`,

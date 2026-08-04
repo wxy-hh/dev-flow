@@ -160,21 +160,24 @@ function optionFor(interaction: UserInteraction, action: string): InteractionOpt
  */
 function matchNaturalOption(interaction: UserInteraction, userReply: string): { option: InteractionOption; comment?: string } | undefined {
   const normalized = normalizeReplyText(userReply);
+  const semanticOnly = interaction.options.some((option) => option.id === "merge-remaining");
   if (!normalized) return undefined;
   const stripped = normalized.replace(/[.、)）\s]/g, "");
-  const letter = stripped.match(/^([a-c])$/u);
-  if (letter) {
-    const option = interaction.options[letter[1].toLowerCase().charCodeAt(0) - 97];
-    if (option) return { option };
-  }
-  const number = stripped.match(/^([1-9])$/u);
-  if (number) {
-    const option = interaction.options[Number(number[1]) - 1];
-    if (option) return { option };
-  }
-  if (normalized === "推荐" || normalized === "按推荐" || normalized === "选推荐") {
-    const recommended = interaction.options[0];
-    if (recommended) return { option: recommended };
+  if (!semanticOnly) {
+    const letter = stripped.match(/^([a-c])$/u);
+    if (letter) {
+      const option = interaction.options[letter[1].toLowerCase().charCodeAt(0) - 97];
+      if (option) return { option };
+    }
+    const number = stripped.match(/^([1-9])$/u);
+    if (number) {
+      const option = interaction.options[Number(number[1]) - 1];
+      if (option) return { option };
+    }
+    if (normalized === "推荐" || normalized === "按推荐" || normalized === "选推荐") {
+      const recommended = interaction.options[0];
+      if (recommended) return { option: recommended };
+    }
   }
   // 修改类前缀：「修改需求: <意见>」「修改计划: <意见>」→ request-changes + comment
   const editMatch = normalized.match(/^修改(?:需求|意见|计划|方案|)?[:：]?\s*([\s\S]*)$/u);
@@ -185,9 +188,10 @@ function matchNaturalOption(interaction: UserInteraction, userReply: string): { 
   // label 匹配：精确/缩写（用户回 label 的一部分，如「其他」）对所有交互生效；
   // 前缀 + 补充说明形式（label + comment）对 confirm 选项禁用（防“确认需求，但先别改”被误判为确认），其余选项允许
   for (const candidate of interaction.options) {
+    if (semanticOnly && normalized === normalizeReplyText(candidate.id)) return { option: candidate };
     const labelNorm = normalizeReplyText(candidate.label);
     if (!labelNorm) continue;
-    if (labelNorm === normalized || (labelNorm.startsWith(normalized) && normalized.length >= 1)) {
+    if (labelNorm === normalized || (!semanticOnly && labelNorm.startsWith(normalized) && normalized.length >= 1)) {
       return { option: candidate };
     }
     if (candidate.id !== "confirm" && normalized.startsWith(labelNorm) && normalized.length > labelNorm.length) {
@@ -308,9 +312,12 @@ export function fallbackHint(interaction: UserInteraction): string {
     const confirm = interaction.options.find((option) => option.id === "confirm");
     const changes = interaction.options.find((option) => option.id === "request-changes");
     const parts: string[] = [];
-    if (confirm) parts.push(`✅ 如需确认开始执行，直接回复：${confirm.label}（或「确认」）`);
+    if (confirm) parts.push("✅ 如需确认开始执行，直接回复以下任一短语：确认 / 确认需求 / 需求已确认 / 同意需求 / 确认执行 / 批准实现 / 同意实现 / 开始实现 / 开始执行 / 确认开始执行 / 同意开始执行 / 批准执行 / 同意执行 / approved / LGTM");
     if (changes) parts.push(`✏️ 如需调整，请回复：修改计划: <补充你的修改意见>`);
     return parts.join("；");
+  }
+  if (interaction.options.some((option) => option.id === "merge-remaining")) {
+    return [interaction.question ?? "请选择方案：", ...interaction.options.map((option) => option.label)].join("\n");
   }
   const lines = [interaction.question ?? "请选择方案："];
   interaction.options.forEach((option, index) => {

@@ -15,6 +15,7 @@ import { clearInteractionsByKind, clearInteractionsForTarget } from "./user-inte
 import { prepareReviewInvalidation } from "./review-store.js";
 import { reopenObligations } from "../policy/obligations.js";
 import { normalizeUnicode } from "./path-normalization.js";
+import { detectRollbackSplitWarning } from "../policy/rollback-warnings.js";
 
 const names: Record<string, string> = {
   requirements: "需求文档.md",
@@ -28,18 +29,24 @@ const traceArtifactKindList = new Set<TraceArtifactKind>(["requirements", "imple
 interface ArtifactInvalidation {
   /** The source step remains satisfied; every later step is invalidated. */
   afterStep?: string;
+  /** Review-enforced plan edits reopen the source step itself. */
+  reopenFromStep?: string;
 }
 
 /** The sole mapping from editable evidence to approvals and dependent workflow state. */
 const artifactInvalidations: Record<string, ArtifactInvalidation> = {
   requirements: { afterStep: "requirements_alignment" },
-  "implementation-plan": { afterStep: "planning" },
+  "implementation-plan": { afterStep: "planning", reopenFromStep: "planning" },
 };
 
 export interface RecordArtifactWithTraceOptions {
   /** Test-only fault injection. Production callers omit this. */
   snapshot?: TraceStoreOptions;
   mutation?: PreparedMutationOptions;
+}
+export interface RecordArtifactWithTraceResult {
+  state: FeatureState;
+  warnings?: string[];
 }
 function template(state: FeatureState, id: string, kind: string): string {
   if (traceArtifactKinds.has(kind)) {
@@ -70,18 +77,56 @@ function assertManualRegistrationAllowed(state: FeatureState, kind: string, trac
   }
 }
 
-function invalidateArtifactDependents(state: FeatureState, kind: string, reason: "artifact-changed" | "trace-changed"): void {
+function assertPlanRevisionQuiescent(state: FeatureState, kind: string): void {
+  if (kind !== "implementation-plan") return;
+  const active = (state.implementationUnits ?? []).find((unit) => unit.status === "active");
+  if (active) {
+    throw new DevFlowError("PLAN_REVISION_REQUIRES_QUIESCENT_UNIT", "implementation-plan cannot change while an implementation unit is active", {
+      activeUnitId: active.unitId,
+      hint: "先 checkpoint 或 rollback 再修订计划",
+    });
+  }
+}
+
+function cleanupTombstonedPendingUnits(state: FeatureState, ledger: { nodes: Record<string, { status: string }> }): void {
+  if (!state.implementationUnits) return;
+  state.implementationUnits = state.implementationUnits.filter((unit) => {
+    if (unit.status !== "pending") return true;
+    return ledger.nodes[unit.unitId]?.status === "current";
+  });
+}
+
+/** Apply the route-specific invalidation semantics for an edited artifact. */
+export function invalidateFromStep(state: FeatureState, kind: string): { planningReopened: boolean } {
   const rule = artifactInvalidations[kind] ?? {};
+  let planningReopened = false;
+  const reopenFromStep = rule.reopenFromStep
+    && reviewEnforcementRequired(state.route, state.workflowCapabilities)
+    ? rule.reopenFromStep
+    : undefined;
+  if (reopenFromStep) {
+    const ordered = effectiveRoute(state).orderedSteps;
+    const sourceIndex = ordered.indexOf(reopenFromStep);
+    for (const step of ordered.slice(sourceIndex)) delete state.steps[step];
+    planningReopened = reopenFromStep === "planning";
+  } else if (rule.afterStep) {
+    const ordered = effectiveRoute(state).orderedSteps;
+    const sourceIndex = ordered.indexOf(rule.afterStep);
+    for (const step of ordered.slice(sourceIndex + 1)) delete state.steps[step];
+  }
+  const ordered = effectiveRoute(state).orderedSteps;
+  state.currentStage = ordered.find((step) => state.steps[step]?.status !== "satisfied") ?? ordered.at(-1);
+  state.featureCheck = {};
+  state.logicComplete = false;
+  delete state.steps.finalize;
+  return { planningReopened };
+}
+
+function invalidateArtifactDependents(state: FeatureState, kind: string, reason: "artifact-changed" | "trace-changed"): { planningReopened: boolean } {
+  const invalidation = invalidateFromStep(state, kind);
   for (const approval of approvalIds(state)) {
     delete state.humanGates[approval];
     clearInteractionsForTarget(state, `approval:${approval}`);
-  }
-  if (rule.afterStep) {
-    const ordered = effectiveRoute(state).orderedSteps;
-    const sourceIndex = ordered.indexOf(rule.afterStep);
-    for (const step of ordered.slice(sourceIndex + 1)) {
-      delete state.steps[step];
-    }
   }
   if (kind === "requirements") clearInteractionsByKind(state, "grill");
   state.featureCheck = {};
@@ -91,6 +136,7 @@ function invalidateArtifactDependents(state: FeatureState, kind: string, reason:
   state.obligations = reopenObligations(state.obligations, ["approval"]);
   // Keep the precise causal reason in the mutation event rather than state schema.
   void reason;
+  return invalidation;
 }
 
 export async function assertArtifactCurrent(root: string, id: string, state: FeatureState, kind: string): Promise<string> {
@@ -120,12 +166,14 @@ export async function scaffoldArtifact(root: string, id: string, expectedRevisio
 export async function recordArtifact(root: string, id: string, expectedRevision: number, kind: string): Promise<FeatureState> {
   const state = await readState(root, id);
   assertManualRegistrationAllowed(state, kind, false);
+  assertPlanRevisionQuiescent(state, kind);
   const artifact = state.artifacts[kind]; if (!artifact) throw new DevFlowError("MISSING_REQUIRED_ARTIFACT", kind);
   const contents = await readFile(path.join(featureDirectory(root, id), normalizeUnicode(artifact.path)), "utf8"); const checksum = hash(contents);
   return mutate(root, id, expectedRevision, "artifact-recorded", (current) => {
+    assertPlanRevisionQuiescent(current, kind);
     current.artifacts[kind] = { ...artifact, path: normalizeUnicode(artifact.path), sha256: checksum };
     invalidateArtifactDependents(current, kind, "artifact-changed");
-  }, { kind, invalidationReason: "artifact-changed" });
+  }, { kind, invalidationReason: "artifact-changed", planningReopened: kind === "implementation-plan" && reviewEnforcementRequired(state.route, state.workflowCapabilities) });
 }
 
 /**
@@ -140,10 +188,11 @@ export async function recordArtifactWithTrace(
   artifactKind: TraceArtifactKind,
   traceDelta: TraceDelta,
   options: RecordArtifactWithTraceOptions = {},
-): Promise<FeatureState> {
+): Promise<RecordArtifactWithTraceResult> {
   if (!traceArtifactKindList.has(artifactKind)) throw new DevFlowError("INVALID_ARTIFACT", artifactKind);
   let eventData: Record<string, unknown> = { kind: artifactKind };
-  return mutatePrepared(root, id, expectedRevision, "artifact-recorded-with-trace", async (current, nextStateRevision) => {
+  let warnings: string[] = [];
+  const state = await mutatePrepared(root, id, expectedRevision, "artifact-recorded-with-trace", async (current, nextStateRevision) => {
     if (current.lifecycle !== "active") throw new DevFlowError("INVALID_LIFECYCLE", "only active features can register artifacts");
     if (!traceEnforcementRequired(current.route, current.workflowCapabilities)) {
       throw new DevFlowError("TRACE_NOT_ENFORCED", `${artifactKind} does not use Trace registration on ${current.route}`, {
@@ -152,6 +201,7 @@ export async function recordArtifactWithTrace(
       });
     }
     assertManualRegistrationAllowed(current, artifactKind, true);
+    assertPlanRevisionQuiescent(current, artifactKind);
     const artifact = current.artifacts[artifactKind];
     if (!artifact) throw new DevFlowError("MISSING_REQUIRED_ARTIFACT", artifactKind);
     const contents = await readFile(path.join(featureDirectory(root, id), normalizeUnicode(artifact.path)), "utf8");
@@ -170,6 +220,7 @@ export async function recordArtifactWithTrace(
       verificationCommandIds: config.verification.commands.map((command) => command.id),
       nextStateRevision,
     });
+    warnings = detectRollbackSplitWarning(Object.values(ledger.nodes).filter((node) => node.kind === "rollback"));
     const pointer = await writeTraceSnapshot(root, ledger, options.snapshot);
     const artifactChanged = artifact.sha256 !== artifactSha256;
     const traceChanged = JSON.stringify(currentLedger.nodes) !== JSON.stringify(ledger.nodes)
@@ -182,6 +233,7 @@ export async function recordArtifactWithTrace(
       artifactChanged,
       traceChanged,
       invalidationReason: artifactChanged ? "artifact-changed" : traceChanged ? "trace-changed" : undefined,
+      ...(warnings.length ? { warnings } : {}),
     };
     return {
       mutate: (draft) => {
@@ -189,12 +241,15 @@ export async function recordArtifactWithTrace(
         draft.traceability = pointer;
         if (reviewPointer) draft.review = reviewPointer;
         if (artifactChanged || traceChanged) {
-          invalidateArtifactDependents(draft, artifactKind, artifactChanged ? "artifact-changed" : "trace-changed");
+          const invalidation = invalidateArtifactDependents(draft, artifactKind, artifactChanged ? "artifact-changed" : "trace-changed");
+          cleanupTombstonedPendingUnits(draft, ledger);
+          eventData = { ...eventData, planningReopened: invalidation.planningReopened };
         }
       },
       eventData: () => eventData,
     };
   }, options.mutation);
+  return warnings.length ? { state, warnings } : { state };
 }
 export async function assertArtifactIntegrity(root: string, id: string): Promise<void> {
   const state = await readState(root, id);

@@ -32,6 +32,14 @@ export async function mcpCall(serverPath, cwd, name, arguments_ = {}) {
   const message = messages.find((candidate) => candidate.id === 1);
   if (!message) throw new Error(`MCP did not return a response for request 1: ${response.stdout}`);
   if (message.error) throw Object.assign(new Error(message.error.data?.message ?? message.error.message), { code: message.error.data?.code });
+  if (message.result?.isError) {
+    const value = message.result.structuredContent;
+    throw Object.assign(new Error(value?.message ?? message.result.content?.[0]?.text ?? "MCP tool failed"), {
+      code: value?.code,
+      details: value?.details,
+      structuredContent: value,
+    });
+  }
   return message.result.structuredContent;
 }
 

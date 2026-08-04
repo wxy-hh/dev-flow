@@ -1,10 +1,14 @@
-import { contract } from "./contract.js";
+import { allowedRiskLabels, contract } from "./contract.js";
 import { decisionBasisHash, deriveObligations } from "./obligations.js";
 import type {
   Classification,
   ClassificationBasis,
   ClassificationFacts,
   ClassificationInput,
+  ClassificationIssue,
+  ClassificationPreview,
+  ClassificationReason,
+  ClassificationSignals,
   DerivedRiskRequirements,
   Level,
   RiskLabel,
@@ -42,19 +46,67 @@ function defaultBasis(input: ClassificationInput): ClassificationBasis {
   };
 }
 
-function validateBasis(basis: ClassificationBasis, riskLabels: RiskLabel[]): void {
+function basisOnly(input: ClassificationFacts): ClassificationBasis {
+  const nestedSignals = (input as unknown as { classificationBasis?: ClassificationBasis }).classificationBasis?.signals;
+  return {
+    scopeFacts: input.scopeFacts,
+    topologyFacts: input.topologyFacts,
+    uncertaintyFacts: input.uncertaintyFacts,
+    riskFacts: input.riskFacts,
+    decisionRefs: input.decisionRefs,
+    ...((input.signals ?? nestedSignals) ? { signals: input.signals ?? nestedSignals } : {}),
+  };
+}
+
+function actualType(value: unknown): string {
+  if (value === null) return "null";
+  if (Array.isArray(value)) return "array";
+  return typeof value;
+}
+
+export function validateBasis(basis: ClassificationBasis, riskLabels: RiskLabel[]): void {
   for (const key of ["scopeFacts", "topologyFacts", "uncertaintyFacts", "decisionRefs"] as const) {
     if (!Array.isArray(basis[key]) || basis[key].some((item) => typeof item !== "string" || item.trim().length === 0)) {
-      throw new PolicyError("CLASSIFICATION_BASIS_INVALID", `${key} must be a list of non-empty fact strings`);
+      throw new PolicyError("CLASSIFICATION_BASIS_INVALID", `${key} must be a list of non-empty fact strings`, {
+        path: `$.classificationBasis.${key}`,
+        actualType: actualType(basis[key]),
+        invalidValue: basis[key],
+      });
     }
   }
   if (!basis.riskFacts || typeof basis.riskFacts !== "object" || Array.isArray(basis.riskFacts)) {
-    throw new PolicyError("CLASSIFICATION_BASIS_INVALID", "riskFacts must be an object keyed by risk label");
+    throw new PolicyError("CLASSIFICATION_BASIS_INVALID", "riskFacts must be an object keyed by risk label", {
+      path: "$.classificationBasis.riskFacts",
+      actualType: actualType(basis.riskFacts),
+      invalidValue: basis.riskFacts,
+    });
+  }
+  for (const [label, facts] of Object.entries(basis.riskFacts)) {
+    if (!allowedRiskLabels.includes(label as RiskLabel)) {
+      throw new PolicyError("CLASSIFICATION_BASIS_INVALID", `riskFacts contains an unknown risk label: ${label}`, {
+        path: `$.classificationBasis.riskFacts.${label}`,
+        actualType: actualType(facts),
+        invalidValue: label,
+        allowed: allowedRiskLabels,
+      });
+    }
+    if (!Array.isArray(facts) || facts.length === 0 || facts.some((fact) => typeof fact !== "string" || fact.trim().length === 0)) {
+      throw new PolicyError("CLASSIFICATION_BASIS_INVALID", `riskFacts.${label} must be a non-empty fact list`, {
+        path: `$.classificationBasis.riskFacts.${label}`,
+        actualType: actualType(facts),
+        invalidValue: facts,
+      });
+    }
   }
   for (const label of riskLabels) {
     const facts = basis.riskFacts[label];
     if (!Array.isArray(facts) || facts.length === 0 || facts.some((fact) => typeof fact !== "string" || fact.trim().length === 0)) {
-      throw new PolicyError("RISK_BASIS_REQUIRED", `risk label ${label} has no factual basis`, { label });
+      throw new PolicyError("RISK_BASIS_REQUIRED", `risk label ${label} has no factual basis`, {
+        label,
+        path: `$.classificationBasis.riskFacts.${label}`,
+        actualType: actualType(facts),
+        invalidValue: facts,
+      });
     }
   }
 }
@@ -68,7 +120,7 @@ export function selectBaseRoute(input: ClassificationFacts): {
   contradictions: string[];
 } {
   const classification = normalizeClassification(input);
-  const basis = input;
+  const basis = basisOnly(input);
   validateBasis(basis, classification.riskLabels);
   assertTopologyLevel(classification);
   const contradictions: string[] = [];
@@ -97,6 +149,151 @@ export function selectBaseRoute(input: ClassificationFacts): {
     classificationBasis: basis,
     obligations: deriveObligations(route, basis),
     contradictions,
+  };
+}
+
+const signalRequirements = new Set(["missing-or-unclear", "documented-unconfirmed", "provided-confirmed"]);
+const formalControlValues = new Set(["trace", "independent-review", "multiple-rollback-units"]);
+
+function issue(code: string, path: string, message: string, recoveryHint: string): ClassificationIssue {
+  return { code, path, message, recoveryHint };
+}
+
+function signalPath(field: string): string {
+  return `$.classificationBasis.signals.${field}`;
+}
+
+function maxLevel(left: Level, right: Level): Level {
+  return levelRank[left] >= levelRank[right] ? left : right;
+}
+
+function levelForImpactScope(scope: ClassificationSignals["impactScope"]): Level {
+  return scope === "single-location" ? "XS" : scope === "single-module" ? "S" : "M";
+}
+
+function recommendationReasons(signals: ClassificationSignals, topology: Topology, level: Level, riskLabels: RiskLabel[], basis: ClassificationBasis): ClassificationReason[] {
+  const reasons: ClassificationReason[] = [
+    {
+      field: "impactScope",
+      value: signals.impactScope,
+      basisPaths: [signalPath("impactScope")],
+      message: `影响范围决定基础级别 ${levelForImpactScope(signals.impactScope)}`,
+    },
+    {
+      field: "topology",
+      value: topology,
+      basisPaths: [signalPath("coordinatedRollback"), signalPath("independentChains"), signalPath("sharedContract")],
+      message: `结构化拓扑信号建议 ${topology}`,
+    },
+    {
+      field: "level",
+      value: level,
+      basisPaths: [signalPath("impactScope"), signalPath("coordinatedRollback"), signalPath("independentChains"), signalPath("sharedContract")],
+      message: `基础级别与拓扑最低级别合并为 ${level}`,
+    },
+  ];
+  const execution = level === "M" || level === "L"
+    ? signals.requirements !== "provided-confirmed" || signals.formalControls.length > 0 ? "standard" : "light"
+    : undefined;
+  if (execution) reasons.push({
+    field: "execution",
+    value: execution,
+    basisPaths: [signalPath("requirements"), signalPath("formalControls")],
+    message: `需求确认状态与形式化控制决定 ${execution} 执行模式`,
+  });
+  for (const label of riskLabels) reasons.push({
+    field: "riskLabels",
+    value: label,
+    basisPaths: [`$.classificationBasis.riskFacts.${label}`],
+    message: `风险事实增加 ${label} 义务，不提高级别`,
+  });
+  void basis;
+  return reasons;
+}
+
+/**
+ * Pure, structure-only classification recommendation. It never reads files,
+ * interprets prose, or treats risk as a size signal.
+ */
+export function recommendClassification(basis: ClassificationBasis): ClassificationPreview {
+  const issues: ClassificationIssue[] = [];
+  try {
+    validateBasis(basis, []);
+  } catch (error) {
+    if (error instanceof PolicyError) {
+      issues.push(issue(error.code, String(error.details.path ?? "$.classificationBasis"), error.message, "修正 classificationBasis 的结构化字段后重新推荐"));
+    } else {
+      issues.push(issue("CLASSIFICATION_BASIS_INVALID", "$.classificationBasis", "classification basis is invalid", "提供完整的结构化 classificationBasis"));
+    }
+  }
+  const signals = basis?.signals;
+  if (!signals || typeof signals !== "object" || Array.isArray(signals)) {
+    issues.push(issue("CLASSIFICATION_SIGNALS_REQUIRED", "$.classificationBasis.signals", "signals is required for recommendation mode", "调查仓库后提供完整 ClassificationSignals"));
+    return { readyToLock: false, reasons: [], issues };
+  }
+  const signalRecord = signals as unknown as Record<string, unknown>;
+  const impactScope = signalRecord.impactScope;
+  if (impactScope !== "single-location" && impactScope !== "single-module" && impactScope !== "cross-module") {
+    issues.push(issue("CLASSIFICATION_SIGNAL_INVALID", signalPath("impactScope"), "impactScope is invalid", "选择 single-location、single-module 或 cross-module"));
+  }
+  if (typeof signalRecord.sharedContract !== "boolean") {
+    issues.push(issue("CLASSIFICATION_SIGNAL_INVALID", signalPath("sharedContract"), "sharedContract must be boolean", "提供布尔型 sharedContract"));
+  }
+  if (typeof signalRecord.independentChains !== "number" || !Number.isInteger(signalRecord.independentChains) || signalRecord.independentChains < 1) {
+    issues.push(issue("CLASSIFICATION_SIGNAL_INVALID", signalPath("independentChains"), "independentChains must be an integer >= 1", "提供大于等于 1 的独立链数量"));
+  }
+  if (typeof signalRecord.coordinatedRollback !== "boolean") {
+    issues.push(issue("CLASSIFICATION_SIGNAL_INVALID", signalPath("coordinatedRollback"), "coordinatedRollback must be boolean", "提供布尔型 coordinatedRollback"));
+  }
+  if (!signalRequirements.has(signalRecord.requirements as string)) {
+    issues.push(issue("CLASSIFICATION_SIGNAL_INVALID", signalPath("requirements"), "requirements is invalid", "提供合法 RequirementsState"));
+  }
+  if (!Array.isArray(signalRecord.formalControls)
+    || signalRecord.formalControls.some((control) => typeof control !== "string" || !formalControlValues.has(control as string))) {
+    issues.push(issue("CLASSIFICATION_SIGNAL_INVALID", signalPath("formalControls"), "formalControls contains an invalid control", "仅使用 trace、independent-review、multiple-rollback-units"));
+  }
+  if (issues.length) return { readyToLock: false, reasons: [], issues };
+
+  const validSignals = signals as ClassificationSignals;
+  if (validSignals.impactScope === "single-location"
+    && (validSignals.sharedContract || validSignals.independentChains > 1 || validSignals.coordinatedRollback)) {
+    issues.push(issue("CLASSIFICATION_SIGNALS_CONTRADICTORY", signalPath("impactScope"), "single-location conflicts with cross-location topology signals", "修正影响范围或拓扑信号，使两者一致"));
+  }
+  if (validSignals.impactScope === "single-module" && (validSignals.independentChains > 1 || validSignals.coordinatedRollback)) {
+    issues.push(issue("CLASSIFICATION_SIGNALS_CONTRADICTORY", signalPath("impactScope"), "single-module conflicts with multiple independent chains or coordinated rollback", "修正影响范围或拓扑信号，使两者一致"));
+  }
+  if (issues.length) return { readyToLock: false, reasons: [], issues };
+
+  const topology: Topology = validSignals.coordinatedRollback
+    ? "coordinated-rollback"
+    : validSignals.independentChains >= 2
+      ? "multi-chain"
+      : validSignals.sharedContract ? "shared-contract" : "local";
+  const level = maxLevel(levelForImpactScope(validSignals.impactScope), minimumLevelForTopology(topology));
+  const riskLabels = Object.keys(basis.riskFacts).sort() as RiskLabel[];
+  const execution = level === "M" || level === "L"
+    ? validSignals.requirements !== "provided-confirmed" || validSignals.formalControls.length > 0 ? "standard" : "light"
+    : undefined;
+  const classification: Classification = {
+    level,
+    topology,
+    ...(execution ? { execution } : {}),
+    requirements: validSignals.requirements,
+    riskLabels,
+    acceptanceAssistSuggested: false,
+    classificationBasis: basis,
+  };
+  const route: RouteId = level === "XS" ? "xs"
+    : level === "S" ? "s"
+      : level === "M" ? execution === "light" ? "light-m" : "standard-m"
+        : execution === "light" ? "light-l" : "standard-l";
+  return {
+    readyToLock: true,
+    classification,
+    route,
+    obligations: deriveObligations(route, basis),
+    reasons: recommendationReasons(validSignals, topology, level, riskLabels, basis),
+    issues: [],
   };
 }
 

@@ -1,5 +1,6 @@
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
+import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { promisify } from "node:util";
 import { deriveRiskRequirements } from "../policy/route.js";
@@ -91,10 +92,14 @@ type Attempt = {
   startedAt: string;
   finishedAt: string;
   exitCode: number;
-  output: string;
+  /** Legacy readers may still find an inline output field. New attempts use the file. */
+  output?: string;
+  outputTail: string;
+  outputPath: string;
   fingerprint: string;
   host: "claude" | "codex";
   manualAcceptance?: ManualAcceptance;
+  phase?: "preflight" | "forward";
 };
 
 function validateManualAcceptance(value: unknown): ManualAcceptance | undefined {
@@ -165,6 +170,7 @@ async function assertOptionalManualAcceptance(
   id: string,
   state: FeatureState,
   manualAcceptance: ManualAcceptance | undefined,
+  host: "claude" | "codex",
 ): Promise<void> {
   if (manualAcceptance?.mode !== "user-signoff") return;
 
@@ -175,6 +181,14 @@ async function assertOptionalManualAcceptance(
   const events = await readFeatureEvents(root, id);
   const event = events.find((item) => item.type === "host-event"
     && (item.data as { eventId?: unknown }).eventId === manualAcceptance.promptEventId);
+  const eventHost = (event?.data as { host?: unknown } | undefined)?.host;
+  if (event && eventHost !== host) {
+    throw new DevFlowError("HOST_EVENT_HOST_MISMATCH", "host event belongs to a different host", {
+      expectedHost: host,
+      actualHost: eventHost,
+      eventId: manualAcceptance.promptEventId,
+    });
+  }
   const payload = event?.data as { type?: unknown; text?: unknown } | undefined;
   if (!payload || payload.type !== "user-prompt" || payload.text !== manualAcceptance.userReply) {
     throw new DevFlowError(
@@ -221,26 +235,40 @@ export async function runVerification(
   if (!selected.length || commandIds?.some((command) => !selected.some((item) => item.id === command))) {
     throw new DevFlowError("UNKNOWN_VERIFICATION_COMMAND", "verification command is not configured");
   }
-  await assertOptionalManualAcceptance(root, id, initial, manualAcceptance);
+  await assertOptionalManualAcceptance(root, id, initial, manualAcceptance, host);
   assertMoneyBehaviorCommands(initial, selected.map((command) => command.id), config.verification.behaviorCommands);
 
-  const fingerprint = await fingerprintProtectedRoots(root, config.protectedRoots);
+  const fingerprint = await fingerprintProtectedRoots(root, config);
   const replacingStaleVerification = Boolean(
     initial.verification.verifiedFingerprint
     && initial.verification.verifiedFingerprint !== fingerprint,
   );
   const startedAt = new Date().toISOString();
   let exitCode = 0;
+  let phase: Attempt["phase"] = "forward";
   const output: string[] = [];
-  for (const command of selected) {
-    const result = await runVerificationCommand(root, command);
-    output.push(`[${command.id}] ${result.output}`);
-    if (result.exitCode !== 0) {
-      exitCode = result.exitCode;
-      break;
+  const preflight = (config.verification.preflightCommands ?? []).map((commandId) => {
+    const command = config.verification.commands.find((candidate) => candidate.id === commandId);
+    if (!command) throw new DevFlowError("INVALID_PROJECT_CONFIG", "preflight command is not configured", { commandId });
+    return command;
+  });
+  for (const group of [
+    { phase: "preflight" as const, commands: preflight },
+    { phase: "forward" as const, commands: selected },
+  ]) {
+    if (exitCode !== 0) break;
+    for (const command of group.commands) {
+      const result = await runVerificationCommand(root, command);
+      output.push(`[${command.id}] ${result.output}`);
+      if (result.exitCode !== 0) {
+        exitCode = result.exitCode;
+        phase = group.phase;
+        break;
+      }
     }
   }
   const finishedAt = new Date().toISOString();
+  const fullOutput = output.join("\n");
 
   return mutate(root, id, expectedRevision, "verification-recorded", async (state) => {
     if (state.lifecycle !== "active") {
@@ -256,16 +284,21 @@ export async function runVerification(
       : ["targeted"];
     const attempt: Attempt = {
       id: state.verification.attempts.length + 1,
-      commandIds: selected.map((item) => item.id),
+      commandIds: [...preflight, ...selected].map((item) => item.id),
       kinds,
       startedAt,
       finishedAt,
       exitCode,
-      output: output.join("\n").slice(-32_000),
+      outputTail: fullOutput.slice(-4_000),
+      outputPath: `verification/${state.verification.attempts.length + 1}.log`,
       fingerprint,
       host,
+      phase,
       ...(manualAcceptance ? { manualAcceptance } : {}),
     };
+    const outputFile = path.join(root, ".dev-flow", "features", id, attempt.outputPath);
+    await mkdir(path.dirname(outputFile), { recursive: true });
+    await writeFile(outputFile, fullOutput);
     state.verification.attempts.push(attempt);
     delete state.verification.satisfiedByAttemptId;
     delete state.verification.verifiedFingerprint;
@@ -296,7 +329,7 @@ export async function runVerification(
       // The steps remain the source of truth for ordering.
       state.currentStage = "finalize";
     } else {
-      const signature = `${exitCode}:${createHash("sha256").update(output.join("\n")).digest("hex").slice(0, 16)}`;
+       const signature = `${exitCode}:${createHash("sha256").update(fullOutput).digest("hex").slice(0, 16)}`;
       state.repair = recordRepairAttempt(state.repair ?? startRepairLoop(), signature, output.slice(-3));
     }
     state.lastUpdatedBy = { host, pluginVersion: __DEV_FLOW_VERSION__ };
@@ -309,7 +342,7 @@ export async function readVerificationFreshness(
 ): Promise<VerificationFreshness> {
   if (!state.verification.verifiedFingerprint) return { status: "missing" };
   const config = await readProjectConfig(root);
-  const current = await fingerprintProtectedRoots(root, config.protectedRoots);
+  const current = await fingerprintProtectedRoots(root, config);
   if (state.verification.verifiedFingerprint === current) return { status: "fresh" };
   return {
     status: "stale",
@@ -330,7 +363,7 @@ export async function invalidateStaleVerification(
   expectedRevision: number,
 ): Promise<FeatureState | undefined> {
   const config = await readProjectConfig(root);
-  const current = await fingerprintProtectedRoots(root, config.protectedRoots);
+  const current = await fingerprintProtectedRoots(root, config);
   const state = await readState(root, id);
   if (!state.verification.verifiedFingerprint || state.verification.verifiedFingerprint === current) return undefined;
   if (state.revision !== expectedRevision) {

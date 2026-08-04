@@ -22,10 +22,7 @@ function frontMatter(context: ArtifactTemplateContext, kind: string, grillStatus
 
 function requirementsTemplate(context: ArtifactTemplateContext): string {
   const grillStatus = context.requirementsState === "provided-confirmed" ? "not_required" : "pending";
-  const grillTransition = grillStatus === "pending"
-    ? "<!-- grill 状态转换：pending → in_progress 时，在 front matter 的 dev_flow 下添加 grill_question_id: G-001 与 grill_response_hint: \"等待用户回答\"；完成后将状态改为 complete 并删除这两个字段。 -->\n\n"
-    : "";
-  return `${frontMatter(context, "requirements", grillStatus)}${grillTransition}# 需求\n\n## 范围\n\n## 目标\n\n## 非目标\n\n## 验收条件\n\n<!-- dev-flow:id=REQ-001 kind=requirement -->\n### REQ-001：需求\n\n- 描述：\n\n<!-- dev-flow:id=AC-001 kind=acceptance-criterion -->\n#### AC-001：验收条件（parent: REQ-001）\n\n- 验收条件：\n\n## 决策记录\n\n| ID | 问题 | 决策 | 来源 | 影响 |\n| --- | --- | --- | --- | --- |\n\n## 开放问题\n\n- 无\n`;
+  return `${frontMatter(context, "requirements", grillStatus)}# 需求\n\n## 范围\n\n## 目标\n\n## 非目标\n\n## 验收条件\n\n<!-- dev-flow:id=REQ-001 kind=requirement -->\n### REQ-001：需求\n\n- 描述：\n\n<!-- dev-flow:id=AC-001 kind=acceptance-criterion -->\n#### AC-001：验收条件（parent: REQ-001）\n\n- 验收条件：\n\n## 决策记录\n\n| ID | 问题 | 决策 | 来源 | 影响 |\n| --- | --- | --- | --- | --- |\n\n## 开放问题\n\n- 无\n`;
 }
 
 function implementationPlanTemplate(context: ArtifactTemplateContext): string {

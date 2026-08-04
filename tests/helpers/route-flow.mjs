@@ -362,7 +362,7 @@ export async function prepareReviewReadyFeature(root, input, options = {}) {
   const driven = await driveUntil(root, state.featureId, state, {
     ...options,
     input,
-    stopAt: (action) => action.kind === "create-review-batch" && action.step === "plan_review",
+    stopAt: (action) => action.kind === "create-review-batch" && action.step === "planning",
   });
   assert.equal(driven.action.kind, "create-review-batch");
   return driven.state;

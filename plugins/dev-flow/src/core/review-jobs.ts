@@ -1,8 +1,9 @@
 import { createHash, randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
-import type { ReviewAgentAttestation, ReviewBasis, ReviewBatch, ReviewJob, ReviewLedger, ReviewSamplingAttempt } from "../policy/review.js";
+import { toPublicReviewJob, type ReviewAgentAttestation, type ReviewBasis, type ReviewBatch, type ReviewJob, type ReviewLedger, type ReviewSamplingAttempt, type PublicReviewJob } from "../policy/review.js";
 import type { ReviewAssurance, ReviewFinding, ReviewFindingInput, ReviewFindingResolutionInput } from "../policy/types.js";
+import { pathWithinFileScope } from "../policy/rollback.js";
 import {
   assuranceForReview2a,
   assuranceForReviewBatch,
@@ -15,7 +16,7 @@ import {
 import { DevFlowError } from "./errors.js";
 import { normalizeUnicode } from "./path-normalization.js";
 import { fingerprintProtectedRoots } from "./fingerprint.js";
-import { mutatePrepared, readState, type FeatureState } from "./state-store.js";
+import { mutatePrepared, readFeatureEvents, readState, type FeatureState } from "./state-store.js";
 import {
   canonicalReviewValueJson,
   readReviewLedger,
@@ -65,15 +66,21 @@ export interface CreateReviewBatchResult {
 export interface ClaimedReviewJob {
   state: FeatureState;
   batchId: string;
-  job: Omit<ReviewJob, "claim">;
+  job: PublicReviewJob;
   capability: string;
   idempotent: boolean;
+}
+
+export interface ReleasedReviewJob {
+  state: FeatureState;
+  batchId: string;
+  job: PublicReviewJob;
 }
 
 export interface StartedReviewSampling {
   state: FeatureState;
   batchId: string;
-  job: Omit<ReviewJob, "claim">;
+  job: PublicReviewJob;
   requestId: string;
   package: unknown;
 }
@@ -168,7 +175,7 @@ async function deriveReviewInput(root: string, state: FeatureState): Promise<Der
   // Content fingerprint of protected roots at basis capture time. Batch create and
   // pre-record planning gates must see live drift; post-record revalidation is
   // handled separately so implementation may mutate those same paths.
-  const protectedRootsFingerprint = await fingerprintProtectedRoots(root, config.protectedRoots);
+  const protectedRootsFingerprint = await fingerprintProtectedRoots(root, config);
   const basis: ReviewBasis = {
     featureId: state.featureId,
     route: state.route,
@@ -213,10 +220,7 @@ function findJob(batch: ReviewBatch, jobId: string): ReviewJob {
   return job!;
 }
 
-function visibleJob(job: ReviewJob): Omit<ReviewJob, "claim"> {
-  const { claim: _claim, ...visible } = job;
-  return visible;
-}
+function visibleJob(job: ReviewJob): PublicReviewJob { return toPublicReviewJob(job); }
 
 function recoverExpiredLease(job: ReviewJob, now: Date): ReviewJob {
   if (job.status === "claimed" && job.claim && Date.parse(job.claim.leaseExpiresAt) <= now.getTime()) {
@@ -322,16 +326,20 @@ function assertFindingScope(
   const allowed = [...new Set([...manifest.protectedRoots, ...manifest.rollbackFileScopes])];
   const inManifest = (value: string) => {
     const normalized = normalizeUnicode(value);
-    return safePackagePath(normalized) && allowed.some((scope) => scope === "." || normalized === scope || normalized.startsWith(`${scope}/`));
+    return safePackagePath(normalized) && allowed.some((scope) => pathWithinFileScope(normalized, [scope]));
   };
+  const invalidPaths: string[] = [];
   for (const finding of findings) {
     if (finding.severity === "blocking" && !finding.evidence.length) invalid("REVIEW_FINDING_EVIDENCE_REQUIRED", "blocking finding requires evidence");
-    if (finding.targets.some((target) => !inManifest(target)) || finding.evidence.some((evidence) => !inManifest(evidence.path))) {
-      invalid("REVIEW_FINDING_SCOPE_INVALID", "finding targets and evidence must be package-relative paths inside the scope manifest");
-    }
+    invalidPaths.push(...finding.targets.filter((target) => !inManifest(target)));
+    invalidPaths.push(...finding.evidence.map((evidence) => evidence.path).filter((path) => !inManifest(path)));
   }
-  if (resolutions.some((resolution) => resolution.evidence.some((evidence) => !inManifest(evidence.path)))) {
-    invalid("REVIEW_FINDING_SCOPE_INVALID", "resolution evidence must be package-relative paths inside the scope manifest");
+  invalidPaths.push(...resolutions.flatMap((resolution) => resolution.evidence.map((evidence) => evidence.path).filter((path) => !inManifest(path))));
+  if (invalidPaths.length) {
+    invalid("REVIEW_FINDING_SCOPE_INVALID", "finding targets and evidence must be package-relative paths inside the scope manifest", {
+      invalidPaths: [...new Set(invalidPaths)].sort(),
+      allowedScopes: allowed.sort(),
+    });
   }
 }
 
@@ -430,7 +438,7 @@ export async function getReviewJob(
   batchId: string,
   jobId: string,
   capability: string,
-): Promise<{ job: Omit<ReviewJob, "claim">; package: unknown }> {
+): Promise<{ job: PublicReviewJob; package: unknown }> {
   const state = await readState(root, id);
   const batch = currentBatch(await readReviewLedger(root, state), batchId);
   const job = findJob(batch, jobId);
@@ -475,6 +483,44 @@ export async function claimReviewJob(
     });
     const pointer = await writeReviewSnapshot(root, cloneLedger(ledger, nextStateRevision, batches));
     return { mutate: (draft) => { draft.review = pointer; }, eventData: { batchId, jobId } };
+  });
+  return { ...result!, state };
+}
+
+/** Release only the exact claim that supplied the capability; expired claims are
+ * still releasable by their original holder, while other callers must reclaim. */
+export async function releaseReviewJob(
+  root: string,
+  id: string,
+  expectedRevision: number,
+  batchId: string,
+  jobId: string,
+  capability: string,
+): Promise<ReleasedReviewJob> {
+  let result: Omit<ReleasedReviewJob, "state"> | undefined;
+  const state = await mutatePrepared(root, id, expectedRevision, "review-job-released", async (current, nextStateRevision) => {
+    const ledger = await readReviewLedger(root, current);
+    const batch = currentBatch(ledger, batchId);
+    const original = findJob(batch, jobId);
+    if (original.status === "submitted") invalid("REVIEW_JOB_ALREADY_SUBMITTED", "review job has already been submitted", { jobId });
+    if (original.status === "sampling") invalid("REVIEW_JOB_SAMPLING_IN_PROGRESS", "review job is held by server sampling", { jobId });
+    if (original.status !== "claimed" || !original.claim) invalid("REVIEW_JOB_NOT_CLAIMED", "review job is not currently claimed", { jobId });
+    if (digest(capability) !== original.claim.requestSha256) invalid("REVIEW_JOB_CAPABILITY_INVALID", "review job capability is invalid");
+    const released: ReviewJob = { ...original, status: "pending", claim: undefined };
+    const updatedBatch = {
+      ...batch,
+      jobs: batch.jobs.map((candidate) => candidate.jobId === jobId ? released : candidate),
+    };
+    const pointer = await writeReviewSnapshot(root, cloneLedger(
+      ledger,
+      nextStateRevision,
+      ledger.batches.map((candidate) => candidate.batchId === batchId ? updatedBatch : candidate),
+    ));
+    result = { batchId, job: visibleJob(released) };
+    return {
+      mutate: (draft) => { draft.review = pointer; },
+      eventData: { batchId, jobId },
+    };
   });
   return { ...result!, state };
 }
@@ -643,8 +689,25 @@ export async function submitReviewJob(
       result = { batch, idempotent: true };
       return { mutate: () => undefined, unchanged: true, eventData: { batchId, jobId, idempotent: true } };
     }
-    if (Date.parse(job.claim.leaseExpiresAt) <= now.getTime()) invalid("REVIEW_JOB_LEASE_EXPIRED", "review job lease has expired", { jobId });
-    const submitted = await submitParsedReviewJob(root, id, ledger, batch, job, parsed, now, undefined, hostAttestation);
+    if (Date.parse(job.claim.leaseExpiresAt) <= now.getTime()) invalid("REVIEW_JOB_LEASE_EXPIRED", "review job lease has expired", {
+      jobId,
+      leaseExpiresAt: job.claim.leaseExpiresAt,
+      recoveryHint: "重新 claim 当前 job 后再提交；过期租约不会自动保留提交权",
+    });
+    let submitted: SubmittedReviewJob;
+    try {
+      submitted = await submitParsedReviewJob(root, id, ledger, batch, job, parsed, now, undefined, hostAttestation);
+    } catch (error) {
+      if (error instanceof DevFlowError) {
+        invalid(error.code, error.message, {
+          ...error.details,
+          claimRetained: true,
+          leaseExpiresAt: job.claim.leaseExpiresAt,
+          retryHint: "修正 completion、scope 或 attestation 后，在当前租约内重试提交",
+        });
+      }
+      throw error;
+    }
     const batches = ledger.batches.map((candidate) => candidate.batchId === batchId ? submitted.batch : candidate);
     const pointer = await writeReviewSnapshot(root, cloneLedger(ledger, nextStateRevision, batches));
     result = { batch: submitted.batch, idempotent: false };
@@ -872,7 +935,10 @@ async function currentBatchWithBasis(
   if (requireLiveBasis) {
     const reviewInput = await deriveReviewInput(root, state);
     if (basisHash(reviewInput.basis) !== batch!.basisHash) {
-      invalid("REVIEW_BASIS_STALE", "review batch basis no longer matches current feature state", { batchId: batch!.batchId });
+      invalid("REVIEW_BASIS_STALE", "review batch basis no longer matches current feature state", {
+        batchId: batch!.batchId,
+        recoveryHint: "重建批次→重交 jobs→re-record planning",
+      });
     }
   }
   return { ledger, batch: batch! };
@@ -967,6 +1033,50 @@ function assertResolvedAcceptance(
   }
 }
 
+/** Validate the user event before a risk-acceptance token can consume it. */
+export function assertReviewRiskAcceptanceEvidence(
+  event: { revision: number; at: string; data: unknown } | undefined,
+  interaction: Pick<UserInteraction, "presentedAt">,
+  promptEventId: string,
+  userReply: string,
+  host: "claude" | "codex",
+): void {
+  if (!event) {
+    throw new DevFlowError("INTERACTION_PROVENANCE_UNAVAILABLE", "no matching user prompt event was captured", {
+      eventId: promptEventId,
+      recoveryHint: "使用当前宿主捕获的后续 user-prompt event 再重试",
+    });
+  }
+  const payload = event.data as { eventId?: unknown; host?: unknown; type?: unknown; text?: unknown; at?: unknown };
+  if (payload.host !== host) {
+    throw new DevFlowError("HOST_EVENT_HOST_MISMATCH", "host event belongs to a different host", {
+      expectedHost: host,
+      actualHost: payload.host,
+      eventId: promptEventId,
+    });
+  }
+  if (payload.eventId !== promptEventId || payload.type !== "user-prompt") {
+    throw new DevFlowError("INTERACTION_PROVENANCE_UNAVAILABLE", "the referenced event is not a user prompt", {
+      eventId: promptEventId,
+      recoveryHint: "使用当前宿主捕获的 user-prompt event 再重试",
+    });
+  }
+  if (payload.text !== userReply) {
+    throw new DevFlowError("REVIEW_RISK_ACCEPTANCE_REPLY_MISMATCH", "userReply must match the captured prompt text exactly", {
+      eventId: promptEventId,
+      recoveryHint: "传入与 host event 完全一致的 userReply",
+    });
+  }
+  const eventTime = Date.parse(typeof payload.at === "string" ? payload.at : event.at);
+  const presentedTime = Date.parse(interaction.presentedAt);
+  if (Number.isNaN(eventTime) || Number.isNaN(presentedTime) || eventTime <= presentedTime) {
+    throw new DevFlowError("REVIEW_RISK_ACCEPTANCE_SAME_TURN", "risk acceptance must come from a later user turn", {
+      eventId: promptEventId,
+      recoveryHint: "在风险接受交互呈现后的后续回合重新提交",
+    });
+  }
+}
+
 /** Resolve the one-time text token and atomically persist accepted dispositions. */
 export async function resolveReviewRiskAcceptanceToken(
   root: string,
@@ -980,6 +1090,9 @@ export async function resolveReviewRiskAcceptanceToken(
   let result: Omit<ResolvedReviewRiskAcceptance, "state"> | undefined;
   const state = await mutatePrepared(root, id, expectedRevision, "review-risk-acceptance-resolved", async (current, nextStateRevision) => {
     const interaction = getInteraction(current as FeatureState, interactionId);
+    const hostEvent = (await readFeatureEvents(root, id)).find((event) => event.type === "host-event"
+      && (event.data as { eventId?: unknown }).eventId === promptEventId);
+    assertReviewRiskAcceptanceEvidence(hostEvent, interaction, promptEventId, userReply, host);
     const { ledger, batch } = await currentBatchWithBasis(root, current as FeatureState);
     const binding = riskBinding(interaction);
     if (interaction.status === "resolved") {

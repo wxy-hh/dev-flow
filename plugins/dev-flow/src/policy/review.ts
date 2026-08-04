@@ -67,6 +67,46 @@ export interface ReviewJob {
   };
 }
 
+export interface PublicReviewLease {
+  claimedAt: string;
+  leaseExpiresAt: string;
+}
+
+export type PublicReviewSamplingAttempt = Omit<ReviewSamplingAttempt, "requestSha256">;
+export type PublicReviewSamplingProvenance = Omit<ReviewSamplingProvenance, "requestSha256">;
+export type PublicReviewSubmission = Omit<NonNullable<ReviewJob["submission"]>, "samplingProvenance"> & {
+  samplingProvenance?: PublicReviewSamplingProvenance;
+};
+
+export type PublicReviewJob = Omit<ReviewJob, "claim" | "samplingAttempts" | "submission"> & {
+  lease?: PublicReviewLease;
+  samplingAttempts?: PublicReviewSamplingAttempt[];
+  submission?: PublicReviewSubmission;
+};
+
+/** Strip the capability hash from every client-visible review projection. */
+export function toPublicReviewJob(job: ReviewJob): PublicReviewJob {
+  const { claim, samplingAttempts, submission, ...publicJob } = job;
+  return {
+    ...publicJob,
+    ...(claim ? { lease: { claimedAt: claim.claimedAt, leaseExpiresAt: claim.leaseExpiresAt } } : {}),
+    ...(samplingAttempts ? {
+      samplingAttempts: samplingAttempts.map(({ requestSha256: _requestSha256, ...attempt }) => attempt),
+    } : {}),
+    ...(submission ? {
+      submission: {
+        ...submission,
+        ...(submission.samplingProvenance ? {
+          samplingProvenance: {
+            issuedAt: submission.samplingProvenance.issuedAt,
+            completedAt: submission.samplingProvenance.completedAt,
+          },
+        } : {}),
+      },
+    } : {}),
+  };
+}
+
 /** Core records only request hashes; plaintext sampling IDs never enter snapshots. */
 export interface ReviewSamplingAttempt {
   requestSha256: string;
@@ -298,8 +338,7 @@ export function deriveReviewJobRequirements(
   riskLabels: RiskLabel[],
 ): ReviewJobRequirement[] {
   if (route !== "standard-m" && route !== "standard-l") return [];
-  const roles: ReviewRole[] = ["requirements-coverage", "architecture-testability"];
-  if (route === "standard-l") roles.push("rollback-operability");
+  const roles: ReviewRole[] = ["requirements-coverage", "architecture-testability", "rollback-operability"];
   if (riskLabels.includes("security")) roles.push("security");
   if (riskLabels.some((label) => label === "data" || label === "money" || label === "irreversible_consequence")) {
     roles.push("data-irreversibility");

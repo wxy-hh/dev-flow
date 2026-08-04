@@ -18,3 +18,13 @@ test("canonicalizes decomposed Unicode in protected roots", () => {
   assert.doesNotThrow(() => validateProjectConfig(config));
   assert.deepEqual(config.protectedRoots, ["src/需求á"]);
 });
+
+test("validates preflight command references and protected-root excludes", () => {
+  const config = structuredClone(valid);
+  config.verification.preflightCommands = ["unit", "unit"];
+  config.protectedRootsExclude = ["src/generated/**"];
+  assert.doesNotThrow(() => validateProjectConfig(config));
+  assert.deepEqual(config.verification.preflightCommands, ["unit"]);
+  assert.throws(() => validateProjectConfig({ ...valid, verification: { ...valid.verification, preflightCommands: ["missing"] } }), /INVALID_PROJECT_CONFIG/);
+  assert.throws(() => validateProjectConfig({ ...valid, protectedRootsExclude: ["../generated"] }), /INVALID_PROJECT_CONFIG/);
+});

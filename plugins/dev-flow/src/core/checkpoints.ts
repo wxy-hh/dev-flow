@@ -9,6 +9,7 @@ import {
   type CheckpointVerificationAttempt,
 } from "../policy/rollback.js";
 import type { RollbackNode } from "../policy/traceability.js";
+import type { VerificationCommandRef } from "../policy/traceability.js";
 import { DevFlowError } from "./errors.js";
 import { fingerprintProtectedRoots, snapshotProtectedRoots, type ProtectedFileSnapshot } from "./fingerprint.js";
 import type { ProjectConfig, VerificationCommand } from "./project-config.js";
@@ -233,13 +234,38 @@ function currentRollbackNode(state: FeatureState, nodes: RollbackNode[], unitId:
 }
 
 function resolveVerificationCommands(config: ProjectConfig, node: RollbackNode): VerificationCommand[] {
-  return node.forwardVerification.map((commandId) => {
+  return node.forwardVerification.map((reference, index) => resolveVerificationCommand(config, node.id, reference, index));
+}
+
+function resolveVerificationCommand(
+  config: ProjectConfig,
+  unitId: string,
+  reference: VerificationCommandRef,
+  index: number,
+): VerificationCommand {
+  if (typeof reference !== "string") {
+    return {
+      id: `inline:${unitId}:${index}`,
+      command: reference.command,
+      args: [...reference.args ?? []],
+      cwd: reference.cwd ?? ".",
+    };
+  }
+  const command = config.verification.commands.find((candidate) => candidate.id === reference);
+  if (!command) {
+    throw new DevFlowError("TRACE_VERIFICATION_COMMAND_UNKNOWN", "rollback unit references an unknown verification command", {
+      unitId,
+      commandId: reference,
+    });
+  }
+  return command;
+}
+
+function resolvePreflightCommands(config: ProjectConfig): VerificationCommand[] {
+  return (config.verification.preflightCommands ?? []).map((commandId) => {
     const command = config.verification.commands.find((candidate) => candidate.id === commandId);
     if (!command) {
-      throw new DevFlowError("TRACE_VERIFICATION_COMMAND_UNKNOWN", "rollback unit references an unknown verification command", {
-        unitId: node.id,
-        commandId,
-      });
+      throw new DevFlowError("INVALID_PROJECT_CONFIG", "preflight command is not configured", { commandId });
     }
     return command;
   });
@@ -305,9 +331,10 @@ export async function checkpointImplementationUnit(
     throw new DevFlowError("TRACE_SLICE_STALE", "rollback verification configuration is stale", { unitId });
   }
   const commands = resolveVerificationCommands(config, node);
+  const preflightCommands = resolvePreflightCommands(config);
 
   const baseline = await readCheckpointBaseline(root, id, unitId);
-  const after = await snapshotProtectedRoots(root, config.protectedRoots);
+  const after = await snapshotProtectedRoots(root, config);
   const records = diffSnapshots(baseline.files, after);
   // fileScope is anticipated scope. The complete actual file set is retained
   // in the checkpoint manifest and surfaced through drift analysis; a missing
@@ -383,7 +410,10 @@ export async function checkpointImplementationUnit(
   const manifestFile = path.join(featureDir, manifestPath(checkpointId));
 
   const attempts: CheckpointVerificationAttempt[] = [];
-  for (const command of commands) {
+  for (const { command, phase } of [
+    ...preflightCommands.map((command) => ({ command, phase: "preflight" as const })),
+    ...commands.map((command) => ({ command, phase: "forward" as const })),
+  ]) {
     const startedAt = new Date().toISOString();
     const result = await runVerificationCommand(root, command);
     const attempt: CheckpointVerificationAttempt = {
@@ -393,26 +423,36 @@ export async function checkpointImplementationUnit(
       status: result.exitCode === 0 ? "passed" : "failed",
       startedAt,
       completedAt: new Date().toISOString(),
+      phase,
+      cwd: command.cwd,
+      outputTail: result.output.slice(-4_000),
     };
     attempts.push(attempt);
     if (result.exitCode !== 0) {
-      throw new DevFlowError("CHECKPOINT_VERIFICATION_FAILED", "forward verification failed; the unit stays active and no checkpoint is recorded", {
+      throw new DevFlowError(phase === "preflight" ? "CHECKPOINT_PREFLIGHT_FAILED" : "CHECKPOINT_VERIFICATION_FAILED", phase === "preflight"
+        ? "preflight verification failed; the unit stays active and no checkpoint is recorded"
+        : "forward verification failed; the unit stays active and no checkpoint is recorded", {
         unitId,
         attemptId: attempt.attemptId,
+        phase,
         commandId: attempt.commandId,
+        command: attempt.command,
+        cwd: command.cwd,
         exitCode: result.exitCode,
-        output: result.output.slice(-4_000),
-        recoveryHint: "前向验证失败时单元保持 active 且不记 checkpoint：若失败源于测试先行（验证依赖尚未落地的单元），请把测试与修复合并为同一回撤单元（原子单元）一并回滚；checkpoint 前清理 scratch/ 中的残留红测试",
+        outputTail: result.output.slice(-4_000),
+        recoveryHint: phase === "preflight"
+          ? "修复配置的环境前置命令后重试；单元保持 active 且不会创建 checkpoint"
+          : "前向验证失败时单元保持 active 且不记 checkpoint：若失败源于测试先行（验证依赖尚未落地的单元），请把测试与修复合并为同一回撤单元（原子单元）一并回滚；checkpoint 前清理 scratch/ 中的残留红测试",
       });
     }
   }
 
   // Drift guard: verification commands must not change protected files.
-  const afterVerification = await snapshotProtectedRoots(root, config.protectedRoots);
+  const afterVerification = await snapshotProtectedRoots(root, config);
   if (!snapshotsEqual(after, afterVerification)) {
     throw new DevFlowError("CHECKPOINT_HASH_MISMATCH", "protected files changed while verification ran", { unitId });
   }
-  const completedFingerprint = await fingerprintProtectedRoots(root, config.protectedRoots);
+  const completedFingerprint = await fingerprintProtectedRoots(root, config);
 
   for (const record of records) {
     if (record.change === "deleted" || record.change === "renamed") continue;
@@ -445,7 +485,7 @@ export async function checkpointImplementationUnit(
     approvalBasisHash: unit.basisHash,
     projectConfigSha256,
     ...(unit.beginNonce ? { beginNonce: unit.beginNonce } : {}),
-    verificationCommands: commands.map((command) => ({ commandId: command.id, command: commandSummary(command) })),
+    verificationCommands: [...preflightCommands, ...commands].map((command) => ({ commandId: command.id, command: commandSummary(command) })),
   };
   const validated = parseCheckpointManifest(JSON.parse(JSON.stringify(manifest)));
 
