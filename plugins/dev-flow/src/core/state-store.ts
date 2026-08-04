@@ -316,6 +316,56 @@ export async function recordHostEvent(root: string, hostEvent: HostEvent): Promi
   }
   finally { await release(); }
 }
+
+export type HostAuthorizationEventType = "host-authorization-pending" | "host-authorization-granted";
+export type HostAuthorizationRiskClass = "task-reusable" | "always-confirm";
+export interface HostAuthorizationRecord {
+  host: "claude" | "codex";
+  featureId: string;
+  riskClass: HostAuthorizationRiskClass;
+  commandFingerprint: string;
+  sourceToolEvent: string;
+  requestedAt?: string;
+  grantedAt?: string;
+}
+
+/** Persist host authorization as an append-only Core event, never in state.json. */
+export async function recordHostAuthorizationEvent(
+  root: string,
+  type: HostAuthorizationEventType,
+  record: HostAuthorizationRecord,
+): Promise<void> {
+  const active = await readActive(root);
+  if (!active || active.featureId !== record.featureId) return;
+  const release = await lock(root, active.featureId, "host-authorization");
+  try {
+    const current = await readActive(root);
+    if (!current || current.featureId !== record.featureId || current.revision !== active.revision) return;
+    const state = await readState(root, record.featureId);
+    if (state.lifecycle !== "active" || state.revision !== current.revision) return;
+    const events = await readFeatureEvents(root, record.featureId);
+    const duplicate = events.some((event) => {
+      if (event.type !== type) return false;
+      const value = event.data as Partial<HostAuthorizationRecord>;
+      return value.host === record.host
+        && value.featureId === record.featureId
+        && value.riskClass === record.riskClass
+        && value.commandFingerprint === record.commandFingerprint
+        && value.sourceToolEvent === record.sourceToolEvent;
+    });
+    if (!duplicate) await appendEvent(root, record.featureId, state.revision, type, record);
+  }
+  finally { await release(); }
+}
+
+export async function readHostAuthorizationEvents(root: string, featureId: string): Promise<Array<{ type: HostAuthorizationEventType; data: HostAuthorizationRecord }>> {
+  const events = await readFeatureEvents(root, featureId);
+  return events.flatMap((event) => {
+    if (event.type !== "host-authorization-pending" && event.type !== "host-authorization-granted") return [];
+    return [{ type: event.type, data: event.data as HostAuthorizationRecord }];
+  });
+}
+
 export async function readFeatureEvents(root: string, id: string): Promise<Array<{ revision: number; type: string; at: string; data: unknown }>> {
   try { return (await readFile(eventPath(root, id), "utf8")).split("\n").filter(Boolean).map((line) => JSON.parse(line)); }
   catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return []; throw error; }

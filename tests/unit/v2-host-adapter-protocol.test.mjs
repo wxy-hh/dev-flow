@@ -1,0 +1,165 @@
+import assert from "node:assert/strict";
+import test, { after } from "node:test";
+import { buildTestBundles } from "../helpers/test-bundle.mjs";
+import { createTinyApp, strictProjectConfig } from "../helpers/fixture-repo.mjs";
+import { run } from "../helpers/host-runner.mjs";
+import { loadSource } from "../helpers/load-source.mjs";
+
+const state = await loadSource("plugins/dev-flow/src/core/state-store.ts");
+const bundles = await buildTestBundles();
+after(() => bundles.dispose());
+
+async function invokeRaw(hook, cwd, event) {
+  return run(process.execPath, [hook], { cwd, input: `${JSON.stringify({ cwd, ...event })}\n` });
+}
+
+async function startIntake() {
+  const fixture = await createTinyApp();
+  await state.initProject(fixture.root, strictProjectConfig);
+  await state.startFeature(fixture.root, {
+    featureId: "protocol",
+    objective: "验证宿主协议",
+    scope: { inScope: ["src/counter.js"], outOfScope: [] },
+    host: "codex",
+  });
+  return fixture;
+}
+
+test("Claude PreToolUse allow exits with no stdout", async () => {
+  const fixture = await createTinyApp();
+  try {
+    const result = await invokeRaw(bundles.pathFor("claude-hook"), fixture.root, {
+      hook_event_name: "PreToolUse",
+      tool_name: "Bash",
+      tool_input: { command: "node verification-script.mjs | tee /tmp/dev-flow-verification.log" },
+    });
+    assert.equal(result.stdout, "");
+    assert.equal(result.stderr, "");
+  } finally {
+    await fixture.dispose();
+  }
+});
+
+test("Claude PreToolUse block uses current hookSpecificOutput deny protocol", async () => {
+  const fixture = await startIntake();
+  try {
+    const result = await invokeRaw(bundles.pathFor("claude-hook"), fixture.root, {
+      hook_event_name: "PreToolUse",
+      tool_name: "Write",
+      tool_input: { file_path: "src/counter.js" },
+    });
+    const output = JSON.parse(result.stdout);
+    assert.deepEqual(output.hookSpecificOutput.hookEventName, "PreToolUse");
+    assert.equal(output.hookSpecificOutput.permissionDecision, "deny");
+    assert.match(output.hookSpecificOutput.permissionDecisionReason, /原因：/);
+    assert.match(output.hookSpecificOutput.permissionDecisionReason, /影响：/);
+    assert.match(output.hookSpecificOutput.permissionDecisionReason, /解决方案：/);
+    assert.match(output.hookSpecificOutput.permissionDecisionReason, /继续方式：/);
+    assert.equal("continue" in output, false);
+    assert.equal("decision" in output, false);
+  } finally {
+    await fixture.dispose();
+  }
+});
+
+test("Codex PreToolUse allow exits with no stdout", async () => {
+  const fixture = await createTinyApp();
+  try {
+    const result = await invokeRaw(bundles.pathFor("codex-hook"), fixture.root, {
+      hook_event_name: "PreToolUse",
+      tool_name: "Bash",
+      tool_input: { command: "bash -c 'printf ok > docs/result.md'" },
+    });
+    assert.equal(result.stdout, "");
+    assert.equal(result.stderr, "");
+  } finally {
+    await fixture.dispose();
+  }
+});
+
+test("Codex PreToolUse block uses decision block without unsupported fields", async () => {
+  const fixture = await startIntake();
+  try {
+    const result = await invokeRaw(bundles.pathFor("codex-hook"), fixture.root, {
+      hook_event_name: "PreToolUse",
+      tool_name: "Write",
+      tool_input: { file_path: "src/counter.js" },
+    });
+    const output = JSON.parse(result.stdout);
+    assert.equal(output.decision, "block");
+    assert.match(output.reason, /原因：/);
+    assert.match(output.reason, /影响：/);
+    assert.match(output.reason, /解决方案：/);
+    assert.match(output.reason, /继续方式：/);
+    assert.equal("continue" in output, false);
+    assert.equal("stopReason" in output, false);
+    assert.equal("permissionDecision" in output, false);
+  } finally {
+    await fixture.dispose();
+  }
+});
+
+test("Claude PermissionRequest 首次放行原生确认，成功后只在同 feature 返回 allow", async () => {
+  const fixture = await startIntake();
+  try {
+    const hook = bundles.pathFor("claude-hook");
+    const first = await invokeRaw(hook, fixture.root, {
+      hook_event_name: "PermissionRequest",
+      event_id: "claude-permission-1",
+      tool_name: "Bash",
+      tool_input: { command: "rm -rf src/generated" },
+    });
+    assert.equal(first.stdout, "");
+    await invokeRaw(hook, fixture.root, {
+      hook_event_name: "PostToolUse",
+      event_id: "claude-tool-1",
+      tool_name: "Bash",
+      tool_input: { command: "rm -rf src/generated" },
+      tool_response: { success: true },
+    });
+    const second = await invokeRaw(hook, fixture.root, {
+      hook_event_name: "PermissionRequest",
+      event_id: "claude-permission-2",
+      tool_name: "Bash",
+      tool_input: { command: "rm -rf src/generated" },
+    });
+    const output = JSON.parse(second.stdout);
+    assert.deepEqual(output.hookSpecificOutput, {
+      hookEventName: "PermissionRequest",
+      decision: { behavior: "allow" },
+    });
+    assert.equal("continue" in output, false);
+  } finally {
+    await fixture.dispose();
+  }
+});
+
+test("Codex PermissionRequest 首次不代决，成功后使用 Codex allow 形状", async () => {
+  const fixture = await startIntake();
+  try {
+    const hook = bundles.pathFor("codex-hook");
+    const first = await invokeRaw(hook, fixture.root, {
+      hook_event_name: "PermissionRequest",
+      event_id: "codex-permission-1",
+      tool_name: "Bash",
+      tool_input: { command: "git reset --hard HEAD" },
+    });
+    assert.equal(first.stdout, "");
+    await invokeRaw(hook, fixture.root, {
+      hook_event_name: "PostToolUse",
+      event_id: "codex-tool-1",
+      tool_name: "Bash",
+      tool_input: { command: "git reset --hard HEAD" },
+      tool_response: { success: true },
+    });
+    const second = await invokeRaw(hook, fixture.root, {
+      hook_event_name: "PermissionRequest",
+      event_id: "codex-permission-2",
+      tool_name: "Bash",
+      tool_input: { command: "git reset --hard HEAD" },
+    });
+    assert.deepEqual(JSON.parse(second.stdout), { decision: "allow" });
+  } finally {
+    await fixture.dispose();
+  }
+});

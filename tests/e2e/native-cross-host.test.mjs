@@ -24,12 +24,12 @@ async function finishLightL(startServer, finishServer, approvalHook, starter, fi
     });
     state = await mcpCall(finishServer, fixture.root, "dev_flow_scaffold_artifact", { featureId: "handoff", expectedRevision: state.revision, kind: "implementation-plan" });
     state = await mcpCall(finishServer, fixture.root, "dev_flow_record_artifact", { featureId: "handoff", expectedRevision: state.revision, kind: "implementation-plan" });
-    state = await mcpCall(finishServer, fixture.root, "dev_flow_record_step", { featureId: "handoff", expectedRevision: state.revision, step: "planning", evidence: { reviewType: "plan" } });
+    state = await mcpCall(finishServer, fixture.root, "dev_flow_record_step", { featureId: "handoff", expectedRevision: state.revision, step: "planning", evidence: { reviewType: "plan", checks: ["rollback-strategy"] } });
     const beforeApproval = await mcpCall(finishServer, fixture.root, "dev_flow_status", { featureId: "handoff" });
     const approvalId = beforeApproval.obligations.find((obligation) => obligation.kind === "approval" && obligation.status !== "satisfied").id;
     state = await mcpCall(finishServer, fixture.root, "dev_flow_present_approval", { featureId: "handoff", expectedRevision: state.revision, approvalId, host: finisher });
     const promptEventId = `${finisher}-approval`;
-    assert.deepEqual(await invokeHook(approvalHook, fixture.root, { hook_event_name: "UserPromptSubmit", event_id: promptEventId, prompt: "批准实现" }), { continue: true });
+    assert.equal(await invokeHook(approvalHook, fixture.root, { hook_event_name: "UserPromptSubmit", event_id: promptEventId, prompt: "批准实现" }), undefined);
     state = await mcpCall(finishServer, fixture.root, "dev_flow_confirm_approval", { featureId: "handoff", expectedRevision: state.revision, approvalId, userReply: "批准实现", promptEventId, host: finisher });
     const source = path.join(fixture.root, "src", "counter.js");
     await writeFile(source, (await readFile(source, "utf8")).replace("value + 1", "value + 2"));

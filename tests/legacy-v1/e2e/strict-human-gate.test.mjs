@@ -33,7 +33,7 @@ test("a HUMAN GATE cannot confirm in the presentation turn and accepts a later h
       () => mcpCall(mcp, fixture.root, "dev_flow_confirm_gate", { featureId: "gate", expectedRevision: state.revision, gate: "requirement_confirmation", userReply: "approved", promptEventId: "later", host: "claude" }),
       (error) => error.code === "HUMAN_GATE_SAME_TURN",
     );
-    assert.deepEqual(await invokeHook(claudeHook, fixture.root, { hook_event_name: "UserPromptSubmit", event_id: "later", prompt: "approved" }), { continue: true });
+    assert.equal(await invokeHook(claudeHook, fixture.root, { hook_event_name: "UserPromptSubmit", event_id: "later", prompt: "approved" }), undefined);
     state = await mcpCall(mcp, fixture.root, "dev_flow_confirm_gate", { featureId: "gate", expectedRevision: state.revision, gate: "requirement_confirmation", userReply: "approved", promptEventId: "later", host: "claude" });
     assert.equal(state.steps.requirement_confirmation.status, "satisfied");
   } finally { await fixture.dispose(); }

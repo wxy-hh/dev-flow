@@ -45,7 +45,7 @@ export async function mcpCall(serverPath, cwd, name, arguments_ = {}) {
 
 export async function invokeHook(hookPath, cwd, event) {
   const response = await run(process.execPath, [hookPath], { cwd, input: `${JSON.stringify({ cwd, ...event })}\n` });
-  return JSON.parse(response.stdout.trim());
+  return response.stdout.trim() ? JSON.parse(response.stdout.trim()) : undefined;
 }
 
 async function descendants(directory, predicate, matches = [], depth = 0) {

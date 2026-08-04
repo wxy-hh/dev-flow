@@ -54,6 +54,10 @@ verification 失败保留当前工作，不自动丢弃或静默 rollback。Repa
 
 ## Hooks、诊断与发布
 
-Host adapter 对普通实现写入只做语义审计；intake、`.dev-flow` 控制文件、开放恢复事务和 Git 写入继续拒绝。无法解析写入影响时报告 `impact unresolved`，不冒充路线或 approval 错误。宿主支持矩阵只有 Claude Code（manifest+MCP+claude-hook）与 Codex CLI（manifest+MCP+codex-hook）；其他 MCP 客户端未支持，直连仅诊断，不具备写入守卫与可信用户证据。模型代决、手工调 hook、仅 MCP happy path、`doctor` 静态检查都不是兼容证据。`dev_flow_doctor` 只读报告损坏状态、开放恢复事务、遗留 v1 feature、插件接线和 bundle 完整性，并给出可执行 recovery action。
+Host adapter 对普通实现写入只做语义审计；intake、`.dev-flow` 控制文件、开放恢复事务和 Git 写入继续拒绝。Bash target analyzer 是辅助分析器，不是第二套权限系统：wrapper、解释器、管道、heredoc、变量展开、复杂重定向或仓库外日志无法静态解析时默认 fail-open，由宿主 sandbox、permissions 和原生确认负责安全判断，不产生 `DEV_FLOW_WRITE_TARGET_UNRESOLVED`。能确定归属的 protected roots、控制区、已登记/未登记资产和 logic-complete 门禁仍按现有工作流合同处理。
+
+策略层返回显式 `allow` / `block` outcome。block 固定携带原因、影响、解决方案、确认模式和 `retryOriginal`，adapter 不再把异常或字符串猜测映射成状态损坏。`DEV_FLOW_WORKFLOW_STATE_UNREADABLE` 只在 active、project、state、revision 或 recovery 读取证据失败时使用，并给出来源；普通意外分析失败 fail-open 并作为诊断 advisory。Claude PreToolUse 使用 `hookSpecificOutput.permissionDecision = "deny"`，Codex 使用 `{ decision: "block", reason }`；允许且无 advisory 时两个宿主都退出 0 且无 stdout，Codex 不使用 `continue`、`stopReason` 或伪造 ask。
+
+`PermissionRequest` 只在宿主本来准备询问时参与：首次风险请求不代决，成功的 `PostToolUse` 才能把 `task-reusable` 风险指纹追加到 active feature 的 Core 事件账本；`always-confirm`、feature 切换、finalize/abandon 和宿主 bypass 模式不产生或不复用 grant。宿主支持矩阵只有 Claude Code（manifest+MCP+claude-hook）与 Codex CLI（manifest+MCP+codex-hook）；其他 MCP 客户端未支持，直连仅诊断，不具备写入守卫与可信用户证据。模型代决、手工调 hook、仅 MCP happy path、`doctor` 静态检查都不是兼容证据。`dev_flow_doctor` 只读报告损坏状态、开放恢复事务、遗留 v1 feature、插件接线和 bundle 完整性，并给出可执行 recovery action。
 
 发布包包含 `dist/mcp-server.mjs`、`dist/claude-hook.mjs`、`dist/codex-hook.mjs`，版本由根 `package.json` 统一同步；发布前必须通过 schema、路线、跨宿主和构建检查。

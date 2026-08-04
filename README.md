@@ -22,6 +22,14 @@ Dev Flow 的设计初衷不是把每个小任务都变成重流程，而是在�
 
 不把仅 MCP happy path、模型代决或手工调 hook 当作宿主兼容证据；`doctor` 的静态检查也不等于第三方宿主兼容。新增宿主必须同步更新支持矩阵、manifest、hook 和分发合同测试。
 
+## Hook 与宿主权限边界
+
+Dev Flow 的 Bash target analyzer 只做工作流辅助分析，不是命令合法性裁判。它可以在可靠识别目标时判断 protected roots、`.dev-flow` 控制区、active feature 资产和 Git 写入门禁；命令使用 wrapper、解释器、管道、heredoc、变量展开或复杂重定向而无法静态解析时，默认继续执行，不返回 `DEV_FLOW_WRITE_TARGET_UNRESOLVED`。仓库外验证日志也交给 Claude Code / Codex 的原生 sandbox、permissions 和确认流处理。
+
+Hook 仍会拒绝确定的 `.dev-flow` 控制文件写入、intake 或未批准阶段的 protected-root 写入、未登记的 feature 资产、开放恢复事务以及 logic-complete 前的 Git 写入。每个 Dev Flow block 都包含原因、影响、具体解决方案、是否需要用户决定和解决后是否自动重试原操作；自动动作不会要求用户再回复一次“继续”。状态确实不可读时才使用 `DEV_FLOW_WORKFLOW_STATE_UNREADABLE`，并先自动刷新和运行只读 doctor。
+
+普通风险的宿主确认成功且工具执行成功后，`PermissionRequest` / `PostToolUse` 会把授权记在当前 active feature 的 Core 事件账本中，只复用同一 feature 的 `task-reusable` 风险。切换、finalize 或 abandon feature 后不复用；publish、push、deploy、生产变更和云资源删除等 `always-confirm` 动作每次仍由宿主确认。bypass、dontAsk 等宿主模式关闭确认时，Dev Flow 不保证强制弹窗。Claude 的 block 使用 `hookSpecificOutput.permissionDecision = "deny"`，Codex 使用 `{ "decision": "block", "reason": "..." }`；两者允许且无 advisory 时均退出 0 且不输出 JSON，Codex PreToolUse 不使用 `continue`、`stopReason` 或伪造的 ask。
+
 ## v2 可追溯性（2.0.0+）
 
 标准 M/L 的需求与实施计划通过 `dev_flow_record_artifact_with_trace` 原子登记；`dev_flow_get_traceability` 只读查看 pointer、ledger、summary 与 blocker。Markdown 只用于叙述，内容寻址 snapshot 才是事实层，state pointer 是提交点。不要直接写 `.dev-flow/features/*/traceability/**`。

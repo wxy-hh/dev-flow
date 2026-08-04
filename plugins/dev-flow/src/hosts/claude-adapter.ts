@@ -1,38 +1,59 @@
-import { lstat } from "node:fs/promises";
-import path from "node:path";
 import { recordHostEvent } from "../core/state-store.js";
-import { preToolBlockReason } from "./adapter-policy.js";
+import { evaluatePreToolUse, formatPreToolBlock } from "./adapter-policy.js";
+import { evaluatePermissionRequest, recordPermissionPostToolUse } from "./host-authorization.js";
 
 const chunks: Buffer[] = [];
 for await (const chunk of process.stdin) chunks.push(Buffer.from(chunk));
 const event = JSON.parse(Buffer.concat(chunks).toString("utf8") || "{}");
 const cwd = event.cwd ?? process.cwd();
-let allow = true;
-let reason: string | undefined;
+
+if (event.hook_event_name === "PermissionRequest") {
+  try {
+    const outcome = await evaluatePermissionRequest(cwd, event, "claude");
+    if (outcome?.kind === "allow") {
+      process.stdout.write(JSON.stringify({
+        hookSpecificOutput: {
+          hookEventName: "PermissionRequest",
+          decision: { behavior: "allow" },
+        },
+      }) + "\n");
+    }
+  } catch (error) {
+    // A failed grant lookup must not replace the host's native confirmation flow.
+    process.stderr.write(`Dev Flow Claude permission evaluation failed: ${String(error)}\n`);
+  }
+}
 
 if (event.hook_event_name === "PreToolUse") {
   try {
-    reason = await preToolBlockReason(cwd, event);
-    allow = !reason;
-  } catch {
-    // Only a definitely absent pointer means no workflow; unreadable paths fail closed.
-    try {
-      await lstat(path.join(cwd, ".dev-flow", "active.json"));
-      allow = false;
-      reason = "DEV_FLOW_WORKFLOW_STATE_UNREADABLE: 无法安全读取活动工作流；请运行 dev_flow_doctor，损坏时使用 recover 恢复";
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === "ENOENT") {
-        allow = true;
-        reason = undefined;
-      } else {
-        allow = false;
-        reason = "DEV_FLOW_WORKFLOW_STATE_UNREADABLE: 无法安全检查活动工作流路径；请运行 dev_flow_doctor";
-      }
+    const outcome = await evaluatePreToolUse(cwd, event);
+    if (outcome.kind === "block") {
+      process.stdout.write(JSON.stringify({
+        hookSpecificOutput: {
+          hookEventName: "PreToolUse",
+          permissionDecision: "deny",
+          permissionDecisionReason: formatPreToolBlock(outcome.block),
+        },
+      }) + "\n");
+    } else if (outcome.advisory) {
+      process.stdout.write(JSON.stringify({
+        hookSpecificOutput: {
+          hookEventName: "PreToolUse",
+          additionalContext: outcome.advisory.message,
+        },
+      }) + "\n");
     }
+  } catch (error) {
+    // An unexpected adapter failure is diagnostic only; host permissions remain authoritative.
+    process.stderr.write(`Dev Flow Claude hook evaluation failed: ${String(error)}\n`);
   }
 }
 
 if (event.hook_event_name === "UserPromptSubmit" || event.hook_event_name === "Stop" || event.hook_event_name === "PostToolUse") {
+  if (event.hook_event_name === "PostToolUse") {
+    try { await recordPermissionPostToolUse(cwd, event, "claude"); }
+    catch { /* authorization memory must not suppress the audit event */ }
+  }
   try {
     const text = event.prompt ?? event.user_prompt ?? event.tool_input?.prompt;
     await recordHostEvent(cwd, {
@@ -43,5 +64,3 @@ if (event.hook_event_name === "UserPromptSubmit" || event.hook_event_name === "S
     });
   } catch { /* hooks must not fail normal host operation */ }
 }
-
-process.stdout.write(JSON.stringify(allow ? { continue: true } : { continue: false, decision: "block", reason }) + "\n");

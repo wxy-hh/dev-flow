@@ -3,6 +3,9 @@ import { DevFlowError } from "./errors.js";
 import type { FeatureState } from "./state-store.js";
 
 export function currentOpenStep(state: FeatureState): string | undefined {
+  // Intake deliberately has no route. FeatureState keeps route required for
+  // the routed branch for now, so this runtime guard documents that type debt.
+  if (state.mode !== "routed") return undefined;
   return routeDefinitionForFeature(state.route, state.workflowCapabilities).orderedSteps.find((step) => state.steps[step]?.status !== "satisfied");
 }
 

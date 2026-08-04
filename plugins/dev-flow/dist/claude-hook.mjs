@@ -1,8 +1,4 @@
-/* dev-flow 3.0.1; built from source, deterministic build */
-
-// plugins/dev-flow/src/hosts/claude-adapter.ts
-import { lstat as lstat2 } from "node:fs/promises";
-import path12 from "node:path";
+/* dev-flow 3.0.2; built from source, deterministic build */
 
 // plugins/dev-flow/src/core/state-store.ts
 import { randomUUID as randomUUID4, createHash as createHash5 } from "node:crypto";
@@ -740,6 +736,7 @@ function assertTraceSliceCurrent(ledger, route, step, currentProjectConfigSha256
 
 // plugins/dev-flow/src/core/step-order.ts
 function currentOpenStep(state) {
+  if (state.mode !== "routed") return void 0;
   return routeDefinitionForFeature(state.route, state.workflowCapabilities).orderedSteps.find((step) => state.steps[step]?.status !== "satisfied");
 }
 
@@ -1572,6 +1569,33 @@ async function recordHostEvent(root, hostEvent) {
     await release();
   }
 }
+async function recordHostAuthorizationEvent(root, type, record) {
+  const active = await readActive(root);
+  if (!active || active.featureId !== record.featureId) return;
+  const release = await lock(root, active.featureId, "host-authorization");
+  try {
+    const current = await readActive(root);
+    if (!current || current.featureId !== record.featureId || current.revision !== active.revision) return;
+    const state = await readState(root, record.featureId);
+    if (state.lifecycle !== "active" || state.revision !== current.revision) return;
+    const events = await readFeatureEvents(root, record.featureId);
+    const duplicate = events.some((event2) => {
+      if (event2.type !== type) return false;
+      const value = event2.data;
+      return value.host === record.host && value.featureId === record.featureId && value.riskClass === record.riskClass && value.commandFingerprint === record.commandFingerprint && value.sourceToolEvent === record.sourceToolEvent;
+    });
+    if (!duplicate) await appendEvent(root, record.featureId, state.revision, type, record);
+  } finally {
+    await release();
+  }
+}
+async function readHostAuthorizationEvents(root, featureId) {
+  const events = await readFeatureEvents(root, featureId);
+  return events.flatMap((event2) => {
+    if (event2.type !== "host-authorization-pending" && event2.type !== "host-authorization-granted") return [];
+    return [{ type: event2.type, data: event2.data }];
+  });
+}
 async function readFeatureEvents(root, id) {
   try {
     return (await readFile5(eventPath(root, id), "utf8")).split("\n").filter(Boolean).map((line) => JSON.parse(line));
@@ -1727,7 +1751,7 @@ async function readRollbackTransaction(root, featureId) {
   }
   return parsed;
 }
-async function assertNoOpenRollbackTransaction(root, allow2) {
+async function assertNoOpenRollbackTransaction(root, allow) {
   let entries;
   try {
     entries = await readdir4(features(root), { withFileTypes: true });
@@ -1739,7 +1763,7 @@ async function assertNoOpenRollbackTransaction(root, allow2) {
     if (!entry.isDirectory()) continue;
     const transaction = await readRollbackTransaction(root, entry.name);
     if (!transaction || rollbackTransactionFinished(transaction)) continue;
-    if (allow2?.featureId === entry.name && allow2.transactionId !== void 0 && allow2.transactionId === transaction.transactionId) continue;
+    if (allow?.featureId === entry.name && allow.transactionId !== void 0 && allow.transactionId === transaction.transactionId) continue;
     throw new DevFlowError("ROLLBACK_TRANSACTION_OPEN", "a rollback transaction is open", {
       transactionId: transaction.transactionId,
       featureId: entry.name,
@@ -2162,8 +2186,20 @@ function judgeWrite(context) {
 }
 
 // plugins/dev-flow/src/hosts/adapter-policy.ts
+function createPreToolBlock(code, reason, impact, recovery) {
+  return { code, reason, impact, recovery, recoveryHint: recovery.action };
+}
 function formatPreToolBlock(block) {
-  return `${block.code}: ${block.recoveryHint}`;
+  const confirmation = block.recovery.mode === "user-decision" ? "\u9700\u8981\u7528\u6237\u51B3\u5B9A\uFF1B\u6A21\u578B\u5E94\u53EA\u8BE2\u95EE\u4E00\u6B21\uFF0C\u786E\u8BA4\u540E\u76F4\u63A5\u6267\u884C\u89E3\u51B3\u52A8\u4F5C\u3002" : block.recovery.mode === "guided" ? "\u5148\u81EA\u52A8\u6267\u884C\u89E3\u51B3\u52A8\u4F5C\uFF1B\u53EA\u6709\u52A8\u4F5C\u8BC1\u660E\u9700\u8981 recover\u3001\u91CD\u5EFA\u3001\u653E\u5F03\u6216\u6539\u53D8\u76EE\u6807\u65F6\u624D\u8BE2\u95EE\u7528\u6237\u4E00\u6B21\u3002" : "\u4E0D\u9700\u8981\u7528\u6237\u51B3\u5B9A\uFF1B\u6A21\u578B\u53EF\u4EE5\u76F4\u63A5\u6267\u884C\u89E3\u51B3\u52A8\u4F5C\u3002";
+  const continuation = block.recovery.retryOriginal ? "\u89E3\u51B3\u540E\u81EA\u52A8\u91CD\u8BD5\u539F\u64CD\u4F5C\uFF0C\u65E0\u9700\u7528\u6237\u518D\u6B21\u56DE\u590D\u7EE7\u7EED" : "\u539F\u64CD\u4F5C\u4E0D\u4F1A\u91CD\u8BD5\uFF1B\u5B8C\u6210\u89E3\u51B3\u52A8\u4F5C\u540E\u7EE7\u7EED\u540E\u7EED\u5FC5\u8981\u6B65\u9AA4";
+  return [
+    block.code,
+    `\u539F\u56E0\uFF1A${block.reason}`,
+    `\u5F71\u54CD\uFF1A${block.impact}`,
+    `\u89E3\u51B3\u65B9\u6848\uFF1A${block.recovery.action}`,
+    `\u786E\u8BA4\uFF1A${confirmation}`,
+    `\u7EE7\u7EED\u65B9\u5F0F\uFF1A${continuation}`
+  ].join("\n");
 }
 var directWriteTools = /* @__PURE__ */ new Set(["write", "edit", "multiedit", "applypatch", "apply_patch", "patch"]);
 var controlFileNames = /* @__PURE__ */ new Set(["state.json", "active.json", "project.json", "events.jsonl", "status.md", "\u72B6\u6001\u6587\u6863.md", "recovery-transaction.json", "recovery-events.jsonl"]);
@@ -2218,6 +2254,14 @@ function directTargets(event2) {
   const targets = [input.file_path, input.path, input.target_file].filter((value) => typeof value === "string");
   for (const key of ["patch", "diff", "input"]) targets.push(...patchTargets(input[key]));
   return targets;
+}
+function knownWriteTargets(event2) {
+  if (toolName(event2) === "bash") {
+    const command = typeof event2.tool_input?.command === "string" ? event2.tool_input.command : "";
+    const analysis = analyzeBashWriteTargets(command);
+    return analysis.kind === "resolved" ? analysis.targets : analysis.kind === "read-only" ? [] : void 0;
+  }
+  return directTargets(event2);
 }
 var writeSyntaxHint = /(?:^|[;&|]\s*)(?:\w+=\S+\s+)*(?:tee\b|touch\b|mkdir\b|rm\b|mv\b|cp\b|sed\s+-i\b|perl\s+-pi\b)|(?:^|\s)>{1,2}\s*|\s>{1,2}\s*|\bapply_patch\b/;
 function stripQuotes(token) {
@@ -2493,9 +2537,9 @@ async function loadActiveWorkflow(root) {
     if (recovery) {
       try {
         const project2 = await readProjectConfig(root);
-        return { kind: "unreadable", reason: `recovery journal is open for ${recovery.featureId}`, protectedRoots: project2.protectedRoots, blockAllWrites: false };
+        return { kind: "unreadable", reason: `recovery journal open for ${recovery.featureId}`, protectedRoots: project2.protectedRoots, blockAllWrites: false };
       } catch {
-        return { kind: "unreadable", reason: "recovery journal or project.json invalid", blockAllWrites: true };
+        return { kind: "unreadable", reason: "project.json invalid while recovery journal is open", blockAllWrites: true };
       }
     }
   } catch {
@@ -2509,7 +2553,7 @@ async function loadActiveWorkflow(root) {
       const project2 = await readProjectConfig(root);
       return { kind: "unreadable", reason: "active.json unreadable", protectedRoots: project2.protectedRoots, blockAllWrites: false };
     } catch {
-      return { kind: "unreadable", reason: "active.json or project.json unreadable", blockAllWrites: true };
+      return { kind: "unreadable", reason: "project.json invalid while active.json is unreadable", blockAllWrites: true };
     }
   }
   if (!active) return { kind: "none" };
@@ -2523,11 +2567,23 @@ async function loadActiveWorkflow(root) {
   let ledger;
   try {
     state = await readState(root, active.featureId);
-    if (state.lifecycle !== "active" || active.revision !== state.revision) return { kind: "unreadable", reason: "active pointer does not match active state", protectedRoots: project.protectedRoots, blockAllWrites: false };
-    if (state.traceability) ledger = await readTraceability(root, state);
-    if (state.review) await readReviewLedger(root, state);
   } catch {
     return { kind: "unreadable", reason: "state invalid", protectedRoots: project.protectedRoots, blockAllWrites: false };
+  }
+  if (state.lifecycle !== "active" || active.revision !== state.revision) return { kind: "unreadable", reason: "active pointer revision mismatch", protectedRoots: project.protectedRoots, blockAllWrites: false };
+  if (state.traceability) {
+    try {
+      ledger = await readTraceability(root, state);
+    } catch {
+      return { kind: "unreadable", reason: "traceability snapshot invalid", protectedRoots: project.protectedRoots, blockAllWrites: false };
+    }
+  }
+  if (state.review) {
+    try {
+      await readReviewLedger(root, state);
+    } catch {
+      return { kind: "unreadable", reason: "review snapshot invalid", protectedRoots: project.protectedRoots, blockAllWrites: false };
+    }
   }
   const allowedArtifacts = /* @__PURE__ */ new Set();
   for (const [kind, artifact] of Object.entries(state.artifacts ?? {})) {
@@ -2556,55 +2612,88 @@ async function loadActiveWorkflow(root) {
 }
 function classifyTarget(root, target, workflow) {
   const relative = projectRelative(root, target);
-  if (!relative) {
-    return {
-      code: "DEV_FLOW_WRITE_TARGET_UNRESOLVED",
-      recoveryHint: "\u8BF7\u4F7F\u7528\u80FD\u89E3\u6790\u5230\u4ED3\u5E93\u5185\u7684\u9879\u76EE\u76F8\u5BF9\u8DEF\u5F84\uFF08\u9A8C\u8BC1\u65E5\u5FD7\u8BF7\u5199\u5165\u9879\u76EE\u5185\uFF0C\u4F8B\u5982 vitest.log\uFF09"
-    };
-  }
-  if (isControlPath(relative)) {
-    return {
-      code: "DEV_FLOW_STATE_MUTATION_FORBIDDEN",
-      recoveryHint: "\u5DE5\u4F5C\u6D41\u72B6\u6001\u4EC5\u80FD\u901A\u8FC7 MCP \u53D8\u66F4\uFF1B\u8BF7\u7F16\u8F91\u5DF2\u767B\u8BB0\u8D44\u4EA7\uFF0C\u6216\u5BF9\u635F\u574F\u72B6\u6001\u4F7F\u7528 doctor/recovery"
-    };
-  }
+  if (!relative) return void 0;
+  if (isControlPath(relative)) return controlMutationBlock(relative);
   if (isDevFlowPath(relative)) {
     if (workflow.allowedArtifacts.has(relative)) return void 0;
     if (relative.startsWith(`.dev-flow/features/${workflow.featureId}/`) && relative.endsWith(".md")) {
-      return {
-        code: "DEV_FLOW_ARTIFACT_NOT_REGISTERED",
-        recoveryHint: "\u8BF7\u5148\u901A\u8FC7 MCP scaffold \u8BE5\u8D44\u4EA7\uFF0C\u7F16\u8F91\u540E\u767B\u8BB0"
-      };
+      const displayName = path11.posix.basename(relative, ".md");
+      const kind = displayName === "\u9700\u6C42\u6587\u6863" ? "requirements" : displayName === "\u5B9E\u65BD\u8BA1\u5212" ? "implementation-plan" : displayName;
+      return createPreToolBlock(
+        "DEV_FLOW_ARTIFACT_NOT_REGISTERED",
+        `\u76EE\u6807 ${relative} \u662F active feature \u7684 ${kind} Markdown \u8D44\u4EA7\uFF0C\u4F46\u5C1A\u672A\u767B\u8BB0`,
+        "\u539F\u5199\u5165\u672A\u6267\u884C\uFF1B\u8BE5\u8D44\u4EA7\u4E0D\u4F1A\u8FDB\u5165 feature \u8BC1\u636E\u8D26\u672C",
+        {
+          mode: "guided",
+          action: `\u5148\u901A\u8FC7 MCP scaffold/register ${kind} \u8D44\u4EA7 ${relative}\uFF0C\u518D\u81EA\u52A8\u91CD\u8BD5\u539F\u5199\u5165`,
+          retryOriginal: true
+        }
+      );
     }
-    return {
-      code: "DEV_FLOW_STATE_MUTATION_FORBIDDEN",
-      recoveryHint: "\u4EC5\u53EF\u7F16\u8F91 active feature \u5DF2\u767B\u8BB0\u7684\u975E status Markdown \u8D44\u4EA7"
-    };
+    return createPreToolBlock(
+      "DEV_FLOW_STATE_MUTATION_FORBIDDEN",
+      `\u76EE\u6807 ${relative} \u4F4D\u4E8E Dev Flow \u63A7\u5236\u533A\uFF0C\u4E14\u4E0D\u662F active feature \u5DF2\u767B\u8BB0\u7684\u53EF\u7F16\u8F91 Markdown \u8D44\u4EA7`,
+      "\u539F\u5199\u5165\u672A\u6267\u884C\uFF1BDev Flow \u63A7\u5236\u533A\u6CA1\u6709\u88AB\u4FEE\u6539",
+      {
+        mode: "user-decision",
+        action: "\u786E\u8BA4\u540E\u7531\u6A21\u578B\u8C03\u7528\u5BF9\u5E94 MCP \u5B8C\u6210\u540C\u4E00\u5DE5\u4F5C\u6D41\u610F\u56FE\uFF1B\u4E0D\u8981\u76F4\u63A5\u7F16\u8F91\u63A7\u5236\u533A\u6587\u4EF6",
+        retryOriginal: false
+      }
+    );
   }
   if (workflow.state?.mode === "intake") {
     const decision = judgeWrite({ mode: "intake", controlPath: false, protectedPath: isProtected(root, target, workflow.protectedRoots), impactResolved: false });
-    if (decision.decision === "block") return { code: "DEV_FLOW_IMPLEMENTATION_APPROVAL_REQUIRED", recoveryHint: "\u8BF7\u5148\u5B8C\u6210 intake \u8C03\u67E5\u5E76\u9501\u5B9A\u57FA\u7840\u8DEF\u7EBF" };
+    if (decision.decision === "block") {
+      return createPreToolBlock(
+        "DEV_FLOW_IMPLEMENTATION_APPROVAL_REQUIRED",
+        `feature \u4ECD\u5904\u4E8E intake\uFF0C\u76EE\u6807 ${relative} \u4F4D\u4E8E protected root\uFF0C\u5C1A\u672A\u8FDB\u5165\u53EF\u6267\u884C\u5B9E\u73B0\u9636\u6BB5`,
+        "\u539F\u5199\u5165\u672A\u6267\u884C\uFF1Bprotected \u76EE\u6807\u4FDD\u6301\u4E0D\u53D8",
+        {
+          mode: "user-decision",
+          action: "\u5148\u5B8C\u6210 intake \u8C03\u67E5\u3001\u89E3\u51B3\u5206\u7C7B\u51B3\u7B56\u5E76\u9501\u5B9A\u57FA\u7840\u8DEF\u7EBF\uFF1B\u6EE1\u8DB3\u5B9E\u73B0\u6279\u51C6\u6761\u4EF6\u540E\u81EA\u52A8\u91CD\u8BD5\u539F\u5199\u5165",
+          retryOriginal: true
+        }
+      );
+    }
   }
   if (workflow.state?.mode === "routed" && currentOpenStep(workflow.state) === "implementation" && isProtected(root, target, workflow.protectedRoots)) {
     const approvalPending = workflow.state.obligations?.some((obligation) => obligation.kind === "approval" && obligation.status !== "satisfied") ?? false;
     if (approvalPending && !workflow.approvalConfirmed) {
-      return {
-        code: "DEV_FLOW_IMPLEMENTATION_APPROVAL_REQUIRED",
-        recoveryHint: `\u76EE\u6807\u4F4D\u4E8E\u53D7\u4FDD\u62A4\u6839\u76EE\u5F55\uFF1B\u8BF7\u5B8C\u6210\u5F53\u524D\u6267\u884C\u786E\u8BA4\u4E49\u52A1\u540E\u518D\u5199\u5165${scratchHint}`
-      };
+      return createPreToolBlock(
+        "DEV_FLOW_IMPLEMENTATION_APPROVAL_REQUIRED",
+        `\u5F53\u524D open step \u662F implementation\uFF0C\u4F46\u76EE\u6807 ${projectRelative(root, target)} \u4F4D\u4E8E protected root\uFF0C\u6267\u884C\u6279\u51C6\u4E49\u52A1\u5C1A\u672A\u6EE1\u8DB3`,
+        "\u539F\u5199\u5165\u672A\u6267\u884C\uFF1B\u76EE\u6807\u6587\u4EF6\u548C\u5F53\u524D feature \u72B6\u6001\u672A\u6539\u53D8",
+        {
+          mode: "user-decision",
+          action: `\u5411\u7528\u6237\u5C55\u793A\u5F53\u524D\u5B9E\u73B0\u6279\u51C6\u95EE\u9898\u5E76\u8BF7\u6C42\u4E00\u6B21\u786E\u8BA4\uFF1B\u786E\u8BA4\u540E\u81EA\u52A8\u91CD\u8BD5\u539F\u5199\u5165${scratchHint}`,
+          retryOriginal: true
+        }
+      );
     }
     const unitBlock = implementationUnitWriteBlock(workflow.state, workflow.ledger, projectRelative(root, target));
     if (unitBlock?.code === "IMPLEMENTATION_UNIT_REQUIRED") {
-      return {
-        code: "DEV_FLOW_IMPLEMENTATION_UNIT_REQUIRED",
-        recoveryHint: "Core \u5C1A\u672A\u51C6\u5907\u5F53\u524D\u56DE\u64A4\u5355\u5143\uFF1B\u8BF7\u81EA\u52A8\u91CD\u8BD5 dev_flow_begin_implementation_unit \u540E\u518D\u5199\u5165 protected \u6587\u4EF6"
-      };
+      return createPreToolBlock(
+        "DEV_FLOW_IMPLEMENTATION_UNIT_REQUIRED",
+        `\u76EE\u6807 ${projectRelative(root, target)} \u5DF2\u901A\u8FC7\u5B9E\u73B0\u6279\u51C6\uFF0C\u4F46\u5F53\u524D\u6CA1\u6709\u6D3B\u52A8\u7684 rollback unit`,
+        "\u539F\u5199\u5165\u672A\u6267\u884C\uFF1Bprotected \u76EE\u6807\u4FDD\u6301\u4E0D\u53D8",
+        {
+          mode: "automatic",
+          action: "\u8C03\u7528 dev_flow_begin_implementation_unit \u51C6\u5907\u5F53\u524D rollback unit\uFF1B\u6210\u529F\u540E\u81EA\u52A8\u91CD\u8BD5\u539F\u5199\u5165",
+          retryOriginal: true
+        }
+      );
     }
     if (unitBlock?.code === "IMPLEMENTATION_UNIT_OUT_OF_SCOPE") {
-      return {
-        code: "DEV_FLOW_IMPLEMENTATION_UNIT_OUT_OF_SCOPE",
-        recoveryHint: "\u5F53\u524D\u56DE\u64A4\u5355\u5143\u5728 Trace \u4E2D\u5DF2\u5931\u6548\uFF1B\u8BF7\u5237\u65B0\u72B6\u6001\u5E76\u4FEE\u590D\u6216\u91CD\u65B0\u767B\u8BB0\u5F53\u524D Trace \u540E\u518D\u5199\u5165"
-      };
+      return createPreToolBlock(
+        "DEV_FLOW_IMPLEMENTATION_UNIT_OUT_OF_SCOPE",
+        `\u5F53\u524D rollback unit \u5728 Trace \u4E2D\u5DF2\u5931\u6548\uFF0C\u65E0\u6CD5\u8BC1\u660E\u76EE\u6807 ${projectRelative(root, target)} \u5C5E\u4E8E\u5F53\u524D\u5B9E\u73B0\u4F9D\u636E`,
+        "\u539F\u5199\u5165\u672A\u6267\u884C\uFF1B\u76EE\u6807\u6587\u4EF6\u548C Trace \u72B6\u6001\u672A\u6539\u53D8",
+        {
+          mode: "user-decision",
+          action: "\u5237\u65B0 Trace\uFF1B\u80FD\u81EA\u52A8\u4FEE\u590D\u5931\u6548\u5F15\u7528\u65F6\u5148\u4FEE\u590D\uFF0C\u5426\u5219\u5C55\u793A\u5DEE\u5F02\u5E76\u5411\u7528\u6237\u8BE2\u95EE\u4E00\u6B21\uFF1B\u89E3\u51B3\u540E\u81EA\u52A8\u91CD\u8BD5\u539F\u5199\u5165",
+          retryOriginal: true
+        }
+      );
     }
     const decision = judgeWrite({ mode: "routed", stage: "implementation", controlPath: false, protectedPath: true, impactResolved: true });
     if (decision.decision !== "block") return void 0;
@@ -2613,19 +2702,43 @@ function classifyTarget(root, target, workflow) {
     const relative2 = projectRelative(root, target);
     const block = implementationUnitWriteBlock(workflow.state, workflow.ledger, relative2);
     if (block?.code === "IMPLEMENTATION_UNIT_REQUIRED") {
-      return {
-        code: "DEV_FLOW_IMPLEMENTATION_UNIT_REQUIRED",
-        recoveryHint: "\u8BF7\u5148\u901A\u8FC7 dev_flow_begin_implementation_unit \u5F00\u59CB\u4E0B\u4E00\u4E2A\u56DE\u64A4\u5355\u5143\uFF0C\u518D\u5199 protected \u6587\u4EF6"
-      };
+      return createPreToolBlock(
+        "DEV_FLOW_IMPLEMENTATION_UNIT_REQUIRED",
+        `\u76EE\u6807 ${relative2} \u4F4D\u4E8E protected root\uFF0C\u4F46\u6CA1\u6709\u6D3B\u52A8\u7684 rollback unit`,
+        "\u539F\u5199\u5165\u672A\u6267\u884C\uFF1B\u76EE\u6807\u6587\u4EF6\u4FDD\u6301\u4E0D\u53D8",
+        {
+          mode: "automatic",
+          action: "\u8C03\u7528 dev_flow_begin_implementation_unit \u5F00\u59CB\u4E0B\u4E00\u4E2A rollback unit\uFF1B\u6210\u529F\u540E\u81EA\u52A8\u91CD\u8BD5\u539F\u5199\u5165",
+          retryOriginal: true
+        }
+      );
     }
     if (block?.code === "IMPLEMENTATION_UNIT_OUT_OF_SCOPE") {
-      return {
-        code: "DEV_FLOW_IMPLEMENTATION_UNIT_OUT_OF_SCOPE",
-        recoveryHint: "\u5F53\u524D\u56DE\u64A4\u5355\u5143\u5728 Trace \u4E2D\u5DF2\u5931\u6548\uFF1B\u8BF7\u5237\u65B0\u72B6\u6001\u5E76\u4FEE\u590D\u6216\u91CD\u65B0\u767B\u8BB0\u5F53\u524D Trace \u540E\u518D\u5199\u5165"
-      };
+      return createPreToolBlock(
+        "DEV_FLOW_IMPLEMENTATION_UNIT_OUT_OF_SCOPE",
+        `\u5F53\u524D rollback unit \u5728 Trace \u4E2D\u5DF2\u5931\u6548\uFF0C\u65E0\u6CD5\u8BC1\u660E\u76EE\u6807 ${relative2} \u5C5E\u4E8E\u5F53\u524D\u5B9E\u73B0\u4F9D\u636E`,
+        "\u539F\u5199\u5165\u672A\u6267\u884C\uFF1B\u76EE\u6807\u6587\u4EF6\u548C Trace \u72B6\u6001\u672A\u6539\u53D8",
+        {
+          mode: "user-decision",
+          action: "\u5237\u65B0 Trace\uFF1B\u80FD\u81EA\u52A8\u4FEE\u590D\u5931\u6548\u5F15\u7528\u65F6\u5148\u4FEE\u590D\uFF0C\u5426\u5219\u5C55\u793A\u5DEE\u5F02\u5E76\u5411\u7528\u6237\u8BE2\u95EE\u4E00\u6B21\uFF1B\u89E3\u51B3\u540E\u81EA\u52A8\u91CD\u8BD5\u539F\u5199\u5165",
+          retryOriginal: true
+        }
+      );
     }
   }
   return void 0;
+}
+function controlMutationBlock(relative) {
+  return createPreToolBlock(
+    "DEV_FLOW_STATE_MUTATION_FORBIDDEN",
+    `\u76EE\u6807 ${relative} \u662F Dev Flow \u63A7\u5236\u6587\u4EF6\uFF0C\u4E0D\u80FD\u7531\u666E\u901A\u6587\u4EF6\u5DE5\u5177\u76F4\u63A5\u4FEE\u6539`,
+    "\u539F\u5199\u5165\u672A\u6267\u884C\uFF1B\u5DE5\u4F5C\u6D41\u63A7\u5236\u72B6\u6001\u4FDD\u6301\u4E0D\u53D8",
+    {
+      mode: "user-decision",
+      action: `\u786E\u8BA4\u540E\u7531\u6A21\u578B\u8C03\u7528\u5BF9\u5E94 MCP \u5B8C\u6210\u5BF9 ${relative} \u7684\u540C\u4E00\u610F\u56FE\uFF1B\u4E0D\u8981\u91CD\u8BD5\u8FD9\u6B21\u63A7\u5236\u6587\u4EF6\u76F4\u63A5\u5199\u5165`,
+      retryOriginal: false
+    }
+  );
 }
 async function revokedImplementationApprovalHint(root, featureId) {
   const events = await readFeatureEvents(root, featureId);
@@ -2650,40 +2763,83 @@ async function revokedImplementationApprovalHint(root, featureId) {
 }
 async function augmentApprovalBlock(root, workflow, block) {
   if (block.code !== "DEV_FLOW_IMPLEMENTATION_APPROVAL_REQUIRED") return block;
-  const revokedKind = await revokedImplementationApprovalHint(root, workflow.featureId);
+  let revokedKind;
+  try {
+    revokedKind = await revokedImplementationApprovalHint(root, workflow.featureId);
+  } catch {
+    return unreadableBlock("events.jsonl invalid or unreadable");
+  }
   if (!revokedKind) return block;
+  const action = `\u8BA1\u5212\u4F9D\u636E\uFF08${revokedKind}\uFF09\u5DF2\u5728\u5B9E\u73B0\u6279\u51C6\u540E\u53D8\u66F4\uFF0C\u6279\u51C6\u5DF2\u4F5C\u5E9F\uFF1B\u8BF7\u5148\u5B8C\u6210\u76F8\u5173\u6B65\u9AA4\u5E76\u91CD\u65B0\u786E\u8BA4\u5B9E\u73B0\u6279\u51C6\u540E\u518D\u5199 protected \u6587\u4EF6${scratchHint}`;
   return {
     ...block,
-    recoveryHint: `\u8BA1\u5212\u4F9D\u636E\uFF08${revokedKind}\uFF09\u5DF2\u5728\u5B9E\u73B0\u6279\u51C6\u540E\u53D8\u66F4\uFF0C\u6279\u51C6\u5DF2\u4F5C\u5E9F\uFF1B\u8BF7\u5148\u5B8C\u6210\u76F8\u5173\u6B65\u9AA4\u5E76\u91CD\u65B0\u786E\u8BA4\u5B9E\u73B0\u6279\u51C6\u540E\u518D\u5199 protected \u6587\u4EF6${scratchHint}`
+    reason: action,
+    recovery: { ...block.recovery, action },
+    recoveryHint: action
   };
 }
-function unreadableBlock(reason2) {
-  return {
-    code: "DEV_FLOW_WORKFLOW_STATE_UNREADABLE",
-    recoveryHint: `\u65E0\u6CD5\u5B89\u5168\u8BFB\u53D6\u6D3B\u52A8\u5DE5\u4F5C\u6D41\uFF08${reason2}\uFF09\uFF1B\u8BF7\u8FD0\u884C dev_flow_doctor\uFF0C\u635F\u574F\u65F6\u4F7F\u7528 recover \u6062\u590D`
-  };
+function annotatePreparationFailure(block, diagnostic) {
+  if (!diagnostic || block.code !== "DEV_FLOW_IMPLEMENTATION_UNIT_REQUIRED" && block.code !== "DEV_FLOW_IMPLEMENTATION_UNIT_OUT_OF_SCOPE") return block;
+  const reason = `${block.reason} Core \u81EA\u52A8\u51C6\u5907 rollback unit \u5931\u8D25\uFF1A${diagnostic}`;
+  const action = `${block.recovery.action}\uFF1B\u4E0D\u8981\u628A\u8BE5 Core \u9519\u8BEF\u89E3\u91CA\u4E3A workflow state unreadable`;
+  return { ...block, reason, recovery: { ...block.recovery, action }, recoveryHint: action };
+}
+function unreadableBlock(reason) {
+  return createPreToolBlock(
+    "DEV_FLOW_WORKFLOW_STATE_UNREADABLE",
+    `\u8BFB\u53D6\u5DE5\u4F5C\u6D41\u8BC1\u636E\u5931\u8D25\uFF1A${reason}`,
+    "\u539F\u64CD\u4F5C\u672A\u6267\u884C\uFF1B\u65E0\u6CD5\u5B89\u5168\u786E\u8BA4\u5F53\u524D workflow gate \u662F\u5426\u6EE1\u8DB3",
+    {
+      mode: "guided",
+      action: "\u5148\u81EA\u52A8\u5237\u65B0 active/state \u5E76\u8FD0\u884C\u53EA\u8BFB dev_flow_doctor\uFF1B\u53EA\u6709 doctor \u8BC1\u660E\u5FC5\u987B recover\u3001\u91CD\u5EFA\u6216\u653E\u5F03 feature \u65F6\u624D\u5411\u7528\u6237\u8BE2\u95EE\u4E00\u6B21\uFF0C\u89E3\u51B3\u540E\u81EA\u52A8\u91CD\u8BD5\u539F\u64CD\u4F5C",
+      retryOriginal: true
+    }
+  );
 }
 function unreadableTargetBlock(root, target, workflow) {
-  if (workflow.blockAllWrites) return unreadableBlock(workflow.reason);
   const relative = projectRelative(root, target);
-  if (!relative || isDevFlowPath(relative) || isProtected(root, target, workflow.protectedRoots ?? [])) return unreadableBlock(workflow.reason);
+  if (!relative) return void 0;
+  if (isControlPath(relative)) return controlMutationBlock(relative);
+  if (workflow.blockAllWrites) return unreadableBlock(workflow.reason);
+  if (isDevFlowPath(relative) || isProtected(root, target, workflow.protectedRoots ?? [])) return unreadableBlock(workflow.reason);
   return void 0;
 }
-async function preToolBlockReason(root, event2) {
-  const block = await preToolBlock(root, event2);
-  return block ? formatPreToolBlock(block) : void 0;
+async function evaluatePreToolUse(root, event2) {
+  if (!isRelevantPreToolUse(event2)) return { kind: "allow" };
+  try {
+    const block = await evaluatePreToolUseInternal(root, event2);
+    return block ? { kind: "block", block } : { kind: "allow" };
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    return {
+      kind: "allow",
+      advisory: {
+        code: "DEV_FLOW_HOOK_EVALUATION_FAILED",
+        message: `DEV_FLOW_HOOK_EVALUATION_FAILED: Dev Flow hook analysis failed (${detail}); the original operation was not blocked and remains subject to host permissions.`
+      }
+    };
+  }
 }
-async function preToolBlock(root, event2) {
+async function evaluatePreToolUseInternal(root, event2) {
   if (!isRelevantPreToolUse(event2)) return void 0;
+  const knownTargets = knownWriteTargets(event2);
+  if (knownTargets) {
+    for (const target of knownTargets) {
+      const relative = projectRelative(root, target);
+      if (relative && isControlPath(relative)) return controlMutationBlock(relative);
+    }
+  }
   const loaded = await loadActiveWorkflow(root);
-  if (loaded.kind === "none") return void 0;
+  if (loaded.kind === "none") {
+    return void 0;
+  }
   if (loaded.kind === "unreadable") {
     if (toolName(event2) === "bash") {
       const command2 = typeof event2.tool_input?.command === "string" ? event2.tool_input.command : "";
       if (classifyGitCommand(command2) === "write") return unreadableBlock(loaded.reason);
       const analysis = analyzeBashWriteTargets(command2);
       if (analysis.kind === "read-only") return void 0;
-      if (analysis.kind === "unresolved") return unreadableBlock(loaded.reason);
+      if (analysis.kind === "unresolved") return void 0;
       for (const target of analysis.targets) {
         const block = unreadableTargetBlock(root, target, loaded);
         if (block) return block;
@@ -2691,7 +2847,7 @@ async function preToolBlock(root, event2) {
       return void 0;
     }
     const targets2 = directTargets(event2);
-    if (!targets2.length) return unreadableBlock(loaded.reason);
+    if (!targets2.length) return void 0;
     for (const target of targets2) {
       const block = unreadableTargetBlock(root, target, loaded);
       if (block) return block;
@@ -2701,51 +2857,175 @@ async function preToolBlock(root, event2) {
   let { workflow } = loaded;
   const command = typeof event2.tool_input?.command === "string" ? event2.tool_input.command : "";
   const prepareImplementationWrite = async (targets2) => {
-    if (!workflow.state || currentOpenStep(workflow.state) !== "implementation" || !targets2.some((target) => isProtected(root, target, workflow.protectedRoots))) return;
+    if (workflow.state?.mode !== "routed" || currentOpenStep(workflow.state) !== "implementation" || !targets2.some((target) => isProtected(root, target, workflow.protectedRoots))) return void 0;
     try {
       const prepared = await ensureActiveImplementationUnit(root, workflow.featureId, workflow.state);
       if (prepared.revision !== workflow.state.revision) {
         const refreshed = await loadActiveWorkflow(root);
         if (refreshed.kind === "ready") workflow = refreshed.workflow;
+        else return "active workflow refresh after implementation-unit preparation did not produce a readable state";
       }
-    } catch {
+      return void 0;
+    } catch (error) {
+      return error instanceof Error ? error.message : String(error);
     }
   };
   if (toolName(event2) === "bash" && classifyGitCommand(command) === "write" && !workflow.logicComplete) {
-    return {
-      code: "DEV_FLOW_GIT_GUARD",
-      recoveryHint: "\u529F\u80FD\u5C1A\u672A logic-complete\uFF1B\u8BF7\u5148\u5B8C\u6210 verify\u3001feature-check \u4E0E finalize \u518D\u8FDB\u884C git \u5199\u5165"
-    };
+    return createPreToolBlock(
+      "DEV_FLOW_GIT_GUARD",
+      "\u5F53\u524D feature \u5C1A\u672A\u8FBE\u5230 logic-complete\uFF0CGit \u5199\u5165\u95E8\u7981\u4ECD\u7136\u5F00\u542F",
+      "\u539F Git \u64CD\u4F5C\u672A\u6267\u884C\uFF1B\u5DE5\u4F5C\u6811\u548C Git \u5386\u53F2\u6CA1\u6709\u88AB\u8FD9\u6B21\u547D\u4EE4\u4FEE\u6539",
+      {
+        mode: "guided",
+        action: "\u5148\u901A\u8FC7 MCP \u5B8C\u6210 verify\u3001feature-check \u4E0E finalize\uFF0C\u4F7F feature \u8FBE\u5230 logic-complete\uFF1B\u5B8C\u6210\u540E\u81EA\u52A8\u91CD\u8BD5\u539F Git \u64CD\u4F5C",
+        retryOriginal: true
+      }
+    );
   }
   if (toolName(event2) === "bash") {
     const analysis = analyzeBashWriteTargets(command);
     if (analysis.kind === "read-only") return void 0;
-    if (analysis.kind === "unresolved") {
-      return {
-        code: "DEV_FLOW_WRITE_TARGET_UNRESOLVED",
-        recoveryHint: "\u8BF7\u62C6\u5206\u786E\u5B9A\u6027\u7684\u5199\u547D\u4EE4\u6216\u4F7F\u7528 MCP \u8D44\u4EA7\u5DE5\u5177\uFF1B\u9A8C\u8BC1\u65E5\u5FD7\u8BF7\u5199\u5165\u9879\u76EE\u5185\u76F8\u5BF9\u8DEF\u5F84\uFF08\u4F8B\u5982 vitest.log\uFF09\uFF0C\u52FF\u6DF7\u7528\u672A\u89E3\u6790\u7684 shell \u5199\u5165"
-      };
-    }
-    await prepareImplementationWrite(analysis.targets);
+    if (analysis.kind === "unresolved") return void 0;
+    const preparationDiagnostic2 = await prepareImplementationWrite(analysis.targets);
     for (const target of analysis.targets) {
       const block = classifyTarget(root, target, workflow);
-      if (block) return augmentApprovalBlock(root, workflow, block);
+      if (block) return augmentApprovalBlock(root, workflow, annotatePreparationFailure(block, preparationDiagnostic2));
     }
     return void 0;
   }
   const targets = directTargets(event2);
-  if (!targets.length) {
-    return {
-      code: "DEV_FLOW_IMPLEMENTATION_APPROVAL_REQUIRED",
-      recoveryHint: "\u8865\u4E01\u65E0\u53EF\u89E3\u6790\u76EE\u6807\uFF1B\u5728\u5B9E\u73B0\u6279\u51C6\u524D\u4FDD\u5B88\u62D2\u7EDD"
-    };
-  }
-  await prepareImplementationWrite(targets);
+  if (!targets.length) return void 0;
+  const preparationDiagnostic = await prepareImplementationWrite(targets);
   for (const target of targets) {
     const block = classifyTarget(root, target, workflow);
-    if (block) return augmentApprovalBlock(root, workflow, block);
+    if (block) return augmentApprovalBlock(root, workflow, annotatePreparationFailure(block, preparationDiagnostic));
   }
   return void 0;
+}
+
+// plugins/dev-flow/src/hosts/risk-policy.ts
+import { createHash as createHash10 } from "node:crypto";
+import path12 from "node:path";
+function canonical(value) {
+  if (value === null || typeof value !== "object") return JSON.stringify(value);
+  if (Array.isArray(value)) return `[${value.map(canonical).join(",")}]`;
+  return `{${Object.entries(value).sort(([left], [right]) => left.localeCompare(right)).map(([key, item]) => `${JSON.stringify(key)}:${canonical(item)}`).join(",")}}`;
+}
+function commandFor(input) {
+  const command = input.toolInput?.command;
+  if (typeof command === "string") return command.trim().replace(/\s+/g, " ");
+  return canonical(input.toolInput ?? {});
+}
+function targetScope(command, root) {
+  if (/[$`*?{]/.test(command) || /(?:^|\s)~(?:\/|\s|$)/.test(command)) return "unknown";
+  const candidates = [...command.matchAll(/(?:^|[\s"'=])((?:\/|(?:\.\.\/)+)[^\s'"`;|&]*)/g)].map((match) => match[1]);
+  for (const target of candidates) {
+    const absolute = path12.resolve(root, target);
+    const relative = path12.relative(root, absolute);
+    if (relative.startsWith("..") || path12.isAbsolute(relative)) return "outside";
+  }
+  return "inside";
+}
+function fingerprint(input, riskClass, category, command) {
+  return createHash10("sha256").update(canonical({ riskClass, category, toolName: String(input.toolName ?? ""), command })).digest("hex");
+}
+function classifyRisk(input, root) {
+  const toolName2 = String(input.toolName ?? "").toLowerCase();
+  const command = commandFor(input);
+  if (!command && !toolName2) return void 0;
+  const external = /\b(?:git\s+push|(?:npm|pnpm|yarn|bun)\s+(?:publish|release)|docker\s+push)\b/i.test(command) || /\b(?:deploy|deployment|publish|release)\b/i.test(command) || /\b(?:production|prod)\b/i.test(command) && /\b(?:change|apply|delete|deploy|push|publish|release|migrate)\b/i.test(command) || /\b(?:terraform\s+destroy|kubectl\s+delete|helm\s+(?:uninstall|delete)|(?:aws|gcloud|az)\b[^\n]*(?:delete|destroy|remove))\b/i.test(command);
+  if (external) {
+    return {
+      riskClass: "always-confirm",
+      category: "external-action",
+      commandFingerprint: fingerprint(input, "always-confirm", "external-action", command)
+    };
+  }
+  const destructive = /\brm\s+(?:-[^\s]*r[^\s]*|--recursive)\b/i.test(command) || /\bgit\s+(?:reset\s+--hard|clean\s+[^\n]*-[^\n]*f|(?:checkout|restore)\s+--|rebase)\b/i.test(command) || /\b(?:delete|remove)\b/i.test(toolName2);
+  if (!destructive) return void 0;
+  const scope = targetScope(command, root);
+  if (scope !== "inside") {
+    return {
+      riskClass: "always-confirm",
+      category: "external-action",
+      commandFingerprint: fingerprint(input, "always-confirm", "external-action", command)
+    };
+  }
+  return {
+    riskClass: "task-reusable",
+    category: "destructive-worktree",
+    commandFingerprint: fingerprint(input, "task-reusable", "destructive-worktree", command)
+  };
+}
+
+// plugins/dev-flow/src/hosts/host-authorization.ts
+function eventId(event2, assessment, kind) {
+  const value = event2;
+  const supplied = [value.event_id, value.tool_use_id, value.permission_request_id].find((candidate) => typeof candidate === "string" && candidate.length > 0);
+  return supplied ?? `${kind}:${assessment.commandFingerprint}`;
+}
+async function activeFeature(root) {
+  const active = await readActive(root);
+  if (!active) return void 0;
+  const state = await readState(root, active.featureId);
+  if (state.lifecycle !== "active" || state.revision !== active.revision) return void 0;
+  return { featureId: active.featureId, revision: active.revision };
+}
+function sameFeatureRisk(record, featureId, assessment) {
+  return record.featureId === featureId && record.riskClass === assessment.riskClass;
+}
+function sameRequest(record, host, featureId, assessment) {
+  return record.host === host && sameFeatureRisk(record, featureId, assessment) && record.commandFingerprint === assessment.commandFingerprint;
+}
+async function evaluatePermissionRequest(root, event2, host) {
+  if (event2.hook_event_name !== "PermissionRequest") return void 0;
+  const assessment = classifyRisk({ toolName: event2.tool_name, toolInput: event2.tool_input }, root);
+  if (!assessment) return void 0;
+  const feature = await activeFeature(root);
+  if (!feature) return void 0;
+  const events = await readHostAuthorizationEvents(root, feature.featureId);
+  const granted = events.some((item) => item.type === "host-authorization-granted" && sameFeatureRisk(item.data, feature.featureId, assessment));
+  if (granted) return { kind: "allow", assessment };
+  const sourceToolEvent = eventId(event2, assessment, "permission-request");
+  await recordHostAuthorizationEvent(root, "host-authorization-pending", {
+    host,
+    featureId: feature.featureId,
+    riskClass: assessment.riskClass,
+    commandFingerprint: assessment.commandFingerprint,
+    sourceToolEvent,
+    requestedAt: (/* @__PURE__ */ new Date()).toISOString()
+  });
+  return { kind: "defer", assessment };
+}
+function postToolSucceeded(event2) {
+  const value = event2;
+  if (value.error !== void 0 && value.error !== null) return false;
+  for (const response of [value.tool_response, value.tool_result]) {
+    if (!response || typeof response !== "object") continue;
+    const candidate = response;
+    if (candidate.is_error === true || candidate.isError === true || candidate.success === false || candidate.error !== void 0) return false;
+  }
+  return true;
+}
+async function recordPermissionPostToolUse(root, event2, host) {
+  if (event2.hook_event_name !== "PostToolUse" || !postToolSucceeded(event2)) return;
+  const assessment = classifyRisk({ toolName: event2.tool_name, toolInput: event2.tool_input }, root);
+  if (!assessment || assessment.riskClass !== "task-reusable") return;
+  const feature = await activeFeature(root);
+  if (!feature) return;
+  const events = await readHostAuthorizationEvents(root, feature.featureId);
+  const pending = [...events].reverse().find((item) => item.type === "host-authorization-pending" && sameRequest(item.data, host, feature.featureId, assessment));
+  if (!pending) return;
+  const alreadyGranted = events.some((item) => item.type === "host-authorization-granted" && sameRequest(item.data, host, feature.featureId, assessment));
+  if (alreadyGranted) return;
+  await recordHostAuthorizationEvent(root, "host-authorization-granted", {
+    host,
+    featureId: feature.featureId,
+    riskClass: assessment.riskClass,
+    commandFingerprint: assessment.commandFingerprint,
+    sourceToolEvent: pending.data.sourceToolEvent,
+    grantedAt: (/* @__PURE__ */ new Date()).toISOString()
+  });
 }
 
 // plugins/dev-flow/src/hosts/claude-adapter.ts
@@ -2753,29 +3033,53 @@ var chunks = [];
 for await (const chunk of process.stdin) chunks.push(Buffer.from(chunk));
 var event = JSON.parse(Buffer.concat(chunks).toString("utf8") || "{}");
 var cwd = event.cwd ?? process.cwd();
-var allow = true;
-var reason;
+if (event.hook_event_name === "PermissionRequest") {
+  try {
+    const outcome = await evaluatePermissionRequest(cwd, event, "claude");
+    if (outcome?.kind === "allow") {
+      process.stdout.write(JSON.stringify({
+        hookSpecificOutput: {
+          hookEventName: "PermissionRequest",
+          decision: { behavior: "allow" }
+        }
+      }) + "\n");
+    }
+  } catch (error) {
+    process.stderr.write(`Dev Flow Claude permission evaluation failed: ${String(error)}
+`);
+  }
+}
 if (event.hook_event_name === "PreToolUse") {
   try {
-    reason = await preToolBlockReason(cwd, event);
-    allow = !reason;
-  } catch {
-    try {
-      await lstat2(path12.join(cwd, ".dev-flow", "active.json"));
-      allow = false;
-      reason = "DEV_FLOW_WORKFLOW_STATE_UNREADABLE: \u65E0\u6CD5\u5B89\u5168\u8BFB\u53D6\u6D3B\u52A8\u5DE5\u4F5C\u6D41\uFF1B\u8BF7\u8FD0\u884C dev_flow_doctor\uFF0C\u635F\u574F\u65F6\u4F7F\u7528 recover \u6062\u590D";
-    } catch (error) {
-      if (error.code === "ENOENT") {
-        allow = true;
-        reason = void 0;
-      } else {
-        allow = false;
-        reason = "DEV_FLOW_WORKFLOW_STATE_UNREADABLE: \u65E0\u6CD5\u5B89\u5168\u68C0\u67E5\u6D3B\u52A8\u5DE5\u4F5C\u6D41\u8DEF\u5F84\uFF1B\u8BF7\u8FD0\u884C dev_flow_doctor";
-      }
+    const outcome = await evaluatePreToolUse(cwd, event);
+    if (outcome.kind === "block") {
+      process.stdout.write(JSON.stringify({
+        hookSpecificOutput: {
+          hookEventName: "PreToolUse",
+          permissionDecision: "deny",
+          permissionDecisionReason: formatPreToolBlock(outcome.block)
+        }
+      }) + "\n");
+    } else if (outcome.advisory) {
+      process.stdout.write(JSON.stringify({
+        hookSpecificOutput: {
+          hookEventName: "PreToolUse",
+          additionalContext: outcome.advisory.message
+        }
+      }) + "\n");
     }
+  } catch (error) {
+    process.stderr.write(`Dev Flow Claude hook evaluation failed: ${String(error)}
+`);
   }
 }
 if (event.hook_event_name === "UserPromptSubmit" || event.hook_event_name === "Stop" || event.hook_event_name === "PostToolUse") {
+  if (event.hook_event_name === "PostToolUse") {
+    try {
+      await recordPermissionPostToolUse(cwd, event, "claude");
+    } catch {
+    }
+  }
   try {
     const text = event.prompt ?? event.user_prompt ?? event.tool_input?.prompt;
     await recordHostEvent(cwd, {
@@ -2787,4 +3091,3 @@ if (event.hook_event_name === "UserPromptSubmit" || event.hook_event_name === "S
   } catch {
   }
 }
-process.stdout.write(JSON.stringify(allow ? { continue: true } : { continue: false, decision: "block", reason }) + "\n");

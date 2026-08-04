@@ -14,6 +14,12 @@ export interface HookEvent {
   hook_event_name?: string;
   tool_name?: string;
   tool_input?: Record<string, unknown>;
+  event_id?: string;
+  tool_use_id?: string;
+  permission_request_id?: string;
+  error?: unknown;
+  tool_response?: unknown;
+  tool_result?: unknown;
 }
 
 export type PreToolBlockCode =
@@ -23,17 +29,59 @@ export type PreToolBlockCode =
   | "DEV_FLOW_IMPLEMENTATION_UNIT_OUT_OF_SCOPE"
   | "DEV_FLOW_STATE_MUTATION_FORBIDDEN"
   | "DEV_FLOW_ARTIFACT_NOT_REGISTERED"
-  | "DEV_FLOW_WORKFLOW_STATE_UNREADABLE"
-  | "DEV_FLOW_WRITE_TARGET_UNRESOLVED";
+  | "DEV_FLOW_WORKFLOW_STATE_UNREADABLE";
+
+export interface PreToolRecovery {
+  mode: "automatic" | "guided" | "user-decision";
+  action: string;
+  retryOriginal: boolean;
+}
 
 export interface PreToolBlock {
   code: PreToolBlockCode;
-  recoveryHint: string;
+  reason: string;
+  impact: string;
+  recovery: PreToolRecovery;
+  /** @deprecated Use recovery.action. Kept for source consumers during migration. */
+  recoveryHint?: string;
 }
 
-/** Serialize for host hooks: first token is stable code. */
+export interface PreToolAdvisory {
+  code: "DEV_FLOW_HOOK_EVALUATION_FAILED";
+  message: string;
+}
+
+export type PreToolOutcome =
+  | { kind: "allow"; advisory?: PreToolAdvisory }
+  | { kind: "block"; block: PreToolBlock };
+
+function createPreToolBlock(
+  code: PreToolBlockCode,
+  reason: string,
+  impact: string,
+  recovery: PreToolRecovery,
+): PreToolBlock {
+  return { code, reason, impact, recovery, recoveryHint: recovery.action };
+}
+
+/** Serialize the complete recovery contract for host hooks and model context. */
 export function formatPreToolBlock(block: PreToolBlock): string {
-  return `${block.code}: ${block.recoveryHint}`;
+  const confirmation = block.recovery.mode === "user-decision"
+    ? "需要用户决定；模型应只询问一次，确认后直接执行解决动作。"
+    : block.recovery.mode === "guided"
+      ? "先自动执行解决动作；只有动作证明需要 recover、重建、放弃或改变目标时才询问用户一次。"
+      : "不需要用户决定；模型可以直接执行解决动作。";
+  const continuation = block.recovery.retryOriginal
+    ? "解决后自动重试原操作，无需用户再次回复继续"
+    : "原操作不会重试；完成解决动作后继续后续必要步骤";
+  return [
+    block.code,
+    `原因：${block.reason}`,
+    `影响：${block.impact}`,
+    `解决方案：${block.recovery.action}`,
+    `确认：${confirmation}`,
+    `继续方式：${continuation}`,
+  ].join("\n");
 }
 
 const directWriteTools = new Set(["write", "edit", "multiedit", "applypatch", "apply_patch", "patch"]);
@@ -102,6 +150,15 @@ function directTargets(event: HookEvent): string[] {
   const targets = [input.file_path, input.path, input.target_file].filter((value): value is string => typeof value === "string");
   for (const key of ["patch", "diff", "input"]) targets.push(...patchTargets(input[key]));
   return targets;
+}
+
+function knownWriteTargets(event: HookEvent): string[] | undefined {
+  if (toolName(event) === "bash") {
+    const command = typeof event.tool_input?.command === "string" ? event.tool_input.command : "";
+    const analysis = analyzeBashWriteTargets(command);
+    return analysis.kind === "resolved" ? analysis.targets : analysis.kind === "read-only" ? [] : undefined;
+  }
+  return directTargets(event);
 }
 
 export type WriteTargetAnalysis =
@@ -333,7 +390,7 @@ export function analyzeBashWriteTargets(command: string): WriteTargetAnalysis {
   }
   const { masked, unsafe } = maskHeredocBodies(trimmed);
   // Only proven data heredocs are masked; anything else (unknown consumer,
-  // unresolvable delimiter, unterminated body) fails closed.
+  // unresolvable delimiter, unterminated body) remains unresolved.
   if (unsafe) return { kind: "unresolved", syntax: "heredoc-unresolved" };
   if (!writeSyntaxHint.test(masked)) return { kind: "read-only" };
 
@@ -429,8 +486,8 @@ async function loadActiveWorkflow(root: string): Promise<
     if (recovery) {
       try {
         const project = await readProjectConfig(root);
-        return { kind: "unreadable", reason: `recovery journal is open for ${recovery.featureId}`, protectedRoots: project.protectedRoots, blockAllWrites: false };
-      } catch { return { kind: "unreadable", reason: "recovery journal or project.json invalid", blockAllWrites: true }; }
+        return { kind: "unreadable", reason: `recovery journal open for ${recovery.featureId}`, protectedRoots: project.protectedRoots, blockAllWrites: false };
+      } catch { return { kind: "unreadable", reason: "project.json invalid while recovery journal is open", blockAllWrites: true }; }
     }
   } catch { return { kind: "unreadable", reason: "recovery journal unreadable", blockAllWrites: true }; }
   let active;
@@ -439,7 +496,7 @@ async function loadActiveWorkflow(root: string): Promise<
     try {
       const project = await readProjectConfig(root);
       return { kind: "unreadable", reason: "active.json unreadable", protectedRoots: project.protectedRoots, blockAllWrites: false };
-    } catch { return { kind: "unreadable", reason: "active.json or project.json unreadable", blockAllWrites: true }; }
+    } catch { return { kind: "unreadable", reason: "project.json invalid while active.json is unreadable", blockAllWrites: true }; }
   }
   if (!active) return { kind: "none" };
 
@@ -451,10 +508,16 @@ async function loadActiveWorkflow(root: string): Promise<
   let ledger: Awaited<ReturnType<typeof readTraceability>> | undefined;
   try {
     state = await readState(root, active.featureId);
-    if (state.lifecycle !== "active" || active.revision !== state.revision) return { kind: "unreadable", reason: "active pointer does not match active state", protectedRoots: project.protectedRoots, blockAllWrites: false };
-    if (state.traceability) ledger = await readTraceability(root, state);
-    if (state.review) await readReviewLedger(root, state);
   } catch { return { kind: "unreadable", reason: "state invalid", protectedRoots: project.protectedRoots, blockAllWrites: false }; }
+  if (state.lifecycle !== "active" || active.revision !== state.revision) return { kind: "unreadable", reason: "active pointer revision mismatch", protectedRoots: project.protectedRoots, blockAllWrites: false };
+  if (state.traceability) {
+    try { ledger = await readTraceability(root, state); }
+    catch { return { kind: "unreadable", reason: "traceability snapshot invalid", protectedRoots: project.protectedRoots, blockAllWrites: false }; }
+  }
+  if (state.review) {
+    try { await readReviewLedger(root, state); }
+    catch { return { kind: "unreadable", reason: "review snapshot invalid", protectedRoots: project.protectedRoots, blockAllWrites: false }; }
+  }
 
   const allowedArtifacts = new Set<string>();
   for (const [kind, artifact] of Object.entries(state.artifacts ?? {})) {
@@ -492,59 +555,94 @@ function classifyTarget(
   workflow: ActiveWorkflow,
 ): PreToolBlock | undefined {
   const relative = projectRelative(root, target);
-  if (!relative) {
-    return {
-      code: "DEV_FLOW_WRITE_TARGET_UNRESOLVED",
-      recoveryHint: "请使用能解析到仓库内的项目相对路径（验证日志请写入项目内，例如 vitest.log）",
-    };
-  }
-  if (isControlPath(relative)) {
-    return {
-      code: "DEV_FLOW_STATE_MUTATION_FORBIDDEN",
-      recoveryHint: "工作流状态仅能通过 MCP 变更；请编辑已登记资产，或对损坏状态使用 doctor/recovery",
-    };
-  }
+  // Repository-external writes are outside the workflow asset contract. The
+  // host's own permissions/sandbox remains responsible for those operations.
+  if (!relative) return undefined;
+  if (isControlPath(relative)) return controlMutationBlock(relative);
   if (isDevFlowPath(relative)) {
     if (workflow.allowedArtifacts.has(relative)) return undefined;
     // Known artifact filename under active feature but not registered yet
     if (relative.startsWith(`.dev-flow/features/${workflow.featureId}/`) && relative.endsWith(".md")) {
-      return {
-        code: "DEV_FLOW_ARTIFACT_NOT_REGISTERED",
-        recoveryHint: "请先通过 MCP scaffold 该资产，编辑后登记",
-      };
+      const displayName = path.posix.basename(relative, ".md");
+      const kind = displayName === "需求文档" ? "requirements" : displayName === "实施计划" ? "implementation-plan" : displayName;
+      return createPreToolBlock(
+        "DEV_FLOW_ARTIFACT_NOT_REGISTERED",
+        `目标 ${relative} 是 active feature 的 ${kind} Markdown 资产，但尚未登记`,
+        "原写入未执行；该资产不会进入 feature 证据账本",
+        {
+          mode: "guided",
+          action: `先通过 MCP scaffold/register ${kind} 资产 ${relative}，再自动重试原写入`,
+          retryOriginal: true,
+        },
+      );
     }
-    return {
-      code: "DEV_FLOW_STATE_MUTATION_FORBIDDEN",
-      recoveryHint: "仅可编辑 active feature 已登记的非 status Markdown 资产",
-    };
+    return createPreToolBlock(
+      "DEV_FLOW_STATE_MUTATION_FORBIDDEN",
+      `目标 ${relative} 位于 Dev Flow 控制区，且不是 active feature 已登记的可编辑 Markdown 资产`,
+      "原写入未执行；Dev Flow 控制区没有被修改",
+      {
+        mode: "user-decision",
+        action: "确认后由模型调用对应 MCP 完成同一工作流意图；不要直接编辑控制区文件",
+        retryOriginal: false,
+      },
+    );
   }
   if (workflow.state?.mode === "intake") {
     const decision = judgeWrite({ mode: "intake", controlPath: false, protectedPath: isProtected(root, target, workflow.protectedRoots), impactResolved: false });
-    if (decision.decision === "block") return { code: "DEV_FLOW_IMPLEMENTATION_APPROVAL_REQUIRED", recoveryHint: "请先完成 intake 调查并锁定基础路线" };
+    if (decision.decision === "block") {
+      return createPreToolBlock(
+        "DEV_FLOW_IMPLEMENTATION_APPROVAL_REQUIRED",
+        `feature 仍处于 intake，目标 ${relative} 位于 protected root，尚未进入可执行实现阶段`,
+        "原写入未执行；protected 目标保持不变",
+        {
+          mode: "user-decision",
+          action: "先完成 intake 调查、解决分类决策并锁定基础路线；满足实现批准条件后自动重试原写入",
+          retryOriginal: true,
+        },
+      );
+    }
   }
   if (workflow.state?.mode === "routed" && currentOpenStep(workflow.state) === "implementation" && isProtected(root, target, workflow.protectedRoots)) {
     const approvalPending = workflow.state.obligations?.some((obligation) => obligation.kind === "approval" && obligation.status !== "satisfied") ?? false;
     if (approvalPending && !workflow.approvalConfirmed) {
-      return {
-        code: "DEV_FLOW_IMPLEMENTATION_APPROVAL_REQUIRED",
-        recoveryHint: `目标位于受保护根目录；请完成当前执行确认义务后再写入${scratchHint}`,
-      };
+      return createPreToolBlock(
+        "DEV_FLOW_IMPLEMENTATION_APPROVAL_REQUIRED",
+        `当前 open step 是 implementation，但目标 ${projectRelative(root, target)} 位于 protected root，执行批准义务尚未满足`,
+        "原写入未执行；目标文件和当前 feature 状态未改变",
+        {
+          mode: "user-decision",
+          action: `向用户展示当前实现批准问题并请求一次确认；确认后自动重试原写入${scratchHint}`,
+          retryOriginal: true,
+        },
+      );
     }
     // Checkpoint-enforced routes need a live unit baseline before the first
     // protected write. Scope membership itself is audited at checkpoint time;
     // it is deliberately not a write-time allowlist.
     const unitBlock = implementationUnitWriteBlock(workflow.state, workflow.ledger, projectRelative(root, target)!);
     if (unitBlock?.code === "IMPLEMENTATION_UNIT_REQUIRED") {
-      return {
-        code: "DEV_FLOW_IMPLEMENTATION_UNIT_REQUIRED",
-        recoveryHint: "Core 尚未准备当前回撤单元；请自动重试 dev_flow_begin_implementation_unit 后再写入 protected 文件",
-      };
+      return createPreToolBlock(
+        "DEV_FLOW_IMPLEMENTATION_UNIT_REQUIRED",
+        `目标 ${projectRelative(root, target)} 已通过实现批准，但当前没有活动的 rollback unit`,
+        "原写入未执行；protected 目标保持不变",
+        {
+          mode: "automatic",
+          action: "调用 dev_flow_begin_implementation_unit 准备当前 rollback unit；成功后自动重试原写入",
+          retryOriginal: true,
+        },
+      );
     }
     if (unitBlock?.code === "IMPLEMENTATION_UNIT_OUT_OF_SCOPE") {
-      return {
-        code: "DEV_FLOW_IMPLEMENTATION_UNIT_OUT_OF_SCOPE",
-        recoveryHint: "当前回撤单元在 Trace 中已失效；请刷新状态并修复或重新登记当前 Trace 后再写入",
-      };
+      return createPreToolBlock(
+        "DEV_FLOW_IMPLEMENTATION_UNIT_OUT_OF_SCOPE",
+        `当前 rollback unit 在 Trace 中已失效，无法证明目标 ${projectRelative(root, target)} 属于当前实现依据`,
+        "原写入未执行；目标文件和 Trace 状态未改变",
+        {
+          mode: "user-decision",
+          action: "刷新 Trace；能自动修复失效引用时先修复，否则展示差异并向用户询问一次；解决后自动重试原写入",
+          retryOriginal: true,
+        },
+      );
     }
     const decision = judgeWrite({ mode: "routed", stage: "implementation", controlPath: false, protectedPath: true, impactResolved: true });
     if (decision.decision !== "block") return undefined;
@@ -554,21 +652,46 @@ function classifyTarget(
     const relative = projectRelative(root, target)!;
     const block = implementationUnitWriteBlock(workflow.state, workflow.ledger, relative);
     if (block?.code === "IMPLEMENTATION_UNIT_REQUIRED") {
-      return {
-        code: "DEV_FLOW_IMPLEMENTATION_UNIT_REQUIRED",
-        recoveryHint: "请先通过 dev_flow_begin_implementation_unit 开始下一个回撤单元，再写 protected 文件",
-      };
+      return createPreToolBlock(
+        "DEV_FLOW_IMPLEMENTATION_UNIT_REQUIRED",
+        `目标 ${relative} 位于 protected root，但没有活动的 rollback unit`,
+        "原写入未执行；目标文件保持不变",
+        {
+          mode: "automatic",
+          action: "调用 dev_flow_begin_implementation_unit 开始下一个 rollback unit；成功后自动重试原写入",
+          retryOriginal: true,
+        },
+      );
     }
     if (block?.code === "IMPLEMENTATION_UNIT_OUT_OF_SCOPE") {
-      return {
-        code: "DEV_FLOW_IMPLEMENTATION_UNIT_OUT_OF_SCOPE",
-        recoveryHint: "当前回撤单元在 Trace 中已失效；请刷新状态并修复或重新登记当前 Trace 后再写入",
-      };
+      return createPreToolBlock(
+        "DEV_FLOW_IMPLEMENTATION_UNIT_OUT_OF_SCOPE",
+        `当前 rollback unit 在 Trace 中已失效，无法证明目标 ${relative} 属于当前实现依据`,
+        "原写入未执行；目标文件和 Trace 状态未改变",
+        {
+          mode: "user-decision",
+          action: "刷新 Trace；能自动修复失效引用时先修复，否则展示差异并向用户询问一次；解决后自动重试原写入",
+          retryOriginal: true,
+        },
+      );
     }
     // Anticipated fileScope drift is reported by the checkpoint auditor, not
     // rejected by the host write hook.
   }
   return undefined;
+}
+
+function controlMutationBlock(relative: string): PreToolBlock {
+  return createPreToolBlock(
+    "DEV_FLOW_STATE_MUTATION_FORBIDDEN",
+    `目标 ${relative} 是 Dev Flow 控制文件，不能由普通文件工具直接修改`,
+    "原写入未执行；工作流控制状态保持不变",
+    {
+      mode: "user-decision",
+      action: `确认后由模型调用对应 MCP 完成对 ${relative} 的同一意图；不要重试这次控制文件直接写入`,
+      retryOriginal: false,
+    },
+  );
 }
 
 /** 从事件账本推导实现批准是否因计划依据变更而作废（返回最近作废的资产 kind）。 */
@@ -602,43 +725,98 @@ async function augmentApprovalBlock(
   block: PreToolBlock,
 ): Promise<PreToolBlock> {
   if (block.code !== "DEV_FLOW_IMPLEMENTATION_APPROVAL_REQUIRED") return block;
-  const revokedKind = await revokedImplementationApprovalHint(root, workflow.featureId);
+  let revokedKind: string | undefined;
+  try {
+    revokedKind = await revokedImplementationApprovalHint(root, workflow.featureId);
+  } catch {
+    return unreadableBlock("events.jsonl invalid or unreadable");
+  }
   if (!revokedKind) return block;
+  const action = `计划依据（${revokedKind}）已在实现批准后变更，批准已作废；请先完成相关步骤并重新确认实现批准后再写 protected 文件${scratchHint}`;
   return {
     ...block,
-    recoveryHint: `计划依据（${revokedKind}）已在实现批准后变更，批准已作废；请先完成相关步骤并重新确认实现批准后再写 protected 文件${scratchHint}`,
+    reason: action,
+    recovery: { ...block.recovery, action },
+    recoveryHint: action,
   };
+}
+
+function annotatePreparationFailure(block: PreToolBlock, diagnostic: string | undefined): PreToolBlock {
+  if (!diagnostic || (block.code !== "DEV_FLOW_IMPLEMENTATION_UNIT_REQUIRED" && block.code !== "DEV_FLOW_IMPLEMENTATION_UNIT_OUT_OF_SCOPE")) return block;
+  const reason = `${block.reason} Core 自动准备 rollback unit 失败：${diagnostic}`;
+  const action = `${block.recovery.action}；不要把该 Core 错误解释为 workflow state unreadable`;
+  return { ...block, reason, recovery: { ...block.recovery, action }, recoveryHint: action };
 }
 
 function unreadableBlock(reason: string): PreToolBlock {
-  return {
-    code: "DEV_FLOW_WORKFLOW_STATE_UNREADABLE",
-    recoveryHint: `无法安全读取活动工作流（${reason}）；请运行 dev_flow_doctor，损坏时使用 recover 恢复`,
-  };
+  return createPreToolBlock(
+    "DEV_FLOW_WORKFLOW_STATE_UNREADABLE",
+    `读取工作流证据失败：${reason}`,
+    "原操作未执行；无法安全确认当前 workflow gate 是否满足",
+    {
+      mode: "guided",
+      action: "先自动刷新 active/state 并运行只读 dev_flow_doctor；只有 doctor 证明必须 recover、重建或放弃 feature 时才向用户询问一次，解决后自动重试原操作",
+      retryOriginal: true,
+    },
+  );
 }
 
 function unreadableTargetBlock(root: string, target: string, workflow: UnreadableWorkflow): PreToolBlock | undefined {
-  if (workflow.blockAllWrites) return unreadableBlock(workflow.reason);
   const relative = projectRelative(root, target);
-  if (!relative || isDevFlowPath(relative) || isProtected(root, target, workflow.protectedRoots ?? [])) return unreadableBlock(workflow.reason);
+  if (!relative) return undefined;
+  if (isControlPath(relative)) return controlMutationBlock(relative);
+  if (workflow.blockAllWrites) return unreadableBlock(workflow.reason);
+  if (isDevFlowPath(relative) || isProtected(root, target, workflow.protectedRoots ?? [])) return unreadableBlock(workflow.reason);
   return undefined;
 }
 
-/**
- * Evaluate only enforcement decisions. Adapters remain event normalizers and do
- * not mutate feature state.
- * Returns a structured block, or undefined to allow.
- */
+/** Evaluate policy without making adapters infer meaning from exceptions. */
+export async function evaluatePreToolUse(root: string, event: HookEvent): Promise<PreToolOutcome> {
+  if (!isRelevantPreToolUse(event)) return { kind: "allow" };
+  try {
+    const block = await evaluatePreToolUseInternal(root, event);
+    return block ? { kind: "block", block } : { kind: "allow" };
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    return {
+      kind: "allow",
+      advisory: {
+        code: "DEV_FLOW_HOOK_EVALUATION_FAILED",
+        message: `DEV_FLOW_HOOK_EVALUATION_FAILED: Dev Flow hook analysis failed (${detail}); the original operation was not blocked and remains subject to host permissions.`,
+      },
+    };
+  }
+}
+
+/** Compatibility wrapper for callers that only need a possible block. */
+export async function preToolBlock(root: string, event: HookEvent): Promise<PreToolBlock | undefined> {
+  const outcome = await evaluatePreToolUse(root, event);
+  return outcome.kind === "block" ? outcome.block : undefined;
+}
+
+/** Compatibility wrapper for callers that need the serialized block reason. */
 export async function preToolBlockReason(root: string, event: HookEvent): Promise<string | undefined> {
   const block = await preToolBlock(root, event);
   return block ? formatPreToolBlock(block) : undefined;
 }
 
-export async function preToolBlock(root: string, event: HookEvent): Promise<PreToolBlock | undefined> {
+async function evaluatePreToolUseInternal(root: string, event: HookEvent): Promise<PreToolBlock | undefined> {
   if (!isRelevantPreToolUse(event)) return undefined;
 
+  // A statically known control target remains fail-closed even if loading the
+  // rest of the workflow later encounters an unexpected I/O or policy error.
+  const knownTargets = knownWriteTargets(event);
+  if (knownTargets) {
+    for (const target of knownTargets) {
+      const relative = projectRelative(root, target);
+      if (relative && isControlPath(relative)) return controlMutationBlock(relative);
+    }
+  }
+
   const loaded = await loadActiveWorkflow(root);
-  if (loaded.kind === "none") return undefined;
+  if (loaded.kind === "none") {
+    return undefined;
+  }
 
   if (loaded.kind === "unreadable") {
     // Preserve normal reads and non-protected writes when project policy is readable.
@@ -647,7 +825,7 @@ export async function preToolBlock(root: string, event: HookEvent): Promise<PreT
       if (classifyGitCommand(command) === "write") return unreadableBlock(loaded.reason);
       const analysis = analyzeBashWriteTargets(command);
       if (analysis.kind === "read-only") return undefined;
-      if (analysis.kind === "unresolved") return unreadableBlock(loaded.reason);
+      if (analysis.kind === "unresolved") return undefined;
       for (const target of analysis.targets) {
         const block = unreadableTargetBlock(root, target, loaded);
         if (block) return block;
@@ -655,7 +833,7 @@ export async function preToolBlock(root: string, event: HookEvent): Promise<PreT
       return undefined;
     }
     const targets = directTargets(event);
-    if (!targets.length) return unreadableBlock(loaded.reason);
+    if (!targets.length) return undefined;
     for (const target of targets) {
       const block = unreadableTargetBlock(root, target, loaded);
       if (block) return block;
@@ -670,56 +848,55 @@ export async function preToolBlock(root: string, event: HookEvent): Promise<PreT
   // write boundary. It keeps the unit/checkpoint contract intact while
   // avoiding a user-visible failure for a model that proceeds directly from
   // approval to its first ordinary file write.
-  const prepareImplementationWrite = async (targets: string[]): Promise<void> => {
-    if (!workflow.state || currentOpenStep(workflow.state) !== "implementation"
-      || !targets.some((target) => isProtected(root, target, workflow.protectedRoots))) return;
+  const prepareImplementationWrite = async (targets: string[]): Promise<string | undefined> => {
+    if (workflow.state?.mode !== "routed" || currentOpenStep(workflow.state) !== "implementation"
+      || !targets.some((target) => isProtected(root, target, workflow.protectedRoots))) return undefined;
     try {
       const prepared = await ensureActiveImplementationUnit(root, workflow.featureId, workflow.state);
       if (prepared.revision !== workflow.state.revision) {
         const refreshed = await loadActiveWorkflow(root);
         if (refreshed.kind === "ready") workflow = refreshed.workflow;
+        else return "active workflow refresh after implementation-unit preparation did not produce a readable state";
       }
-    } catch {
-      // classifyTarget emits the stable unit-required recovery code below;
-      // transient preparation failures must not turn a hook into a crash.
+      return undefined;
+    } catch (error) {
+      return error instanceof Error ? error.message : String(error);
     }
   };
 
   if (toolName(event) === "bash" && classifyGitCommand(command) === "write" && !workflow.logicComplete) {
-    return {
-      code: "DEV_FLOW_GIT_GUARD",
-      recoveryHint: "功能尚未 logic-complete；请先完成 verify、feature-check 与 finalize 再进行 git 写入",
-    };
+    return createPreToolBlock(
+      "DEV_FLOW_GIT_GUARD",
+      "当前 feature 尚未达到 logic-complete，Git 写入门禁仍然开启",
+      "原 Git 操作未执行；工作树和 Git 历史没有被这次命令修改",
+      {
+        mode: "guided",
+        action: "先通过 MCP 完成 verify、feature-check 与 finalize，使 feature 达到 logic-complete；完成后自动重试原 Git 操作",
+        retryOriginal: true,
+      },
+    );
   }
 
   if (toolName(event) === "bash") {
     const analysis = analyzeBashWriteTargets(command);
     if (analysis.kind === "read-only") return undefined;
-    if (analysis.kind === "unresolved") {
-      return {
-        code: "DEV_FLOW_WRITE_TARGET_UNRESOLVED",
-        recoveryHint: "请拆分确定性的写命令或使用 MCP 资产工具；验证日志请写入项目内相对路径（例如 vitest.log），勿混用未解析的 shell 写入",
-      };
-    }
-    await prepareImplementationWrite(analysis.targets);
+    // The analyzer is advisory. Unknown shell syntax must not become a second
+    // permission system or force the model to rewrite an otherwise valid tool call.
+    if (analysis.kind === "unresolved") return undefined;
+    const preparationDiagnostic = await prepareImplementationWrite(analysis.targets);
     for (const target of analysis.targets) {
       const block = classifyTarget(root, target, workflow);
-      if (block) return augmentApprovalBlock(root, workflow, block);
+      if (block) return augmentApprovalBlock(root, workflow, annotatePreparationFailure(block, preparationDiagnostic));
     }
     return undefined;
   }
 
   const targets = directTargets(event);
-  if (!targets.length) {
-    return {
-      code: "DEV_FLOW_IMPLEMENTATION_APPROVAL_REQUIRED",
-      recoveryHint: "补丁无可解析目标；在实现批准前保守拒绝",
-    };
-  }
-  await prepareImplementationWrite(targets);
+  if (!targets.length) return undefined;
+  const preparationDiagnostic = await prepareImplementationWrite(targets);
   for (const target of targets) {
     const block = classifyTarget(root, target, workflow);
-    if (block) return augmentApprovalBlock(root, workflow, block);
+    if (block) return augmentApprovalBlock(root, workflow, annotatePreparationFailure(block, preparationDiagnostic));
   }
   return undefined;
 }

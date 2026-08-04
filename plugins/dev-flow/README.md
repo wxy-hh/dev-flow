@@ -19,6 +19,10 @@
 
 Claude Code 与 Codex CLI 均受支持，但必须分别安装对应 manifest、MCP 和 `claude-hook.mjs` / `codex-hook.mjs`。其他 MCP 客户端未受支持，直连只用于诊断，不提供写入守卫或可信用户证据。模型代决、手工调 hook、仅 MCP happy path，以及 `doctor` 静态检查都不能证明宿主兼容。
 
+Hook 的 Bash target analyzer 是工作流辅助，不是命令合法性裁判。wrapper、解释器、管道、heredoc、变量展开、复杂重定向和仓库外验证日志无法静态解析时默认继续，由宿主原生 sandbox、permissions 和确认流负责安全判断；unresolved 不再产生 `DEV_FLOW_WRITE_TARGET_UNRESOLVED`。Dev Flow 仍拒绝确定的 `.dev-flow` 控制写入、intake/未批准 protected-root 写入、未登记资产、开放恢复事务和 logic-complete 前 Git 写入。
+
+Dev Flow block 会同时说明原因、影响、解决方案、确认边界和自动重试方式。`DEV_FLOW_WORKFLOW_STATE_UNREADABLE` 只用于有读取证据的状态问题，先刷新和只读 doctor。普通风险通过宿主确认并成功执行后，只在当前 active feature 记忆 `task-reusable` grant；切换、finalize、abandon 或 `always-confirm` 外部动作不复用。Claude block 使用 `hookSpecificOutput.permissionDecision = "deny"`，Codex block 使用 `{ "decision": "block", "reason": "..." }`；允许路径不输出假 JSON，Codex PreToolUse 不输出 `continue`、`stopReason` 或 `permissionDecision: "ask"`。
+
 ## Windows 系统提醒
 
 Windows 用户可明确要求 Dev Flow 执行 `dev_flow_enable_windows_notifications`。该操作只在当前用户的开始菜单创建或刷新一个通知身份快捷方式，用于之后的原生 Toast 与系统提示音；不修改 feature 状态、不请求管理员权限，失败时仍保留 MCP 通知。插件升级后可以安全地再次执行该操作。

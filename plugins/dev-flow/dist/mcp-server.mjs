@@ -1,4 +1,4 @@
-/* dev-flow 3.0.1; built from source, deterministic build */
+/* dev-flow 3.0.2; built from source, deterministic build */
 
 // plugins/dev-flow/src/mcp/server.ts
 import readline from "node:readline";
@@ -1838,6 +1838,7 @@ function assertTraceSliceCurrent(ledger, route, step, currentProjectConfigSha256
 
 // plugins/dev-flow/src/core/step-order.ts
 function currentOpenStep(state) {
+  if (state.mode !== "routed") return void 0;
   return routeDefinitionForFeature(state.route, state.workflowCapabilities).orderedSteps.find((step) => state.steps[step]?.status !== "satisfied");
 }
 function assertCurrentStep(state, step) {
@@ -3021,7 +3022,7 @@ async function startFeature(root2, input, options = {}) {
         decisionLedger: [],
         blockingFindings: [],
         logicComplete: false,
-        lastUpdatedBy: { host: input.host, pluginVersion: "3.0.1" }
+        lastUpdatedBy: { host: input.host, pluginVersion: "3.0.2" }
       };
       validateFeatureState(state);
       await options.fault?.("before-state-commit");
@@ -3112,7 +3113,7 @@ async function recordDecision(root2, id, expectedRevision, question, factRefs = 
     const ledger = draft.decisionLedger ?? [];
     if (ledger.some((candidate) => candidate.id === decision.id)) return;
     draft.decisionLedger = [...ledger, decision];
-    draft.lastUpdatedBy = { host, pluginVersion: "3.0.1" };
+    draft.lastUpdatedBy = { host, pluginVersion: "3.0.2" };
   }, { decisionId: decision.id });
 }
 async function resolveRecordedDecision(root2, id, expectedRevision, decisionId, evidence, conclusion, host) {
@@ -3123,7 +3124,7 @@ async function resolveRecordedDecision(root2, id, expectedRevision, decisionId, 
     const next = [...ledger];
     next[index] = resolveDecision(next[index], evidence, conclusion);
     draft.decisionLedger = next;
-    draft.lastUpdatedBy = { host, pluginVersion: "3.0.1" };
+    draft.lastUpdatedBy = { host, pluginVersion: "3.0.2" };
   }, { decisionId });
 }
 async function mutate(root2, id, expectedRevision, operation, mutator, eventData = {}) {
@@ -4545,7 +4546,7 @@ async function requestGrillDecision(root2, id, expectedRevision, input) {
       ledger.push({ id: input.questionId, question: input.question, status: "open", source: "grill" });
     }
     draft.decisionLedger = ledger;
-    draft.lastUpdatedBy = { host: input.host, pluginVersion: "3.0.1" };
+    draft.lastUpdatedBy = { host: input.host, pluginVersion: "3.0.2" };
   }, () => ({ questionId: input.questionId, interactionId: interaction?.id, options: input.options }));
   if (!interaction) throw new DevFlowError("INTERACTION_NOT_CREATED", target);
   return { state, interaction: toPublicInteraction(interaction) };
@@ -4612,7 +4613,7 @@ async function resolveGrillDecision(root2, id, expectedRevision, interactionId, 
         next[index] = resolveDecision(next[index], input.source === "elicitation" ? input.comment ?? "\u7528\u6237\u9009\u62E9" : input.userReply, response2.action);
         draft.decisionLedger = next;
       }
-      draft.lastUpdatedBy = { host, pluginVersion: "3.0.1" };
+      draft.lastUpdatedBy = { host, pluginVersion: "3.0.2" };
     }, { interactionId, mode: "intake" });
     if (!response2) throw new DevFlowError("INTERACTION_NOT_RESOLVED", interactionId);
     return { state: state2, interaction: toPublicInteraction(getInteraction(state2, interactionId)), response: response2 };
@@ -4640,7 +4641,7 @@ async function resolveGrillDecision(root2, id, expectedRevision, interactionId, 
       next[index] = resolveDecision(next[index], input.source === "elicitation" ? input.comment ?? "\u7528\u6237\u9009\u62E9" : input.userReply, response.action);
       draft.decisionLedger = next;
     }
-    draft.lastUpdatedBy = { host, pluginVersion: "3.0.1" };
+    draft.lastUpdatedBy = { host, pluginVersion: "3.0.2" };
   }, () => ({ interactionId, response }));
   if (!response) throw new DevFlowError("INTERACTION_NOT_RESOLVED", interactionId);
   return { state, interaction: toPublicInteraction(getInteraction(state, interactionId)), response };
@@ -4942,7 +4943,7 @@ async function runVerification(root2, id, expectedRevision, host, commandIds, ma
       const signature = `${exitCode}:${createHash11("sha256").update(fullOutput).digest("hex").slice(0, 16)}`;
       state.repair = recordRepairAttempt(state.repair ?? startRepairLoop(), signature, output.slice(-3));
     }
-    state.lastUpdatedBy = { host, pluginVersion: "3.0.1" };
+    state.lastUpdatedBy = { host, pluginVersion: "3.0.2" };
   });
 }
 async function readVerificationFreshness(root2, state) {
@@ -6299,7 +6300,7 @@ async function resolveApprovalResponse(root2, id, expectedRevision, interactionI
     } else {
       throw new DevFlowError("INTERACTION_ACTION_INVALID", response.action);
     }
-    state.lastUpdatedBy = { host, pluginVersion: "3.0.1" };
+    state.lastUpdatedBy = { host, pluginVersion: "3.0.2" };
   }, () => ({ approval, interactionId, response }));
 }
 async function resolveApprovalElicitation(root2, id, expectedRevision, interactionId, action, comment, host) {
@@ -6375,7 +6376,7 @@ async function confirmApproval(root2, id, expectedRevision, approval, userReply,
     };
     clearInteractionsForTarget(state, `approval:${selectedApproval}`);
     state.obligations = satisfyObligations(state.obligations, ["approval"]);
-    state.lastUpdatedBy = { host, pluginVersion: "3.0.1" };
+    state.lastUpdatedBy = { host, pluginVersion: "3.0.2" };
   }, { approval: selectedApproval });
 }
 
@@ -7677,7 +7678,7 @@ async function resolveRollbackGateResponse(root2, featureId, expectedRevision, i
     } else {
       throw new DevFlowError("INTERACTION_ACTION_INVALID", response.action);
     }
-    state.lastUpdatedBy = { host, pluginVersion: "3.0.1" };
+    state.lastUpdatedBy = { host, pluginVersion: "3.0.2" };
   }, () => ({ gate: "rollback-confirmation", interactionId, response }));
 }
 async function resolveRollbackGateElicitation(root2, featureId, expectedRevision, interactionId, action, comment, host) {
@@ -10382,7 +10383,7 @@ async function call(name, a, connection2) {
     case "dev_flow_enable_windows_notifications":
       return enableWindowsNotifications({ nodeExecutable: process.execPath });
     case "dev_flow_doctor":
-      return collectDoctorReport(root, pluginRoot, "3.0.1", tools);
+      return collectDoctorReport(root, pluginRoot, "3.0.2", tools);
     case "dev_flow_recover_corrupt_feature":
       return recoverCorruptFeature(root, {
         featureId: a.featureId,
@@ -10406,7 +10407,7 @@ async function dispatchRequest(message) {
       connection.configure(message.params?.capabilities);
       protocolResult(message.id, {
         protocolVersion: message.params?.protocolVersion || "2024-11-05",
-        serverInfo: { name: "dev-flow", version: "3.0.1" },
+        serverInfo: { name: "dev-flow", version: "3.0.2" },
         capabilities: { tools: {} },
         instructions: "Classify before starting. Read dev_flow_next for the current stage, activity, allowed action categories, completion criteria, obligations, and any required attention; choose suitable equivalent tools within that contract. A dynamically derived approval opens a pending interaction: present its natural-language hint to the user; grill questions may be answered with A/B/C or the option name. One-time reply tokens are a last-resort fallback only when the user cannot answer naturally. Use dev_flow_init_project before start."
       });
