@@ -10,7 +10,7 @@ Dev Flow 的设计初衷不是把每个小任务都变成重流程，而是在�
 - 流程接口：本地 MCP（Skills 不得手改状态文件）  
 - 不提供：复制安装、升级脚本、旧版迁移、CLAUDE.md 注入、OpenSpec 集成  
 
-更细的契约见 [路线说明](docs/routes.md)、[架构](docs/architecture.md)、[发布](docs/publishing.md)。
+更细的契约见 [路线说明](docs/routes.md)、[架构](docs/architecture.md)、[发布](docs/publishing.md);想从零了解设计与常见问题,见 [Dev Flow 入门教程与 FAQ](docs/dev-flow-guide.md)。
 
 ## 宿主支持矩阵
 

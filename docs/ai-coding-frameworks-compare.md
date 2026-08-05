@@ -1,18 +1,18 @@
-# AI 编程框架四方对决：Spec Kit、OpenSpec、Superpowers、Dev Flow 谁才是你的菜？
+# AI 编程框架五方对决：Spec Kit、OpenSpec、Superpowers、Dev Flow、Matt Pocock Skills 谁才是你的菜？
 
 
-## 1. 四大框架全景速览
+## 1. 五大框架全景速览
 
-| 维度 | Spec Kit | OpenSpec | Superpowers | Dev Flow |
-| --- | --- | --- | --- | --- |
-| **维护方** | GitHub / Microsoft | Fission-AI（独立开发者） | Jesse Vincent（社区驱动） | 个人开发者（wxy-hh） |
-| **Stars** | ~93K | ~34K | ~204K | —（个人项目） |
-| **首版发布** | 2025 年 9 月 | 2025 年 9 月 | 2025 年 10 月 | 2026 年 7 月 |
-| **技术栈** | Python + uv | TypeScript + npm | Markdown + Shell（零依赖） | TypeScript + Node（运行时零 npm 依赖） |
-| **AI 工具** | 30+ | 25+ | 5+（专注 Claude Code） | 40 个 MCP 工具（Claude + Codex 双宿主） |
-| **核心理念** | 阶段门控，规范可执行化 | 轻量规范层，增量变更驱动 | 流程纪律，技能自动触发 | 规模×拓扑×风险选路线，机器门禁强制义务 |
-| **TDD 强制** | 否（可选） | 否（可选） | 是（强制） | 否（验证义务按路线与风险决定） |
-| **许可证** | MIT | MIT | MIT | MIT |
+| 维度 | Spec Kit | OpenSpec | Superpowers | Dev Flow | Matt Pocock Skills |
+| --- | --- | --- | --- | --- | --- |
+| **维护方** | GitHub / Microsoft | Fission-AI（独立开发者） | Jesse Vincent（社区驱动） | 个人开发者（wxy-hh） | Matt Pocock（个人，60K+ 订阅） |
+| **Stars** | ~93K | ~34K | ~204K | —（个人项目） | ~10K+ |
+| **首版发布** | 2025 年 9 月 | 2025 年 9 月 | 2025 年 10 月 | 2026 年 7 月 | 2025 年 |
+| **技术栈** | Python + uv | TypeScript + npm | Markdown + Shell（零依赖） | TypeScript + Node（运行时零 npm 依赖） | 纯 Markdown（零依赖） |
+| **AI 工具** | 30+ | 25+ | 5+（专注 Claude Code） | 40 个 MCP 工具（Claude + Codex 双宿主） | 24 个技能（Claude / Codex / 任何模型） |
+| **核心理念** | 阶段门控，规范可执行化 | 轻量规范层，增量变更驱动 | 流程纪律，技能自动触发 | 规模×拓扑×风险选路线，机器门禁强制义务 | 小而可组合的技能，不拥有你的过程 |
+| **TDD 强制** | 否（可选） | 否（可选） | 是（强制） | 否（验证义务按路线与风险决定） | 是（tdd 技能红-绿-重构） |
+| **许可证** | MIT | MIT | MIT | MIT | MIT |
 
 ---
 
@@ -264,19 +264,70 @@ hooks 层在宿主事件流上直接拦截：logic-complete 之前 Git 写（add
 
 `dev_flow_classify` 按 规模（XS/S/M/L）× 拓扑 × 执行（light/standard）× 需求状态 × 风险标签 选路线，基础路线只有六条；7 个风险标签（security / data / money / external / availability / critical_correctness / irreversible_consequence）**不创建新路线**，只追加 review、verification、rollback、checkpoint 或 approval 义务。30 分钟的小改动走 XS 路线不背任何强制文档；金融支付类改动在 standard L 上被追加确认与审查义务——**流程重量永远和改动的重要性成正比**。
 
+### 3.5 Matt Pocock Skills：不拥有你的过程，给你可组合的纪律
+
+如果说 Dev Flow 是「把流程写成机器合同」,Matt Pocock Skills(mattpocock/skills)走的是**完全相反**的路:README 开宗明义地反对 Spec Kit 这类框架——"GSD、BMAD、Spec-Kit try to help by owning the process. But while doing so, they take away your control and make bugs in the process hard to resolve."(它们试图拥有你的过程,却夺走你的控制权,让过程中的 bug 难以解决)。
+
+#### 源码结构
+
+```bash
+mattpocock/skills/
+  ├── skills/
+  │   ├── engineering/          # 工程技能(按用户/模型调用分两轴)
+  │   │   ├── grill-with-docs/  # 拷问+领域建模+ADR(核心创新)
+  │   │   ├── to-spec/          # 会话→规格,发布到 issue tracker
+  │   │   ├── to-tickets/       # 计划/规格→带阻塞边界的工单
+  │   │   ├── wayfinder/        # 超大块工作的决策工单地图
+  │   │   ├── implement/        # 按规格/工单实现,tdd + code-review
+  │   │   ├── tdd/              # 红-绿-重构循环(模型自动调用)
+  │   │   ├── code-review/      # 双轴审查:规范轴 + 需求轴(并行子代理)
+  │   │   ├── diagnosing-bugs/  # 复现→最小化→假设→插桩→修复→回归
+  │   │   ├── domain-modeling/  # 领域建模,更新 CONTEXT.md 与 ADR
+  │   │   ├── codebase-design/  # 深模块设计共享词汇
+  │   │   ├── triage/           # issue 状态机(needs-triage→ready-for-agent…)
+  │   │   └── …
+  │   └── productivity/         # 通用技能(grill-me、handoff、teach…)
+  ├── docs/                     # 配套文档(ADR、工程方法论)
+  └── scripts/                  # link-skills / list-skills
+```
+
+#### 核心创新 1：两轴技能设计
+
+所有技能按**谁能调用**分成两轴:
+
+- **user-invoked**(斜杠命令):编排类,只能用户显式触发(grill-me、wayfinder、to-spec);
+- **model-invoked**:纪律类,任务匹配时模型自动使用(tdd、code-review、domain-modeling、diagnosing-bugs)。
+
+规则:`user-invoked 可以调用 model-invoked,但绝不能调用另一个 user-invoked`——编排与纪律严格分层,防止技能互相嵌套失控。
+
+#### 核心创新 2：grill-with-docs —— 拷问 + 领域建模合一
+
+这是它最有特色的技能。一次 grilling 会话同时做三件事:拷问方案决策、打磨项目**共享语言**(更新 CONTEXT.md 术语表)、把难以言说的决策写成 ADR。README 原话:"共享语言可能是这个仓库里最酷的技巧"——它让 agent 用项目词汇思考,减少啰嗦、命名一致、token 更省。
+
+#### 核心创新 3：以 issue tracker 为状态层
+
+它没有状态文件,但有一个**持久层约定**:issue tracker(GitHub/Linear/本地 markdown)承载 triage 状态机、wayfinder 决策地图、to-spec 发布的规格。跨会话的「记忆」不靠状态机,靠工单和文档。
+
+#### 与四者的本质差异
+
+- **vs Spec Kit**:反对「拥有过程」,技能小而可 hack,不锁死流程;
+- **vs Superpowers**:同样靠提示词纪律,但 Superpowers 用 hook 强制注入,它靠技能触发词 + 两轴设计;
+- **vs Dev Flow**:无状态机、无机器门禁、无事件账本——它把「流程正确性」完全押在**模型自觉 + 技能质量**上,换取的是零安装负担、零锁定、极高的可组合性;
+- **vs OpenSpec**:它不管理规范文件,规范/工单落在用户自己的 issue tracker,不发明新格式(只有 CONTEXT.md 与 ADR 两个轻约定)。
+
 ---
 
 ## 4. 核心哲学对比
 
-| 维度 | Spec Kit | OpenSpec | Superpowers | Dev Flow |
-| --- | --- | --- | --- | --- |
-| **类比** | 工业机床 | 趁手美工刀 | 工程纪律手册 | 智能交通管制系统 |
-| **管什么** | 规范产物（spec/plan/tasks） | 规范变更（proposal/delta/archive） | 开发流程（brainstorm→TDD→review） | 流程的执行契约（分类→阶段→义务→门禁→状态） |
-| **怎么管** | 阶段门控，按序推进 | 增量补丁，自由迭代 | Hook 触发，自动激活 | 机器强制：MCP 状态机 + hooks 拦截，不靠提示词自觉 |
-| **核心数据** | Markdown 文档 + YAML 扩展 | Delta Spec + Artifact Graph | SKILL.md 流程定义 | contract.json 路线合同 + `.dev-flow/` 原子状态/事件账本 |
-| **扩展机制** | Extension ZIP + Preset YAML | 无 | 编写新 Skill（用 TDD 方式） | 无需扩展；风险标签自动追加义务 |
-| **规范落点** | 项目内 `.specify/` + `specs/` | 项目内 `openspec/` | 规范是副产品，存在 `docs/superpowers/` | 项目内 `.dev-flow/` |
-| **升级兼容性** | 可能覆盖自定义模板 | 无破坏性升级 | 纯 Markdown，无兼容性问题 | 显式版本合同，dist 受版本控制 |
+| 维度 | Spec Kit | OpenSpec | Superpowers | Dev Flow | Matt Pocock Skills |
+| --- | --- | --- | --- | --- | --- |
+| **类比** | 工业机床 | 趁手美工刀 | 工程纪律手册 | 智能交通管制系统 | 工具箱（随取随用） |
+| **管什么** | 规范产物（spec/plan/tasks） | 规范变更（proposal/delta/archive） | 开发流程（brainstorm→TDD→review） | 流程的执行契约（分类→阶段→义务→门禁→状态） | 工程基本功（对齐/反馈/建模/调试） |
+| **怎么管** | 阶段门控，按序推进 | 增量补丁，自由迭代 | Hook 触发，自动激活 | 机器强制：MCP 状态机 + hooks 拦截，不靠提示词自觉 | 技能触发词 + 两轴设计，模型自觉使用 |
+| **核心数据** | Markdown 文档 + YAML 扩展 | Delta Spec + Artifact Graph | SKILL.md 流程定义 | contract.json 路线合同 + `.dev-flow/` 原子状态/事件账本 | SKILL.md + CONTEXT.md/ADR + issue tracker |
+| **扩展机制** | Extension ZIP + Preset YAML | 无 | 编写新 Skill（用 TDD 方式） | 无需扩展；风险标签自动追加义务 | 改 SKILL.md 即可，鼓励 hack |
+| **规范落点** | 项目内 `.specify/` + `specs/` | 项目内 `openspec/` | 规范是副产品，存在 `docs/superpowers/` | 项目内 `.dev-flow/` | 用户自己的 issue tracker + CONTEXT.md |
+| **升级兼容性** | 可能覆盖自定义模板 | 无破坏性升级 | 纯 Markdown，无兼容性问题 | 显式版本合同，dist 受版本控制 | 插件订阅或复制可编辑，双通道 |
 
 ---
 
@@ -391,7 +442,7 @@ hooks 层在宿主事件流上直接拦截：logic-complete 之前 Git 写（add
 | **安装复杂度** | 插件市场一键安装 | `npm install -g` 一行 | 需 Python 3.11+ + uv + `specify init` | 插件市场一键安装（Claude / Codex 双宿主） |
 | **适合项目规模** | 中小（注重质量） | 中小（注重速度） | 中大型（注重规范） | XS → L 全覆盖，流程重量自适应 |
 
-> 注：四个框架的目标产出物（`app.py` 和 `test_app.py`）功能等价。**差异不在最终代码，在于「如何到达那里」的过程。** 其中 dev-flow 一列为按设计推演，未实测。
+> 注：四个框架的目标产出物（`app.py` 和 `test_app.py`）功能等价。**差异不在最终代码，在于「如何到达那里」的过程。** 其中 dev-flow 一列为按设计推演，未实测。Matt Pocock Skills 未参与本轮实测——它是方法论型技能集（grill/tdd/code-review 等可自由组合），不强制一套固定流程，难以用同一实验脚本衡量。
 
 ---
 
@@ -411,10 +462,15 @@ hooks 层在宿主事件流上直接拦截：logic-complete 之前 Git 写（add
 | 流程要求机器强制，不接受靠提示词自觉 | **Dev Flow** | hooks + MCP 状态机拦截越界，逻辑未完成禁 Git 写 |
 | 项目里从 XS 到 L 的改动都有，不想为小改动背重流程 | **Dev Flow** | 路线按规模×拓扑×风险自适应，小改动零文档 |
 | 需要可审计追溯与最小回撤单元 | **Dev Flow（standard M/L）** | REQ/AC → TASK → TEST/RU 可审计图 + 单元级双向验证回滚 |
+| 想要工程方法论最扎实的审查/调试/建模技能 | **Matt Pocock Skills** | 双轴 code-review、diagnosing-bugs、domain-modeling 是五者中方法论最完整的 |
+| 不想被任何框架锁死，想完全掌控过程 | **Matt Pocock Skills** | 技能即文件可 hack，不拥有你的过程 |
+| 要流程保证又要有方法论深度 | **Dev Flow + Matt Pocock Skills** | Dev Flow 管「何时做什么」，技能管「怎么做好」，互补不互斥 |
 
 ---
 
 ## 7. 深度思考：四个框架背后的范式之争
+
+> 本节基于第 5 节四框架实测（Matt Pocock Skills 为方法论型技能集，未参与实测）。
 
 在跑完四个框架之后，有一些超越「哪个更好」的思考：
 
@@ -457,16 +513,17 @@ hooks 层在宿主事件流上直接拦截：logic-complete 之前 Git 写（add
 
 ---
 
+
 ## 8. 总结
 
-| 维度 | Spec Kit | OpenSpec | Superpowers | Dev Flow |
-| --- | --- | --- | --- | --- |
-| **一句话** | 规范可执行，生成代码 | 规范轻量化，追踪变更 | 流程纪律化，强制质量 | 流程合同化，机器强制履行 |
-| **最佳场景** | 新项目、大团队 | 存量迭代、快速开发 | 质量优先、Claude Code | 双宿主接力、规模多样、要求可追溯 |
-| **学习成本** | 中-高 | 低 | 中 | 中（概念多，但按路线自动收敛） |
-| **Token 成本** | 高 | 低 | 中-高 | 低-中（XS/S 极低，standard L 中高） |
-| **产出质量上限** | 高 | 中-高 | 最高 | 高 |
-| **灵活性** | 低（门控严格） | 高（自由迭代） | 中（流程绑定） | 中（路线自选，门禁强制） |
+| 维度 | Spec Kit | OpenSpec | Superpowers | Dev Flow | Matt Pocock Skills |
+| --- | --- | --- | --- | --- | --- |
+| **一句话** | 规范可执行，生成代码 | 规范轻量化，追踪变更 | 流程纪律化，强制质量 | 流程合同化，机器强制履行 | 基本功技能化，不拥有过程 |
+| **最佳场景** | 新项目、大团队 | 存量迭代、快速开发 | 质量优先、Claude Code | 双宿主接力、规模多样、要求可追溯 | 想保留控制权、技能可定制 |
+| **学习成本** | 中-高 | 低 | 中 | 中（概念多，但按路线自动收敛） | 低-中（技能即斜杠命令） |
+| **Token 成本** | 高 | 低 | 中-高 | 低-中（XS/S 极低，standard L 中高） | 中（拷问与子代理审查有成本） |
+| **产出质量上限** | 高 | 中-高 | 最高 | 高 | 高 |
+| **灵活性** | 低（门控严格） | 高（自由迭代） | 中（流程绑定） | 中（路线自选，门禁强制） | 最高（可 hack、可组合） |
 
 **作者建议**：
 
