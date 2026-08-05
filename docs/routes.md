@@ -39,7 +39,7 @@
 - 实际 diff 与计划不一致时生成 drift report；只有实质偏航、重大风险取舍或恢复路径耗尽才向用户确认。
 - 连续在同一工作区启动多个 feature 时，启动瞬间已存在的受保护目录脏文件仍归属前一 feature；如需串行开发，请先提交或隔离工作区。`dev_flow_finalize` 会以 `DELIVERY_FILE_PREEXISTING_DIRTY` 阻止把这类文件误纳入当前交付快照。
 
-standard M 的“独立审查”指 planning 内部的 plan-review jobs；`code_review` 阶段的 code review 只通过 `record_step(reviewType: "code")` 记录轻量证据，不能互相顶替。内部的 review、Trace、checkpoint、rollback、feature-check 都是 Core 义务或只读投影，不再作为重复的用户路线步骤。Standard 路线的单元依赖顺序由 Core 编排；模型不应把它扩展成第二条用户路线。v2 不迁移旧状态；doctor 会报告遗留状态并建议在 1.10 完成/放弃后重新开始。
+standard M 的“独立审查”指 planning 内部的 plan-review jobs；`code_review` 阶段由 `code-review` 技能对实现变更做实质审查（正确性、安全、测试等），blocking 先修再过关，通过后用 `record_step(reviewType: "code")`（及合同要求的 depth/checks）关闭门禁，与 plan-review 不能互相顶替。内部的 review、Trace、checkpoint、rollback、feature-check 都是 Core 义务或只读投影，不再作为重复的用户路线步骤。Standard 路线的单元依赖顺序由 Core 编排；模型不应把它扩展成第二条用户路线。v2 不迁移旧状态；doctor 会报告遗留状态并建议在 1.10 完成/放弃后重新开始。
 
 机器权威：`plugins/dev-flow/policy/contract.json`。运行 `npm test` 验证合同、单元、路线和跨宿主交接。正常用户交互只使用中文选项和 `dev_flow_answer`，不使用 token 或公共 resolve 工具。
 

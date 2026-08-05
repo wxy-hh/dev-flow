@@ -15,7 +15,14 @@ test("distributed skills describe the internal review and feature-check contract
   assert.match(featureCheck, /并入 finalize/);
   assert.match(planReview, /planning/);
   assert.match(codeReview, /code_review/);
+  assert.match(codeReview, /reviewType: "code"/);
+  assert.match(codeReview, /requiredEvidence/);
+  assert.match(codeReview, /full-code-review/);
+  assert.match(codeReview, /实质审查|blocking/);
+  assert.match(codeReview, /diff|变更/);
+  assert.match(codeReview, /record_step/);
   assert.match(routes, /rollback-operability/);
+  assert.match(routes, /实质审查/);
 });
 
 test("intake and status skills surface the classification level/route to the user", async () => {

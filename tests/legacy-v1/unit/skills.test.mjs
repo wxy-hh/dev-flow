@@ -29,7 +29,7 @@ const SKILL_ALIASES = {
 
 const ROUTE_HIT_TOKENS = {
   "plan-review": [/plan_review/, /create-review-batch/, /dev_flow_submit_review_job/, /implementation_approval/],
-  "code-review": [/code_review/, /reviewType: "code"/, /requiredEvidence/, /full-code-review/],
+  "code-review": [/code_review/, /reviewType: "code"/, /requiredEvidence/, /full-code-review/, /blocking|实质审查/, /diff|变更/],
   implement: [/implementation/, /implementation_approval/, /dev_flow_begin_implementation_unit/, /dev_flow_checkpoint_implementation_unit/, /fileScope/, /连续编辑多个文件/, /当前 diff/, /只调用一次/],
   verify: [/verification/, /dev_flow_verify/, /requiredEvidence\.verificationKinds/, /manualAcceptance/, /user-signoff/, /acceptanceAssist/, /明确要求协助/, /交付后检查/],
   "feature-check": [/feature-check/, /dev_flow_feature_check/, /不得编造/, /人工\/UI 验收/, /Core/],
