@@ -1,16 +1,14 @@
-import { readFile } from "node:fs/promises";
-import path from "node:path";
 import { checkpointsEnforcementRequired, routeDefinitionForFeature } from "../policy/contract.js";
 import type { NextAction, RequiredEvidence, StageCapabilityView } from "../policy/types.js";
 import type { RollbackNode, TraceSummary, TraceabilityPointer } from "../policy/traceability.js";
 import { DevFlowError } from "./errors.js";
 import { approvalReplyHint, type ApprovalId } from "./approval.js";
 import { nextAction } from "./next.js";
-import { parseGrillFrontMatter } from "./requirements-grill.js";
+import { pendingDecisionForState } from "./decision-interactions.js";
 import { readProjectConfig, readState, type FeatureState } from "./state-store.js";
 import { inspectCurrentTrace, type TraceBlocker } from "./traceability-gates.js";
 import { readTraceability } from "./traceability-store.js";
-import { fallbackHint, findInteractionForTarget, toPublicInteraction, type PublicInteraction } from "./user-interactions.js";
+import { decisionHint, findInteractionForTarget, toPublicInteraction, type PublicInteraction } from "./user-interactions.js";
 import { readVerificationFreshness, type VerificationFreshness } from "./verification.js";
 import { readReviewProjection, type ReviewProjection } from "./review-projection.js";
 import { rollbackChainView, type RollbackChainView } from "./rollback.js";
@@ -115,36 +113,13 @@ async function reviewStatus(root: string, state: FeatureState): Promise<ReviewSt
 
 async function grillWait(root: string, state: FeatureState, action: NextAction): Promise<ProgressWait> {
   if (action.kind !== "run-step" || action.step !== "requirements") return { kind: "none" };
-  const artifact = state.artifacts.requirements;
-  if (!artifact) return { kind: "none" };
-  let contents: string;
-  try {
-    contents = await readFile(path.join(root, ".dev-flow", "features", state.featureId, artifact.path), "utf8");
-  } catch {
-    throw new DevFlowError("GRILL_STATUS_INVALID", "registered requirements artifact cannot be read", {
-      recoveryHint: "Restore or re-scaffold the requirements artifact through MCP, then record it before continuing",
-    });
-  }
-  const grill = parseGrillFrontMatter(contents);
-  const pending = Object.values(state.interactions ?? {}).find((value) => {
-    const interaction = value as { kind?: string; status?: string };
-    return interaction.kind === "grill" && interaction.status === "pending";
-  }) as { target?: string } | undefined;
-  if (pending?.target?.startsWith("grill:")) {
-    const interaction = findInteractionForTarget(state, pending.target);
-    if (interaction) return {
-      kind: "grill",
-      questionId: pending.target.slice("grill:".length),
-      responseHint: fallbackHint(interaction),
-      interaction: toPublicInteraction(interaction),
-    };
-  }
-  if (grill.status !== "in_progress") return { kind: "none" };
-  const interaction = findInteractionForTarget(state, `grill:${grill.questionId!}`);
+  const decision = pendingDecisionForState(state);
+  if (decision?.kind !== "grill") return { kind: "none" };
+  const interaction = decision.target ? findInteractionForTarget(state, decision.target) : undefined;
   return {
     kind: "grill",
-    questionId: grill.questionId!,
-    responseHint: interaction ? fallbackHint(interaction) : grill.responseHint!,
+    questionId: "current",
+    responseHint: interaction ? decisionHint(interaction) : decision.question,
     ...(interaction ? { interaction: toPublicInteraction(interaction) } : {}),
   };
 }
@@ -196,7 +171,7 @@ export async function buildProgress(
       approvalId,
       replyHint: returned
         ? "已记录修改意见；请先更新并登记门禁依据，再展示新的确认控件"
-        : interaction ? fallbackHint(interaction) : approvalReplyHint(),
+        : interaction ? decisionHint(interaction) : approvalReplyHint(),
       ...(interaction ? { interaction: toPublicInteraction(interaction) } : {}),
       ...(returned && snapshot?.lastResponse?.comment ? { feedback: snapshot.lastResponse.comment } : {}),
     };

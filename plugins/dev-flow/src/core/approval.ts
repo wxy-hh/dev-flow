@@ -2,7 +2,7 @@ import { normalizeReplyText } from "./user-interactions.js";
 
 /**
  * An approval is addressed by the Core-derived obligation id. There is no
- * fixed route gate or business-specific confirmation name in v2.
+ * fixed route gate or business-specific confirmation name in v3.
  */
 export type ApprovalId = string;
 

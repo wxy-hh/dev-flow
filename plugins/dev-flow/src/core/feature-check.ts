@@ -23,6 +23,8 @@ import { invalidateStaleVerification } from "./verification.js";
 import { assertReviewComplete } from "./review-jobs.js";
 import { captureAutomaticCheckpoint } from "./auto-checkpoint.js";
 import { satisfyObligations } from "../policy/obligations.js";
+import { reconcileWorkspaceLineage } from "./git-reconciliation.js";
+import { hasCurrentQualityException } from "./quality-exceptions.js";
 
 function assertRequiredEvidence(step: string, required: RequiredEvidence, evidence: unknown): void {
   const missing = missingRequiredEvidence(required, evidence);
@@ -111,7 +113,7 @@ export async function recordStep(
     const route = routeDefinitionForFeature(state.route, state.workflowCapabilities);
     await assertRequirementsGrillSatisfied(root, id, state);
     await assertTraceGateCurrent(root, state, step);
-    if (step === "implementation" && state.schemaVersion !== 2 && checkpointsEnforcementRequired(state.route, state.workflowCapabilities)) {
+    if (step === "implementation" && state.schemaVersion === 3 && checkpointsEnforcementRequired(state.route, state.workflowCapabilities)) {
       await assertImplementationUnitsComplete(root, state);
     }
     const required = requiredEvidenceForStep(
@@ -131,10 +133,10 @@ export async function recordStep(
     const next = route.orderedSteps.find((candidate) => state.steps[candidate]?.status !== "satisfied");
     state.currentStage = next;
   });
-  if (next.schemaVersion === 2 && next.currentStage === "implementation" && !next.checkpoints?.length) {
+  if (next.schemaVersion === 3 && next.currentStage === "implementation" && !next.checkpoints?.length) {
     return captureAutomaticCheckpoint(root, id, next.revision, "implementation", "implementation-entry");
   }
-  if (step === "implementation" && next.schemaVersion === 2 && next.checkpoints?.length) {
+  if (step === "implementation" && next.schemaVersion === 3 && next.checkpoints?.length) {
     return captureAutomaticCheckpoint(root, id, next.revision, "implementation", "implementation-complete");
   }
   return next;
@@ -155,6 +157,8 @@ async function assertImplementationUnitsComplete(root: string, state: FeatureSta
 }
 
 async function invalidateBeforeFinalClaim(root: string, id: string, expectedRevision: number): Promise<void> {
+  const state = await readState(root, id);
+  if (hasCurrentQualityException(state, "verification")) return;
   const invalidated = await invalidateStaleVerification(root, id, expectedRevision);
   if (invalidated) {
     throw new DevFlowError("VERIFICATION_STALE", "protected files changed; rerun verification", {
@@ -165,7 +169,7 @@ async function invalidateBeforeFinalClaim(root: string, id: string, expectedRevi
 
 function assertVerificationWasNotInvalidated(state: FeatureState): void {
   const evidence = state.steps.verification?.evidence as { reason?: unknown } | undefined;
-  if (evidence?.reason === "protected-files-changed") {
+  if (evidence?.reason === "protected-files-changed" && !hasCurrentQualityException(state, "verification")) {
     throw new DevFlowError("VERIFICATION_STALE", "protected files changed; rerun verification");
   }
 }
@@ -189,7 +193,7 @@ export async function featureCheck(
     assertVerificationWasNotInvalidated(state);
     assertCurrentStep(state, "feature_check");
     await assertTraceGateCurrent(root, state, "feature_check");
-    if (state.verification.verifiedFingerprint !== state.businessFingerprint) {
+    if (state.verification.verifiedFingerprint !== state.businessFingerprint && !hasCurrentQualityException(state, "verification")) {
       throw new DevFlowError("VERIFICATION_STALE", "protected files changed or verification did not pass");
     }
     const orderedSteps = routeDefinitionForFeature(state.route, state.workflowCapabilities).orderedSteps;
@@ -228,11 +232,15 @@ export async function finalize(
   await invalidateBeforeFinalClaim(root, id, expectedRevision);
   await assertArtifactIntegrity(root, id);
   const config = await readProjectConfig(root);
+  const reconciledWorkspace = initial.workspace.baseHead
+    ? await reconcileWorkspaceLineage(root, initial.workspace, config)
+    : initial.workspace;
   let snapshot: DeliverySnapshot | undefined;
   return mutate(root, id, expectedRevision, "finalized", async (state) => {
     await assertRequirementsGrillSatisfied(root, id, state);
     assertVerificationWasNotInvalidated(state);
     const route = routeDefinitionForFeature(state.route, state.workflowCapabilities);
+    state.workspace = reconciledWorkspace;
     assertCurrentStep(state, "finalize");
     await assertTraceGateCurrent(root, state, "finalize");
     if (route.featureCheckRequired
@@ -249,7 +257,7 @@ export async function finalize(
     if (pending.length) {
       throw new DevFlowError("OBLIGATIONS_INCOMPLETE", "required workflow obligations are not satisfied", {
         obligations: pending,
-        recoveryHint: "请按 dev_flow_next 返回的门禁完成确认、审查、验证或回撤策略后重试完成",
+        recoveryHint: "请按 dev_flow_status 和对应 inspect 主题完成确认、审查、验证或回撤策略后重试完成",
       });
     }
     snapshot = await createDeliverySnapshot(root, id, state, config);

@@ -8,6 +8,7 @@ import type { ReviewFinding } from "../policy/types.js";
 import { DevFlowError } from "./errors.js";
 import { readReviewLedger } from "./review-store.js";
 import type { FeatureState } from "./state-store.js";
+import { unresolvedBlockingFindings } from "./review-findings.js";
 
 const digest = (contents: string | Buffer): string => createHash("sha256").update(contents).digest("hex");
 
@@ -90,12 +91,12 @@ function publicFinding(finding: ReviewFinding): ReviewProjectionFinding {
   };
 }
 
-function allDispositions(ledger: ReviewLedger): Record<string, ReviewFindingDisposition> {
-  return Object.assign({}, ...ledger.batches.map((batch) => batch.dispositions ?? {}));
-}
-
 function unresolvedBlockingFindingIds(ledger: ReviewLedger): string[] {
-  const dispositions = allDispositions(ledger);
+  if (ledger.findingEvents?.length) {
+    const current = ledger.batches.find((batch) => batch.validity === "current");
+    return unresolvedBlockingFindings(ledger, current?.basisHash).map((finding) => finding.findingId).sort();
+  }
+  const dispositions = Object.fromEntries(ledger.batches.flatMap((batch) => Object.entries(batch.dispositions ?? {})));
   return ledger.batches.flatMap((batch) => batch.jobs.flatMap((job) => job.submission?.findings ?? []))
     .filter((finding) => finding.severity === "blocking" && !dispositions[finding.findingId])
     .map((finding) => finding.findingId)

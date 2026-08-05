@@ -182,7 +182,7 @@ test("高风险 XS 的确认义务在 implementation 写入前生效", async () 
   assert.equal(blocked?.code, "DEV_FLOW_IMPLEMENTATION_APPROVAL_REQUIRED");
 
   const presentation = await gates.presentApproval(root, "security-xs", current.revision, action.step);
-  current = await gates.resolveApprovalElicitation(root, "security-xs", presentation.revision, presentation.approvalInteraction.id, "confirm", undefined, "codex");
+  current = await gates.resolveApprovalElicitation(root, "security-xs", presentation.revision, presentation.interactionId, "confirm", undefined, "codex");
   const allowed = await adapter.preToolBlock(root, { tool_name: "write", tool_input: { file_path: "src/feature.txt" } });
   assert.equal(allowed, undefined);
 });

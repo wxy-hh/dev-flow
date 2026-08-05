@@ -1,6 +1,6 @@
-# Dev Flow 2.0 路线契约
+# Dev Flow 4.0 路线契约
 
-`dev_flow_start` 只创建 intake；`dev_flow_classify` 是纯预览，`dev_flow_lock_classification` 在事实和决策收敛后原子锁定基础路线。基础路线只有六条，风险只增加义务，不创建路线。
+`dev_flow_start` 只创建需求了解状态；`dev_flow_classify` 是纯预览，`dev_flow_lock_classification` 在事实和决策收敛后原子锁定基础路线。基础路线只有六条，风险只增加义务，不创建路线。
 
 | 路线 | 用户可见阶段 | 强制文档 |
 | --- | --- | --- |
@@ -21,7 +21,7 @@
 | light L | approval、checkpoint、rollback | 无计划批次；planning 需提交 `rollback-strategy` 证据 |
 | standard L | approval、checkpoint、review、rollback | requirements-coverage、architecture-testability、rollback-operability |
 
-`workflowCapabilities` 表示 Core/宿主支持的能力，不等于当前路线已经满足的义务；实际是否阻塞以 `dev_flow_next` 的 `obligations` 为准。风险标签只基于用户需求和仓库事实追加义务，不使用业务案例名单分级。
+`workflowCapabilities` 表示 Core/宿主支持的能力，不等于当前路线已经满足的义务；实际是否阻塞以 Core 状态和 compact status 的下一步为准。风险标签只基于用户需求和仓库事实追加义务，不使用业务案例名单分级。
 
 风险覆盖层不会创建第二条路线：Core 会在现有路线最合适的阶段返回 `risk-review`、安全边界、回滚或领域验证等证据要求；完成该阶段证据后，相关义务自动变为 `satisfied`。完成前如果仍有义务未满足，`dev_flow_finalize` 会返回 `OBLIGATIONS_INCOMPLETE`，并列出可恢复的义务清单。
 
@@ -41,4 +41,12 @@
 
 standard M 的“独立审查”指 planning 内部的 plan-review jobs；`code_review` 阶段的 code review 只通过 `record_step(reviewType: "code")` 记录轻量证据，不能互相顶替。内部的 review、Trace、checkpoint、rollback、feature-check 都是 Core 义务或只读投影，不再作为重复的用户路线步骤。Standard 路线的单元依赖顺序由 Core 编排；模型不应把它扩展成第二条用户路线。v2 不迁移旧状态；doctor 会报告遗留状态并建议在 1.10 完成/放弃后重新开始。
 
-机器权威：`plugins/dev-flow/policy/contract.json`。运行 `npm test` 验证合同、单元、路线和跨宿主交接。
+机器权威：`plugins/dev-flow/policy/contract.json`。运行 `npm test` 验证合同、单元、路线和跨宿主交接。正常用户交互只使用中文选项和 `dev_flow_answer`，不使用 token 或公共 resolve 工具。
+
+## 4.0 生命周期补充
+
+- compact status 只显示当前真实阻塞；详细事实通过单一 topic inspect 获取。
+- 同一 active feature 最多一个 pending decision；每回合只问一道题，没有“合并剩余”自动选项。
+- review blocker 由 ledger-level finding events 归约；successor 必须为 carried finding 提交显式结果。
+- 启动脏树、WIP/manual commit、pause/resume 和 finalize 均经过 workspace lineage 对账；系统不得自动 stash、reset 或改写用户历史。
+- 流程质量问题可由用户明确接受风险并绑定当前 basis/fingerprint；state corruption、Git lineage 分叉和交付内容不确定不能走质量例外。

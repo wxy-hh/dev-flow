@@ -3,7 +3,7 @@ name: plan
 description: 在 planning 阶段生成实施计划并触发 Core 内嵌审查。
 ---
 
-仅使用 Dev Flow MCP 和已登记资产；禁止手改状态、Trace、Review snapshot。读取 `dev_flow_next` 的 planning 能力、完成条件和义务，在能力合同内推进。
+仅使用 Dev Flow MCP 和已登记资产；禁止手改状态、Trace、Review snapshot。读取 `dev_flow_status`，需要细节时 inspect `classification`、`artifacts`、`review`，在当前中文阶段合同内推进。
 
 standard M/L 需要 `实施计划.md`，light L 需要该文件，XS/S/light M 不强制生成 Markdown。编辑资产遵循：scaffold → 读取登记路径 → 编辑 → record；Trace delta 与 artifact hash 必须由一个 CAS 提交。
 

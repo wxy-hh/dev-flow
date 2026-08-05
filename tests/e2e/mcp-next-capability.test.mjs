@@ -13,8 +13,8 @@ const config = {
   protectedRoots: ["src"],
 };
 
-test("MCP dev_flow_next returns the public stage capability contract", async () => {
-  const root = await mkdtemp(path.join(os.tmpdir(), "dev-flow-mcp-next-v2-"));
+test("MCP status is compact and inspect exposes one explicit topic", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "dev-flow-mcp-status-v3-"));
   try {
     await mkdir(path.join(root, "src"));
     await mcpCall(server, root, "dev_flow_init_project", { config });
@@ -22,14 +22,14 @@ test("MCP dev_flow_next returns the public stage capability contract", async () 
       featureId: "capability", objective: "验证阶段能力合同", scope: { inScope: ["src"], outOfScope: [] }, host: "codex",
     });
     assert.equal("steps" in started, false);
-    assert.equal(started.mode, "intake");
-    const fullStatus = await mcpCall(server, root, "dev_flow_status", { featureId: "capability" });
-    assert.ok(fullStatus.steps);
-    const capability = await mcpCall(server, root, "dev_flow_next", { featureId: "capability" });
-    assert.equal(capability.stage, "intake");
-    assert.ok(capability.allowedActions.includes("lock-classification"));
-    assert.equal("kind" in capability, false);
-    assert.equal("step" in capability, false);
+    assert.equal(started.state.mode, "intake");
+    const status = await mcpCall(server, root, "dev_flow_status", { featureId: "capability" });
+    assert.equal(status.当前阶段, "需求了解");
+    assert.equal("steps" in status, false);
+    assert.equal(status.control.expectedRevision, started.state.revision);
+    const classification = await mcpCall(server, root, "dev_flow_inspect", { featureId: "capability", topic: "classification" });
+    assert.equal(classification.topic, "classification");
+    await assert.rejects(() => mcpCall(server, root, "dev_flow_inspect", { featureId: "capability", topic: "all" }), (error) => error.code === "INVALID_TOOL_INPUT");
   } finally {
     await rm(root, { recursive: true, force: true });
   }

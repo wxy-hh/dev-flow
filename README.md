@@ -1,6 +1,6 @@
 # Dev Flow
 
-Dev Flow 是面向 **Claude Code** 与 **Codex CLI** 的预构建双宿主插件。
+Dev Flow 4.0 是面向 **Claude Code** 与 **Codex CLI** 的预构建双宿主插件。
 
 它按**规模（XS/S/M/L）× 拓扑 × 执行方式（light/standard）× 需求状态 × 风险标签**选择路线，只强制该路线所需的步骤与证据；两端共用 `.dev-flow/` 状态，可在 Claude 开任务、Codex 收尾（或反向）。
 
@@ -26,19 +26,27 @@ Dev Flow 的设计初衷不是把每个小任务都变成重流程，而是在�
 
 Dev Flow 的 Bash target analyzer 只做工作流辅助分析，不是命令合法性裁判。它可以在可靠识别目标时判断 protected roots、`.dev-flow` 控制区、active feature 资产和 Git 写入门禁；命令使用 wrapper、解释器、管道、heredoc、变量展开或复杂重定向而无法静态解析时，默认继续执行，不返回 `DEV_FLOW_WRITE_TARGET_UNRESOLVED`。仓库外验证日志也交给 Claude Code / Codex 的原生 sandbox、permissions 和确认流处理。
 
-Hook 仍会拒绝确定的 `.dev-flow` 控制文件写入、intake 或未批准阶段的 protected-root 写入、未登记的 feature 资产、开放恢复事务以及 logic-complete 前的 Git 写入。每个 Dev Flow block 都包含原因、影响、具体解决方案、是否需要用户决定和解决后是否自动重试原操作；自动动作不会要求用户再回复一次“继续”。状态确实不可读时才使用 `DEV_FLOW_WORKFLOW_STATE_UNREADABLE`，并先自动刷新和运行只读 doctor。
+Hook 仍会拒绝确定的 `.dev-flow` 控制文件写入、intake 或未批准阶段的 protected-root 写入、未登记的 feature 资产和开放恢复事务。implementation 获得授权后可按 feature ownership 审计本地 Git stage/commit；push 与历史改写仍禁止。每个 Dev Flow block 都包含原因、影响、具体解决方案、是否需要用户决定和解决后是否自动重试原操作。
 
 普通风险的宿主确认成功且工具执行成功后，`PermissionRequest` / `PostToolUse` 会把授权记在当前 active feature 的 Core 事件账本中，只复用同一 feature 的 `task-reusable` 风险。切换、finalize 或 abandon feature 后不复用；publish、push、deploy、生产变更和云资源删除等 `always-confirm` 动作每次仍由宿主确认。bypass、dontAsk 等宿主模式关闭确认时，Dev Flow 不保证强制弹窗。Claude 的 block 使用 `hookSpecificOutput.permissionDecision = "deny"`，Codex 使用 `{ "decision": "block", "reason": "..." }`；两者允许且无 advisory 时均退出 0 且不输出 JSON，Codex PreToolUse 不使用 `continue`、`stopReason` 或伪造的 ask。
 
-## v2 可追溯性（2.0.0+）
+## v4 可追溯性与审查
 
 标准 M/L 的需求与实施计划通过 `dev_flow_record_artifact_with_trace` 原子登记；`dev_flow_get_traceability` 只读查看 pointer、ledger、summary 与 blocker。Markdown 只用于叙述，内容寻址 snapshot 才是事实层，state pointer 是提交点。不要直接写 `.dev-flow/features/*/traceability/**`。
 
 generated status 只由 Core scaffold/refresh；standard L 没有 status 文件，应读取 `dev_flow_status`。
 
-**Review 2a / 4B**：新 standard M/L feature 使用不可变 review batch 与 Core 生成的只读 `plan-review` 投影。默认保证等级为 `multi-perspective`（多角色完成 ≠ 已证明多代理）。可选服务端采样可升至 `independent-sampling`；可选宿主 subagent attestation 最多 `multi-agent-attested`（不是 verified）。v2 的 checkpoint 由 Core 在所有路线的实现边界自动捕获：XS/S 使用单一基线，light M 默认单元，M/L 按事实和可验证切片增加边界，不要求 agent 手动推进。回撤执行仍走既有事务日志和显式恢复确认；checkpoint 是实现期恢复，finalize 的 delivery snapshot / feature 级反向 patch 仍是交付层回退证据，二者不可互相替代。
+**Review 3 / 4B**：standard M/L 使用不可变 review batch 与 Core 生成的只读 `plan-review` 投影。finding events 是唯一 blocker 归约源；successor 必须显式处置 carried findings。默认保证等级为 `multi-perspective`（多角色完成不等于已证明多代理）。checkpoint 由 Core 自动捕获，回撤执行走事务日志和显式确认；finalize 的 delivery snapshot 是交付层回退证据。
 
-3.0 mutation 工具默认返回精简 `FeatureMutationSummary`，不再把完整 `FeatureState` 放进普通 mutation 响应；需要完整状态、完整 review 或 verification attempt 摘要时调用 `dev_flow_status`。review claim 的 capability 只在当前租约内保存并用于 `dev_flow_release_review_job`/重试，不应读取或传播内部 hash。
+4.0 mutation 默认只返回中文用户视图；内部 revision、stage 和 action 只放 structured control。`dev_flow_status` 是 compact 日常入口，详细事实使用九个 topic 的 `dev_flow_inspect`。用户决定统一调用 `dev_flow_answer`，不要求 ID、hash 或 token。
+
+### 4.0 生命周期要点
+
+- 状态 schema 为 v3，旧状态硬拒绝，不提供运行时迁移。
+- 同一 feature 最多一个 pending decision；每回合只呈现一个中文问题和 2-3 个选项。
+- 启动允许脏树，但范围相交的预存路径必须逐题归属；系统不自动 stash、reset 或还原用户文件。
+- WIP/manual commit 可存在；`dev_flow_reconcile_workspace` 自动对账，只有内容变化才标记相关 evidence stale。
+- `dev_flow_pause` 不要求提交、验证或 finalize；resume 先对账。质量例外只适用于流程质量问题，完整性阻塞不能伪装成功。
 
 ---
 
@@ -175,7 +183,7 @@ claude plugin list
 1. **新开**一个会话，或执行 `/reload-plugins`。  
 2. 打开 `/plugin`，确认 **dev-flow** 为已安装且 **enabled**。  
 3. 打开 `/mcp`，确认存在 **dev-flow** 服务器，且工具列表里有例如：  
-   `dev_flow_init_project`、`dev_flow_start`、`dev_flow_next`、`dev_flow_status`、`dev_flow_doctor` 等。  
+   `dev_flow_init_project`、`dev_flow_start`、`dev_flow_status`、`dev_flow_inspect`、`dev_flow_answer`、`dev_flow_doctor` 等。  
 4. 若 hooks 提示未信任：按宿主 UI **审核并信任** dev-flow 的 hooks（未信任则门禁不生效）。
 
 **没有** `/dev_flow_init_project` 或 `/dev-flow:init` 之类斜杠命令是正常的。
@@ -222,9 +230,9 @@ claude plugin list
 之后固定习惯：
 
 1. 先 `dev_flow_start` 创建 intake，再用 `dev_flow_classify` 预览并用 `dev_flow_lock_classification` 原子锁定事实分类。
-2. 按 `dev_flow_next` 返回的阶段能力推进；阶段内等价操作可以自由安排，不必为每个工具动作停下来确认。
+2. 按 `dev_flow_status` 的中文下一步推进；需要事实细节时按主题调用 `dev_flow_inspect`。
 3. 动态 approval obligation、重大偏航、未解决 blocking finding 或不可恢复错误才需要用户决策；展示后等待用户下一条消息，再确认或修改。
-4. **logic-complete 之前**，hooks 会拦截 Git 写操作（add/commit/push 等）。
+4. implementation 获得授权后本地 stage/commit 仍须经过 ownership 审计；本仓库禁止智能体实际 commit，push 始终由用户审核发布。
 
 #### 5. 日常与收尾
 
@@ -248,7 +256,7 @@ claude plugin list
 
 ### 宿主基线
 
-2.0 经 release-smoke 验证的最低组合：
+4.0 经协议测试验证的最低组合：
 
 | 组件 | 版本 |
 |------|------|
@@ -272,13 +280,13 @@ npm run test:host-e2e
 2. 在业务仓调用 **`dev_flow_init_project`** → 得到 `.dev-flow/project.json`。  
 3. **`dev_flow_doctor`** 确认健康。  
 4. **`/dev-flow:task`** 创建 intake，调查事实并记录用户决策。
-5. `dev_flow_classify` 预览、`dev_flow_lock_classification` 锁定；随后始终参考 `dev_flow_next` 的阶段能力。
-6. 所有路线由 Core 自动捕获实现 checkpoint；approval obligation 或真实偏航需要用户决策时才停等确认，最后 finalize；logic-complete 后才 Git 写。
+5. `dev_flow_classify` 预览、`dev_flow_lock_classification` 锁定；随后读取 `dev_flow_status`。
+6. 所有路线由 Core 自动捕获实现 checkpoint；用户决定统一通过 `dev_flow_answer`，最后 finalize；WIP/manual commit 和 pause/resume 均可恢复。
 
 需求确认不等于需求拷问：需求不清晰时先停留在 intake，`grillme` 只收敛用户拥有的决策并写入 Decision Ledger；不要求先生成需求文档。明确事实可直接锁定分类，`provided-confirmed` 也仍可显式调用 `/dev-flow:grillme`。
 
-**1.3.0+ 等待与恢复**：`dev_flow_status` 返回 `progress`（当前步骤、是否等人、Q-id/gate 提示），不会修改 revision；用户说「继续」时先 status，再按 wait 提示回复——合法等待不是失败。损坏的 active state 用 `dev_flow_doctor` + `dev_flow_recover_corrupt_feature`（备份 abandon）；若 pointer 本身损坏，必须使用 doctor 给出的 `activeSha256`、目标 feature 与证据续办，禁止手改 `.dev-flow`。agent 只能编辑 MCP 已登记的 artifact；控制文件仅 MCP 可写。同 level 的 `standard → light` 可在用户明确要求、无 protected-root 变更、且实现门禁从未展示时 `dev_flow_reclassify`（需 `userEvidence`）。
-**2.0 事实覆盖层**：分类依据必须来自仓库事实与决策台账；风险只增加 review、verification、rollback、checkpoint 或 approval 义务，不创建额外路线。实现期普通写入按真实影响审计，控制路径继续拒绝；验证失败保留工作并进入 repair loop，有进展自动修复，连续无进展才请求用户。
+**4.0 等待与恢复**：`dev_flow_status` 返回 compact 中文状态和唯一待决问题；详细信息用 `dev_flow_inspect`。损坏的 active state 用 `dev_flow_doctor` + `dev_flow_recover_corrupt_feature`，禁止手改 `.dev-flow`。agent 只能编辑 MCP 已登记的 artifact；控制文件仅 MCP 可写。旧 active feature 与新任务冲突时只呈现一个 task-switch decision。
+**4.0 事实覆盖层**：分类依据必须来自仓库事实与决策台账；风险只增加 review、verification、rollback、checkpoint 或 approval 义务，不创建额外路线。实现期普通写入按真实影响审计，控制路径继续拒绝；验证失败保留工作并进入 repair loop，有进展自动修复，连续无进展才请求用户。
 
 项目侧状态（示意）：
 
@@ -327,7 +335,7 @@ description 仍保留 `df-*`、`dev-flow-*` 旧名作匹配兼容。
 | 用途 | Skill id | 斜杠 | 旧名兼容 | 主要 next 动作 / 场景 |
 |------|----------|------|----------|----------------------|
 | 开任务 / 分类 | `task` | `/dev-flow:task` | `df-task`、`dev-flow-task` | classify + `dev_flow_start` |
-| 状态 / 接力 | `status` | `/dev-flow:status` | `df-status`、`dev-flow-status` | 只读 status / next |
+| 状态 / 接力 | `status` | `/dev-flow:status` | `df-status`、`dev-flow-status` | compact status / topic inspect |
 | 诊断 | `doctor` | `/dev-flow:doctor` | `df-doctor`、`dev-flow-doctor` | `dev_flow_doctor` |
 | 需求采集与登记 | `requirements` | `/dev-flow:requirements` | `df-requirements`、`dev-flow-requirements` | `requirements` / `requirements_alignment` |
 | 需求/方案逐题拷问 | `grillme` | `/dev-flow:grillme` | `df-grillme`、`dev-flow-grillme` | requirements 内 grill 子流程 |
@@ -341,11 +349,11 @@ description 仍保留 `df-*`、`dev-flow-*` 旧名作匹配兼容。
 | 完备检查 | `feature-check` | `/dev-flow:feature-check` | `df-feature-check`… | `feature-check` |
 | 收尾 | `finish` | `/dev-flow:finish` | `df-finish`… | `finalize` |
 
-`requirements` 是需求链唯一编排者与 MCP 写入者；`grillme` 只做逐题压测（可写需求草稿的 Decision Log / Open Questions / `grill_status`，**禁止** mutation/gate）。触发词含 grillme、拷问、压测方案等。执行批准不是固定阶段，而是当 approval obligation 仍待确认且实现前置条件满足时动态呈现的一次用户决策。
+`requirements` 是需求链唯一编排者与 MCP 写入者；`grillme` 只做逐题压测，需求文档不保存 grill 控制字段，**禁止**手改 mutation/gate。触发词含 grillme、拷问、压测方案等。执行批准不是固定阶段，而是当 approval obligation 仍待确认且实现前置条件满足时动态呈现的一次用户决策。
 
-**工作流命中不依赖技能长名**：状态机只认 MCP（`dev_flow_next` 返回的 stage、能力类别、完成条件和义务）。技能 description 同时写明对应 stage（如 `planning`、`code_review`、`implementation`），模型可在能力合同内选择等价工具。
+**工作流命中不依赖技能长名**：状态机只认 MCP（`dev_flow_status` 的中文阶段和 `structuredContent.control`）。技能 description 同时写明对应阶段，模型可在能力合同内选择等价工具。
 
-状态只通过 MCP（如 `dev_flow_start`、`dev_flow_next`、`dev_flow_confirm_approval`、`dev_flow_finalize` 等）变更。
+状态只通过 MCP（如 `dev_flow_start`、`dev_flow_status`、`dev_flow_answer`、`dev_flow_pause`、`dev_flow_finalize` 等）变更。
 
 ---
 

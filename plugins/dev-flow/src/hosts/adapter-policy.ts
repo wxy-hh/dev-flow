@@ -1,6 +1,8 @@
 import path from "node:path";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 import { approvalBasisArtifacts, confirmedApproval } from "../core/approval-basis.js";
-import { classifyGitCommand } from "../core/git-policy.js";
+import { classifyGitCommand, classifyGitCommandKind } from "../core/git-policy.js";
 import { readActive, readFeatureEvents, readProjectConfig, readRecoveryTransaction, readState, type FeatureState } from "../core/state-store.js";
 import { readTraceability } from "../core/traceability-store.js";
 import { readReviewLedger } from "../core/review-store.js";
@@ -89,6 +91,7 @@ const controlFileNames = new Set(["state.json", "active.json", "project.json", "
 
 /** 拦截消息中的 scratch 引导：临时验证文件放到 protectedRoots 之外的 scratch/，不触发 checkpoint。 */
 const scratchHint = "；临时验证文件请放入 scratch/ 目录";
+const runGit = promisify(execFile);
 
 function toolName(event: HookEvent): string {
   return String(event.tool_name ?? "").toLowerCase();
@@ -681,6 +684,37 @@ function classifyTarget(
   return undefined;
 }
 
+async function stagedGitPaths(root: string): Promise<string[]> {
+  const result = await runGit("git", ["diff", "--cached", "--name-only", "-z"], { cwd: root, encoding: "utf8" });
+  return String(result.stdout).split("\0").filter(Boolean).map((value) => value.replaceAll("\\", "/").normalize("NFC"));
+}
+
+function inFeatureScope(relative: string, state: FeatureState): boolean {
+  return state.scope.inScope.some((scope) => scope === "." || relative === scope || relative.startsWith(`${scope}/`));
+}
+
+function gitPathPolicy(command: string, root: string, workflow: ActiveWorkflow, paths: string[]): PreToolBlock | undefined {
+  const state = workflow.state;
+  if (!state) return undefined;
+  const excluded = paths.filter((relative) => state.workspace.ownership[relative] === "excluded");
+  const unknown = paths.filter((relative) => state.workspace.ownership[relative] !== "feature" && !inFeatureScope(relative, state));
+  if (excluded.length || unknown.length) {
+    return createPreToolBlock(
+      "DEV_FLOW_GIT_GUARD",
+      "Git 命令包含未归属或已排除的路径",
+      "原 Git 操作未执行；不会把用户或其他任务的文件混入 feature 提交",
+      {
+        mode: "user-decision",
+        action: "先将路径明确纳入当前 feature 或移出暂存区；本仓库禁止智能体提交时交由用户审核",
+        retryOriginal: false,
+      },
+    );
+  }
+  void command;
+  void root;
+  return undefined;
+}
+
 function controlMutationBlock(relative: string): PreToolBlock {
   return createPreToolBlock(
     "DEV_FLOW_STATE_MUTATION_FORBIDDEN",
@@ -864,14 +898,29 @@ async function evaluatePreToolUseInternal(root: string, event: HookEvent): Promi
     }
   };
 
-  if (toolName(event) === "bash" && classifyGitCommand(command) === "write" && !workflow.logicComplete) {
+  if (toolName(event) === "bash" && classifyGitCommand(command) === "write") {
+    const gitKind = classifyGitCommandKind(command);
+    const localCommit = gitKind === "local-stage" || gitKind === "local-commit";
+    const implementationReady = workflow.state?.mode === "routed"
+      && currentOpenStep(workflow.state) === "implementation"
+      && workflow.approvalConfirmed;
+    const unsafePathForm = localCommit && /\bgit\s+add\s+(?:-A|--all|\.|-u\b)|\bgit\s+commit\s+[^\n]*\s-a(?:\s|$)/.test(command);
+    if (localCommit && workflow.state?.lifecycle === "active" && (workflow.logicComplete || implementationReady) && !unsafePathForm) {
+      const addMatch = command.match(/\bgit\s+add\s+([^;&|\n]+)/);
+      const explicitPaths = addMatch
+        ? addMatch[1].split(/\s+/).filter((value) => value && !value.startsWith("-"))
+        : await stagedGitPaths(root);
+      const pathBlock = gitPathPolicy(command, root, workflow, explicitPaths.map((value) => projectRelative(root, value) ?? value));
+      if (!pathBlock) return undefined;
+      return pathBlock;
+    }
     return createPreToolBlock(
       "DEV_FLOW_GIT_GUARD",
-      "当前 feature 尚未达到 logic-complete，Git 写入门禁仍然开启",
+      gitKind === "external-publish" ? "外部发布仍然被禁止" : "当前 Git 写入不满足阶段、批准或路径归属条件",
       "原 Git 操作未执行；工作树和 Git 历史没有被这次命令修改",
       {
         mode: "guided",
-        action: "先通过 MCP 完成 verify、feature-check 与 finalize，使 feature 达到 logic-complete；完成后自动重试原 Git 操作",
+        action: gitKind === "external-publish" ? "不要执行 push 或其他外部发布；本仓库由用户审核后手动发布" : "先完成实现批准并只暂存 feature-owned 路径；仓库规则禁止智能体提交时交由用户执行",
         retryOriginal: true,
       },
     );

@@ -25,7 +25,6 @@ test("grillme in intake records and resolves a decision without a requirements d
     ], host: "codex",
   });
   assert.equal(presented.state.mode, "intake");
-  const resolved = await grill.resolveGrillElicitation(root, "f", presented.state.revision, presented.interaction.id, "keep", undefined, "codex");
+  const resolved = await grill.resolveGrillElicitation(root, "f", presented.state.revision, presented.interactionId, "keep", undefined, "codex");
   assert.equal(resolved.state.decisionLedger[0].status, "resolved");
 });
-

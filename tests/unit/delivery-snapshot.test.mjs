@@ -204,7 +204,7 @@ test("finalize rejects protected changes absent from implementation evidence", a
   }
 });
 
-test("finalize rejects a committed protected change after the feature baseline", async () => {
+test("finalize accepts a committed protected change after the feature baseline", async () => {
   const root = await createGitRoot("dev-flow-snapshot-head-drift-");
   try {
     let state = await startXs(root);
@@ -214,13 +214,32 @@ test("finalize rejects a committed protected change after the feature baseline",
     await run("git", ["-c", "user.name=Dev Flow Tests", "-c", "user.email=tests@example.invalid", "commit", "--quiet", "-m", "intervening change"], { cwd: root });
     state = await verification.runVerification(root, "f", state.revision, "codex", ["pass"]);
 
-    await assert.rejects(
-      () => checks.finalize(root, "f", state.revision),
-      (error) => error.code === "DELIVERY_BASELINE_CHANGED",
-    );
-    const active = await store.readState(root, "f");
-    assert.equal(active.lifecycle, "active");
-    assert.equal(active.deliverySnapshot, undefined);
+    const finalized = await checks.finalize(root, "f", state.revision);
+    assert.equal(finalized.lifecycle, "finalized");
+    assert.equal(finalized.deliverySnapshot.finalHead.length, 40);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("multiple WIP commits plus remaining worktree edits produce one reversible final patch", async () => {
+  const root = await createGitRoot("dev-flow-snapshot-wip-chain-");
+  try {
+    let state = await startXs(root);
+    await writeFile(path.join(root, "src", "app.js"), "export const value = 2;\n");
+    state = await checks.recordStep(root, "f", state.revision, "implementation", { files: ["src/app.js"] });
+    await run("git", ["add", "src/app.js"], { cwd: root });
+    await run("git", ["-c", "user.name=Dev Flow Tests", "-c", "user.email=tests@example.invalid", "commit", "--quiet", "-m", "wip one"], { cwd: root });
+    await writeFile(path.join(root, "src", "app.js"), "export const value = 3;\n");
+    await run("git", ["add", "src/app.js"], { cwd: root });
+    await run("git", ["-c", "user.name=Dev Flow Tests", "-c", "user.email=tests@example.invalid", "commit", "--quiet", "-m", "wip two"], { cwd: root });
+    await writeFile(path.join(root, "src", "app.js"), "export const value = 4;\n");
+    state = await verifyAndFinalize(root, state);
+    assert.equal(state.lifecycle, "finalized");
+    const patch = await readFile(path.join(root, state.deliverySnapshot.patchPath), "utf8");
+    assert.match(patch, /value = 4/);
+    await run("git", ["apply", "-R", "--binary", state.deliverySnapshot.patchPath], { cwd: root });
+    assert.equal(await readFile(path.join(root, "src", "app.js"), "utf8"), "export const value = 1;\n");
   } finally {
     await rm(root, { recursive: true, force: true });
   }

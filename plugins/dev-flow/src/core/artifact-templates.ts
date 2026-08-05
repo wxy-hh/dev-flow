@@ -6,23 +6,22 @@ export interface ArtifactTemplateContext {
   requirementsState?: RequirementsState;
 }
 
-function frontMatter(context: ArtifactTemplateContext, kind: string, grillStatus?: string): string {
+function frontMatter(context: ArtifactTemplateContext, kind: string): string {
   return [
     "---",
     "dev_flow:",
-    "  schema_version: 2",
+    "  schema_version: 3",
     `  feature_id: ${context.featureId}`,
     `  route: ${context.route}`,
     `  kind: ${kind}`,
-    ...(grillStatus ? [`  grill_status: ${grillStatus}`] : []),
     "---",
     "",
   ].join("\n");
 }
 
 function requirementsTemplate(context: ArtifactTemplateContext): string {
-  const grillStatus = context.requirementsState === "provided-confirmed" ? "not_required" : "pending";
-  return `${frontMatter(context, "requirements", grillStatus)}# 需求\n\n## 范围\n\n## 目标\n\n## 非目标\n\n## 验收条件\n\n<!-- dev-flow:id=REQ-001 kind=requirement -->\n### REQ-001：需求\n\n- 描述：\n\n<!-- dev-flow:id=AC-001 kind=acceptance-criterion -->\n#### AC-001：验收条件（parent: REQ-001）\n\n- 验收条件：\n\n## 决策记录\n\n| ID | 问题 | 决策 | 来源 | 影响 |\n| --- | --- | --- | --- | --- |\n\n## 开放问题\n\n- 无\n`;
+  void context.requirementsState;
+  return `${frontMatter(context, "requirements")}# 需求\n\n## 范围\n\n## 目标\n\n## 非目标\n\n## 验收条件\n\n<!-- dev-flow:id=REQ-001 kind=requirement -->\n### REQ-001：需求\n\n- 描述：\n\n<!-- dev-flow:id=AC-001 kind=acceptance-criterion -->\n#### AC-001：验收条件（parent: REQ-001）\n\n- 验收条件：\n\n## 决策记录\n\n| ID | 问题 | 决策 | 来源 | 影响 |\n| --- | --- | --- | --- | --- |\n\n## 开放问题\n\n- 无\n`;
 }
 
 function implementationPlanTemplate(context: ArtifactTemplateContext): string {

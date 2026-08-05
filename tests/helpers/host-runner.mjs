@@ -36,7 +36,7 @@ export async function mcpCall(serverPath, cwd, name, arguments_ = {}) {
     const value = message.result.structuredContent;
     throw Object.assign(new Error(value?.message ?? message.result.content?.[0]?.text ?? "MCP tool failed"), {
       code: value?.code,
-      details: value?.details,
+      details: value?.technical ?? value?.details,
       structuredContent: value,
     });
   }

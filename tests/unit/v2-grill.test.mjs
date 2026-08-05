@@ -11,40 +11,29 @@ const interactions = await loadSource("plugins/dev-flow/src/core/user-interactio
 const stateStore = await loadSource("plugins/dev-flow/src/core/state-store.ts");
 const artifacts = await loadSource("plugins/dev-flow/src/core/artifacts.ts");
 
-test("new requirements templates use pending without a second question state", () => {
+test("requirements templates contain no grill control state", () => {
   const contents = templates.renderArtifactTemplate({ featureId: "f", route: "standard-m", requirementsState: "documented-unconfirmed" }, "requirements");
-  assert.match(contents, /grill_status: pending/);
-  assert.doesNotMatch(contents, /grill_question_id|grill_response_hint|in_progress/);
-  assert.deepEqual(grill.parseGrillFrontMatter(contents), { status: "pending" });
+  assert.doesNotMatch(contents, /grill_status|grill_question_id|grill_response_hint|in_progress/);
 });
 
-test("legacy in_progress requirements remain parseable", () => {
-  const contents = "---\ndev_flow:\n  grill_status: in_progress\n  grill_question_id: G-001\n  grill_response_hint: \"等待用户回答\"\n---\n";
-  assert.deepEqual(grill.parseGrillFrontMatter(contents), {
-    status: "in_progress",
-    questionId: "G-001",
-    responseHint: "等待用户回答",
-  });
-});
-
-test("merge-remaining requires semantic id or complete label, not a letter, number, or recommendation", () => {
+test("decision replies require a complete option label", () => {
   const state = {
     interactions: {
       "i-1": {
         id: "i-1",
         kind: "grill",
         status: "pending",
-        fallbackToken: "token",
+         fallbackToken: "internal-only",
         options: [
           { id: "first", label: "保守处理" },
-          { id: "merge-remaining", label: "合并剩余（剩余问题按推荐答案一次确认）" },
+          { id: "other", label: "扩大范围" },
         ],
       },
     },
   };
-  assert.throws(() => interactions.resolveTokenInteraction(state, "i-1", "C", "codex", "prompt"), /INTERACTION_TOKEN_MISMATCH/);
-  const response = interactions.resolveTokenInteraction(state, "i-1", "合并剩余（剩余问题按推荐答案一次确认）", "codex", "prompt");
-  assert.equal(response.action, "merge-remaining");
+  assert.throws(() => interactions.resolveTextInteraction(state, "i-1", "C", "codex", { promptEventId: "prompt" }), /DECISION_REPLY_NOT_RECOGNIZED/);
+  const response = interactions.resolveTextInteraction(state, "i-1", "扩大范围", "codex", { promptEventId: "prompt" });
+  assert.equal(response.action, "other");
 });
 
 test("routed pending requirements can request grill directly and resolve interaction plus ledger together", async () => {
@@ -85,9 +74,9 @@ test("routed pending requirements can request grill directly and resolve interac
       host: "codex",
     });
     assert.equal(requested.state.decisionLedger.find((item) => item.id === "G-001").status, "open");
-    const resolved = await grill.resolveGrillElicitation(root, state.featureId, requested.state.revision, requested.interaction.id, "answer", undefined, "codex");
+    const resolved = await grill.resolveGrillElicitation(root, state.featureId, requested.state.revision, requested.interactionId, "answer", undefined, "codex");
     assert.equal(resolved.state.decisionLedger.find((item) => item.id === "G-001").status, "resolved");
-    assert.equal(resolved.state.interactions[requested.interaction.id].status, "resolved");
+    assert.equal(resolved.state.interactions[requested.interactionId].status, "resolved");
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -105,7 +94,7 @@ test("intake grill request reopens a previously resolved decision", async () => 
     let state = await stateStore.startFeature(root, { featureId: "grill-intake", host: "codex", objective: "intake" });
     const input = { questionId: "G-REOPEN", question: "再次确认", options: [{ id: "yes", label: "确认" }, { id: "no", label: "拒绝" }], host: "codex" };
     const first = await grill.requestGrillDecision(root, state.featureId, state.revision, input);
-    const resolved = await grill.resolveGrillElicitation(root, state.featureId, first.state.revision, first.interaction.id, "yes", undefined, "codex");
+    const resolved = await grill.resolveGrillElicitation(root, state.featureId, first.state.revision, first.interactionId, "yes", undefined, "codex");
     const second = await grill.requestGrillDecision(root, state.featureId, resolved.state.revision, input);
     state = second.state;
     assert.equal(state.decisionLedger.find((item) => item.id === "G-REOPEN").status, "open");
@@ -129,7 +118,7 @@ test("intake grill token requires a matching host user-prompt event", async () =
     const at = new Date(Date.now() + 1000).toISOString();
     await stateStore.recordHostEvent(root, { eventId: "prompt-wrong-host", type: "user-prompt", host: "claude", text: "确认", at });
     await assert.rejects(
-      () => grill.resolveGrillToken(root, state.featureId, requested.state.revision, requested.interaction.id, "确认", "prompt-wrong-host", "codex"),
+      () => grill.resolveGrillAnswer(root, state.featureId, requested.state.revision, requested.interactionId, "确认", "codex"),
       (error) => error.code === "HOST_EVENT_HOST_MISMATCH",
     );
   } finally {

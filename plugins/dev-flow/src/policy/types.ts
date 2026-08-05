@@ -10,8 +10,86 @@ export type RiskLabel =
   | "availability"
   | "critical_correctness"
   | "irreversible_consequence";
-/** The only base routes in v2. Risk never creates another route. */
+/** The only base routes in v3. Risk never creates another route. */
 export type RouteId = "xs" | "s" | "light-m" | "standard-m" | "light-l" | "standard-l";
+
+export type FeatureLifecycle = "active" | "paused" | "finalized" | "abandoned";
+export type Lifecycle = FeatureLifecycle;
+
+export interface StartedDirtyPath {
+  status: "staged" | "unstaged" | "untracked" | "deleted" | "renamed";
+  sha256?: string;
+  blobSha256?: string;
+  renamedFrom?: string;
+}
+
+export interface ObservedCommit {
+  hash: string;
+  parentHashes: string[];
+  changedPaths: string[];
+  source: "feature" | "manual" | "unknown";
+  observedAt: string;
+}
+
+export interface WorkspaceLineage {
+  baseHead: string;
+  baseBranch: string;
+  observedHead: string;
+  startedDirty: Record<string, StartedDirtyPath>;
+  ownership: Record<string, "feature" | "excluded">;
+  ownershipSource: Record<string, "scope" | "user-adopted" | "manual-commit">;
+  observedCommits: ObservedCommit[];
+  lastWorkspaceFingerprint: string;
+  reconciliationStatus: "current" | "required" | "blocked";
+}
+
+export interface EvidenceFreshness {
+  basisHash?: string;
+  fingerprint?: string;
+  review: "current" | "stale" | "missing";
+  verification: "current" | "stale" | "missing";
+  checkpoint: "current" | "stale" | "missing";
+  implementation: "current" | "stale" | "missing";
+}
+
+export type PendingDecisionKind =
+  | "grill"
+  | "approval"
+  | "review-risk"
+  | "rollback-confirmation"
+  | "quality-exception"
+  | "workspace-ownership"
+  | "task-switch";
+
+export interface PendingDecisionOption {
+  id: string;
+  label: string;
+  description?: string;
+  recommended?: boolean;
+  requiresComment?: boolean;
+}
+
+export interface PendingDecision {
+  kind: PendingDecisionKind;
+  question: string;
+  options: PendingDecisionOption[];
+  basisHash: string;
+  presentedAt: string;
+  presentedRevision: number;
+  source: "core";
+  /** Internal correlation only; never copied to the default user view. */
+  target?: string;
+}
+
+export interface QualityException {
+  kind: "review" | "verification" | "checkpoint" | "implementation-evidence";
+  basisHash: string;
+  fingerprint: string;
+  riskSummary: string;
+  userEvidence: string;
+  at: string;
+  status: "current" | "stale";
+}
 
 export type RiskObligationKind = "review" | "verification" | "rollback" | "approval" | "checkpoint";
 export type ObligationStatus = "pending" | "satisfied" | "stale";
@@ -232,6 +310,7 @@ export interface ReviewFindingResolutionInput {
   findingId: string;
   evidence: Array<{ path: string; line?: number }>;
   note: string;
+  outcome?: "resolved" | "still-blocking" | "risk-acceptance-required";
 }
 
 export type VerificationKind = "targeted" | "behavior" | "integration" | "full";
@@ -264,7 +343,7 @@ export interface StepSnapshot {
 }
 
 export interface DeriveState {
-  schemaVersion: 2;
+  schemaVersion: 3;
   lifecycle: "active" | "paused" | "finalized" | "abandoned";
   route: RouteId;
   steps: Record<string, StepSnapshot | undefined>;

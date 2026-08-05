@@ -24,5 +24,6 @@ test("intake and status skills surface the classification level/route to the use
   // 锁定分类后必须用可见文本声明级别与路线，不能只留在 MCP 返回里
   assert.match(task, /锁定成功后必须用可见文本向用户声明本次分级/);
   assert.match(task, /route/);
-  assert.match(status, /分类锁定结果（含 level、route）/);
+  assert.match(status, /compact 中文用户视图/);
+  assert.match(status, /dev_flow_inspect/);
 });

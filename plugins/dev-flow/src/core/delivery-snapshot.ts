@@ -8,12 +8,15 @@ import { normalizeProjectPath, normalizeUnicode } from "./path-normalization.js"
 import type { ProjectConfig } from "./project-config.js";
 import type { FeatureState } from "./state-store.js";
 import { pathWithinFileScope } from "../policy/rollback.js";
+import { changedPathsBetween, gitBranchAndHead, isAncestor } from "./git-reconciliation.js";
 
 const run = promisify(execFile);
 
 export interface DeliveryBaseline {
   gitHead?: string;
+  baseBranch?: string;
   dirtyPaths: string[];
+  startedDirty?: Record<string, { status: "staged" | "unstaged" | "untracked" | "deleted" | "renamed"; sha256?: string; blobSha256?: string; renamedFrom?: string }>;
 }
 
 export interface DeliverySnapshot {
@@ -22,7 +25,14 @@ export interface DeliverySnapshot {
   patchPath: string;
   patchSha256: string;
   baseHead: string;
+  finalHead?: string;
+  branch?: string;
   files: string[];
+  commitRange?: string[];
+  ownedPaths?: string[];
+  manualAdoptedPaths?: string[];
+  uncommittedPaths?: string[];
+  qualityExceptions?: string[];
 }
 
 const digest = (value: string | Buffer) => createHash("sha256").update(value).digest("hex");
@@ -201,47 +211,69 @@ export async function createDeliverySnapshot(
   state: FeatureState,
   config: ProjectConfig,
 ): Promise<DeliverySnapshot | undefined> {
-  const files = implementationFiles(state.steps.implementation?.evidence);
-  assertImplementationFilesInProtectedRoots(files, config.protectedRoots);
+  const implementation = implementationFiles(state.steps.implementation?.evidence);
+  assertImplementationFilesInProtectedRoots(implementation, config.protectedRoots);
 
   const baseline = state.deliveryBaseline;
-  if (!baseline?.gitHead) {
-    throw new DevFlowError("DELIVERY_SNAPSHOT_GIT_REQUIRED", "delivery snapshots require Git HEAD captured at feature start", {
-      recoveryHint: "Start a new feature from a committed Git baseline before modifying protected files",
+  const lineage = state.workspace;
+  if (!baseline?.gitHead || !lineage.baseHead) {
+    throw new DevFlowError("DELIVERY_SNAPSHOT_GIT_REQUIRED", "交付快照需要 feature 启动时捕获的 Git 基线。", {
+      userMessage: "当前仓库没有可证明的 Git 基线，不能生成交付快照。",
+      cause: "启动时没有可读取的 HEAD。",
+      impact: "最终交付内容无法与启动状态比较。",
+      recoveryKind: "repair",
+      recoveryInstruction: "修复 Git 仓库后重新开始 feature；系统不会猜测基线。",
+      retryOriginal: false,
     });
   }
-  const currentHead = (await git(root, ["rev-parse", "HEAD"])).trim();
-  if (currentHead !== baseline.gitHead) {
-    throw new DevFlowError("DELIVERY_BASELINE_CHANGED", "Git HEAD changed after this feature started; delivery snapshot ownership is no longer reliable", {
-      expectedHead: baseline.gitHead,
-      currentHead,
-      recoveryHint: "Start a new feature from the current committed HEAD, then reapply and verify the intended changes",
-    });
+  const current = await gitBranchAndHead(root);
+  if (lineage.baseBranch && current.branch !== lineage.baseBranch) {
+    throw new DevFlowError("GIT_BRANCH_CHANGED", "当前分支与 feature 启动分支不同。", { baseBranch: lineage.baseBranch, currentBranch: current.branch, recoveryHint: "切回启动分支后重新对账" });
   }
-  const initialDirty = new Set(baseline.dirtyPaths);
-  const claimedDirty = files.filter((file) => initialDirty.has(file));
-  if (claimedDirty.length) {
-    throw new DevFlowError("DELIVERY_FILE_PREEXISTING_DIRTY", "feature-owned files were already dirty when the feature started", {
-      files: claimedDirty,
-      recoveryHint: "Isolate the feature in a clean worktree or exclude the pre-existing changes before finalizing",
-    });
+  if (!(await isAncestor(root, lineage.baseHead, current.head))) {
+    throw new DevFlowError("GIT_HISTORY_REWRITE", "当前 HEAD 不是 feature 基线的祖先链后代。", { baseHead: lineage.baseHead, currentHead: current.head, recoveryHint: "恢复可证明的提交链后重新对账" });
   }
 
+  const initialDirty = new Set(Object.keys(lineage.startedDirty).length ? Object.keys(lineage.startedDirty) : baseline.dirtyPaths);
   const currentDirty = await dirtyPaths(root, config);
-  const unexpected = currentDirty.filter((file) => !initialDirty.has(file) && !files.includes(file));
+  const committed = await changedPathsBetween(root, lineage.baseHead, current.head);
+  const featureOwned = new Set([
+    ...implementation,
+    ...Object.entries(lineage.ownership).filter(([, owner]) => owner === "feature").map(([file]) => file),
+  ]);
+  const protectedChanged = [...new Set([...committed, ...currentDirty])].filter((file) => isWithinProtectedRoot(file, config.protectedRoots));
+  const unexpected = protectedChanged.filter((file) => !featureOwned.has(file)
+    && !(initialDirty.has(file) && lineage.ownership[file] === "excluded"));
   if (unexpected.length) {
-    throw new DevFlowError("DELIVERY_FILE_UNREGISTERED", "protected changes are not registered in implementation evidence", {
+    throw new DevFlowError("DELIVERY_FILE_UNREGISTERED", "存在尚未归属的受保护文件变更。", {
       files: unexpected,
-      recoveryHint: "把每个 feature 拥有的受保护文件加入 implementation evidence.files（只接受纯路径，如 \"src/foo.js\" 而非 \"src/foo.js (新增)\"），然后重新验证并 finalize",
+      userMessage: "发现未归属的受保护文件变更，不能生成交付快照。",
+      cause: "系统不会猜测这些改动属于当前 feature。",
+      impact: "交付快照可能混入其他任务的内容。",
+      recoveryKind: "ask-user",
+      recoveryInstruction: "先通过工作区对账接纳文件、调整范围，或由用户处理这些文件后重试。",
+      requiresUserDecision: true,
+      retryOriginal: false,
     });
   }
-  const changed = files.filter((file) => currentDirty.includes(file));
-  const untracked = await untrackedFiles(root, changed);
-  const tracked = changed.filter((file) => !untracked.has(file));
-  const patches: string[] = [];
-  if (tracked.length) {
-    patches.push(await git(root, ["diff", "--binary", "--full-index", "--no-ext-diff", baseline.gitHead, "--", ...tracked]));
+  const claimedDirty = [...featureOwned].filter((file) => initialDirty.has(file) && lineage.ownership[file] !== "feature");
+  if (claimedDirty.length) {
+    throw new DevFlowError("DELIVERY_FILE_PREEXISTING_DIRTY", "feature-owned 文件在启动时已经有未归属改动。", {
+      files: claimedDirty,
+      userMessage: "当前 feature 的文件在启动前已有改动，尚未完成归属。",
+      cause: "启动脏树必须先经过用户归属决策。",
+      impact: "系统不会把预存改动静默算入本次交付。",
+      recoveryKind: "ask-user",
+      recoveryInstruction: "接纳这些改动为当前 feature，或先提交、暂存/恢复后再继续。",
+      requiresUserDecision: true,
+      retryOriginal: false,
+    });
   }
+  const files = [...featureOwned].sort();
+  const untracked = await untrackedFiles(root, files);
+  const tracked = files.filter((file) => !untracked.has(file));
+  const patches: string[] = [];
+  if (tracked.length) patches.push(await git(root, ["diff", "--binary", "--full-index", "--no-ext-diff", lineage.baseHead, "--", ...tracked]));
   for (const file of [...untracked].sort()) {
     await assertPlainFile(root, file);
     patches.push(await git(root, ["diff", "--binary", "--no-index", "--", "/dev/null", file], true));
@@ -260,7 +292,10 @@ export async function createDeliverySnapshot(
     "# 交付快照",
     "",
     `- Feature: ${featureId}`,
-    `- Base Git HEAD: ${baseline.gitHead}`,
+    `- Base Git HEAD: ${lineage.baseHead}`,
+    `- Final Git HEAD: ${current.head}`,
+    `- Branch: ${current.branch}`,
+    `- Commit range: ${lineage.baseHead}..${current.head}`,
     `- Patch: ${patchFilename}`,
     `- Patch SHA-256: ${patchHash}`,
     "",
@@ -270,6 +305,13 @@ export async function createDeliverySnapshot(
     "| --- | --- | --- |",
     ...rows,
     "",
+    "## 归属记录",
+    "",
+    `- Feature-owned 路径：${files.length ? files.join(", ") : "无"}`,
+    `- 用户手动接纳路径：${Object.entries(lineage.ownershipSource).filter(([, source]) => source === "manual-commit").map(([file]) => file).join(", ") || "无"}`,
+    `- 未提交路径：${currentDirty.filter((file) => featureOwned.has(file)).join(", ") || "无"}`,
+    `- 用户接受风险：${state.qualityExceptions.filter((exception) => exception.status === "current").map((exception) => exception.kind).join(", ") || "无"}`,
+    "",
     "## 回滚",
     "",
     `在仓库根目录执行：\`git apply -R --binary ${patchPath}\``,
@@ -277,5 +319,19 @@ export async function createDeliverySnapshot(
   ].join("\n");
   const manifestHash = digest(manifest);
   await writeFile(path.join(root, manifestPath), manifest, "utf8");
-  return { manifestPath, manifestSha256: manifestHash, patchPath, patchSha256: patchHash, baseHead: baseline.gitHead, files };
+  return {
+    manifestPath,
+    manifestSha256: manifestHash,
+    patchPath,
+    patchSha256: patchHash,
+    baseHead: lineage.baseHead,
+    finalHead: current.head,
+    branch: current.branch,
+    files,
+    commitRange: current.head === lineage.baseHead ? [] : [lineage.baseHead, current.head],
+    ownedPaths: files,
+    manualAdoptedPaths: Object.entries(lineage.ownershipSource).filter(([, source]) => source === "manual-commit").map(([file]) => file),
+    uncommittedPaths: currentDirty.filter((file) => featureOwned.has(file)),
+    qualityExceptions: state.qualityExceptions.filter((exception) => exception.status === "current").map((exception) => exception.kind),
+  };
 }

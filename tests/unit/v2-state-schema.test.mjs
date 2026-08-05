@@ -17,19 +17,19 @@ const facts = {
   scopeFacts: ["只改一个模块"], topologyFacts: ["没有共享契约"], uncertaintyFacts: [], riskFacts: {}, decisionRefs: [],
 };
 
-test("start creates intake and lock atomically creates routed v2 state", async () => {
+test("start creates intake and lock atomically creates routed v3 state", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "dev-flow-v2-state-"));
   await mkdir(path.join(root, "src"));
   await state.initProject(root, config);
   const intake = await state.startFeature(root, { featureId: "f", objective: "调整模块行为", scope: { inScope: ["src/需求a\u0301"], outOfScope: [] }, host: "codex" });
-  assert.equal(intake.schemaVersion, 2);
+  assert.equal(intake.schemaVersion, 3);
   assert.equal(intake.mode, "intake");
   assert.equal(intake.route, undefined);
   assert.deepEqual(intake.scope.inScope, ["src/需求á"]);
   const routed = await state.lockClassification(root, "f", intake.revision, facts);
   assert.equal(routed.mode, "routed");
   assert.equal(routed.route, "standard-m");
-  assert.equal(routed.schemaVersion, 2);
+  assert.equal(routed.schemaVersion, 3);
   assert.ok(routed.classificationBasis);
 });
 

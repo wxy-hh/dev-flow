@@ -17,7 +17,7 @@ test("approval matching remains exact and rejects conditional sentences", () => 
 });
 
 test("approval fallback hint lists the complete accepted phrase set", () => {
-  const hint = interactions.fallbackHint({
+  const hint = interactions.decisionHint({
     kind: "approval",
     options: [{ id: "confirm", label: "确认开始执行" }, { id: "request-changes", label: "提出修改意见" }],
   });

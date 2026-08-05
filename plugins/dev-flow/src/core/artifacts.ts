@@ -52,7 +52,7 @@ function template(state: FeatureState, id: string, kind: string): string {
   if (traceArtifactKinds.has(kind)) {
     return renderArtifactTemplate({ featureId: id, route: state.route, requirementsState: state.classification.requirements }, kind);
   }
-  return `---\ndev_flow:\n  schema_version: 2\n  feature_id: ${id}\n  route: ${state.route}\n  kind: ${kind}\n---\n\n# ${kind}\n\n`;
+  return `---\ndev_flow:\n  schema_version: 3\n  feature_id: ${id}\n  route: ${state.route}\n  kind: ${kind}\n---\n\n# ${kind}\n\n`;
 }
 
 function effectiveRoute(state: FeatureState) {
@@ -133,6 +133,7 @@ function invalidateArtifactDependents(state: FeatureState, kind: string, reason:
   delete state.steps.feature_check;
   state.logicComplete = false;
   delete state.steps.finalize;
+  state.qualityExceptions = state.qualityExceptions.map((exception) => ({ ...exception, status: "stale" as const }));
   state.obligations = reopenObligations(state.obligations, ["approval"]);
   // Keep the precise causal reason in the mutation event rather than state schema.
   void reason;

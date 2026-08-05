@@ -9,6 +9,7 @@ import { DevFlowError } from "./errors.js";
 import { fingerprintProtectedRoots } from "./fingerprint.js";
 import { assertRequirementsGrillSatisfied } from "./requirements-grill.js";
 import { mutate, readFeatureEvents, readProjectConfig, readState, type FeatureState } from "./state-store.js";
+import { resolvePromptEvent } from "./interaction-provenance.js";
 import type { VerificationCommand } from "./project-config.js";
 import { assertCurrentStep, currentOpenStep } from "./step-order.js";
 import { recordRepairAttempt, startRepairLoop, markRepairCompleted } from "./repair-loop.js";
@@ -69,7 +70,6 @@ export interface ManualAcceptance {
   mode: "browser" | "user-signoff" | "code-path-audit";
   source: string;
   scenarios: Array<{ name: string; evidence: string }>;
-  promptEventId?: string;
   userReply?: string;
 }
 
@@ -126,11 +126,9 @@ function validateManualAcceptance(value: unknown): ManualAcceptance | undefined 
     return { name: item.name.trim(), evidence: item.evidence.trim() };
   });
   if (input.mode === "user-signoff") {
-    const promptEventId = input.promptEventId;
     const userReply = input.userReply;
-    if (typeof promptEventId !== "string" || !promptEventId.trim()
-      || typeof userReply !== "string" || !userReply.trim()) {
-      throw new DevFlowError("INVALID_MANUAL_ACCEPTANCE", "user-signoff requires promptEventId and userReply");
+    if (typeof userReply !== "string" || !userReply.trim()) {
+      throw new DevFlowError("INVALID_MANUAL_ACCEPTANCE", "user-signoff requires a userReply");
     }
     if (!userSignoffPhrases.some((phrase) => normalizeReply(phrase) === normalizeReply(userReply))) {
       throw new DevFlowError("INVALID_MANUAL_ACCEPTANCE", "user-signoff reply is not an explicit acceptance phrase", {
@@ -141,12 +139,11 @@ function validateManualAcceptance(value: unknown): ManualAcceptance | undefined 
       mode: input.mode,
       source: input.source.trim(),
       scenarios,
-      promptEventId: promptEventId.trim(),
       userReply,
     };
   }
-  if (input.promptEventId !== undefined || input.userReply !== undefined) {
-    throw new DevFlowError("INVALID_MANUAL_ACCEPTANCE", "only user-signoff may include prompt evidence");
+  if (input.userReply !== undefined) {
+    throw new DevFlowError("INVALID_MANUAL_ACCEPTANCE", "only user-signoff may include a userReply");
   }
   return { mode: input.mode, source: input.source.trim(), scenarios };
 }
@@ -174,29 +171,14 @@ async function assertOptionalManualAcceptance(
 ): Promise<void> {
   if (manualAcceptance?.mode !== "user-signoff") return;
 
-  const consumed = consumedSignoffEventIds(state);
-  if (consumed.has(manualAcceptance.promptEventId!)) {
-    throw new DevFlowError("MANUAL_ACCEPTANCE_EVENT_CONSUMED", "user signoff event was already consumed");
-  }
   const events = await readFeatureEvents(root, id);
-  const event = events.find((item) => item.type === "host-event"
-    && (item.data as { eventId?: unknown }).eventId === manualAcceptance.promptEventId);
-  const eventHost = (event?.data as { host?: unknown } | undefined)?.host;
-  if (event && eventHost !== host) {
-    throw new DevFlowError("HOST_EVENT_HOST_MISMATCH", "host event belongs to a different host", {
-      expectedHost: host,
-      actualHost: eventHost,
-      eventId: manualAcceptance.promptEventId,
-    });
-  }
-  const payload = event?.data as { type?: unknown; text?: unknown } | undefined;
-  if (!payload || payload.type !== "user-prompt" || payload.text !== manualAcceptance.userReply) {
-    throw new DevFlowError(
-      "MANUAL_ACCEPTANCE_PROVENANCE_UNAVAILABLE",
-      "user signoff must match a captured user prompt",
-      { recoveryHint: "Capture a later UserPromptSubmit event with one exact acceptance phrase, then retry verification" },
-    );
-  }
+  resolvePromptEvent(events, {
+    host,
+    userReply: manualAcceptance.userReply!,
+    presentedAt: new Date(0).toISOString(),
+    presentedRevision: state.revision - 1,
+    consumedEventIds: consumedSignoffEventIds(state),
+  });
 }
 
 function assertMoneyBehaviorCommands(state: FeatureState, commandIds: string[], behaviorCommands: string[]): void {

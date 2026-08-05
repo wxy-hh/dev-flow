@@ -3,28 +3,18 @@ import { DevFlowError } from "./errors.js";
 import { mutate, readFeatureEvents, readState, type FeatureState } from "./state-store.js";
 import { resolveDecision } from "./decision-ledger.js";
 import { decisionBasisHash } from "../policy/obligations.js";
+import { resolvePromptEvent } from "./interaction-provenance.js";
 import {
   createInteraction,
   findInteractionForTarget,
   getInteraction,
-  normalizeReplyText,
   resolveNativeInteraction,
-  resolveTokenInteraction,
+  resolveTextInteraction,
   toPublicInteraction,
   type InteractionOption,
   type InteractionResponse,
   type PublicInteraction,
-  type UserInteraction,
 } from "./user-interactions.js";
-
-const statuses = ["not_required", "pending", "in_progress", "complete"] as const;
-export type GrillStatus = typeof statuses[number];
-
-export interface GrillFrontMatter {
-  status: GrillStatus;
-  questionId?: string;
-  responseHint?: string;
-}
 
 export interface GrillDecisionInput {
   questionId: string;
@@ -33,92 +23,17 @@ export interface GrillDecisionInput {
   host: "claude" | "codex";
 }
 
-/** Core-injected option: confirm the current question plus all remaining ones at recommended answers. */
-export const MERGE_REMAINING_OPTION: InteractionOption = {
-  id: "merge-remaining",
-  label: "合并剩余（剩余问题按推荐答案一次确认）",
-  description: "当前题与剩余问题全部按各题推荐答案确认，一次性完成 grill。",
-};
-
-function withMergeRemaining(options: InteractionOption[]): InteractionOption[] {
-  return options.some((option) => option.id === MERGE_REMAINING_OPTION.id) ? options : [...options, MERGE_REMAINING_OPTION];
-}
-
 export interface GrillDecisionResult {
   state: FeatureState;
   interaction: PublicInteraction;
   response?: InteractionResponse;
+  /** Internal correlation used by the MCP server; never serialized in content. */
+  interactionId: string;
 }
 
-function allowedStatuses(state: FeatureState): GrillStatus[] {
-  return state.classification.requirements === "provided-confirmed" ? ["not_required", "complete"] : ["complete"];
-}
-
-function invalidStatus(details: Record<string, unknown>): never {
-  throw new DevFlowError("GRILL_STATUS_INVALID", "requirements grill_status must be a supported enum", {
-    allowed: statuses,
-    recoveryHint: "请将 grill_status 设为受支持的值并重新登记需求文档",
-    ...details,
-  });
-}
-
-function parseNestedDevFlow(contents: string): Record<string, string> {
-  const frontMatter = contents.match(/^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/)?.[1];
-  if (!frontMatter) invalidStatus({ reason: "MISSING_FRONT_MATTER" });
-  const lines = frontMatter.split(/\r?\n/);
-  const devFlowIndexes = lines.map((line, index) => line === "dev_flow:" ? index : -1).filter((index) => index >= 0);
-  if (devFlowIndexes.length !== 1) invalidStatus({ reason: "MISSING_OR_DUPLICATE_DEV_FLOW" });
-  const fields: Record<string, string> = {};
-  for (const line of lines.slice(devFlowIndexes[0] + 1)) {
-    if (!line.startsWith("  ")) break;
-    const match = line.match(/^  ([A-Za-z0-9_]+):\s*(.*)$/);
-    if (!match) continue;
-    const key = match[1];
-    let value = match[2].trim();
-    if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) {
-      value = value.slice(1, -1);
-    }
-    if (fields[key] !== undefined) invalidStatus({ reason: "DUPLICATE_FIELD", field: key });
-    fields[key] = value;
-  }
-  return fields;
-}
-
-function readStatus(fields: Record<string, string>): GrillStatus {
-  const status = fields.grill_status;
-  if (!status || !statuses.includes(status as GrillStatus)) invalidStatus({ actual: status, reason: "MISSING_OR_INVALID_GRILL_STATUS" });
-  return status as GrillStatus;
-}
-
-/** Parse new three-state front matter while retaining old in_progress documents. */
-export function parseGrillFrontMatter(contents: string): GrillFrontMatter {
-  const fields = parseNestedDevFlow(contents);
-  const status = readStatus(fields);
-  const result: GrillFrontMatter = { status };
-  if (fields.grill_question_id) result.questionId = fields.grill_question_id;
-  if (fields.grill_response_hint) result.responseHint = fields.grill_response_hint;
-  if (status === "in_progress" && (!result.questionId || !result.responseHint)) {
-    throw new DevFlowError("GRILL_STATUS_INVALID", "in_progress grill requires grill_question_id and grill_response_hint", {
-      recoveryHint: "请在 dev_flow 下补充 grill_question_id: G-001 与 grill_response_hint: \"等待用户回答\"，登记需求文档后再询问用户",
-    });
-  }
-  if (status === "complete" || status === "not_required") {
-    if (result.questionId || result.responseHint) {
-      throw new DevFlowError("GRILL_STATUS_INVALID", "complete/not_required grill must not retain current-question fields", {
-        recoveryHint: "请删除 dev_flow.grill_question_id 与 dev_flow.grill_response_hint，再登记需求文档；完成态示例：grill_status: complete",
-      });
-    }
-  }
-  return result;
-}
-
-async function currentGrillQuestion(root: string, id: string, state: FeatureState): Promise<GrillFrontMatter> {
+async function currentRequirements(root: string, id: string, state: FeatureState): Promise<void> {
   if (!state.artifacts.requirements) throw new DevFlowError("MISSING_REQUIRED_ARTIFACT", "requirements");
-  const grill = parseGrillFrontMatter(await assertArtifactCurrent(root, id, state, "requirements"));
-  if (grill.status !== "pending" && grill.status !== "in_progress") {
-    throw new DevFlowError("GRILL_DECISION_NOT_PENDING", "there is no current grill question");
-  }
-  return grill;
+  await assertArtifactCurrent(root, id, state, "requirements");
 }
 
 export async function requestGrillDecision(
@@ -127,124 +42,31 @@ export async function requestGrillDecision(
   expectedRevision: number,
   input: GrillDecisionInput,
 ): Promise<GrillDecisionResult> {
-  if (!input.question.trim()) throw new DevFlowError("GRILL_QUESTION_REQUIRED", "question is required");
+  if (!input.question.trim()) throw new DevFlowError("GRILL_QUESTION_REQUIRED", "问题不能为空。", { userMessage: "当前问题没有内容。", recoveryKind: "retry", recoveryInstruction: "补充一个需要用户决定的问题后重试。", retryOriginal: true });
   const initial = await readState(root, id);
-  if (initial.revision !== expectedRevision) {
-    throw new DevFlowError("STATE_REVISION_CONFLICT", "state revision changed", { currentRevision: initial.revision });
-  }
-  if (initial.mode === "intake") {
-    const target = `grill:${input.questionId}`;
-    const existing = findInteractionForTarget(initial, target);
-    if (existing) return { state: initial, interaction: toPublicInteraction(existing) };
-    let interaction: ReturnType<typeof createInteraction> | undefined;
-    const state = await mutate(root, id, expectedRevision, "intake-decision-presented", (draft) => {
-      interaction = createInteraction(draft, {
-        kind: "grill",
-        target,
-        basisHash: decisionBasisHash({ objective: draft.objective, questionId: input.questionId }),
-        question: input.question,
-        options: withMergeRemaining(input.options),
-      });
-      const ledger = draft.decisionLedger ?? [];
-      const existingDecision = ledger.find((decision) => decision.id === input.questionId);
-      if (existingDecision) {
-        if (existingDecision.status !== "open") {
-          existingDecision.status = "open";
-          delete existingDecision.evidence;
-          delete existingDecision.conclusion;
-        }
-        existingDecision.source = "grill";
-      } else {
-        ledger.push({ id: input.questionId, question: input.question, status: "open", source: "grill" });
-      }
-    }, { questionId: input.questionId, mode: "intake" });
-    if (!interaction) throw new DevFlowError("INTERACTION_NOT_CREATED", target);
-    return { state, interaction: toPublicInteraction(interaction) };
-  }
-  const grill = await currentGrillQuestion(root, id, initial);
-  if (grill.status === "in_progress" && grill.questionId && grill.questionId !== input.questionId) {
-    throw new DevFlowError("GRILL_QUESTION_MISMATCH", input.questionId, { expectedQuestionId: grill.questionId });
-  }
+  if (initial.revision !== expectedRevision) throw new DevFlowError("STATE_REVISION_CONFLICT", "state revision changed", { currentRevision: initial.revision });
+  if (initial.mode !== "intake") await currentRequirements(root, id, initial);
   const target = `grill:${input.questionId}`;
   const existing = findInteractionForTarget(initial, target);
-  if (existing) return { state: initial, interaction: toPublicInteraction(existing) };
+  if (existing) return { state: initial, interaction: toPublicInteraction(existing), interactionId: existing.id };
   let interaction: ReturnType<typeof createInteraction> | undefined;
-  const state = await mutate(root, id, expectedRevision, "grill-decision-presented", (draft) => {
+  const state = await mutate(root, id, expectedRevision, "decision-presented", (draft) => {
     interaction = createInteraction(draft, {
       kind: "grill",
       target,
-      basisHash: draft.artifacts.requirements.sha256,
+      basisHash: decisionBasisHash({ objective: draft.objective, questionId: input.questionId, requirements: draft.artifacts.requirements?.sha256 }),
       question: input.question,
-      options: withMergeRemaining(input.options),
+      options: input.options,
     });
     const ledger = draft.decisionLedger ?? [];
-    const existingDecision = ledger.find((decision) => decision.id === input.questionId);
-    if (existingDecision) {
-      if (existingDecision.status !== "open") {
-        const index = ledger.indexOf(existingDecision);
-        ledger[index] = { ...existingDecision, status: "open", evidence: undefined, conclusion: undefined, source: "grill" };
-      }
-    } else {
-      ledger.push({ id: input.questionId, question: input.question, status: "open", source: "grill" });
-    }
+    const index = ledger.findIndex((decision) => decision.id === input.questionId);
+    if (index >= 0) ledger[index] = { ...ledger[index], question: input.question, status: "open", evidence: undefined, conclusion: undefined, source: "grill" };
+    else ledger.push({ id: input.questionId, question: input.question, status: "open", source: "grill" });
     draft.decisionLedger = ledger;
     draft.lastUpdatedBy = { host: input.host, pluginVersion: __DEV_FLOW_VERSION__ };
-  }, () => ({ questionId: input.questionId, interactionId: interaction?.id, options: input.options }));
+  }, () => ({ questionId: input.questionId, mode: "decision" }));
   if (!interaction) throw new DevFlowError("INTERACTION_NOT_CREATED", target);
-  return { state, interaction: toPublicInteraction(interaction) };
-}
-
-function resolveGrillTextPrompt(
-  events: Array<{ revision: number; type: string; at: string; data: unknown }>,
-  interactionId: string,
-  userReply: string,
-  promptEventId?: string,
-  expectedHost?: "claude" | "codex",
-): string {
-  const matches = (item: { type: string; at: string; data: unknown }) => {
-    const event = item.data as { eventId?: unknown; type?: unknown; text?: unknown; at?: unknown; host?: unknown };
-    return item.type === "host-event" && event.type === "user-prompt"
-      && (!expectedHost || event.host === expectedHost)
-      && normalizeReplyText(String(event.text ?? "")) === normalizeReplyText(userReply) && typeof event.eventId === "string";
-  };
-  if (promptEventId && expectedHost) {
-    const referenced = events.find((item) => item.type === "host-event" && (item.data as { eventId?: unknown }).eventId === promptEventId);
-    if (referenced && (referenced.data as { host?: unknown }).host !== expectedHost) {
-      throw new DevFlowError("HOST_EVENT_HOST_MISMATCH", "host event belongs to a different host", {
-        expectedHost,
-        actualHost: (referenced.data as { host?: unknown }).host,
-        eventId: promptEventId,
-      });
-    }
-  }
-  const selected = promptEventId
-    ? events.find((item) => matches(item) && (item.data as { eventId?: string }).eventId === promptEventId)
-    : [...events].reverse().find(matches);
-  if (!selected) {
-    throw new DevFlowError("INTERACTION_PROVENANCE_UNAVAILABLE", interactionId, {
-      recoveryHint: "请确保宿主 hook 捕获到本次一次性回复（空格与大小写差异会自动归一化），再重试",
-    });
-  }
-  const event = selected.data as { eventId: string; at?: string };
-  const interaction = interactionId;
-  if (typeof event.at !== "string") throw new DevFlowError("INTERACTION_PROVENANCE_UNAVAILABLE", interaction);
-  return event.eventId;
-}
-
-function assertGrillPromptAfterPresentation(
-  events: Array<{ revision: number; type: string; at: string; data: unknown }>,
-  promptEventId: string,
-  interaction: Pick<UserInteraction, "presentedAt">,
-): void {
-  const event = events.find((item) => item.type === "host-event"
-    && (item.data as { eventId?: unknown }).eventId === promptEventId);
-  const eventAt = (event?.data as { at?: unknown } | undefined)?.at;
-  if (!event || typeof eventAt !== "string" || Date.parse(eventAt) <= Date.parse(interaction.presentedAt)) {
-    throw new DevFlowError("INTERACTION_PROVENANCE_UNAVAILABLE", "grill response must come from a later user turn", {
-      eventId: promptEventId,
-      recoveryHint: "在 grill interaction 呈现后的后续回合重新提交 user-prompt",
-    });
-  }
+  return { state, interaction: toPublicInteraction(interaction), interactionId: interaction.id };
 }
 
 async function resolveGrillDecision(
@@ -253,59 +75,28 @@ async function resolveGrillDecision(
   expectedRevision: number,
   interactionId: string,
   host: "claude" | "codex",
-  input: { source: "elicitation"; action: string; comment?: string }
-    | { source: "text-token"; userReply: string; promptEventId?: string },
+  input: { source: "elicitation"; action: string; comment?: string } | { source: "text"; userReply: string },
 ): Promise<GrillDecisionResult> {
   const initial = await readState(root, id);
-  if (initial.revision !== expectedRevision) {
-    throw new DevFlowError("STATE_REVISION_CONFLICT", "state revision changed", { currentRevision: initial.revision });
-  }
+  if (initial.revision !== expectedRevision) throw new DevFlowError("STATE_REVISION_CONFLICT", "state revision changed", { currentRevision: initial.revision });
   const interaction = getInteraction(initial, interactionId);
-  if (interaction.kind !== "grill" || interaction.status !== "pending") throw new DevFlowError("INTERACTION_NOT_PENDING", interactionId);
-  if (initial.mode === "intake") {
-    let response: InteractionResponse | undefined;
-    let promptEventId: string | undefined;
-    if (input.source === "text-token") {
-      if (!input.promptEventId) {
-        throw new DevFlowError("INTERACTION_PROVENANCE_UNAVAILABLE", "intake grill token requires a prompt event id");
-      }
-      const events = await readFeatureEvents(root, id);
-      promptEventId = resolveGrillTextPrompt(events, interactionId, input.userReply, input.promptEventId, host);
-      assertGrillPromptAfterPresentation(events, promptEventId, interaction);
-    }
-    const state = await mutate(root, id, expectedRevision, "intake-decision-resolved", (draft) => {
-      response = input.source === "elicitation"
-        ? resolveNativeInteraction(draft, interactionId, input.action, input.comment, host)
-        : resolveTokenInteraction(draft, interactionId, input.userReply, host, promptEventId!);
-      const index = (draft.decisionLedger ?? []).findIndex((decision) => decision.id === interaction.target.slice("grill:".length));
-      if (index >= 0 && response) {
-        const next = [...(draft.decisionLedger ?? [])];
-        next[index] = resolveDecision(next[index], input.source === "elicitation" ? (input.comment ?? "用户选择") : input.userReply, response.action);
-        draft.decisionLedger = next;
-      }
-      draft.lastUpdatedBy = { host, pluginVersion: __DEV_FLOW_VERSION__ };
-    }, { interactionId, mode: "intake" });
-    if (!response) throw new DevFlowError("INTERACTION_NOT_RESOLVED", interactionId);
-    return { state, interaction: toPublicInteraction(getInteraction(state, interactionId)), response };
-  }
-  const grill = await currentGrillQuestion(root, id, initial);
-  if ((grill.questionId && interaction.target !== `grill:${grill.questionId}`) || interaction.basisHash !== initial.artifacts.requirements.sha256) {
-    throw new DevFlowError("GRILL_BASIS_CHANGED", interactionId, { recoveryHint: "需求文档已变更，请重新登记后请求新的决策" });
-  }
+  if (interaction.kind !== "grill" || interaction.status !== "pending") throw new DevFlowError("INTERACTION_NOT_PENDING", "当前问题已经处理或不存在。", { interactionId });
   let promptEventId: string | undefined;
-  if (input.source === "text-token") {
+  if (input.source === "text") {
     const events = await readFeatureEvents(root, id);
-    promptEventId = resolveGrillTextPrompt(events, interactionId, input.userReply, input.promptEventId, host);
-    const event = events.find((item) => (item.data as { eventId?: string }).eventId === promptEventId)?.data as { at?: string } | undefined;
-    if (!event?.at || Date.parse(event.at) < Date.parse(interaction.presentedAt)) {
-      throw new DevFlowError("INTERACTION_PROVENANCE_UNAVAILABLE", interactionId, { recoveryHint: "请使用决策呈现之后提交的回复" });
-    }
+    const match = resolvePromptEvent(events, {
+      host,
+      userReply: input.userReply,
+      presentedAt: interaction.presentedAt,
+      presentedRevision: initial.pendingDecision?.presentedRevision ?? initial.revision - 1,
+    });
+    promptEventId = match.eventId;
   }
   let response: InteractionResponse | undefined;
-  const state = await mutate(root, id, expectedRevision, "grill-decision-resolved", (draft) => {
+  const state = await mutate(root, id, expectedRevision, "decision-answered", (draft) => {
     response = input.source === "elicitation"
       ? resolveNativeInteraction(draft, interactionId, input.action, input.comment, host)
-      : resolveTokenInteraction(draft, interactionId, input.userReply, host, promptEventId!);
+      : resolveTextInteraction(draft, interactionId, input.userReply, host, { promptEventId });
     const decisionId = interaction.target.slice("grill:".length);
     const index = (draft.decisionLedger ?? []).findIndex((decision) => decision.id === decisionId);
     if (index >= 0 && response) {
@@ -314,73 +105,28 @@ async function resolveGrillDecision(
       draft.decisionLedger = next;
     }
     draft.lastUpdatedBy = { host, pluginVersion: __DEV_FLOW_VERSION__ };
-  }, () => ({ interactionId, response }));
-  if (!response) throw new DevFlowError("INTERACTION_NOT_RESOLVED", interactionId);
-  return { state, interaction: toPublicInteraction(getInteraction(state, interactionId)), response };
+  }, { interactionId, mode: "decision" });
+  if (!response) throw new DevFlowError("INTERACTION_NOT_RESOLVED", "当前问题没有完成回答。", { interactionId });
+  return { state, interaction: toPublicInteraction(getInteraction(state, interactionId)), response, interactionId };
 }
 
-export async function resolveGrillElicitation(
-  root: string,
-  id: string,
-  expectedRevision: number,
-  interactionId: string,
-  action: string,
-  comment: string | undefined,
-  host: "claude" | "codex",
-): Promise<GrillDecisionResult> {
+export async function resolveGrillElicitation(root: string, id: string, expectedRevision: number, interactionId: string, action: string, comment: string | undefined, host: "claude" | "codex"): Promise<GrillDecisionResult> {
   return resolveGrillDecision(root, id, expectedRevision, interactionId, host, { source: "elicitation", action, comment });
 }
 
-export async function resolveGrillToken(
-  root: string,
-  id: string,
-  expectedRevision: number,
-  interactionId: string,
-  userReply: string,
-  promptEventId: string | undefined,
-  host: "claude" | "codex",
-): Promise<GrillDecisionResult> {
-  return resolveGrillDecision(root, id, expectedRevision, interactionId, host, { source: "text-token", userReply, promptEventId });
+export async function resolveGrillAnswer(root: string, id: string, expectedRevision: number, interactionId: string, userReply: string, host: "claude" | "codex"): Promise<GrillDecisionResult> {
+  return resolveGrillDecision(root, id, expectedRevision, interactionId, host, { source: "text", userReply });
 }
 
-/** Enforces the requirements-step grill contract after the artifact is registered. */
+/** Requirements completion is derived from the decision ledger, never Markdown control fields. */
 export async function assertRequirementsGrillSatisfied(root: string, id: string, state: FeatureState): Promise<void> {
   if (state.route !== "standard-m" && state.route !== "standard-l") return;
-  const contents = await assertArtifactCurrent(root, id, state, "requirements");
-  const fields = parseNestedDevFlow(contents);
-  const status = readStatus(fields);
-  const allowed = allowedStatuses(state);
-  const pendingInteraction = Object.values(state.interactions ?? {}).some((value) => {
-    const interaction = value as { kind?: string; status?: string; target?: string };
-    return interaction.kind === "grill" && interaction.status === "pending" && interaction.target?.startsWith("grill:");
-  });
-  if (pendingInteraction) {
-    throw new DevFlowError("GRILL_INCOMPLETE", "a grill interaction is still pending", {
-      recoveryHint: "先回答当前 grill interaction，再记录 requirements 步骤",
-    });
-  }
-  if (!allowed.includes(status)) {
-    throw new DevFlowError("GRILL_INCOMPLETE", "requirements grill is not complete", {
-      requirementsState: state.classification.requirements,
-      status,
-      allowedStatuses: allowed,
-      recoveryHint: "请继续 grillme 直到 grill_status 为 complete，登记资产后记录 requirements 步骤",
-    });
-  }
-  if (fields.grill_question_id || fields.grill_response_hint) {
-    throw new DevFlowError("GRILL_STATUS_INVALID", "complete/not_required grill must not retain current-question fields", {
-      recoveryHint: "grill 完成后请清除当前题字段",
-    });
-  }
-  const grillDecisionIds = new Set(Object.values(state.interactions ?? {})
-    .map((value) => (value as { target?: unknown }).target)
-    .filter((target): target is string => typeof target === "string" && target.startsWith("grill:"))
-    .map((target) => target.slice("grill:".length)));
-  const openDecision = (state.decisionLedger ?? []).find((decision) => (decision.source === "grill" || grillDecisionIds.has(decision.id)) && decision.status === "open");
-  if (openDecision) {
-    throw new DevFlowError("GRILL_INCOMPLETE", "a grill decision remains open", {
-      decisionId: openDecision.id,
-      recoveryHint: "先 resolve 当前 grill 决策，再记录 requirements 步骤",
-    });
-  }
+  await currentRequirements(root, id, state);
+  const pending = Object.values(state.interactions ?? {}).some((value) => {
+    const interaction = value as { kind?: string; status?: string };
+    return interaction.kind === "grill" && interaction.status === "pending";
+  }) || state.pendingDecision?.kind === "grill";
+  if (pending) throw new DevFlowError("GRILL_INCOMPLETE", "还有一个需求问题等待回答。", { userMessage: "需求澄清还没有完成。", cause: "决策账本仍有待回答的 grill 问题。", impact: "当前路线不能进入下一步。", recoveryKind: "retry", recoveryInstruction: "先回答当前唯一问题，再继续当前步骤。", retryOriginal: true });
+  const openDecision = (state.decisionLedger ?? []).find((decision) => decision.source === "grill" && decision.status === "open");
+  if (openDecision) throw new DevFlowError("GRILL_INCOMPLETE", "需求决策账本仍有未收敛问题。", { userMessage: "需求澄清还没有完成。", cause: "决策账本中存在 open grill decision。", impact: "系统不会从 Markdown 字段猜测完成态。", recoveryKind: "retry", recoveryInstruction: "回答当前问题后重新登记真实需求内容。", retryOriginal: true });
 }

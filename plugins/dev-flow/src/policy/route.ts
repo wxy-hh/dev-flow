@@ -111,7 +111,7 @@ export function validateBasis(basis: ClassificationBasis, riskLabels: RiskLabel[
   }
 }
 
-/** Pure v2 resolver. Risk facts can add obligations but can never change route. */
+/** Pure v3 resolver. Risk facts can add obligations but can never change route. */
 export function selectBaseRoute(input: ClassificationFacts): {
   classification: Classification;
   route: RouteId;

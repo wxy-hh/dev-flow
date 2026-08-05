@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
-import { toPublicReviewJob, type ReviewAgentAttestation, type ReviewBasis, type ReviewBatch, type ReviewJob, type ReviewLedger, type ReviewSamplingAttempt, type PublicReviewJob } from "../policy/review.js";
+import { toPublicReviewJob, type ReviewAgentAttestation, type ReviewBasis, type ReviewBatch, type ReviewFindingEvent, type ReviewJob, type ReviewLedger, type ReviewSamplingAttempt, type PublicReviewJob } from "../policy/review.js";
 import type { ReviewAssurance, ReviewFinding, ReviewFindingInput, ReviewFindingResolutionInput } from "../policy/types.js";
 import { pathWithinFileScope } from "../policy/rollback.js";
 import {
@@ -32,11 +32,15 @@ import {
   createInteraction,
   findInteractionForTarget,
   getInteraction,
-  resolveTokenInteraction,
+  resolveTextInteraction,
   toPublicInteraction,
   type PublicInteraction,
   type UserInteraction,
 } from "./user-interactions.js";
+import { resolvePromptEvent } from "./interaction-provenance.js";
+import { carriedFindings } from "./review-findings.js";
+import { effectiveFindingState, unresolvedBlockingFindings } from "./review-findings.js";
+import { hasCurrentQualityException } from "./quality-exceptions.js";
 
 const digest = (value: string) => createHash("sha256").update(value).digest("hex");
 const leaseMilliseconds = 60 * 60 * 1000;
@@ -120,13 +124,14 @@ function satisfyCompletedReviewObligation(
     : obligations;
 }
 
-function cloneLedger(ledger: ReviewLedger, stateRevision: number, batches: ReviewBatch[]): ReviewLedger {
+function cloneLedger(ledger: ReviewLedger, stateRevision: number, batches: ReviewBatch[], appendedFindingEvents: ReviewFindingEvent[] = []): ReviewLedger {
   return {
     ...ledger,
     revision: ledger.revision + 1,
     stateRevision,
     batches,
     summary: reviewSummary(batches),
+    findingEvents: [...(ledger.findingEvents ?? []), ...appendedFindingEvents],
   };
 }
 
@@ -392,6 +397,7 @@ export async function createReviewBatch(
     const jobs: ReviewJob[] = [];
     for (const requirement of requirements) {
       const jobId = randomUUID();
+      const carried = carriedFindings(ledger, requirement.role);
       const packageSha256 = await writeReviewPackage(root, current.featureId, {
         schemaVersion: 1,
         featureId: current.featureId,
@@ -404,8 +410,30 @@ export async function createReviewBatch(
         scopeManifest: reviewInput.scopeManifest,
         role: requirement.role,
         reviewDepth: requirement.reviewDepth,
+        carriedFindings: carried.map((item) => ({
+          findingId: item.finding.findingId,
+          originBatchId: item.originBatchId,
+          originRole: requirement.role,
+          basisHash: item.basisHash,
+          claim: item.finding.claim,
+          evidence: item.finding.evidence,
+        })),
       });
-      jobs.push({ jobId, role: requirement.role, reviewDepth: requirement.reviewDepth, packageSha256, status: "pending" });
+      jobs.push({
+        jobId,
+        role: requirement.role,
+        reviewDepth: requirement.reviewDepth,
+        packageSha256,
+        status: "pending",
+        ...(carried.length ? { carriedFindings: carried.map((item) => ({
+          findingId: item.finding.findingId,
+          originBatchId: item.originBatchId,
+          originRole: requirement.role,
+          basisHash: item.basisHash,
+          claim: item.finding.claim,
+          evidence: item.finding.evidence,
+        })) } : {}),
+      });
     }
     const batch: ReviewBatch = {
       batchId,
@@ -528,6 +556,7 @@ export async function releaseReviewJob(
 interface SubmittedReviewJob {
   batch: ReviewBatch;
   payloadSha256: string;
+  findingEvents: ReviewFindingEvent[];
 }
 
 function normalizeReviewCompletion(parsed: ReturnType<typeof parseReviewJobCompletion>): ReturnType<typeof parseReviewJobCompletion> {
@@ -573,6 +602,7 @@ async function submitParsedReviewJob(
   const manifest = reviewPackage.scopeManifest;
   assertFindingScope(manifest, normalizedParsed.findings, normalizedParsed.resolutions ?? []);
   const dispositions = { ...batch.dispositions };
+  const findingEvents: ReviewFindingEvent[] = [];
   const resolvedIds = new Set<string>();
   for (const resolution of normalizedParsed.resolutions ?? []) {
     if (resolvedIds.has(resolution.findingId)) invalid("REVIEW_RESOLUTION_DUPLICATE", "a finding may be resolved only once per successor batch", { findingId: resolution.findingId });
@@ -594,6 +624,26 @@ async function submitParsedReviewJob(
       resolutionJobId: job.jobId,
       resolvedAt: now.toISOString(),
     };
+    const outcome = resolution.outcome ?? "resolved";
+    findingEvents.push(outcome === "resolved"
+      ? {
+          type: "resolved",
+          findingId: resolution.findingId,
+          successorBatchId: batch.batchId,
+          resolutionJobId: job.jobId,
+          basisHash: batch.basisHash,
+          evidence: resolution,
+          at: now.toISOString(),
+        }
+      : {
+          type: "still-blocking",
+          findingId: resolution.findingId,
+          successorBatchId: batch.batchId,
+          resolutionJobId: job.jobId,
+          basisHash: batch.basisHash,
+          reason: resolution.note,
+          at: now.toISOString(),
+        });
     resolvedIds.add(resolution.findingId);
   }
   const payloadSha256 = digest(canonicalReviewValueJson(normalizedParsed));
@@ -602,6 +652,16 @@ async function submitParsedReviewJob(
     findingId: `F-${randomUUID()}`,
     jobId: job.jobId,
   }));
+  for (const finding of findings) {
+    findingEvents.push({ type: "origin", finding, batchId: batch.batchId, role: job.role, basisHash: batch.basisHash, at: now.toISOString() });
+  }
+  const missingCarried = (job.carriedFindings ?? []).filter((finding) => !resolvedIds.has(finding.findingId));
+  if (missingCarried.length) {
+    invalid("REVIEW_CARRIED_FINDING_UNRESOLVED", "每个结转 blocker 都必须提交明确处置结果", {
+      findingIds: missingCarried.map((finding) => finding.findingId),
+      recoveryHint: "为每个 carried finding 提交 resolved、still-blocking 或 risk-acceptance-required 结果",
+    });
+  }
   const completedAt = now.toISOString();
   const samplingAttempts = samplingAttempt
     ? job.samplingAttempts!.map((attempt) => attempt.requestSha256 !== samplingAttempt.requestSha256 ? attempt : {
@@ -644,7 +704,7 @@ async function submitParsedReviewJob(
     ...updatedBatch,
     progress: updatedBatch.jobs.every((candidate) => candidate.status === "submitted") ? "complete" : "open",
   };
-  return { batch: withDerivedAssurance(updatedBatch), payloadSha256 };
+  return { batch: withDerivedAssurance(updatedBatch), payloadSha256, findingEvents };
 }
 
 export async function submitReviewJob(
@@ -709,7 +769,7 @@ export async function submitReviewJob(
       throw error;
     }
     const batches = ledger.batches.map((candidate) => candidate.batchId === batchId ? submitted.batch : candidate);
-    const pointer = await writeReviewSnapshot(root, cloneLedger(ledger, nextStateRevision, batches));
+    const pointer = await writeReviewSnapshot(root, cloneLedger(ledger, nextStateRevision, batches, submitted.findingEvents));
     result = { batch: submitted.batch, idempotent: false };
     return {
       mutate: (draft) => {
@@ -863,6 +923,7 @@ export async function completeReviewSampling(
       ledger,
       nextStateRevision,
       ledger.batches.map((candidate) => candidate.batchId === batchId ? submitted.batch : candidate),
+      submitted.findingEvents,
     ));
     result = { batch: submitted.batch };
     return {
@@ -945,6 +1006,15 @@ async function currentBatchWithBasis(
 }
 
 function currentBlockingFindings(ledger: ReviewLedger, batch: ReviewBatch): LocatedFinding[] {
+  if (ledger.findingEvents?.length) {
+    return unresolvedBlockingFindings(ledger, batch.basisHash).flatMap((finding) => {
+      const state = effectiveFindingState(ledger, finding.findingId, batch.basisHash);
+      if (!state) return [];
+      const sourceBatch = ledger.batches.find((candidate) => candidate.batchId === state.origin.batchId);
+      const sourceJob = sourceBatch?.jobs.find((candidate) => candidate.jobId === finding.jobId);
+      return sourceBatch && sourceJob ? [{ batch: sourceBatch, job: sourceJob, finding }] : [];
+    });
+  }
   const dispositions = batch.dispositions ?? {};
   return submittedFindings(ledger).filter(({ batch: source, finding }) => source.batchId === batch.batchId
     && finding.severity === "blocking" && !dispositions[finding.findingId]);
@@ -960,6 +1030,12 @@ function selectCurrentBlockingFindings(
   findingIds: string[],
   unresolvedOnly: boolean,
 ): ReviewFinding[] {
+  if (ledger.findingEvents?.length) {
+    const unresolved = new Map(unresolvedBlockingFindings(ledger, batch.basisHash).map((finding) => [finding.findingId, finding]));
+    const selected = sortedFindingIds(findingIds).map((findingId) => unresolved.get(findingId));
+    if (selected.some((finding) => !finding)) invalid("REVIEW_RISK_ACCEPTANCE_INVALID", "风险接受只能覆盖当前未解决的阻断发现", { findingIds });
+    return selected as ReviewFinding[];
+  }
   const byId = new Map(submittedFindings(ledger)
     .filter(({ batch: source, finding }) => source.batchId === batch.batchId
       && finding.severity === "blocking" && (!unresolvedOnly || !batch.dispositions?.[finding.findingId]))
@@ -1033,11 +1109,11 @@ function assertResolvedAcceptance(
   }
 }
 
-/** Validate the user event before a risk-acceptance token can consume it. */
+/** Validate the user event before a risk-acceptance answer can consume it. */
 export function assertReviewRiskAcceptanceEvidence(
   event: { revision: number; at: string; data: unknown } | undefined,
   interaction: Pick<UserInteraction, "presentedAt">,
-  promptEventId: string,
+  promptEventId: string | undefined,
   userReply: string,
   host: "claude" | "codex",
 ): void {
@@ -1077,31 +1153,37 @@ export function assertReviewRiskAcceptanceEvidence(
   }
 }
 
-/** Resolve the one-time text token and atomically persist accepted dispositions. */
-export async function resolveReviewRiskAcceptanceToken(
+/** Resolve one natural-language answer and atomically persist accepted dispositions. */
+export async function resolveReviewRiskAcceptanceAnswer(
   root: string,
   id: string,
   expectedRevision: number,
   interactionId: string,
   userReply: string,
-  promptEventId: string,
   host: "claude" | "codex",
 ): Promise<ResolvedReviewRiskAcceptance> {
   let result: Omit<ResolvedReviewRiskAcceptance, "state"> | undefined;
   const state = await mutatePrepared(root, id, expectedRevision, "review-risk-acceptance-resolved", async (current, nextStateRevision) => {
     const interaction = getInteraction(current as FeatureState, interactionId);
-    const hostEvent = (await readFeatureEvents(root, id)).find((event) => event.type === "host-event"
-      && (event.data as { eventId?: unknown }).eventId === promptEventId);
-    assertReviewRiskAcceptanceEvidence(hostEvent, interaction, promptEventId, userReply, host);
+    const events = await readFeatureEvents(root, id);
+    const resolvedPromptEventId = resolvePromptEvent(events, {
+      host,
+      userReply,
+      presentedAt: interaction.presentedAt,
+      presentedRevision: current.pendingDecision?.presentedRevision ?? current.revision - 1,
+    }).eventId;
+    const hostEvent = events.find((event) => event.type === "host-event"
+      && (event.data as { eventId?: unknown }).eventId === resolvedPromptEventId);
+    assertReviewRiskAcceptanceEvidence(hostEvent, interaction, resolvedPromptEventId, userReply, host);
     const { ledger, batch } = await currentBatchWithBasis(root, current as FeatureState);
     const binding = riskBinding(interaction);
     if (interaction.status === "resolved") {
       const findings = selectCurrentBlockingFindings(ledger, batch, binding.findingIds, false);
       assertResolvedAcceptance(current as FeatureState, interaction, batch, findings);
       const accepted = interaction.response?.action === "accept"
-        && interaction.response.source === "text-token"
+        && interaction.response.source === "text"
         && interaction.response.userReply === userReply
-        && interaction.response.promptEventId === promptEventId
+        && interaction.response.promptEventId === resolvedPromptEventId
         && interaction.response.host === host;
       const dispositions = batch.dispositions ?? {};
       if (accepted && findings.every((finding) => {
@@ -1117,11 +1199,11 @@ export async function resolveReviewRiskAcceptanceToken(
     const findings = acceptanceFindings(ledger, batch, binding.findingIds);
     assertResolvedAcceptance(current as FeatureState, interaction, batch, findings);
     const preview = structuredClone(current as FeatureState);
-    const response = resolveTokenInteraction(preview, interactionId, userReply, host, promptEventId);
+     const response = resolveTextInteraction(preview, interactionId, userReply, host, { promptEventId: resolvedPromptEventId });
     if (response.action !== "accept") {
       result = { acceptedFindingIds: [], idempotent: false };
       return {
-        mutate: (draft) => { resolveTokenInteraction(draft, interactionId, userReply, host, promptEventId); },
+         mutate: (draft) => { resolveTextInteraction(draft, interactionId, userReply, host, { promptEventId: resolvedPromptEventId }); },
         eventData: { interactionId, batchId: batch.batchId, action: response.action },
       };
     }
@@ -1138,15 +1220,26 @@ export async function resolveReviewRiskAcceptanceToken(
       };
     }
     const updatedBatch = { ...batch, dispositions };
+    const findingEvents: ReviewFindingEvent[] = findings.map((finding) => ({
+      type: "risk-accepted",
+      findingId: finding.findingId,
+      batchId: batch.batchId,
+      interactionId,
+      basisHash: batch.basisHash,
+      findingSetHash: binding.findingSetHash,
+      userEvidence: userReply,
+      at: response.respondedAt,
+    }));
     const pointer = await writeReviewSnapshot(root, cloneLedger(
       ledger,
       nextStateRevision,
       ledger.batches.map((candidate) => candidate.batchId === batch.batchId ? updatedBatch : candidate),
+      findingEvents,
     ));
     result = { acceptedFindingIds: binding.findingIds, idempotent: false };
     return {
       mutate: (draft) => {
-        resolveTokenInteraction(draft, interactionId, userReply, host, promptEventId);
+         resolveTextInteraction(draft, interactionId, userReply, host, { promptEventId: resolvedPromptEventId });
         draft.review = pointer;
       },
       eventData: { interactionId, batchId: batch.batchId, findingIds: binding.findingIds, findingSetHash: binding.findingSetHash },
@@ -1162,6 +1255,15 @@ export async function assertReviewComplete(
 ): Promise<{ batchId: string; basisHash: string; assuranceLevel: ReviewAssurance }> {
   const { ledger, batch } = await currentBatchWithBasis(root, state);
   if (batch.progress !== "complete") invalid("REVIEW_BATCH_INCOMPLETE", "all required review jobs must be submitted", { batchId: batch.batchId });
+  if (ledger.findingEvents?.length) {
+    const unresolved = unresolvedBlockingFindings(ledger, batch.basisHash);
+    if (unresolved.length && !hasCurrentQualityException(state, "review")) invalid("REVIEW_BLOCKING_FINDINGS", "review ledger has unresolved blocking findings", {
+      batchId: batch.batchId,
+      findingIds: unresolved.map((finding) => finding.findingId),
+    });
+    await assertCurrentReviewProjection(root, state);
+    return { batchId: batch.batchId, basisHash: batch.basisHash, assuranceLevel: batch.assuranceLevel };
+  }
   const jobs = ledger.batches.flatMap((candidate) => candidate.jobs);
   const dispositions = Object.assign({}, ...ledger.batches.map((candidate) => candidate.dispositions ?? {}));
   const blocking = jobs.flatMap((job) => job.submission?.findings ?? [])

@@ -55,6 +55,14 @@ export interface ReviewJob {
   status: "pending" | "claimed" | "sampling" | "submitted";
   claim?: { requestSha256: string; claimedAt: string; leaseExpiresAt: string };
   samplingAttempts?: ReviewSamplingAttempt[];
+  carriedFindings?: Array<{
+    findingId: string;
+    originBatchId: string;
+    originRole: ReviewRole;
+    basisHash: string;
+    claim: string;
+    evidence: Array<{ path: string; line?: number }>;
+  }>;
   submission?: {
     payloadSha256: string;
     coverageSummary: string;
@@ -158,6 +166,44 @@ export type ReviewFindingDisposition =
       findingSetHash: string;
     };
 
+export type ReviewFindingEvent =
+  | {
+      type: "origin";
+      finding: ReviewFinding;
+      batchId: string;
+      role: ReviewRole;
+      basisHash: string;
+      at: string;
+    }
+  | {
+      type: "resolved";
+      findingId: string;
+      successorBatchId: string;
+      resolutionJobId: string;
+      basisHash: string;
+      evidence: ReviewFindingResolutionInput;
+      at: string;
+    }
+  | {
+      type: "still-blocking";
+      findingId: string;
+      successorBatchId: string;
+      resolutionJobId: string;
+      basisHash: string;
+      reason: string;
+      at: string;
+    }
+  | {
+      type: "risk-accepted";
+      findingId: string;
+      batchId: string;
+      interactionId: string;
+      basisHash: string;
+      findingSetHash: string;
+      userEvidence: string;
+      at: string;
+    };
+
 export interface ReviewBatch {
   batchId: string;
   basis: ReviewBasis;
@@ -177,6 +223,8 @@ export interface ReviewLedger {
   stateRevision: number;
   batches: ReviewBatch[];
   summary: ReviewSummary;
+  /** v3 append-only finding history; old batch dispositions are never authoritative. */
+  findingEvents?: ReviewFindingEvent[];
 }
 
 /**
@@ -325,11 +373,12 @@ function parseFinding(value: unknown, index: number): ReviewFindingInput {
 }
 
 function parseResolution(value: unknown, index: number): ReviewFindingResolutionInput {
-  if (!isRecord(value) || Object.keys(value).some((key) => key !== "findingId" && key !== "evidence" && key !== "note")
+  if (!isRecord(value) || Object.keys(value).some((key) => key !== "findingId" && key !== "evidence" && key !== "note" && key !== "outcome")
     || typeof value.findingId !== "string" || !value.findingId || typeof value.note !== "string" || !value.note.trim()) {
     protocolInvalid(`review resolution ${index} has an invalid shape`);
   }
-  return { findingId: value.findingId, evidence: parseEvidence(value.evidence, `review resolution ${index}`), note: value.note };
+  if (value.outcome !== undefined && value.outcome !== "resolved" && value.outcome !== "still-blocking" && value.outcome !== "risk-acceptance-required") protocolInvalid(`review resolution ${index} has an invalid outcome`);
+  return { findingId: value.findingId, evidence: parseEvidence(value.evidence, `review resolution ${index}`), note: value.note, ...(value.outcome ? { outcome: value.outcome } : {}) };
 }
 
 /** Derive the complete 2a review assignment from immutable feature facts. */

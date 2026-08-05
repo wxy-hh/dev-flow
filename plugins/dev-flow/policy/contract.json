@@ -1,5 +1,5 @@
 {
-  "schemaVersion": 2,
+  "schemaVersion": 3,
   "routes": {
     "xs": {
       "orderedSteps": ["locate", "implementation", "verification", "finalize"],

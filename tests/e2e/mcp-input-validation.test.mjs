@@ -57,7 +57,7 @@ test("MCP rejects silently ignored fields before invoking state handlers", async
         host: "codex",
         manualAcceptance: { mode: "user-signoff", source: "prompt", scenarios: [{ name: "ok", evidence: "ok" }] },
       }),
-      (error) => error.code === "INVALID_TOOL_INPUT" && error.details.issues.some((item) => item.path === "$.manualAcceptance.promptEventId"),
+      (error) => error.code === "INVALID_TOOL_INPUT" && error.details.issues.some((item) => item.path === "$.manualAcceptance.userReply"),
     );
   } finally {
     await rm(root, { recursive: true, force: true });

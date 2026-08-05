@@ -2,7 +2,7 @@ import { routeDefinition } from "./contract.js";
 import type { DeriveState, NextAction } from "./types.js";
 
 export function deriveNext(state: DeriveState): NextAction {
-  if (state.schemaVersion !== 2) throw new Error("UNSUPPORTED_STATE_SCHEMA");
+  if (state.schemaVersion !== 3) throw new Error("UNSUPPORTED_STATE_SCHEMA");
   if (state.lifecycle === "finalized") return { kind: "done" };
   if (state.repair?.status === "waiting-user" || state.repair?.status === "stalled") {
     return {

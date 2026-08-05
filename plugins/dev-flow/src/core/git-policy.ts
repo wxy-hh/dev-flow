@@ -2,6 +2,8 @@
 const readOnly = new Set(["status", "diff", "log", "show", "rev-parse", "ls-files", "ls-tree", "cat-file", "name-rev"]);
 const write = new Set(["add", "commit", "push", "merge", "rebase", "tag", "cherry-pick", "reset"]);
 
+export type GitCommandKind = "read" | "local-stage" | "local-commit" | "history-rewrite" | "external-publish" | "other";
+
 function isReadOnly(subcommand: string, args: string): boolean {
   if (readOnly.has(subcommand)) return true;
   const normalized = args.trim();
@@ -22,6 +24,22 @@ export function classifyGitCommand(command: string): "read" | "write" | "other" 
     if (write.has(subcommand) || !isReadOnly(subcommand, args)) return "write";
   }
   return "read";
+}
+
+export function classifyGitCommandKind(command: string): GitCommandKind {
+  const commands = [...command.matchAll(/(?:^|[;&|]\s*)(?:[A-Za-z_][A-Za-z0-9_]*=(?:"[^"]*"|'[^']*'|\S+)\s+)*(?:command\s+)?git(?:\s+-C\s+(?:"[^"]+"|'[^']+'|\S+))?\s+([\w-]+)([^;&|\n)]*)/g)];
+  if (!commands.length) return "other";
+  let result: GitCommandKind = "read";
+  for (const match of commands) {
+    const subcommand = match[1];
+    const args = (match[2] ?? "").trim();
+    if (isReadOnly(subcommand, args)) continue;
+    if (subcommand === "add") result = "local-stage";
+    else if (subcommand === "commit") result = result === "history-rewrite" ? result : "local-commit";
+    else if (subcommand === "push") result = "external-publish";
+    else result = "history-rewrite";
+  }
+  return result;
 }
 
 export const gitReadOnlyCommands = [...readOnly].sort();

@@ -1,4 +1,4 @@
-/* dev-flow 3.0.2; built from source, deterministic build */
+/* dev-flow 4.0.0; built from source, deterministic build */
 
 // plugins/dev-flow/src/core/state-store.ts
 import { randomUUID as randomUUID4, createHash as createHash5 } from "node:crypto";
@@ -8,7 +8,7 @@ import path7 from "node:path";
 
 // plugins/dev-flow/policy/contract.json
 var contract_default = {
-  schemaVersion: 2,
+  schemaVersion: 3,
   routes: {
     xs: {
       orderedSteps: ["locate", "implementation", "verification", "finalize"],
@@ -86,7 +86,7 @@ var SUPPORTED_WORKFLOW_CAPABILITIES = Object.freeze({
 
 // plugins/dev-flow/src/policy/contract.ts
 var contract = contract_default;
-if (contract.schemaVersion !== 2) {
+if (contract.schemaVersion !== 3) {
   throw new Error(`unsupported contract schema ${String(contract.schemaVersion)}`);
 }
 var allowedRiskLabels = Object.freeze(Object.keys(contract.riskEnhancements));
@@ -167,26 +167,62 @@ function checkpointsEnforcementRequired(route, capabilities) {
 }
 
 // plugins/dev-flow/src/core/errors.ts
+var chineseRecovery = (code) => {
+  if (code.includes("REVISION") || code.includes("CONFLICT")) {
+    return { kind: "refresh", instruction: "\u5237\u65B0\u5F53\u524D\u72B6\u6001\u540E\u91CD\u8BD5\u539F\u64CD\u4F5C\u3002", requiresUserDecision: false, retryOriginal: true };
+  }
+  if (code.includes("INTEGRITY") || code.includes("CORRUPT") || code.includes("UNREADABLE")) {
+    return { kind: "repair", instruction: "\u8FD0\u884C doctor \u68C0\u67E5\u5F53\u524D\u72B6\u6001\uFF1B\u4E0D\u8981\u624B\u52A8\u4FEE\u6539\u63A7\u5236\u6587\u4EF6\u3002", requiresUserDecision: false, retryOriginal: false };
+  }
+  if (code.includes("REQUIRED") || code.includes("INCOMPLETE") || code.includes("STALE")) {
+    return { kind: "retry", instruction: "\u6309\u5F53\u524D\u72B6\u6001\u63D0\u793A\u8865\u9F50\u7F3A\u5931\u8BC1\u636E\u540E\u91CD\u8BD5\u3002", requiresUserDecision: false, retryOriginal: true };
+  }
+  return { kind: "ask-user", instruction: "\u8BF7\u786E\u8BA4\u662F\u5426\u6309\u63A8\u8350\u6062\u590D\u52A8\u4F5C\u7EE7\u7EED\u3002", requiresUserDecision: true, retryOriginal: false };
+};
 var DevFlowError = class extends Error {
   constructor(code, message, details = {}) {
     super(`${code}: ${message}`);
     this.code = code;
     this.details = details;
+    this.name = "DevFlowError";
+    this.userMessage = typeof details.userMessage === "string" ? details.userMessage : "\u5F53\u524D\u52A8\u4F5C\u672A\u5B8C\u6210\u3002";
+    this.cause = typeof details.cause === "string" ? details.cause : "\u5F53\u524D\u6D41\u7A0B\u6761\u4EF6\u5C1A\u672A\u6EE1\u8DB3\u3002";
+    this.impact = typeof details.impact === "string" ? details.impact : "\u6D41\u7A0B\u4FDD\u6301\u5728\u5F53\u524D\u9636\u6BB5\uFF0C\u5DF2\u6709\u7528\u6237\u6587\u4EF6\u4E0D\u4F1A\u88AB\u81EA\u52A8\u6539\u5199\u3002";
+    this.recovery = {
+      ...chineseRecovery(code),
+      ...typeof details.recoveryKind === "string" ? { kind: details.recoveryKind } : {},
+      ...typeof details.recoveryInstruction === "string" ? { instruction: details.recoveryInstruction } : {},
+      ...typeof details.requiresUserDecision === "boolean" ? { requiresUserDecision: details.requiresUserDecision } : {},
+      ...typeof details.retryOriginal === "boolean" ? { retryOriginal: details.retryOriginal } : {}
+    };
+  }
+  userMessage;
+  cause;
+  impact;
+  recovery;
+  toFailure() {
+    const technical = { ...this.details };
+    if (this.code.includes("REVISION_CONFLICT")) {
+      technical.basisChanged = false;
+      technical.safeToRefresh = true;
+    }
+    return {
+      code: this.code,
+      userMessage: this.userMessage,
+      cause: this.cause,
+      impact: this.impact,
+      recovery: { ...this.recovery },
+      ...Object.keys(technical).length ? { technical } : {}
+    };
   }
 };
 
-// plugins/dev-flow/src/core/delivery-snapshot.ts
+// plugins/dev-flow/src/core/fingerprint.ts
 import { execFile } from "node:child_process";
+import { createHash } from "node:crypto";
+import { readdir, readFile, lstat } from "node:fs/promises";
+import path2 from "node:path";
 import { promisify } from "node:util";
-
-// plugins/dev-flow/src/core/path-normalization.ts
-import path from "node:path";
-function normalizeUnicode(value) {
-  return value.normalize("NFC");
-}
-function normalizeProjectPath(value) {
-  return path.posix.normalize(normalizeUnicode(value).replaceAll("\\", "/"));
-}
 
 // plugins/dev-flow/src/policy/rollback.ts
 var IMPLEMENTATION_UNIT_TRANSITIONS = Object.freeze({
@@ -275,16 +311,17 @@ function implementationUnitForRollbackNode(node, basisHash2) {
   return { unitId: node.id, status: "pending", basisHash: basisHash2 };
 }
 
-// plugins/dev-flow/src/core/delivery-snapshot.ts
-var run = promisify(execFile);
+// plugins/dev-flow/src/core/path-normalization.ts
+import path from "node:path";
+function normalizeUnicode(value) {
+  return value.normalize("NFC");
+}
+function normalizeProjectPath(value) {
+  return path.posix.normalize(normalizeUnicode(value).replaceAll("\\", "/"));
+}
 
 // plugins/dev-flow/src/core/fingerprint.ts
-import { execFile as execFile2 } from "node:child_process";
-import { createHash } from "node:crypto";
-import { readdir, readFile, lstat } from "node:fs/promises";
-import path2 from "node:path";
-import { promisify as promisify2 } from "node:util";
-var runFile = promisify2(execFile2);
+var runFile = promisify(execFile);
 var ignored = /* @__PURE__ */ new Set([".git", ".dev-flow", "node_modules"]);
 function configFor(input) {
   return Array.isArray(input) ? { protectedRoots: input } : input;
@@ -1028,6 +1065,19 @@ function validateLedger(value) {
     }
     batchIds.add(batch.batchId);
   }
+  if (ledger.findingEvents !== void 0) {
+    if (!Array.isArray(ledger.findingEvents)) integrity2("review finding event ledger is invalid");
+    const origins = /* @__PURE__ */ new Set();
+    for (const event2 of ledger.findingEvents) {
+      if (!event2 || typeof event2 !== "object" || typeof event2.type !== "string" || typeof event2.at !== "string") integrity2("review finding event has an invalid shape");
+      if (event2.type === "origin") {
+        if (!event2.finding || typeof event2.finding.findingId !== "string" || origins.has(event2.finding.findingId)) integrity2("review finding origin is missing or duplicated");
+        origins.add(event2.finding.findingId);
+      } else if (typeof event2.findingId !== "string" || !origins.has(event2.findingId)) {
+        integrity2("review finding event references an unknown origin", { findingId: event2.findingId });
+      }
+    }
+  }
   const attestationRaws = /* @__PURE__ */ new Set();
   for (const batch of ledger.batches) {
     for (const job of batch.jobs) {
@@ -1085,6 +1135,37 @@ async function readReviewLedger(root, state) {
 import { createHash as createHash4, randomUUID as randomUUID3 } from "node:crypto";
 import { mkdir as mkdir3, open as open3, readFile as readFile4, rename as rename3 } from "node:fs/promises";
 import path6 from "node:path";
+
+// plugins/dev-flow/src/core/review-findings.ts
+function eventsFor(ledger, findingId) {
+  return (ledger.findingEvents ?? []).filter((event2) => event2.type === "origin" ? event2.finding.findingId === findingId : event2.findingId === findingId);
+}
+function originFor(ledger, findingId) {
+  return (ledger.findingEvents ?? []).find((event2) => event2.type === "origin" && event2.finding.findingId === findingId);
+}
+function latestEvent(events) {
+  return events.filter((event2) => event2.type !== "origin").at(-1);
+}
+function effectiveFindingState(ledger, findingId, currentBasisHash) {
+  const origin = originFor(ledger, findingId);
+  if (!origin) return void 0;
+  const latest = latestEvent(eventsFor(ledger, findingId));
+  const basisCurrent = !currentBasisHash || !latest || latest.basisHash === currentBasisHash;
+  const status = !basisCurrent ? "unresolved" : latest?.type === "resolved" ? "resolved" : latest?.type === "still-blocking" ? "still-blocking" : latest?.type === "risk-accepted" ? "risk-accepted" : "unresolved";
+  return {
+    findingId,
+    status,
+    blocking: origin.finding.severity === "blocking" && status !== "resolved" && status !== "risk-accepted",
+    origin,
+    ...latest ? { latestEvent: latest } : {}
+  };
+}
+function unresolvedBlockingFindings(ledger, currentBasisHash) {
+  const ids = new Set((ledger.findingEvents ?? []).filter((event2) => event2.type === "origin" && event2.finding.severity === "blocking").map((event2) => event2.finding.findingId));
+  return [...ids].map((findingId) => effectiveFindingState(ledger, findingId, currentBasisHash)).filter((state) => Boolean(state?.blocking)).map((state) => state.origin.finding);
+}
+
+// plugins/dev-flow/src/core/review-projection.ts
 var digest3 = (contents) => createHash4("sha256").update(contents).digest("hex");
 function projectionError(message, details = {}) {
   throw new DevFlowError("REVIEW_PROJECTION_INVALID", message, details);
@@ -1109,11 +1190,12 @@ function publicFinding(finding) {
     recommendation: finding.recommendation
   };
 }
-function allDispositions(ledger) {
-  return Object.assign({}, ...ledger.batches.map((batch) => batch.dispositions ?? {}));
-}
 function unresolvedBlockingFindingIds(ledger) {
-  const dispositions = allDispositions(ledger);
+  if (ledger.findingEvents?.length) {
+    const current = ledger.batches.find((batch) => batch.validity === "current");
+    return unresolvedBlockingFindings(ledger, current?.basisHash).map((finding) => finding.findingId).sort();
+  }
+  const dispositions = Object.fromEntries(ledger.batches.flatMap((batch) => Object.entries(batch.dispositions ?? {})));
   return ledger.batches.flatMap((batch) => batch.jobs.flatMap((job) => job.submission?.findings ?? [])).filter((finding) => finding.severity === "blocking" && !dispositions[finding.findingId]).map((finding) => finding.findingId).sort();
 }
 function reviewProjectionModel(state, ledger) {
@@ -1310,6 +1392,11 @@ function confirmedApproval(state) {
   return void 0;
 }
 
+// plugins/dev-flow/src/core/git-reconciliation.ts
+import { execFile as execFile2 } from "node:child_process";
+import { promisify as promisify2 } from "node:util";
+var run = promisify2(execFile2);
+
 // plugins/dev-flow/src/core/state-store.ts
 var lifecycles = /* @__PURE__ */ new Set(["active", "paused", "finalized", "abandoned"]);
 var unitStatuses = /* @__PURE__ */ new Set(["pending", "active", "verified", "checkpointed", "rolled_back"]);
@@ -1335,12 +1422,27 @@ function validateImplementationUnits(units) {
 }
 function validateFeatureState(value) {
   const state = value;
-  if (state.schemaVersion === 1) throw new DevFlowError("LEGACY_STATE_UNSUPPORTED", "feature state schema v1 is no longer supported", { recoveryHint: "Use the 1.10 doctor to finish or abandon the feature, then start it again under v2" });
-  if (state?.schemaVersion !== 2) throw new DevFlowError("UNSUPPORTED_STATE_SCHEMA", "only state schema v2 is supported");
+  if (state.schemaVersion === 1 || state.schemaVersion === 2) throw new DevFlowError("LEGACY_STATE_UNSUPPORTED", "\u65E7\u7248 feature \u72B6\u6001\u4E0D\u53D7 4.0 \u8FD0\u884C\u65F6\u652F\u6301\u3002", { userMessage: "\u5F53\u524D feature \u4F7F\u7528\u65E7\u7248\u72B6\u6001\uFF0C\u4E0D\u80FD\u5728 Dev Flow 4.0 \u4E2D\u7EE7\u7EED\u3002", cause: "\u68C0\u6D4B\u5230 schema v1/v2 \u72B6\u6001\u3002", impact: "\u7CFB\u7EDF\u4E0D\u4F1A\u8FC1\u79FB\u3001\u8986\u76D6\u6216\u731C\u6D4B\u65E7\u72B6\u6001\u3002", recoveryKind: "repair", recoveryInstruction: "\u8FD0\u884C doctor \u67E5\u770B\u7ED3\u675F\u6D4B\u8BD5\u72B6\u6001\u6216\u6E05\u7406 fixture \u7684\u8BF4\u660E\uFF0C\u7136\u540E\u91CD\u65B0\u5F00\u59CB\u4EFB\u52A1\u3002", retryOriginal: false });
+  if (state?.schemaVersion !== 3) throw new DevFlowError("UNSUPPORTED_STATE_SCHEMA", "\u5F53\u524D\u53EA\u652F\u6301 schema v3 \u72B6\u6001\u3002", { userMessage: "\u5F53\u524D feature \u72B6\u6001\u7248\u672C\u4E0D\u53D7\u652F\u6301\u3002", cause: "\u72B6\u6001\u4E0D\u662F schema v3\u3002", impact: "\u6D41\u7A0B\u5DF2\u505C\u6B62\uFF0C\u907F\u514D\u5728\u672A\u77E5\u72B6\u6001\u4E0A\u7EE7\u7EED\u5199\u5165\u3002", recoveryKind: "repair", recoveryInstruction: "\u8FD0\u884C doctor \u68C0\u67E5\u72B6\u6001\uFF0C\u5E76\u91CD\u65B0\u5F00\u59CB\u4E00\u4E2A v3 feature\u3002", retryOriginal: false });
   if (state.mode !== "intake" && state.mode !== "routed") throw new DevFlowError("INVALID_STATE_SCHEMA", "state mode must be intake or routed");
-  if (typeof state.featureId !== "string" || !state.featureId || !Number.isInteger(state.revision) || (state.revision ?? -1) < 0 || !lifecycles.has(state.lifecycle) || !state.scope || !Array.isArray(state.scope.inScope) || !Array.isArray(state.scope.outOfScope) || !state.steps || !state.humanGates || !state.artifacts || !state.verification || !Array.isArray(state.verification.attempts) || state.interactions !== void 0 && (typeof state.interactions !== "object" || state.interactions === null || Array.isArray(state.interactions)) || !state.featureCheck || !Array.isArray(state.blockingFindings) || typeof state.logicComplete !== "boolean" || !state.lastUpdatedBy) {
-    throw new DevFlowError("INVALID_STATE_SCHEMA", "state is not a valid v2 feature state");
+  if (typeof state.featureId !== "string" || !state.featureId || !Number.isInteger(state.revision) || (state.revision ?? -1) < 0 || !lifecycles.has(state.lifecycle) || !state.scope || !Array.isArray(state.scope.inScope) || !Array.isArray(state.scope.outOfScope) || !state.steps || !state.humanGates || !state.artifacts || !state.verification || !Array.isArray(state.verification.attempts) || state.interactions !== void 0 && (typeof state.interactions !== "object" || state.interactions === null || Array.isArray(state.interactions)) || !state.featureCheck || !Array.isArray(state.blockingFindings) || typeof state.logicComplete !== "boolean" || !state.lastUpdatedBy || !state.workspace || !state.evidenceFreshness || !Array.isArray(state.qualityExceptions)) {
+    throw new DevFlowError("INVALID_STATE_SCHEMA", "state is not a valid v3 feature state");
   }
+  if (state.lastUpdatedBy.host !== "claude" && state.lastUpdatedBy.host !== "codex") throw new DevFlowError("INVALID_STATE_SCHEMA", "lastUpdatedBy host is invalid");
+  const pendingInteractions = Object.values(state.interactions ?? {}).filter((item) => item.status === "pending");
+  if (pendingInteractions.length > 1) throw new DevFlowError("MULTIPLE_PENDING_DECISIONS", "v3 state contains more than one pending decision", { userMessage: "\u5F53\u524D\u72B6\u6001\u540C\u65F6\u5B58\u5728\u591A\u4E2A\u5F85\u51B3\u95EE\u9898\uFF0C\u6D41\u7A0B\u5DF2\u5B89\u5168\u505C\u6B62\u3002", cause: "\u51B3\u7B56\u8D26\u672C\u4E0D\u662F\u5355\u4E00\u5F85\u51B3\u95EE\u9898\u3002", impact: "\u7CFB\u7EDF\u4E0D\u4F1A\u4EFB\u9009\u4E00\u4E2A\u95EE\u9898\u6D88\u8D39\u3002", recoveryKind: "repair", recoveryInstruction: "\u8FD0\u884C doctor \u68C0\u67E5\u51B3\u7B56\u8D26\u672C\uFF0C\u7136\u540E\u901A\u8FC7\u516C\u5F00\u56DE\u7B54\u63A5\u53E3\u6062\u590D\u3002", retryOriginal: false });
+  if (state.pendingDecision !== void 0) {
+    const decision = state.pendingDecision;
+    if (!decision || decision.source !== "core" || typeof decision.question !== "string" || !decision.question.trim() || !/^[a-f0-9]{64}$/.test(decision.basisHash) || !Number.isInteger(decision.presentedRevision) || !Array.isArray(decision.options) || decision.options.length < 2 || decision.options.length > 3 || decision.options.some((option) => !option || typeof option.id !== "string" || typeof option.label !== "string" || !option.label.trim())) {
+      throw new DevFlowError("INVALID_STATE_SCHEMA", "pendingDecision is invalid");
+    }
+  }
+  const workspace = state.workspace;
+  if (!workspace || typeof workspace.baseHead !== "string" || typeof workspace.baseBranch !== "string" || typeof workspace.observedHead !== "string" || typeof workspace.lastWorkspaceFingerprint !== "string" || !["current", "required", "blocked"].includes(workspace.reconciliationStatus) || typeof workspace.startedDirty !== "object" || workspace.startedDirty === null || Array.isArray(workspace.startedDirty) || typeof workspace.ownership !== "object" || workspace.ownership === null || Array.isArray(workspace.ownership) || typeof workspace.ownershipSource !== "object" || workspace.ownershipSource === null || Array.isArray(workspace.ownershipSource) || !Array.isArray(workspace.observedCommits)) {
+    throw new DevFlowError("INVALID_STATE_SCHEMA", "workspace lineage is invalid");
+  }
+  if (state.lifecycle === "finalized" && !state.deliverySnapshot) throw new DevFlowError("INVALID_STATE_SCHEMA", "finalized v3 state requires a delivery result");
+  if (state.lifecycle === "abandoned" && !state.abandonment) throw new DevFlowError("INVALID_STATE_SCHEMA", "abandoned v3 state requires a user reason");
   if (state.mode === "intake") {
     if (state.route !== void 0 || state.classification !== void 0 || state.classificationBasis !== void 0 || state.obligations !== void 0) {
       throw new DevFlowError("INVALID_STATE_SCHEMA", "intake state cannot contain route or classification fields");
@@ -1351,7 +1453,7 @@ function validateFeatureState(value) {
     return;
   }
   if (!state.route || !routeDefinition(state.route) || !state.classification || !state.classificationBasis || !Array.isArray(state.obligations)) {
-    throw new DevFlowError("INVALID_STATE_SCHEMA", "routed v2 state requires classification facts and obligations");
+    throw new DevFlowError("INVALID_STATE_SCHEMA", "routed v3 state requires classification facts and obligations");
   }
   if (state.repair !== void 0 && (typeof state.repair !== "object" || !["active", "stalled", "waiting-user", "completed"].includes(state.repair.status) || !Array.isArray(state.repair.attempts) || !Number.isInteger(state.repair.maxAttempts) || state.repair.maxAttempts < 1)) {
     throw new DevFlowError("INVALID_STATE_SCHEMA", "repair state is invalid");
@@ -1647,8 +1749,8 @@ async function mutatePreparedLocked(root, id, expectedRevision, operation, prepa
   }
   try {
     const active = await readActive(root);
-    if (active?.featureId === id && (state.lifecycle === "finalized" || state.lifecycle === "abandoned")) await rm(activePath(root), { force: true });
-    else if (active?.featureId === id) await writeAtomic(activePath(root), { featureId: id, revision: state.revision, updatedAt: (/* @__PURE__ */ new Date()).toISOString() });
+    if (active?.featureId === id && (state.lifecycle === "finalized" || state.lifecycle === "abandoned" || state.lifecycle === "paused")) await rm(activePath(root), { force: true });
+    else if (state.lifecycle === "active" && (active?.featureId === id || operation === "feature-resumed")) await writeAtomic(activePath(root), { featureId: id, revision: state.revision, updatedAt: (/* @__PURE__ */ new Date()).toISOString() });
   } catch {
     failures.push("active");
   }
@@ -1775,6 +1877,8 @@ async function assertNoOpenRollbackTransaction(root, allow) {
 
 // plugins/dev-flow/src/hosts/adapter-policy.ts
 import path11 from "node:path";
+import { execFile as execFile4 } from "node:child_process";
+import { promisify as promisify4 } from "node:util";
 
 // plugins/dev-flow/src/core/git-policy.ts
 var readOnly = /* @__PURE__ */ new Set(["status", "diff", "log", "show", "rev-parse", "ls-files", "ls-tree", "cat-file", "name-rev"]);
@@ -1798,6 +1902,21 @@ function classifyGitCommand(command) {
     if (write.has(subcommand) || !isReadOnly(subcommand, args)) return "write";
   }
   return "read";
+}
+function classifyGitCommandKind(command) {
+  const commands = [...command.matchAll(/(?:^|[;&|]\s*)(?:[A-Za-z_][A-Za-z0-9_]*=(?:"[^"]*"|'[^']*'|\S+)\s+)*(?:command\s+)?git(?:\s+-C\s+(?:"[^"]+"|'[^']+'|\S+))?\s+([\w-]+)([^;&|\n)]*)/g)];
+  if (!commands.length) return "other";
+  let result = "read";
+  for (const match of commands) {
+    const subcommand = match[1];
+    const args = (match[2] ?? "").trim();
+    if (isReadOnly(subcommand, args)) continue;
+    if (subcommand === "add") result = "local-stage";
+    else if (subcommand === "commit") result = result === "history-rewrite" ? result : "local-commit";
+    else if (subcommand === "push") result = "external-publish";
+    else result = "history-rewrite";
+  }
+  return result;
 }
 var gitReadOnlyCommands = [...readOnly].sort();
 
@@ -1895,6 +2014,13 @@ async function captureUnitBaseline(root, featureId, unitId, snapshot) {
 import { createHash as createHash8, randomUUID as randomUUID6 } from "node:crypto";
 import { readFile as readFile8 } from "node:fs/promises";
 import path10 from "node:path";
+
+// plugins/dev-flow/src/core/quality-exceptions.ts
+function hasCurrentQualityException(state, kind) {
+  return state.qualityExceptions.some((exception) => exception.kind === kind && exception.status === "current");
+}
+
+// plugins/dev-flow/src/core/review-jobs.ts
 var digest5 = (value) => createHash8("sha256").update(value).digest("hex");
 var leaseMilliseconds = 60 * 60 * 1e3;
 var samplingLeaseMilliseconds = 120 * 1e3;
@@ -2019,6 +2145,15 @@ async function currentBatchWithBasis(root, state, options = {}) {
 async function assertReviewComplete(root, state) {
   const { ledger, batch } = await currentBatchWithBasis(root, state);
   if (batch.progress !== "complete") invalid3("REVIEW_BATCH_INCOMPLETE", "all required review jobs must be submitted", { batchId: batch.batchId });
+  if (ledger.findingEvents?.length) {
+    const unresolved = unresolvedBlockingFindings(ledger, batch.basisHash);
+    if (unresolved.length && !hasCurrentQualityException(state, "review")) invalid3("REVIEW_BLOCKING_FINDINGS", "review ledger has unresolved blocking findings", {
+      batchId: batch.batchId,
+      findingIds: unresolved.map((finding) => finding.findingId)
+    });
+    await assertCurrentReviewProjection(root, state);
+    return { batchId: batch.batchId, basisHash: batch.basisHash, assuranceLevel: batch.assuranceLevel };
+  }
   const jobs = ledger.batches.flatMap((candidate) => candidate.jobs);
   const dispositions = Object.assign({}, ...ledger.batches.map((candidate) => candidate.dispositions ?? {}));
   const blocking = jobs.flatMap((job) => job.submission?.findings ?? []).filter((finding) => {
@@ -2204,6 +2339,7 @@ function formatPreToolBlock(block) {
 var directWriteTools = /* @__PURE__ */ new Set(["write", "edit", "multiedit", "applypatch", "apply_patch", "patch"]);
 var controlFileNames = /* @__PURE__ */ new Set(["state.json", "active.json", "project.json", "events.jsonl", "status.md", "\u72B6\u6001\u6587\u6863.md", "recovery-transaction.json", "recovery-events.jsonl"]);
 var scratchHint = "\uFF1B\u4E34\u65F6\u9A8C\u8BC1\u6587\u4EF6\u8BF7\u653E\u5165 scratch/ \u76EE\u5F55";
+var runGit = promisify4(execFile4);
 function toolName(event2) {
   return String(event2.tool_name ?? "").toLowerCase();
 }
@@ -2728,6 +2864,34 @@ function classifyTarget(root, target, workflow) {
   }
   return void 0;
 }
+async function stagedGitPaths(root) {
+  const result = await runGit("git", ["diff", "--cached", "--name-only", "-z"], { cwd: root, encoding: "utf8" });
+  return String(result.stdout).split("\0").filter(Boolean).map((value) => value.replaceAll("\\", "/").normalize("NFC"));
+}
+function inFeatureScope(relative, state) {
+  return state.scope.inScope.some((scope) => scope === "." || relative === scope || relative.startsWith(`${scope}/`));
+}
+function gitPathPolicy(command, root, workflow, paths) {
+  const state = workflow.state;
+  if (!state) return void 0;
+  const excluded = paths.filter((relative) => state.workspace.ownership[relative] === "excluded");
+  const unknown = paths.filter((relative) => state.workspace.ownership[relative] !== "feature" && !inFeatureScope(relative, state));
+  if (excluded.length || unknown.length) {
+    return createPreToolBlock(
+      "DEV_FLOW_GIT_GUARD",
+      "Git \u547D\u4EE4\u5305\u542B\u672A\u5F52\u5C5E\u6216\u5DF2\u6392\u9664\u7684\u8DEF\u5F84",
+      "\u539F Git \u64CD\u4F5C\u672A\u6267\u884C\uFF1B\u4E0D\u4F1A\u628A\u7528\u6237\u6216\u5176\u4ED6\u4EFB\u52A1\u7684\u6587\u4EF6\u6DF7\u5165 feature \u63D0\u4EA4",
+      {
+        mode: "user-decision",
+        action: "\u5148\u5C06\u8DEF\u5F84\u660E\u786E\u7EB3\u5165\u5F53\u524D feature \u6216\u79FB\u51FA\u6682\u5B58\u533A\uFF1B\u672C\u4ED3\u5E93\u7981\u6B62\u667A\u80FD\u4F53\u63D0\u4EA4\u65F6\u4EA4\u7531\u7528\u6237\u5BA1\u6838",
+        retryOriginal: false
+      }
+    );
+  }
+  void command;
+  void root;
+  return void 0;
+}
 function controlMutationBlock(relative) {
   return createPreToolBlock(
     "DEV_FLOW_STATE_MUTATION_FORBIDDEN",
@@ -2870,14 +3034,25 @@ async function evaluatePreToolUseInternal(root, event2) {
       return error instanceof Error ? error.message : String(error);
     }
   };
-  if (toolName(event2) === "bash" && classifyGitCommand(command) === "write" && !workflow.logicComplete) {
+  if (toolName(event2) === "bash" && classifyGitCommand(command) === "write") {
+    const gitKind = classifyGitCommandKind(command);
+    const localCommit = gitKind === "local-stage" || gitKind === "local-commit";
+    const implementationReady = workflow.state?.mode === "routed" && currentOpenStep(workflow.state) === "implementation" && workflow.approvalConfirmed;
+    const unsafePathForm = localCommit && /\bgit\s+add\s+(?:-A|--all|\.|-u\b)|\bgit\s+commit\s+[^\n]*\s-a(?:\s|$)/.test(command);
+    if (localCommit && workflow.state?.lifecycle === "active" && (workflow.logicComplete || implementationReady) && !unsafePathForm) {
+      const addMatch = command.match(/\bgit\s+add\s+([^;&|\n]+)/);
+      const explicitPaths = addMatch ? addMatch[1].split(/\s+/).filter((value) => value && !value.startsWith("-")) : await stagedGitPaths(root);
+      const pathBlock = gitPathPolicy(command, root, workflow, explicitPaths.map((value) => projectRelative(root, value) ?? value));
+      if (!pathBlock) return void 0;
+      return pathBlock;
+    }
     return createPreToolBlock(
       "DEV_FLOW_GIT_GUARD",
-      "\u5F53\u524D feature \u5C1A\u672A\u8FBE\u5230 logic-complete\uFF0CGit \u5199\u5165\u95E8\u7981\u4ECD\u7136\u5F00\u542F",
+      gitKind === "external-publish" ? "\u5916\u90E8\u53D1\u5E03\u4ECD\u7136\u88AB\u7981\u6B62" : "\u5F53\u524D Git \u5199\u5165\u4E0D\u6EE1\u8DB3\u9636\u6BB5\u3001\u6279\u51C6\u6216\u8DEF\u5F84\u5F52\u5C5E\u6761\u4EF6",
       "\u539F Git \u64CD\u4F5C\u672A\u6267\u884C\uFF1B\u5DE5\u4F5C\u6811\u548C Git \u5386\u53F2\u6CA1\u6709\u88AB\u8FD9\u6B21\u547D\u4EE4\u4FEE\u6539",
       {
         mode: "guided",
-        action: "\u5148\u901A\u8FC7 MCP \u5B8C\u6210 verify\u3001feature-check \u4E0E finalize\uFF0C\u4F7F feature \u8FBE\u5230 logic-complete\uFF1B\u5B8C\u6210\u540E\u81EA\u52A8\u91CD\u8BD5\u539F Git \u64CD\u4F5C",
+        action: gitKind === "external-publish" ? "\u4E0D\u8981\u6267\u884C push \u6216\u5176\u4ED6\u5916\u90E8\u53D1\u5E03\uFF1B\u672C\u4ED3\u5E93\u7531\u7528\u6237\u5BA1\u6838\u540E\u624B\u52A8\u53D1\u5E03" : "\u5148\u5B8C\u6210\u5B9E\u73B0\u6279\u51C6\u5E76\u53EA\u6682\u5B58 feature-owned \u8DEF\u5F84\uFF1B\u4ED3\u5E93\u89C4\u5219\u7981\u6B62\u667A\u80FD\u4F53\u63D0\u4EA4\u65F6\u4EA4\u7531\u7528\u6237\u6267\u884C",
         retryOriginal: true
       }
     );

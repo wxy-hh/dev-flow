@@ -35,11 +35,12 @@ import {
   createInteraction,
   getInteraction,
   resolveNativeInteraction,
-  resolveTokenInteraction,
+  resolveTextInteraction,
   toPublicInteraction,
   type InteractionResponse,
   type PublicInteraction,
 } from "./user-interactions.js";
+import { resolvePromptEvent } from "./interaction-provenance.js";
 
 const digest = (value: string | Buffer) => createHash("sha256").update(value).digest("hex");
 
@@ -469,7 +470,7 @@ export async function presentRollbackGate(
   featureId: string,
   expectedRevision: number,
   targetCheckpointId: string,
-): Promise<{ state: FeatureState; interaction: PublicInteraction; preview: RollbackPreview }> {
+): Promise<{ state: FeatureState; interaction: PublicInteraction; interactionId: string; preview: RollbackPreview }> {
   const initial = await readState(root, featureId);
   if (initial.revision !== expectedRevision) {
     throw new DevFlowError("STATE_REVISION_CONFLICT", "state revision changed", { currentRevision: initial.revision });
@@ -525,12 +526,12 @@ export async function presentRollbackGate(
   }));
 
   if (!interaction) throw new DevFlowError("INTERACTION_NOT_CREATED", targetCheckpointId);
-  return { state, interaction: toPublicInteraction(interaction), preview };
+  return { state, interaction: toPublicInteraction(interaction), interactionId: interaction.id, preview };
 }
 
 /**
  * Shared resolution logic for rollback-confirmation interactions, dispatched
- * from the public elicitation and text-token wrappers below.
+ * from the public elicitation and text-answer wrappers below.
  */
 async function resolveRollbackGateResponse(
   root: string,
@@ -540,7 +541,7 @@ async function resolveRollbackGateResponse(
   host: "claude" | "codex",
   input:
     | { action: string; comment?: string; source: "elicitation" }
-    | { userReply: string; promptEventId: string; source: "text-token" },
+    | { userReply: string; promptEventId?: string; source: "text" },
 ): Promise<FeatureState> {
   const initial = await readState(root, featureId);
   if (initial.revision !== expectedRevision) {
@@ -592,19 +593,21 @@ async function resolveRollbackGateResponse(
     });
   }
 
-  // For text-token resolution, verify the confirming event is a real user
+  // For text resolution, verify the confirming event is a real user
   // prompt from a later turn — not a tool event or a pre-presentation event.
-  if (input.source === "text-token") {
-    if (!input.promptEventId) {
-      throw new DevFlowError("ROLLBACK_GATE_PROVENANCE_UNAVAILABLE", "text-token resolution requires a prompt event id", {
-        recoveryHint: "Pass the host-captured promptEventId from a user prompt that occurred after gate presentation",
-      });
-    }
+  let resolvedPromptEventId: string | undefined;
+  if (input.source === "text") {
     const events = await readFeatureEvents(root, featureId);
+    resolvedPromptEventId = input.promptEventId ?? resolvePromptEvent(events, {
+      host,
+      userReply: input.userReply,
+      presentedAt: gate.presentedAt,
+      presentedRevision: gate.stateRevision,
+    }).eventId;
     const eventRecord = events.find(
       (item) =>
         item.type === "host-event"
-        && (item.data as { eventId?: string }).eventId === input.promptEventId,
+        && (item.data as { eventId?: string }).eventId === resolvedPromptEventId,
     );
     if (!eventRecord) {
       throw new DevFlowError("ROLLBACK_GATE_PROVENANCE_UNAVAILABLE", "no matching host event found for the given promptEventId", {
@@ -617,7 +620,7 @@ async function resolveRollbackGateResponse(
       throw new DevFlowError("HOST_EVENT_HOST_MISMATCH", "host event belongs to a different host", {
         expectedHost: host,
         actualHost: event.host,
-        eventId: input.promptEventId,
+        eventId: resolvedPromptEventId,
       });
     }
 
@@ -661,7 +664,7 @@ async function resolveRollbackGateResponse(
     response =
       input.source === "elicitation"
         ? resolveNativeInteraction(state, interactionId, input.action, input.comment, host)
-        : resolveTokenInteraction(state, interactionId, input.userReply, host, input.promptEventId);
+        : resolveTextInteraction(state, interactionId, input.userReply, host, { promptEventId: resolvedPromptEventId });
 
     if (response.action === "confirm") {
       state.rollbackGate = {
@@ -696,20 +699,18 @@ export async function resolveRollbackGateElicitation(
   });
 }
 
-/** Resolve a rollback confirmation gate through a text-token fallback reply. */
-export async function resolveRollbackGateToken(
+/** Resolve a rollback confirmation gate through a natural-language reply. */
+export async function resolveRollbackGateAnswer(
   root: string,
   featureId: string,
   expectedRevision: number,
   interactionId: string,
   userReply: string,
   host: "claude" | "codex",
-  promptEventId: string,
 ): Promise<FeatureState> {
   return resolveRollbackGateResponse(root, featureId, expectedRevision, interactionId, host, {
     userReply,
-    promptEventId,
-    source: "text-token",
+    source: "text",
   });
 }
 

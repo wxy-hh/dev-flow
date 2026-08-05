@@ -65,3 +65,17 @@ test("dev_flow_classify keeps its either-or branches under a top-level object sc
     assert.ok(Array.isArray(branch.required), "each classify branch must declare required");
   }
 });
+
+test("v3 public MCP surface has one answer tool and no token or legacy resolve tools", async () => {
+  const tools = await toolDefinitions();
+  const names = new Set(tools.map((tool) => tool.name));
+  assert.equal(names.has("dev_flow_answer"), true);
+  assert.equal(names.has("dev_flow_status"), true);
+  assert.equal(names.has("dev_flow_inspect"), true);
+  for (const removed of ["dev_flow_next", "dev_flow_confirm_approval", "dev_flow_respond_interaction", "dev_flow_resolve_grill_decision", "dev_flow_resolve_review_risk_acceptance", "dev_flow_switch_active"]) {
+    assert.equal(names.has(removed), false, `${removed} must not be public in v3`);
+  }
+  const answer = tools.find((tool) => tool.name === "dev_flow_answer");
+  assert.equal("promptEventId" in answer.inputSchema.properties, false);
+  assert.equal("fallbackToken" in answer.inputSchema.properties, false);
+});

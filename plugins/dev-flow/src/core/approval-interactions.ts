@@ -16,18 +16,18 @@ import { satisfyObligations } from "../policy/obligations.js";
 import {
   clearInteractionsForTarget,
   createInteraction,
-  fallbackHint,
+  decisionHint,
   getInteraction,
   normalizeReplyText,
   resolveNativeInteraction,
-  resolveTokenInteraction,
+  resolveTextInteraction,
   toPublicInteraction,
   type InteractionResponse,
   type PublicInteraction,
 } from "./user-interactions.js";
 
 const digest = (value: unknown) => createHash("sha256").update(JSON.stringify(value)).digest("hex");
-export type ApprovalPresentation = FeatureState & { approvalReplyHint: string; approvalInteraction: PublicInteraction; approvalId: ApprovalId };
+export type ApprovalPresentation = FeatureState & { approvalReplyHint: string; approvalInteraction: PublicInteraction; approvalId: ApprovalId; interactionId: string };
 
 function approvalId(value: string): ApprovalId {
   if (!/^approval:[a-f0-9]{16,}$/.test(value)) throw new DevFlowError("INVALID_APPROVAL", value);
@@ -88,11 +88,11 @@ export async function presentApproval(
     });
   }, () => ({
     approvalId: selectedApproval,
-    replyHint: interaction ? fallbackHint(interaction) : approvalReplyHint(),
+    replyHint: interaction ? decisionHint(interaction) : approvalReplyHint(),
     interactionId: interaction?.id,
   }));
   if (!interaction) throw new DevFlowError("INTERACTION_NOT_CREATED", selectedApproval);
-  return { ...state, approvalId: selectedApproval, approvalReplyHint: fallbackHint(interaction), approvalInteraction: toPublicInteraction(interaction) };
+  return { ...state, approvalId: selectedApproval, interactionId: interaction.id, approvalReplyHint: decisionHint(interaction), approvalInteraction: toPublicInteraction(interaction) };
 }
 
 type ApprovalConfirmation = {
@@ -238,15 +238,15 @@ async function resolveApprovalResponse(
   interactionId: string,
   host: "claude" | "codex",
   input: { action: string; comment?: string; source: "elicitation" }
-    | { userReply: string; provenance: ApprovalConfirmation; source: "text-token" },
+    | { userReply: string; provenance: ApprovalConfirmation; source: "text" },
 ): Promise<FeatureState> {
   const initial = await readState(root, id);
   if (initial.revision !== expectedRevision) {
     throw new DevFlowError("STATE_REVISION_CONFLICT", "state revision changed", { currentRevision: initial.revision });
   }
   const approval = approvalFromInteraction(initial, interactionId);
-  const events = input.source === "text-token" ? await readFeatureEvents(root, id) : [];
-  const provenance = input.source === "text-token"
+  const events = input.source === "text" ? await readFeatureEvents(root, id) : [];
+  const provenance = input.source === "text"
     ? assertTokenEvidence(events, initial, approval, input.userReply, input.provenance, host)
     : undefined;
   let response: InteractionResponse | undefined;
@@ -271,7 +271,7 @@ async function resolveApprovalResponse(
         recoveryHint: "门禁依据已变更，请更新并登记相关资产后重新呈现门禁",
       });
     }
-    if (input.source === "text-token") {
+    if (input.source === "text") {
       // 与 confirmApproval 相同的跨门禁防重放：任一 provenance id 已被其他门禁消费即拒绝。
       const ids = [
         ...(provenance?.promptEventId ? [provenance.promptEventId] : []),
@@ -285,14 +285,14 @@ async function resolveApprovalResponse(
     }
     response = input.source === "elicitation"
       ? resolveNativeInteraction(state, interactionId, input.action, input.comment, host)
-      : resolveTokenInteraction(
+      : resolveTextInteraction(
           state,
           interactionId,
           input.userReply,
           host,
           provenance!,
           // 动态 approval 支持自然语言批准词（如“确认需求”“批准实现”），映射为 confirm 选项；
-          // 一次性 token 行仍作为兜底通道。grill 等动态选项交互不映射。
+          // Approval phrases are handled by the single natural-language answer path.
           isExplicitApproval(input.userReply) ? "confirm" : undefined,
         );
     if (response.action === "confirm") {
@@ -336,7 +336,23 @@ export async function resolveApprovalToken(
   provenance: ApprovalConfirmation,
   host: "claude" | "codex",
 ): Promise<FeatureState> {
-  return resolveApprovalResponse(root, id, expectedRevision, interactionId, host, { userReply, provenance, source: "text-token" });
+  return resolveApprovalResponse(root, id, expectedRevision, interactionId, host, { userReply, provenance, source: "text" });
+}
+
+/** Public answer path: Core resolves prompt provenance from the trusted host event ledger. */
+export async function resolveApprovalAnswer(
+  root: string,
+  id: string,
+  expectedRevision: number,
+  interactionId: string,
+  userReply: string,
+  host: "claude" | "codex",
+): Promise<FeatureState> {
+  return resolveApprovalResponse(root, id, expectedRevision, interactionId, host, {
+    userReply,
+    provenance: {},
+    source: "text",
+  });
 }
 
 export async function confirmApproval(

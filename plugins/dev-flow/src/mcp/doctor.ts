@@ -4,7 +4,8 @@ import { createHash } from "node:crypto";
 import { reviewEnforcementRequired, traceEnforcementRequired } from "../policy/contract.js";
 import { listOrphanTraceSnapshots, readTraceability } from "../core/traceability-store.js";
 import { listOrphanReviewSnapshots, readReviewLedger } from "../core/review-store.js";
-import { readProjectConfig, readState, readActive, readRecoveryTransaction, readRollbackTransaction, readFeatureEvents, rollbackTransactionFinished, stateFileSha256, type FeatureState, type RollbackTransaction } from "../core/state-store.js";
+import { assertActivePointerConsistent, readProjectConfig, readState, readActive, readRecoveryTransaction, readRollbackTransaction, readFeatureEvents, rollbackTransactionFinished, stateFileSha256, type FeatureState, type RollbackTransaction } from "../core/state-store.js";
+import { gitBranchAndHead, isAncestor } from "../core/git-reconciliation.js";
 
 type Status = "ok" | "error" | "warning";
 type Diagnostic = { code: string; status: Status; message: string; recoveryHint?: string };
@@ -71,6 +72,7 @@ export async function collectDoctorReport(root: string, pluginRoot: string, vers
       if (!active?.featureId) throw new Error("active feature id is missing");
       try {
         const state = await readState(root, active.featureId);
+        await assertActivePointerConsistent(root);
         traceState = state;
         activeFeature = { present: true, featureId: state.featureId, valid: state.lifecycle === "active" };
         add(
@@ -284,6 +286,29 @@ export async function collectDoctorReport(root: string, pluginRoot: string, vers
     }
   }
 
+  if (traceState && traceState.mode !== "intake" && traceState.workspace) {
+    const workspace = traceState.workspace;
+    try {
+      const { branch, head } = await gitBranchAndHead(root);
+      if (workspace.baseBranch && branch !== workspace.baseBranch) {
+        add(
+          "WORKSPACE_BRANCH_CHANGED",
+          "error",
+          `启动分支为 ${workspace.baseBranch}，当前分支为 ${branch || "未命名分支"}`,
+          "切回原分支后运行 dev_flow_reconcile_workspace 刷新状态，或暂停/终止该 feature；不要手动修改 .dev-flow",
+        );
+      } else if (workspace.baseHead) {
+        const ancestor = await isAncestor(root, workspace.baseHead, head);
+        add(
+          ancestor ? "WORKSPACE_LINEAGE_VALID" : "WORKSPACE_HISTORY_REWRITTEN",
+          ancestor ? "ok" : "error",
+          ancestor ? "Git 基线仍是当前 HEAD 的祖先，提交链可证明" : "当前 HEAD 不再是启动基线的后代",
+          ancestor ? undefined : "恢复可证明的提交链后运行 dev_flow_reconcile_workspace，或暂停/终止该 feature",
+        );
+      }
+    } catch { /* Git unavailable: lineage failures surface through normal mutation errors */ }
+  }
+
   const paths = {
     claudeManifest: path.join(pluginRoot, ".claude-plugin", "plugin.json"),
     codexManifest: path.join(pluginRoot, ".codex-plugin", "plugin.json"),
@@ -308,12 +333,12 @@ export async function collectDoctorReport(root: string, pluginRoot: string, vers
     for (const entry of entries.filter((candidate) => candidate.isDirectory())) {
       try {
         const raw = JSON.parse(await readFile(path.join(directory, entry.name, "state.json"), "utf8")) as { schemaVersion?: unknown; lifecycle?: unknown };
-        if (raw.schemaVersion === 1 && raw.lifecycle !== "finalized" && raw.lifecycle !== "abandoned") legacyFeatures.push(entry.name);
+        if ((raw.schemaVersion === 1 || raw.schemaVersion === 2) && raw.lifecycle !== "finalized" && raw.lifecycle !== "abandoned") legacyFeatures.push(entry.name);
       } catch { /* corrupt features are already surfaced above */ }
     }
   } catch { /* no feature directory means there is nothing to upgrade */ }
-  const v2Ready = legacyFeatures.length === 0;
-  add(v2Ready ? "V2_READY" : "V2_NOT_READY", v2Ready ? "ok" : "warning", v2Ready ? "没有未完成的 v1 feature，可以使用 schema v2" : `仍有未完成的 v1 feature: ${legacyFeatures.join(", ")}`, v2Ready ? undefined : "先在 1.10 完成或放弃这些 feature，再使用 v2；doctor 不自动迁移或 abandon");
+  const v3Ready = legacyFeatures.length === 0;
+  add(v3Ready ? "V3_READY" : "V3_NOT_READY", v3Ready ? "ok" : "warning", v3Ready ? "没有未完成的旧版 feature，可以使用 schema v3" : `仍有未完成的旧版 feature: ${legacyFeatures.join(", ")}`, v3Ready ? undefined : "先结束或清理旧版测试 fixture，再重新开始 schema v3；doctor 不自动迁移或终止");
 
   return {
     version, root, pluginRoot, tools, project, activeFeature, corruptFeature, corruptActivePointer,
@@ -322,7 +347,7 @@ export async function collectDoctorReport(root: string, pluginRoot: string, vers
     trace: trace ?? null,
     review: review ?? null,
     mcp: { server: "running", configuration: !invalidJson },
-    v2Ready,
+    v3Ready,
     legacyFeatures,
     diagnostics,
   };

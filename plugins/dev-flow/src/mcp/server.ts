@@ -2,18 +2,21 @@ import readline from "node:readline";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
 import { recordArtifact, recordArtifactWithTrace, scaffoldArtifact } from "../core/artifacts.js";
-import { DevFlowError } from "../core/errors.js";
+import { DevFlowError, failureFrom } from "../core/errors.js";
 import { featureCheck, finalize, recordStep } from "../core/feature-check.js";
-import { confirmApproval, presentApproval, resolveApprovalElicitation, resolveApprovalToken } from "../core/approval-interactions.js";
+import { presentApproval, resolveApprovalAnswer, resolveApprovalElicitation } from "../core/approval-interactions.js";
 import {
-  initProject, startFeature, lockClassification, recordDecision, resolveRecordedDecision, abandonFeature, reclassifyFeature, switchActive, recoverCorruptFeature, readState,
+  initProject, startFeature, lockClassification, recordDecision, resolveRecordedDecision, abandonFeature, reclassifyFeature, recoverCorruptFeature, readState, readFeatureEvents, mutate, pauseFeature, resumeFeature, reconcileWorkspace,
 } from "../core/state-store.js";
 import type { FeatureState } from "../core/state-store.js";
 import { buildFeatureMutationSummary } from "../core/execution-brief.js";
-import { readStatusView } from "../core/status.js";
+import { readCompactStatus } from "../core/status-projection.js";
+import { inspectFeature, inspectionTopics } from "../core/inspection.js";
+import { presentQualityException, resolveQualityExceptionAnswer } from "../core/quality-exceptions.js";
+import { rebuildReviewProjection } from "../core/review-projection-rebuild.js";
 import { beginImplementationUnit } from "../core/implementation-units.js";
 import { checkpointImplementationUnit } from "../core/checkpoints.js";
-import { executeRollback, presentRollbackGate, previewRollback, resolveRollbackGateElicitation, resolveRollbackGateToken, type RollbackPreview } from "../core/rollback.js";
+import { executeRollback, presentRollbackGate, previewRollback, resolveRollbackGateElicitation, resolveRollbackGateAnswer, type RollbackPreview } from "../core/rollback.js";
 import { runVerification } from "../core/verification.js";
 import { allowedRiskLabels } from "../policy/contract.js";
 import { deriveRiskRequirements, recommendClassification, selectRoute } from "../policy/route.js";
@@ -21,7 +24,7 @@ import { collectDoctorReport } from "./doctor.js";
 import { emitAttention } from "./attention.js";
 import { enableWindowsNotifications } from "./windows-notifications.js";
 import { validateToolInput } from "./input-validation.js";
-import { requestGrillDecision, resolveGrillElicitation, resolveGrillToken } from "../core/requirements-grill.js";
+import { requestGrillDecision, resolveGrillAnswer, resolveGrillElicitation } from "../core/requirements-grill.js";
 import { validateTraceDelta } from "../core/traceability.js";
 import { inspectCurrentTrace } from "../core/traceability-gates.js";
 import {
@@ -33,7 +36,7 @@ import {
   getReviewJob,
   presentReviewRiskAcceptance,
   releaseReviewJob,
-  resolveReviewRiskAcceptanceToken,
+  resolveReviewRiskAcceptanceAnswer,
   submitReviewJob,
 } from "../core/review-jobs.js";
 import { parseHostAttestation, parseReviewJobCompletion, toPublicReviewJob } from "../policy/review.js";
@@ -44,21 +47,24 @@ import {
   type InteractionResponse,
   type PublicInteraction,
 } from "../core/user-interactions.js";
+import { matchDecisionReply, pendingDecisionForState, pendingInteractionForDecision } from "../core/decision-interactions.js";
+import { resolvePromptEvent } from "../core/interaction-provenance.js";
+import { lifecycleLabel, routeLabel, stageLabel } from "../policy/presentation.js";
 
 const root = process.cwd();
 // 原生 elicitation 表单在部分 Claude Code 客户端渲染损坏（选项不渲染、模态卡死），
-// 默认关闭 form 模式、走 text-token 一次性回复；显式置 1 可恢复表单链路。
+// 默认关闭 form 模式；文本回答统一走 dev_flow_answer。
 const formElicitationEnabled = process.env.DEV_FLOW_ELICITATION_FORM === "1";
 const moduleDirectory = path.dirname(fileURLToPath(import.meta.url));
 const pluginRoot = path.basename(moduleDirectory) === "dist" ? path.resolve(moduleDirectory, "..") : path.resolve(moduleDirectory, "../..");
 const tools = [
-  "dev_flow_init_project", "dev_flow_classify", "dev_flow_start", "dev_flow_lock_classification", "dev_flow_record_decision", "dev_flow_resolve_decision", "dev_flow_status", "dev_flow_next",
-  "dev_flow_switch_active", "dev_flow_scaffold_artifact", "dev_flow_record_artifact", "dev_flow_record_step",
-  "dev_flow_record_artifact_with_trace", "dev_flow_get_traceability",
+  "dev_flow_init_project", "dev_flow_classify", "dev_flow_start", "dev_flow_lock_classification", "dev_flow_record_decision", "dev_flow_resolve_decision", "dev_flow_status", "dev_flow_inspect",
+  "dev_flow_scaffold_artifact", "dev_flow_record_artifact", "dev_flow_record_step", "dev_flow_pause", "dev_flow_resume", "dev_flow_reconcile_workspace",
+  "dev_flow_record_artifact_with_trace", "dev_flow_get_traceability", "dev_flow_rebuild_review_projection",
   "dev_flow_create_review_batch", "dev_flow_get_review_job", "dev_flow_claim_review_job", "dev_flow_submit_review_job", "dev_flow_sample_review_job", "dev_flow_release_review_job",
-  "dev_flow_present_review_risk_acceptance", "dev_flow_resolve_review_risk_acceptance",
-  "dev_flow_present_approval", "dev_flow_confirm_approval", "dev_flow_reclassify", "dev_flow_verify",
-  "dev_flow_respond_interaction", "dev_flow_request_grill_decision", "dev_flow_resolve_grill_decision",
+  "dev_flow_present_review_risk_acceptance",
+  "dev_flow_present_approval", "dev_flow_present_quality_exception", "dev_flow_answer", "dev_flow_reclassify", "dev_flow_verify",
+  "dev_flow_request_grill_decision",
   "dev_flow_feature_check", "dev_flow_finalize", "dev_flow_abandon", "dev_flow_enable_windows_notifications", "dev_flow_doctor",
   "dev_flow_begin_implementation_unit", "dev_flow_checkpoint_implementation_unit", "dev_flow_preview_rollback",
   "dev_flow_present_rollback_gate", "dev_flow_execute_rollback",
@@ -184,11 +190,10 @@ const manualAcceptanceSchema = { oneOf: [
     source: string,
     scenarios: manualAcceptanceScenarioSchema,
   }),
-  object(["mode", "source", "promptEventId", "userReply", "scenarios"], {
-    mode: { const: "user-signoff" },
-    source: string,
-    promptEventId: string,
-    userReply: string,
+   object(["mode", "source", "userReply", "scenarios"], {
+     mode: { const: "user-signoff" },
+     source: string,
+     userReply: string,
     scenarios: manualAcceptanceScenarioSchema,
   }),
 ] };
@@ -241,9 +246,8 @@ const toolSchemas: Record<string, { description: string; inputSchema: Record<str
     description: "Resolve one decision with normalized user evidence and conclusion.",
     inputSchema: featureMutation({ decisionId: string, evidence: string, conclusion: string, host: { enum: ["claude", "codex"] } }, ["decisionId", "evidence", "conclusion", "host"]),
   },
-  dev_flow_status: { description: "Read one feature StatusView (state + progress).", inputSchema: object(["featureId"], { featureId: string }), annotations: { readOnlyHint: true } },
-  dev_flow_next: { description: "Return the current stage capability contract and any required attention.", inputSchema: object(["featureId"], { featureId: string }), annotations: { readOnlyHint: true } },
-  dev_flow_switch_active: { description: "Atomically hand off the single active feature.", inputSchema: object(["fromFeatureId", "toFeatureId", "reason"], { fromFeatureId: string, toFeatureId: string, reason: string }) },
+  dev_flow_status: { description: "Read the compact daily status of one feature.", inputSchema: object(["featureId"], { featureId: string }), annotations: { readOnlyHint: true } },
+  dev_flow_inspect: { description: "Read one detailed topic; full state is never exposed through a single public response.", inputSchema: object(["featureId", "topic"], { featureId: string, topic: { enum: inspectionTopics } }), annotations: { readOnlyHint: true } },
   dev_flow_scaffold_artifact: { description: "Create only the current route artifact. For editable artifacts, read the registered path before editing, then record it. Generated status artifacts are read-only: scaffold them and continue with the requested step; do not edit or record them.", inputSchema: featureMutation({ kind: string }, ["kind"]) },
   dev_flow_record_artifact: { description: "Register an edited route artifact.", inputSchema: featureMutation({ kind: string }, ["kind"]) },
   dev_flow_record_artifact_with_trace: {
@@ -255,6 +259,7 @@ const toolSchemas: Record<string, { description: string; inputSchema: Record<str
     inputSchema: object(["featureId"], { featureId: string }),
     annotations: { readOnlyHint: true },
   },
+  dev_flow_rebuild_review_projection: { description: "Rebuild only the generated review projection from the immutable ledger.", inputSchema: featureMutation(), },
   dev_flow_create_review_batch: {
     description: "Create or return the Core-derived immutable review batch for the current basis.",
     inputSchema: featureMutation(),
@@ -295,16 +300,18 @@ const toolSchemas: Record<string, { description: string; inputSchema: Record<str
     description: "Present a one-time user decision for an exact set of current blocking review findings.",
     inputSchema: featureMutation({ findingIds: { type: "array", minItems: 1, uniqueItems: true, items: string } }, ["findingIds"]),
   },
-  dev_flow_resolve_review_risk_acceptance: {
-    description: "Resolve the one-time risk-acceptance token. Replays are accepted only for the identical prior reply.",
-    inputSchema: featureMutation({
-      interactionId: string,
-      userReply: string,
-      promptEventId: string,
-      host: { enum: ["claude", "codex"] },
-    }, ["interactionId", "userReply", "promptEventId", "host"]),
+  dev_flow_answer: {
+    description: "Answer the one current user decision in plain Chinese; Core resolves its kind and trusted host provenance.",
+    inputSchema: featureMutation({ userReply: string, host: { enum: ["claude", "codex"] } }, ["userReply", "host"]),
+  },
+  dev_flow_present_quality_exception: {
+    description: "Present one workflow-quality risk for an explicit user decision; integrity failures cannot use this path.",
+    inputSchema: featureMutation({ kind: { enum: ["review", "verification", "checkpoint", "implementation-evidence"] }, basisHash: string, fingerprint: string, riskSummary: string, host: { enum: ["claude", "codex"] } }, ["kind", "basisHash", "fingerprint", "riskSummary", "host"]),
   },
   dev_flow_record_step: { description: "Record the current non-gate route step.", inputSchema: featureMutation({ step: string, evidence: {} }, ["step", "evidence"]) },
+  dev_flow_pause: { description: "Pause an active feature without requiring commit, verification, or finalize.", inputSchema: featureMutation({ reason: string, host: { enum: ["claude", "codex"] } }, ["reason", "host"]) },
+  dev_flow_resume: { description: "Resume a paused feature after automatic workspace reconciliation.", inputSchema: object(["featureId", "host"], { featureId: string, host: { enum: ["claude", "codex"] } }) },
+  dev_flow_reconcile_workspace: { description: "Reconcile manual commits and workspace changes without asking for already-authorized commit permission.", inputSchema: featureMutation({ host: { enum: ["claude", "codex"] } }, ["host"]) },
   dev_flow_begin_implementation_unit: {
     description: "Begin the next rollback unit of a checkpoints:1 feature; Core derives basis, scope, and dependency order.",
     inputSchema: object(["featureId", "expectedRevision", "unitId"], { featureId: string, expectedRevision: integer, unitId: traceId("RU") }),
@@ -327,43 +334,14 @@ const toolSchemas: Record<string, { description: string; inputSchema: Record<str
     inputSchema: object(["featureId", "expectedRevision", "targetCheckpointId"], { featureId: string, expectedRevision: integer, targetCheckpointId: string }),
   },
   dev_flow_present_approval: { description: "Present one Core-derived approval obligation.", inputSchema: featureMutation({ approvalId: string, host: { enum: ["claude", "codex"] } }, ["approvalId", "host"]) },
-  dev_flow_confirm_approval: {
-    description: "Confirm one presented approval obligation with later user evidence.",
-    inputSchema: featureMutation({
-      approvalId: string,
-      userReply: string,
-      promptEventId: string,
-      turnBoundaryEventId: string,
-      host: { enum: ["claude", "codex"] },
-    }, ["approvalId", "userReply", "promptEventId", "host"]),
-  },
-  dev_flow_respond_interaction: {
-    description: "Resolve the current approval or recovery interaction through its one-time text-token fallback.",
-    inputSchema: featureMutation({
-      interactionId: string,
-      userReply: string,
-      promptEventId: string,
-      turnBoundaryEventId: string,
-      host: { enum: ["claude", "codex"] },
-    }, ["interactionId", "userReply", "promptEventId", "host"]),
-  },
   dev_flow_request_grill_decision: {
     description: "Present the current grill question as structured choices when the host supports MCP elicitation, otherwise return one-time text replies.",
     inputSchema: featureMutation({
       questionId: string,
       question: string,
-      options: { type: "array", minItems: 2, maxItems: 8, items: interactionOptionSchema },
+      options: { type: "array", minItems: 2, maxItems: 3, items: interactionOptionSchema },
       host: { enum: ["claude", "codex"] },
     }, ["questionId", "question", "options", "host"]),
-  },
-  dev_flow_resolve_grill_decision: {
-    description: "Resolve a current grill question through its one-time text-token fallback.",
-    inputSchema: featureMutation({
-      interactionId: string,
-      userReply: string,
-      promptEventId: string,
-      host: { enum: ["claude", "codex"] },
-    }, ["interactionId", "userReply", "promptEventId", "host"]),
   },
   dev_flow_reclassify: {
     description: "Reclassify route (stricter always; same-level standard→light with userEvidence before implementation).",
@@ -409,12 +387,17 @@ function protocolResult(id: unknown, value: unknown) {
 
 /** tools/call result: MCP CallToolResult shape. */
 function toolResult(id: unknown, value: unknown) {
+  const view = value && typeof value === "object" && !Array.isArray(value)
+    ? value as { contentView?: unknown; structuredContentView?: unknown }
+    : {};
+  const contentValue = view.contentView === undefined ? value : view.contentView;
+  const structuredValue = view.structuredContentView === undefined ? value : view.structuredContentView;
   process.stdout.write(`${JSON.stringify({
     jsonrpc: "2.0",
     id,
     result: {
-      content: [{ type: "text", text: JSON.stringify(value) }],
-      structuredContent: value,
+      content: [{ type: "text", text: JSON.stringify(contentValue) }],
+      structuredContent: structuredValue,
     },
   })}\n`);
 }
@@ -423,7 +406,7 @@ const readOnlyResponseTools = new Set([
   "dev_flow_init_project",
   "dev_flow_classify",
   "dev_flow_status",
-  "dev_flow_next",
+  "dev_flow_inspect",
   "dev_flow_get_traceability",
   "dev_flow_get_review_job",
   "dev_flow_preview_rollback",
@@ -433,7 +416,7 @@ const readOnlyResponseTools = new Set([
 
 function isFeatureState(value: unknown): value is FeatureState {
   return Boolean(value && typeof value === "object" && !Array.isArray(value)
-    && (value as { schemaVersion?: unknown }).schemaVersion === 2
+    && (value as { schemaVersion?: unknown }).schemaVersion === 3
     && typeof (value as { featureId?: unknown }).featureId === "string"
     && typeof (value as { revision?: unknown }).revision === "number"
     && typeof (value as { mode?: unknown }).mode === "string");
@@ -442,29 +425,41 @@ function isFeatureState(value: unknown): value is FeatureState {
 /** Apply the compact contract only to mutation responses; read-only views stay full. */
 function compactMutationResult(toolName: string, value: unknown): unknown {
   if (readOnlyResponseTools.has(toolName)) return value;
+  const mutationContent = (summary: ReturnType<typeof buildFeatureMutationSummary>, interaction?: PublicInteraction) => ({
+    状态: lifecycleLabel(summary.lifecycle),
+    ...(summary.route ? { 路线: routeLabel(summary.route) } : {}),
+    当前阶段: stageLabel(summary.stage),
+    下一步: summary.logicComplete ? "当前任务已完成。" : "按当前状态继续下一步。",
+    需要用户决定: summary.counters.openInteractions > 0,
+    健康状态: summary.counters.blockingFindings > 0 ? "需要处理" : "正常",
+    ...(interaction?.status === "pending" ? {
+      需要用户决定: true,
+      当前问题: interaction.question ?? "请回答当前问题。",
+      选项: interaction.options.map((option) => option.label),
+    } : {}),
+  });
   if (isFeatureState(value)) {
-    return {
-      ...buildFeatureMutationSummary(value),
-      ...("reclassifyNotice" in (value as unknown as Record<string, unknown>) ? { reclassifyNotice: (value as unknown as Record<string, unknown>).reclassifyNotice } : {}),
-    };
+    const summary = buildFeatureMutationSummary(value);
+    return { contentView: mutationContent(summary), structuredContentView: { ...summary, state: summary, control: { featureId: summary.featureId, expectedRevision: summary.revision, stage: summary.stage, lifecycle: summary.lifecycle } } };
   }
   if (!value || typeof value !== "object" || Array.isArray(value)) return value;
   const record = value as Record<string, unknown>;
-  if (isFeatureState(record.state)) return { ...record, state: buildFeatureMutationSummary(record.state) };
+  if (isFeatureState(record.state)) {
+    const summary = buildFeatureMutationSummary(record.state);
+    return { contentView: mutationContent(summary, record.interaction as PublicInteraction | undefined), structuredContentView: { ...record, ...summary, state: summary, control: { featureId: summary.featureId, expectedRevision: summary.revision, stage: summary.stage, lifecycle: summary.lifecycle } } };
+  }
   return value;
 }
 
 function failure(id: unknown, error: unknown) {
-  const value = error instanceof DevFlowError
-    ? {
-        code: error.code,
-        message: typeof error.details.outputTail === "string"
-          ? `${error.message}\noutputTail:\n${error.details.outputTail.slice(-1_500)}`
-          : error.message,
-        details: error.details,
-      }
-    : { code: "INTERNAL_ERROR", message: error instanceof Error ? error.message : String(error), details: {} };
-  const content = JSON.stringify(value);
+  const value = failureFrom(error);
+  const content = JSON.stringify({
+    状态: "未完成",
+    原因: value.cause,
+    提示: value.userMessage,
+    影响: value.impact,
+    恢复动作: value.recovery.instruction,
+  });
   process.stdout.write(`${JSON.stringify({
     jsonrpc: "2.0",
     id,
@@ -477,10 +472,8 @@ function failure(id: unknown, error: unknown) {
 }
 
 function protocolFailure(id: unknown, error: unknown): void {
-  const value = error instanceof DevFlowError
-    ? { code: error.code, message: error.message, details: error.details }
-    : { code: "INTERNAL_ERROR", message: error instanceof Error ? error.message : String(error), details: {} };
-  process.stdout.write(`${JSON.stringify({ jsonrpc: "2.0", id, error: { code: -32000, message: value.message, data: value } })}\n`);
+  const value = failureFrom(error);
+  process.stdout.write(`${JSON.stringify({ jsonrpc: "2.0", id, error: { code: -32000, message: value.userMessage, data: value } })}\n`);
 }
 
 function emitAttentionNotification(event: Parameters<typeof emitAttention>[0]): void {
@@ -606,11 +599,12 @@ function interactionEnvelope(
   interactionOutcome: string,
   response?: InteractionResponse,
 ) {
+  const optionLabel = interaction.options.find((option) => option.id === interactionOutcome)?.label;
   return {
-    ...buildFeatureMutationSummary(state),
+    state,
     interaction,
-    interactionOutcome,
-    ...(response ? { response } : {}),
+    interactionOutcome: optionLabel ?? interactionOutcome,
+    ...(response ? { response: { action: optionLabel ?? response.action, ...(response.comment ? { comment: response.comment } : {}) } } : {}),
   };
 }
 
@@ -636,7 +630,7 @@ function reviewSubmissionEnvelope(
   if (!job) throw new DevFlowError("REVIEW_INTEGRITY_FAILED", "submitted review job is missing from its batch", { submittedJobId });
    const publicJob = toPublicReviewJob(job);
   return {
-    state: buildFeatureMutationSummary(result.state),
+    state: result.state,
     idempotent: result.idempotent,
     job: publicJob,
     batch: {
@@ -854,9 +848,8 @@ async function call(name: string, a: any, connection: McpConnection) {
         classificationBasis: classification.classificationBasis,
       } as any);
     }
-    case "dev_flow_status": return readStatusView(root, a.featureId);
-    case "dev_flow_next": return (await readStatusView(root, a.featureId)).stageCapabilities;
-    case "dev_flow_switch_active": return switchActive(root, a.fromFeatureId, a.toFeatureId, a.reason);
+    case "dev_flow_status": return readCompactStatus(root, a.featureId);
+    case "dev_flow_inspect": return inspectFeature(root, a.featureId, a.topic);
     case "dev_flow_scaffold_artifact": return scaffoldArtifact(root, a.featureId, a.expectedRevision, a.kind);
     case "dev_flow_record_artifact": return recordArtifact(root, a.featureId, a.expectedRevision, a.kind);
     case "dev_flow_record_artifact_with_trace": {
@@ -875,6 +868,7 @@ async function call(name: string, a: any, connection: McpConnection) {
         blockers: inspection.blocker ? [inspection.blocker] : [],
       };
     }
+    case "dev_flow_rebuild_review_projection": return rebuildReviewProjection(root, a.featureId, a.expectedRevision);
     case "dev_flow_create_review_batch": {
       assertReviewMutationInput(a, "dev_flow_create_review_batch", []);
       return createReviewBatch(root, a.featureId, a.expectedRevision);
@@ -951,19 +945,10 @@ async function call(name: string, a: any, connection: McpConnection) {
       const result = await presentReviewRiskAcceptance(root, a.featureId, a.expectedRevision, a.findingIds);
       return interactionEnvelope(result.state, result.interaction, result.idempotent ? "pending" : "presented");
     }
-    case "dev_flow_resolve_review_risk_acceptance": {
-      assertReviewMutationInput(a, "dev_flow_resolve_review_risk_acceptance", ["interactionId", "userReply", "promptEventId"], ["host"]);
-      if (a.host !== undefined && a.host !== "claude" && a.host !== "codex") {
-        throw new DevFlowError("INVALID_TOOL_INPUT", "dev_flow_resolve_review_risk_acceptance input does not match its schema");
-      }
-      const result = await resolveReviewRiskAcceptanceToken(
-      root, a.featureId, a.expectedRevision, a.interactionId as string, a.userReply as string,
-         a.promptEventId as string, a.host as "claude" | "codex",
-      );
-      const interaction = toPublicInteraction(getInteraction(result.state, a.interactionId as string));
-      return interactionEnvelope(result.state, interaction, result.idempotent ? "accepted" : "resolved", interactionResponse(result.state, a.interactionId as string));
-    }
     case "dev_flow_record_step": return recordStep(root, a.featureId, a.expectedRevision, a.step, a.evidence);
+    case "dev_flow_pause": return pauseFeature(root, a.featureId, a.expectedRevision, a.reason, a.host);
+    case "dev_flow_resume": return resumeFeature(root, a.featureId, a.host);
+    case "dev_flow_reconcile_workspace": return reconcileWorkspace(root, a.featureId, a.expectedRevision, a.host);
     case "dev_flow_begin_implementation_unit": {
       assertUnitMutationInput(a, "dev_flow_begin_implementation_unit");
       return beginImplementationUnit(root, a.featureId, a.expectedRevision, a.unitId);
@@ -986,15 +971,15 @@ async function call(name: string, a: any, connection: McpConnection) {
       );
       if (!selection) return { ...interactionEnvelope(presentation.state, presentation.interaction, "pending"), preview: presentation.preview };
       const state = await resolveRollbackGateElicitation(
-        root, a.featureId, presentation.state.revision, presentation.interaction.id,
+        root, a.featureId, presentation.state.revision, presentation.interactionId,
          selection.action, selection.comment, a.host as "claude" | "codex",
       );
       return {
         ...interactionEnvelope(
           state,
-          toPublicInteraction(getInteraction(state, presentation.interaction.id)),
-          selection.action,
-          interactionResponse(state, presentation.interaction.id),
+           toPublicInteraction(getInteraction(state, presentation.interactionId)),
+           selection.action,
+           interactionResponse(state, presentation.interactionId),
         ),
         preview: presentation.preview,
       };
@@ -1013,39 +998,118 @@ async function call(name: string, a: any, connection: McpConnection) {
       );
       if (!selection) return interactionEnvelope(presentation, presentation.approvalInteraction, "pending");
       const state = await resolveApprovalElicitation(
-        root, a.featureId, presentation.revision, presentation.approvalInteraction.id,
+        root, a.featureId, presentation.revision, presentation.interactionId,
          selection.action, selection.comment, a.host,
       );
       return interactionEnvelope(
         state,
         presentation.approvalInteraction,
         selection.action,
-        interactionResponse(state, presentation.approvalInteraction.id),
-      );
-    }
-    case "dev_flow_confirm_approval": return confirmApproval(root, a.featureId, a.expectedRevision, a.approvalId, a.userReply, { promptEventId: a.promptEventId, turnBoundaryEventId: a.turnBoundaryEventId }, a.host);
-    case "dev_flow_respond_interaction": {
-      const interaction = getInteraction(await readState(root, a.featureId), a.interactionId);
-      if (interaction.kind === "rollback-confirmation") {
-        const state = await resolveRollbackGateToken(
-          root, a.featureId, a.expectedRevision, a.interactionId, a.userReply,
-           a.host, a.promptEventId,
-        );
-        const response = interactionResponse(state, a.interactionId);
-        return interactionEnvelope(state, toPublicInteraction(getInteraction(state, a.interactionId)), response?.action ?? "resolved", response);
-      }
-      const state = await resolveApprovalToken(
-        root, a.featureId, a.expectedRevision, a.interactionId, a.userReply,
-         { promptEventId: a.promptEventId, turnBoundaryEventId: a.turnBoundaryEventId }, a.host,
-      );
-      const response = interactionResponse(state, a.interactionId);
-      return interactionEnvelope(
-        state,
-        toPublicInteraction(getInteraction(state, a.interactionId)),
-        response?.action ?? "resolved",
-        response,
-      );
-    }
+         interactionResponse(state, presentation.interactionId),
+       );
+     }
+     case "dev_flow_answer": {
+       const state = await readState(root, a.featureId);
+       const decision = pendingDecisionForState(state);
+        if (!decision) {
+          return {
+            state,
+           message: "当前没有需要回答的问题。",
+           nextStep: "流程将按当前阶段自动继续。",
+         };
+       }
+       const interaction = pendingInteractionForDecision(state, decision);
+       if (!interaction) {
+         const prompt = resolvePromptEvent(await readFeatureEvents(root, a.featureId), {
+           host: a.host,
+           userReply: a.userReply,
+           presentedAt: decision.presentedAt,
+           presentedRevision: decision.presentedRevision,
+         });
+         const matched = matchDecisionReply(decision, a.userReply);
+         const next = await mutate(root, a.featureId, a.expectedRevision, "decision-answered", (draft) => {
+           const current = draft.pendingDecision;
+           if (!current) throw new DevFlowError("DECISION_ALREADY_RESOLVED", "当前问题已经处理。", { userMessage: "当前问题已经处理，请刷新状态。", recoveryKind: "refresh", recoveryInstruction: "刷新当前状态后继续。", retryOriginal: false });
+           delete draft.pendingDecision;
+           if (current.kind === "workspace-ownership" && current.target?.startsWith("workspace:")) {
+             const file = current.target.slice("workspace:".length);
+             const owner = matched.option.id === "adopt" ? "feature" : "excluded";
+             draft.workspace.ownership[file] = owner;
+             if (owner === "feature") draft.workspace.ownershipSource[file] = "user-adopted";
+             const nextFile = Object.keys(draft.workspace.startedDirty).find((candidate) => draft.workspace.ownership[candidate] === undefined);
+             if (nextFile) {
+               draft.pendingDecision = {
+                 kind: "workspace-ownership",
+                 question: `启动前已发现路径“${nextFile}”存在改动。它是否属于当前任务？`,
+                 options: [
+                   { id: "adopt", label: "纳入当前任务", recommended: true },
+                   { id: "exclude", label: "先处理后继续" },
+                 ],
+                 basisHash: current.basisHash,
+                 presentedAt: new Date().toISOString(),
+                 presentedRevision: draft.revision,
+                 source: "core",
+                 target: `workspace:${nextFile}`,
+               };
+             }
+           } else if (current.kind === "task-switch" && matched.option.id === "pause-old") {
+             draft.lifecycle = "paused";
+             draft.resumeSummary = "旧任务已暂停；恢复时会自动对账工作区。";
+           }
+         }, { eventId: prompt.eventId, action: matched.option.id });
+          return {
+            state: next,
+           message: matched.option.id === "adopt" ? "已将该路径纳入当前任务。" : matched.option.id === "exclude" ? "已将该路径排除；系统不会自动还原或暂存它。" : "已记录你的选择，流程将按当前任务状态继续。",
+           ...(next.pendingDecision ? { attention: "请只回答当前这一道问题。", 需要用户决定: true } : { 需要用户决定: false }),
+         };
+       }
+       if (decision.kind === "approval") {
+         const next = await resolveApprovalAnswer(root, a.featureId, a.expectedRevision, interaction.id, a.userReply, a.host);
+         const response = interactionResponse(next, interaction.id);
+         return interactionEnvelope(next, toPublicInteraction(getInteraction(next, interaction.id)), response?.action ?? "已处理", response);
+       }
+       if (decision.kind === "grill") {
+         const result = await resolveGrillAnswer(root, a.featureId, a.expectedRevision, interaction.id, a.userReply, a.host);
+         return interactionEnvelope(result.state, result.interaction, result.response?.action ?? "已处理", result.response);
+       }
+       if (decision.kind === "review-risk") {
+         const result = await resolveReviewRiskAcceptanceAnswer(root, a.featureId, a.expectedRevision, interaction.id, a.userReply, a.host);
+         const response = interactionResponse(result.state, interaction.id);
+         return interactionEnvelope(result.state, toPublicInteraction(getInteraction(result.state, interaction.id)), result.idempotent ? "已接受风险" : response?.action ?? "已处理", response);
+       }
+       if (decision.kind === "quality-exception") {
+         const next = await resolveQualityExceptionAnswer(root, a.featureId, a.expectedRevision, interaction.id, a.userReply, a.host);
+         const response = interactionResponse(next, interaction.id);
+         return interactionEnvelope(next, toPublicInteraction(getInteraction(next, interaction.id)), response?.action ?? "已处理", response);
+       }
+       if (decision.kind === "rollback-confirmation") {
+         const next = await resolveRollbackGateAnswer(root, a.featureId, a.expectedRevision, interaction.id, a.userReply, a.host);
+         const response = interactionResponse(next, interaction.id);
+         return interactionEnvelope(next, toPublicInteraction(getInteraction(next, interaction.id)), response?.action ?? "已处理", response);
+       }
+       throw new DevFlowError("DECISION_KIND_UNSUPPORTED", "当前决策类型还没有可用的回答处理器。", {
+         userMessage: "当前问题暂时不能自动处理。",
+         cause: `决策类型为 ${decision.kind}。`,
+         impact: "流程保持在当前阶段。",
+         recoveryKind: "repair",
+         recoveryInstruction: "运行 doctor 检查插件版本和状态。",
+         retryOriginal: false,
+       });
+     }
+     case "dev_flow_present_quality_exception": {
+       const result = await presentQualityException(root, a.featureId, a.expectedRevision, {
+         kind: a.kind,
+         basisHash: a.basisHash,
+         fingerprint: a.fingerprint,
+         riskSummary: a.riskSummary,
+       });
+       emitAttentionNotification({ kind: "decision-required", featureId: a.featureId, decision: "quality-exception" });
+       const selection = await connection.elicit(result.interaction, result.interaction.question ?? "请决定是否接受当前风险。");
+       if (!selection) return interactionEnvelope(result.state, result.interaction, "pending");
+       const next = await resolveQualityExceptionAnswer(root, a.featureId, result.state.revision, result.interactionId, selection.action, a.host);
+       const response = interactionResponse(next, result.interactionId);
+       return interactionEnvelope(next, toPublicInteraction(getInteraction(next, result.interactionId)), response?.action ?? selection.action, response);
+     }
     case "dev_flow_request_grill_decision": {
       const result = await requestGrillDecision(root, a.featureId, a.expectedRevision, {
         questionId: a.questionId,
@@ -1057,17 +1121,11 @@ async function call(name: string, a: any, connection: McpConnection) {
       const selection = await connection.elicit(result.interaction, result.interaction.question ?? "请选择一个方案。");
       if (!selection) return interactionEnvelope(result.state, result.interaction, "pending");
       const resolved = await resolveGrillElicitation(
-        root, a.featureId, result.state.revision, result.interaction.id,
-         selection.action, selection.comment, a.host,
-      );
-      return interactionEnvelope(resolved.state, resolved.interaction, selection.action, resolved.response);
-    }
-    case "dev_flow_resolve_grill_decision": {
-      const resolved = await resolveGrillToken(
-         root, a.featureId, a.expectedRevision, a.interactionId, a.userReply, a.promptEventId, a.host,
-      );
-      return interactionEnvelope(resolved.state, resolved.interaction, resolved.response?.action ?? "resolved", resolved.response);
-    }
+         root, a.featureId, result.state.revision, result.interactionId,
+          selection.action, selection.comment, a.host,
+       );
+       return interactionEnvelope(resolved.state, resolved.interaction, selection.action, resolved.response);
+     }
     case "dev_flow_reclassify": return reclassifyFeature(root, a.featureId, a.expectedRevision, a.classification, a.reason, a.userEvidence);
     case "dev_flow_verify": return runVerification(
        root, a.featureId, a.expectedRevision, a.host, a.commandIds, a.manualAcceptance,
@@ -1108,7 +1166,7 @@ async function dispatchRequest(message: { id?: unknown; method?: string; params?
         protocolVersion: message.params?.protocolVersion || "2024-11-05",
         serverInfo: { name: "dev-flow", version: __DEV_FLOW_VERSION__ },
         capabilities: { tools: {} },
-        instructions: "Classify before starting. Read dev_flow_next for the current stage, activity, allowed action categories, completion criteria, obligations, and any required attention; choose suitable equivalent tools within that contract. A dynamically derived approval opens a pending interaction: present its natural-language hint to the user; grill questions may be answered with A/B/C or the option name. One-time reply tokens are a last-resort fallback only when the user cannot answer naturally. Use dev_flow_init_project before start.",
+         instructions: "先完成事实调查和路线分类。日常读取 dev_flow_status；它会显示中文阶段、当前下一步和唯一待决问题。所有用户决定统一使用 dev_flow_answer，系统会自动按问题类型处理。没有真实决策缺口时流程会自动推进。先调用 dev_flow_init_project，再开始 feature。",
       });
       return;
     }

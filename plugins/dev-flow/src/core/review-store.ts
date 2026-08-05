@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { mkdir, open, readFile, readdir, rename } from "node:fs/promises";
 import path from "node:path";
-import { assuranceForReviewBatch, type ReviewAgentAttestation, type ReviewBatch, type ReviewJob, type ReviewLedger, type ReviewPointer, type ReviewSamplingAttempt, type ReviewSummary } from "../policy/review.js";
+import { assuranceForReviewBatch, type ReviewAgentAttestation, type ReviewBatch, type ReviewFindingEvent, type ReviewJob, type ReviewLedger, type ReviewPointer, type ReviewSamplingAttempt, type ReviewSummary } from "../policy/review.js";
 import type { FeatureState } from "./state-store.js";
 import { DevFlowError } from "./errors.js";
 
@@ -19,7 +19,7 @@ const emptySummary = (): ReviewSummary => ({ batches: 0, current: 0, stale: 0, o
 const digest = (contents: string | Buffer): string => createHash("sha256").update(contents).digest("hex");
 
 export function emptyReviewLedger(featureId: string, stateRevision: number): ReviewLedger {
-  return { schemaVersion: 1, featureId, revision: 0, stateRevision, batches: [], summary: emptySummary() };
+  return { schemaVersion: 1, featureId, revision: 0, stateRevision, batches: [], summary: emptySummary(), findingEvents: [] };
 }
 
 export function canonicalReviewJson(ledger: ReviewLedger): string {
@@ -180,6 +180,19 @@ function validateLedger(value: unknown): asserts value is ReviewLedger {
     // mcp-sampling may later accept manual host attestation on claim/submit; ladder
     // can then reach multi-agent-attested while executionMode remains diagnostic.
     batchIds.add(batch.batchId);
+  }
+  if (ledger.findingEvents !== undefined) {
+    if (!Array.isArray(ledger.findingEvents)) integrity("review finding event ledger is invalid");
+    const origins = new Set<string>();
+    for (const event of ledger.findingEvents as ReviewFindingEvent[]) {
+      if (!event || typeof event !== "object" || typeof event.type !== "string" || typeof event.at !== "string") integrity("review finding event has an invalid shape");
+      if (event.type === "origin") {
+        if (!event.finding || typeof event.finding.findingId !== "string" || origins.has(event.finding.findingId)) integrity("review finding origin is missing or duplicated");
+        origins.add(event.finding.findingId);
+      } else if (typeof event.findingId !== "string" || !origins.has(event.findingId)) {
+        integrity("review finding event references an unknown origin", { findingId: event.findingId });
+      }
+    }
   }
   const attestationRaws = new Set<string>();
   for (const batch of ledger.batches) {
