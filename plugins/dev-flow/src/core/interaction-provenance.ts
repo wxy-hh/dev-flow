@@ -1,5 +1,6 @@
 import { normalizeReplyText } from "./user-interactions.js";
 import { DevFlowError } from "./errors.js";
+import { isHostId, type HostId } from "./host-id.js";
 
 export interface HostEventRecord {
   revision: number;
@@ -13,13 +14,13 @@ export interface ResolvedPromptEvent {
   revision: number;
   at: string;
   text: string;
-  host: "claude" | "codex";
+  host: HostId;
 }
 
-function promptFrom(record: HostEventRecord): { eventId: string; text: string; host: "claude" | "codex"; at: string } | undefined {
+function promptFrom(record: HostEventRecord): { eventId: string; text: string; host: HostId; at: string } | undefined {
   if (record.type !== "host-event" || !record.data || typeof record.data !== "object" || Array.isArray(record.data)) return undefined;
   const data = record.data as { eventId?: unknown; type?: unknown; text?: unknown; host?: unknown; at?: unknown };
-  if (data.type !== "user-prompt" || typeof data.eventId !== "string" || typeof data.text !== "string" || (data.host !== "claude" && data.host !== "codex")) return undefined;
+  if (data.type !== "user-prompt" || typeof data.eventId !== "string" || typeof data.text !== "string" || !isHostId(data.host)) return undefined;
   const at = typeof data.at === "string" ? data.at : record.at;
   if (Number.isNaN(Date.parse(at))) return undefined;
   return { eventId: data.eventId, text: data.text, host: data.host, at };
@@ -29,7 +30,7 @@ function promptFrom(record: HostEventRecord): { eventId: string; text: string; h
 export function resolvePromptEvent(
   events: HostEventRecord[],
   input: {
-    host: "claude" | "codex";
+    host: HostId;
     userReply: string;
     presentedAt: string;
     presentedRevision: number;

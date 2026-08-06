@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { reviewEnforcementRequired, routeDefinitionForFeature } from "../policy/contract.js";
 import { DevFlowError } from "./errors.js";
+import type { HostId } from "./host-id.js";
 import {
   approvalPhrases,
   approvalReplyHint,
@@ -114,7 +115,7 @@ function confirmationEventIds(value: unknown): string[] {
 
 type HostEventRecord = { revision: number; type: string; at: string; data: unknown };
 
-function hostEventRecord(events: HostEventRecord[], eventId: string, expectedHost?: "claude" | "codex"): HostEventRecord | undefined {
+function hostEventRecord(events: HostEventRecord[], eventId: string, expectedHost?: HostId): HostEventRecord | undefined {
   const record = events.find((item) => item.type === "host-event"
     && (item.data as { eventId?: string }).eventId === eventId);
   if (record && expectedHost && (record.data as { host?: unknown }).host !== expectedHost) {
@@ -168,7 +169,7 @@ function resolveProvenance(
   approval: ApprovalId,
   userReply: string,
   provenance: ApprovalConfirmation,
-  host: "claude" | "codex",
+  host: HostId,
 ): ApprovalConfirmation {
   if (provenance.promptEventId || provenance.turnBoundaryEventId) return provenance;
 
@@ -212,7 +213,7 @@ function assertTokenEvidence(
   approval: ApprovalId,
   userReply: string,
   provenance: ApprovalConfirmation,
-  host: "claude" | "codex",
+  host: HostId,
 ): ApprovalConfirmation {
   const resolved = resolveProvenance(events, state, approval, userReply, provenance, host);
   const current = state.humanGates[approval] as { presentedRevision?: number; presentedAt?: string } | undefined;
@@ -236,7 +237,7 @@ async function resolveApprovalResponse(
   id: string,
   expectedRevision: number,
   interactionId: string,
-  host: "claude" | "codex",
+  host: HostId,
   input: { action: string; comment?: string; source: "elicitation" }
     | { userReply: string; provenance: ApprovalConfirmation; source: "text" },
 ): Promise<FeatureState> {
@@ -322,7 +323,7 @@ export async function resolveApprovalElicitation(
   interactionId: string,
   action: string,
   comment: string | undefined,
-  host: "claude" | "codex",
+  host: HostId,
 ): Promise<FeatureState> {
   return resolveApprovalResponse(root, id, expectedRevision, interactionId, host, { action, comment, source: "elicitation" });
 }
@@ -334,7 +335,7 @@ export async function resolveApprovalToken(
   interactionId: string,
   userReply: string,
   provenance: ApprovalConfirmation,
-  host: "claude" | "codex",
+  host: HostId,
 ): Promise<FeatureState> {
   return resolveApprovalResponse(root, id, expectedRevision, interactionId, host, { userReply, provenance, source: "text" });
 }
@@ -346,7 +347,7 @@ export async function resolveApprovalAnswer(
   expectedRevision: number,
   interactionId: string,
   userReply: string,
-  host: "claude" | "codex",
+  host: HostId,
 ): Promise<FeatureState> {
   return resolveApprovalResponse(root, id, expectedRevision, interactionId, host, {
     userReply,
@@ -362,7 +363,7 @@ export async function confirmApproval(
   approval: string,
   userReply: string,
   provenance: ApprovalConfirmation,
-  host: "claude" | "codex",
+  host: HostId,
 ): Promise<FeatureState> {
   const selectedApproval = approvalId(approval);
   if (!userReply.trim()) throw new DevFlowError("APPROVAL_REPLY_REQUIRED", "userReply is required");

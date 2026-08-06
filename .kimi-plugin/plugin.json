@@ -1,0 +1,62 @@
+{
+  "name": "dev-flow",
+  "version": "4.1.0",
+  "description": "Risk-aware multi-route development orchestration for Claude Code, Codex CLI and Kimi Code (repo-root wrapper for GitHub install).",
+  "author": {
+    "name": "wxy-hh",
+    "url": "https://github.com/wxy-hh"
+  },
+  "homepage": "https://github.com/wxy-hh/dev-flow",
+  "repository": "https://github.com/wxy-hh/dev-flow",
+  "license": "MIT",
+  "keywords": [
+    "development",
+    "workflow",
+    "review",
+    "verification"
+  ],
+  "skills": "./plugins/dev-flow/skills/",
+  "sessionStart": {
+    "skill": "kimi-session"
+  },
+  "mcpServers": {
+    "dev-flow": {
+      "command": "node",
+      "args": [
+        "./plugins/dev-flow/dist/mcp-server.mjs"
+      ]
+    }
+  },
+  "hooks": [
+    {
+      "event": "PreToolUse",
+      "command": "node ./plugins/dev-flow/dist/kimi-hook.mjs",
+      "timeout": 60
+    },
+    {
+      "event": "UserPromptSubmit",
+      "command": "node ./plugins/dev-flow/dist/kimi-hook.mjs",
+      "timeout": 60
+    },
+    {
+      "event": "PostToolUse",
+      "command": "node ./plugins/dev-flow/dist/kimi-hook.mjs",
+      "timeout": 60
+    },
+    {
+      "event": "Stop",
+      "command": "node ./plugins/dev-flow/dist/kimi-hook.mjs",
+      "timeout": 60
+    },
+    {
+      "event": "PermissionRequest",
+      "command": "node ./plugins/dev-flow/dist/kimi-hook.mjs",
+      "timeout": 60
+    },
+    {
+      "event": "PermissionResult",
+      "command": "node ./plugins/dev-flow/dist/kimi-hook.mjs",
+      "timeout": 60
+    }
+  ]
+}

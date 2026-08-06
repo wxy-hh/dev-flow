@@ -4,6 +4,7 @@ import path from "node:path";
 import { assuranceForReviewBatch, type ReviewAgentAttestation, type ReviewBatch, type ReviewFindingEvent, type ReviewJob, type ReviewLedger, type ReviewPointer, type ReviewSamplingAttempt, type ReviewSummary } from "../policy/review.js";
 import type { FeatureState } from "./state-store.js";
 import { DevFlowError } from "./errors.js";
+import { isHostId } from "./host-id.js";
 
 function sortValue(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(sortValue);
@@ -103,7 +104,7 @@ function validSamplingAttempts(value: unknown, status: ReviewJob["status"], subm
 
 function validAttestation(value: unknown): value is ReviewAgentAttestation {
   return isRecord(value)
-    && (value.host === "claude" || value.host === "codex")
+    && isHostId(value.host)
     && typeof value.agentId === "string" && value.agentId.trim().length > 0
     && typeof value.issuedAt === "string" && !Number.isNaN(Date.parse(value.issuedAt))
     && typeof value.raw === "string" && value.raw.trim().length > 0

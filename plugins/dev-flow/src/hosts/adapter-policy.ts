@@ -19,6 +19,9 @@ export interface HookEvent {
   event_id?: string;
   tool_use_id?: string;
   permission_request_id?: string;
+  tool_call_id?: string;
+  tool_output?: unknown;
+  prompt?: unknown;
   error?: unknown;
   tool_response?: unknown;
   tool_result?: unknown;

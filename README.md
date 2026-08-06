@@ -1,6 +1,6 @@
 # Dev Flow
 
-Dev Flow 4.0 是面向 **Claude Code** 与 **Codex CLI** 的预构建双宿主插件。
+Dev Flow 4.1 是面向 **Claude Code**、**Codex CLI** 与 **Kimi Code**（实验性）的预构建多宿主插件。
 
 它按**规模（XS/S/M/L）× 拓扑 × 执行方式（light/standard）× 需求状态 × 风险标签**选择路线，只强制该路线所需的步骤与证据；两端共用 `.dev-flow/` 状态，可在 Claude 开任务、Codex 收尾（或反向）。
 
@@ -18,6 +18,7 @@ Dev Flow 的设计初衷不是把每个小任务都变成重流程，而是在�
 | --- | --- | --- |
 | Claude Code | 支持；需同时安装插件 manifest、MCP 与 `claude-hook.mjs` | 支持写入守卫与可信用户事件 |
 | Codex CLI | 支持；需同时安装插件 manifest、MCP 与 `codex-hook.mjs` | 支持写入守卫与可信用户事件 |
+| Kimi Code | 支持（实验性）；需 `.kimi-plugin` manifest（MCP+hooks+`sessionStart.skill`） | 有写入守卫与用户事件证据；授权记忆不生效（依赖原生 session 审批）；hook 脚本错误/超时默认放行（fail-open），YOLO 下门禁失效 |
 | 其他 MCP 客户端 | 未支持；直连仅用于诊断 | 不具备写入守卫与可信用户证据 |
 
 不把仅 MCP happy path、模型代决或手工调 hook 当作宿主兼容证据；`doctor` 的静态检查也不等于第三方宿主兼容。新增宿主必须同步更新支持矩阵、manifest、hook 和分发合同测试。
@@ -28,7 +29,7 @@ Dev Flow 的 Bash target analyzer 只做工作流辅助分析，不是命令合�
 
 Hook 仍会拒绝确定的 `.dev-flow` 控制文件写入、intake 或未批准阶段的 protected-root 写入、未登记的 feature 资产和开放恢复事务。implementation 获得授权后可按 feature ownership 审计本地 Git stage/commit；push 与历史改写仍禁止。每个 Dev Flow block 都包含原因、影响、具体解决方案、是否需要用户决定和解决后是否自动重试原操作。
 
-普通风险的宿主确认成功且工具执行成功后，`PermissionRequest` / `PostToolUse` 会把授权记在当前 active feature 的 Core 事件账本中，只复用同一 feature 的 `task-reusable` 风险。切换、finalize 或 abandon feature 后不复用；publish、push、deploy、生产变更和云资源删除等 `always-confirm` 动作每次仍由宿主确认。bypass、dontAsk 等宿主模式关闭确认时，Dev Flow 不保证强制弹窗。Claude 的 block 使用 `hookSpecificOutput.permissionDecision = "deny"`，Codex 使用 `{ "decision": "block", "reason": "..." }`；两者允许且无 advisory 时均退出 0 且不输出 JSON，Codex PreToolUse 不使用 `continue`、`stopReason` 或伪造的 ask。
+普通风险的宿主确认成功且工具执行成功后，`PermissionRequest` / `PostToolUse` 会把授权记在当前 active feature 的 Core 事件账本中，只复用同一 feature 的 `task-reusable` 风险。切换、finalize 或 abandon feature 后不复用；publish、push、deploy、生产变更和云资源删除等 `always-confirm` 动作每次仍由宿主确认。bypass、dontAsk 等宿主模式关闭确认时，Dev Flow 不保证强制弹窗。Claude 的 block 使用 `hookSpecificOutput.permissionDecision = "deny"`，Codex 使用 `{ "decision": "block", "reason": "..." }`；两者允许且无 advisory 时均退出 0 且不输出 JSON，Codex PreToolUse 不使用 `continue`、`stopReason` 或伪造的 ask。**Kimi 例外**：其 `PermissionRequest`/`PermissionResult` 是观察型事件，Dev Flow 只把原生审批决定写入审计账本、**永不代发 allow**；feature 级授权记忆在 Kimi 上不生效。
 
 ## v4 可追溯性与审查
 
@@ -168,6 +169,30 @@ Codex 当前 **没有** 与 Claude 对等的 `--scope project` 安装参数；�
 团队共享仍靠：每人安装插件 + 仓库内提交 **`.dev-flow/`**（及约定）。  
 升级：`codex plugin marketplace upgrade` 等原生命令（以 `codex plugin --help` 为准）。
 
+### Kimi Code（实验性）
+
+```text
+/plugins install <路径或 GitHub URL>
+```
+
+1. 在 Kimi Code 会话中执行 `/plugins install`，安装 dev-flow 插件（本地路径或 GitHub 仓库 URL）。
+2. 按提示**信任该第三方插件**（安装默认取消，需你明确确认来源可信）。
+3. 执行 `/reload` 或新开会话，确认 `dev_flow_*` MCP 工具可用。
+
+建议（非强制）在 `~/.kimi-code/config.toml` 预置权限规则，减少 MCP 工具每次调用的审批：
+
+```toml
+[[permission.rules]]
+tool = "mcp__dev-flow__*"
+decision = "allow"
+```
+
+注意（Kimi 侧边界，详见支持矩阵）：
+
+- 插件为**用户级安装**，无项目级 scope；更新走 `/plugins`。
+- `PermissionRequest` / `PermissionResult` 为观察型事件，Dev Flow 只记账、**不代做审批决定**；feature 级授权记忆在 Kimi 上不生效，依赖 Kimi 原生 session 级 "Approve for this session"。
+- Kimi hooks **脚本错误或超时默认放行**（fail-open），写入守卫不是唯一安全屏障，请同时依赖宿主权限确认。
+
 ### 安装之后应该做什么（逐步）
 
 以下在**业务项目仓库**中操作。
@@ -253,6 +278,8 @@ claude plugin list
 | 同事 clone 后没有插件 | project 范围需提交 `.claude/settings.json`，同事执行同 scope 的 install 或按团队文档安装 |
 | 卸了插件但 `.dev-flow` 还在 | 预期行为；需手动删 `.dev-flow` |
 | hooks 一直不拦/乱拦 | 确认已信任 hooks；并已 `init_project`；只读 Bash 与写保护策略见架构说明 |
+| Kimi 下每次 MCP 调用都弹审批 | 预期。Kimi 无 hook 代决通道；预置 `[[permission.rules]]` `decision="allow"` 的 `mcp__dev-flow__*` 规则，或会话内 "Approve for this session" |
+| Kimi 下 hook 不触发 / 写守卫失效 | 确认插件已 enabled 且 hooks 已信任；Kimi hooks 脚本错误/超时默认放行（fail-open），是原生设计而非插件缺陷 |
 
 ### 宿主基线
 
@@ -262,6 +289,7 @@ claude plugin list
 |------|------|
 | Claude Code | **2.1.215** |
 | Codex CLI | **0.144.4** |
+| Kimi Code | **0.33.0**（实验性；经协议测试与真机探针验证，见支持矩阵） |
 | Node.js | **≥ 20**（仅开发/构建；用户安装插件无需 `npm install`） |
 
 本机真机安装与跨宿主接力（可选）：

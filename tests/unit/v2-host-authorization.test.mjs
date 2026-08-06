@@ -118,3 +118,37 @@ test("仓库外或无法静态确定的 destructive target 不进入可复用授
   assert.equal(risk.classifyRisk({ toolName: "Bash", toolInput: { command: "rm -rf /tmp/other" } }, root)?.riskClass, "always-confirm");
   assert.equal(risk.classifyRisk({ toolName: "Bash", toolInput: { command: "rm -rf $TARGET" } }, root)?.riskClass, "always-confirm");
 });
+
+test("kimi 观察记账：PermissionRequest 记 pending，PermissionResult 记 result，永不输出 allow 也不写 granted", async () => {
+  const fixture = await createTinyApp();
+  try {
+    await startFeature(fixture.root);
+    await authorization.recordKimiPermissionRequest(fixture.root, {
+      hook_event_name: "PermissionRequest",
+      tool_call_id: "tool-kimi-perm-9",
+      tool_name: "Bash",
+      tool_input: { command: "rm -rf src/generated" },
+    });
+    let events = await state.readHostAuthorizationEvents(fixture.root, "feature");
+    assert.deepEqual(events.map((event) => event.type), ["host-authorization-pending"]);
+    assert.equal(events[0].data.host, "kimi");
+    await authorization.recordKimiPermissionResult(fixture.root, {
+      hook_event_name: "PermissionResult",
+      tool_call_id: "tool-kimi-perm-9",
+      tool_name: "Bash",
+      tool_input: { command: "rm -rf src/generated" },
+      result: "denied",
+    });
+    const allEvents = await state.readFeatureEvents(fixture.root, "feature");
+    const resultEvent = allEvents.find((event) => event.type === "host-authorization-result");
+    assert.ok(resultEvent, "kimi PermissionResult should persist a host-authorization-result event");
+    assert.equal(resultEvent.data.decision, "denied");
+    assert.ok(resultEvent.data.decidedAt);
+    // result 是写-only 审计：授权读取路径只回读 pending/granted
+    const readable = await state.readHostAuthorizationEvents(fixture.root, "feature");
+    assert.deepEqual(readable.map((event) => event.type), ["host-authorization-pending"]);
+    assert.equal(readable.some((event) => event.type === "host-authorization-granted"), false);
+  } finally {
+    await fixture.dispose();
+  }
+});

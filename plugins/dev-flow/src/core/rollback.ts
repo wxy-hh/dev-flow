@@ -7,6 +7,7 @@ import { canonicalReviewValueJson, prepareReviewInvalidation } from "./review-st
 import { blobPath, checkpointChain, readCheckpoint, readCheckpointBaseline } from "./checkpoints.js";
 import type { CheckpointManifest } from "../policy/rollback.js";
 import { DevFlowError } from "./errors.js";
+import type { HostId } from "./host-id.js";
 import { snapshotProtectedRoots, type ProtectedFileSnapshot } from "./fingerprint.js";
 import type { ProjectConfig, VerificationCommand } from "./project-config.js";
 import { implementationUnitForRollbackNode, pathWithinFileScope } from "../policy/rollback.js";
@@ -538,7 +539,7 @@ async function resolveRollbackGateResponse(
   featureId: string,
   expectedRevision: number,
   interactionId: string,
-  host: "claude" | "codex",
+  host: HostId,
   input:
     | { action: string; comment?: string; source: "elicitation" }
     | { userReply: string; promptEventId?: string; source: "text" },
@@ -690,7 +691,7 @@ export async function resolveRollbackGateElicitation(
   interactionId: string,
   action: string,
   comment: string | undefined,
-  host: "claude" | "codex",
+  host: HostId,
 ): Promise<FeatureState> {
   return resolveRollbackGateResponse(root, featureId, expectedRevision, interactionId, host, {
     action,
@@ -706,7 +707,7 @@ export async function resolveRollbackGateAnswer(
   expectedRevision: number,
   interactionId: string,
   userReply: string,
-  host: "claude" | "codex",
+  host: HostId,
 ): Promise<FeatureState> {
   return resolveRollbackGateResponse(root, featureId, expectedRevision, interactionId, host, {
     userReply,

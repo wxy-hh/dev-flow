@@ -1,5 +1,6 @@
 import { resolvePromptEvent } from "./interaction-provenance.js";
 import { DevFlowError } from "./errors.js";
+import type { HostId } from "./host-id.js";
 import { mutate, readFeatureEvents, readState, type FeatureState } from "./state-store.js";
 import {
   createInteraction,
@@ -68,7 +69,7 @@ export async function resolveQualityExceptionAnswer(
   expectedRevision: number,
   interactionId: string,
   userReply: string,
-  host: "claude" | "codex",
+  host: HostId,
 ): Promise<FeatureState> {
   const initial = await readState(root, featureId);
   const interaction = getInteraction(initial, interactionId);

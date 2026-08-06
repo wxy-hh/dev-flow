@@ -9,7 +9,7 @@ import { fileURLToPath } from "node:url";
 const run = promisify(execFile);
 const repositoryRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const temporaryDist = await mkdtemp(path.join(os.tmpdir(), "dev-flow-dist-check-"));
-const names = ["mcp-server.mjs", "claude-hook.mjs", "codex-hook.mjs"];
+const names = ["mcp-server.mjs", "claude-hook.mjs", "codex-hook.mjs", "kimi-hook.mjs"];
 
 try {
   await run(process.execPath, [path.join(repositoryRoot, "scripts", "build.mjs")], {

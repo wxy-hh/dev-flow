@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { DevFlowError } from "./errors.js";
+import type { HostId } from "./host-id.js";
 import type { FeatureState } from "./state-store.js";
 import type { PendingDecisionKind } from "../policy/types.js";
 
@@ -25,7 +26,7 @@ export interface InteractionResponse {
   promptEventId?: string;
   turnBoundaryEventId?: string;
   userReply?: string;
-  host: "claude" | "codex";
+  host: HostId;
   respondedAt: string;
 }
 
@@ -203,7 +204,7 @@ export function resolveNativeInteraction(
   interactionId: string,
   action: string,
   comment: string | undefined,
-  host: "claude" | "codex",
+  host: HostId,
 ): InteractionResponse {
   const interaction = getInteraction(state, interactionId);
   if (interaction.status !== "pending") throw new DevFlowError("INTERACTION_ALREADY_RESOLVED", interactionId);
@@ -226,7 +227,7 @@ export function resolveTextInteraction(
   state: FeatureState,
   interactionId: string,
   userReply: string,
-  host: "claude" | "codex",
+  host: HostId,
   provenance: { promptEventId?: string; turnBoundaryEventId?: string },
   phraseAction?: string,
 ): InteractionResponse {

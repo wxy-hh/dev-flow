@@ -6,6 +6,7 @@ import { promisify } from "node:util";
 import { deriveRiskRequirements } from "../policy/route.js";
 import type { VerificationKind } from "../policy/types.js";
 import { DevFlowError } from "./errors.js";
+import type { HostId } from "./host-id.js";
 import { fingerprintProtectedRoots } from "./fingerprint.js";
 import { assertRequirementsGrillSatisfied } from "./requirements-grill.js";
 import { mutate, readFeatureEvents, readProjectConfig, readState, type FeatureState } from "./state-store.js";
@@ -97,7 +98,7 @@ type Attempt = {
   outputTail: string;
   outputPath: string;
   fingerprint: string;
-  host: "claude" | "codex";
+  host: HostId;
   manualAcceptance?: ManualAcceptance;
   phase?: "preflight" | "forward";
 };
@@ -167,7 +168,7 @@ async function assertOptionalManualAcceptance(
   id: string,
   state: FeatureState,
   manualAcceptance: ManualAcceptance | undefined,
-  host: "claude" | "codex",
+  host: HostId,
 ): Promise<void> {
   if (manualAcceptance?.mode !== "user-signoff") return;
 
@@ -198,7 +199,7 @@ export async function runVerification(
   root: string,
   id: string,
   expectedRevision: number,
-  host: "claude" | "codex",
+  host: HostId,
   commandIds?: string[],
   manualAcceptanceInput?: ManualAcceptance,
 ): Promise<FeatureState> {

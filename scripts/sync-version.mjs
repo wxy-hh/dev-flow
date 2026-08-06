@@ -25,6 +25,8 @@ if (typeof version !== "string" || !/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9
 const manifestPaths = [
   path.join(repositoryRoot, "plugins", "dev-flow", ".claude-plugin", "plugin.json"),
   path.join(repositoryRoot, "plugins", "dev-flow", ".codex-plugin", "plugin.json"),
+  path.join(repositoryRoot, "plugins", "dev-flow", ".kimi-plugin", "plugin.json"),
+  path.join(repositoryRoot, ".kimi-plugin", "plugin.json"),
 ];
 
 if (mode === "write") {

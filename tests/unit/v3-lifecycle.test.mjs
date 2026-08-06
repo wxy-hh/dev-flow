@@ -27,6 +27,23 @@ test("pause removes the active pointer without requiring commit or finalize, res
   }
 });
 
+test("kimi host participates in start, pause and resume with kimi provenance", async () => {
+  const fixture = await createTinyApp();
+  try {
+    await store.initProject(fixture.root, strictProjectConfig);
+    const started = await store.startFeature(fixture.root, { featureId: "kimi-life", host: "kimi" });
+    assert.equal(started.lastUpdatedBy.host, "kimi");
+    const paused = await store.pauseFeature(fixture.root, "kimi-life", started.revision, "暂停", "kimi");
+    assert.equal(paused.lifecycle, "paused");
+    assert.equal(paused.lastUpdatedBy.host, "kimi");
+    const resumed = await store.resumeFeature(fixture.root, "kimi-life", "kimi");
+    assert.equal(resumed.lifecycle, "active");
+    assert.equal(resumed.lastUpdatedBy.host, "kimi");
+  } finally {
+    await fixture.dispose();
+  }
+});
+
 test("resume after a manual pause commit adopts the commit and marks evidence stale", async () => {
   const fixture = await createTinyApp();
   try {

@@ -312,17 +312,20 @@ export async function collectDoctorReport(root: string, pluginRoot: string, vers
   const paths = {
     claudeManifest: path.join(pluginRoot, ".claude-plugin", "plugin.json"),
     codexManifest: path.join(pluginRoot, ".codex-plugin", "plugin.json"),
+    kimiManifest: path.join(pluginRoot, ".kimi-plugin", "plugin.json"),
     mcp: path.join(pluginRoot, ".mcp.json"),
     claudeHooks: path.join(pluginRoot, "hosts", "claude", "hooks.json"),
     codexHooks: path.join(pluginRoot, "hosts", "codex", "hooks.json"),
+    kimiHooks: path.join(pluginRoot, "hosts", "kimi", "hooks.json"),
     mcpBundle: path.join(pluginRoot, "dist", "mcp-server.mjs"),
     claudeBundle: path.join(pluginRoot, "dist", "claude-hook.mjs"),
     codexBundle: path.join(pluginRoot, "dist", "codex-hook.mjs"),
+    kimiBundle: path.join(pluginRoot, "dist", "kimi-hook.mjs"),
   };
   const files = await Promise.all(Object.entries(paths).map(async ([name, file]) => [name, await readable(file)] as const));
   const missing = files.filter(([, exists]) => !exists).map(([name]) => name);
   add(missing.length ? "PLUGIN_FILES_MISSING" : "PLUGIN_FILES_PRESENT", missing.length ? "error" : "ok", missing.length ? `missing plugin files: ${missing.join(", ")}` : "manifests, hooks, MCP configuration and bundles are present");
-  const jsonFiles = [paths.claudeManifest, paths.codexManifest, paths.mcp, paths.claudeHooks, paths.codexHooks];
+  const jsonFiles = [paths.claudeManifest, paths.codexManifest, paths.kimiManifest, paths.mcp, paths.claudeHooks, paths.codexHooks, paths.kimiHooks];
   const invalidJson = (await Promise.all(jsonFiles.map(async (file) => !(await validJson(file))))).some(Boolean);
   add(invalidJson ? "PLUGIN_WIRING_INVALID" : "PLUGIN_WIRING_VALID", invalidJson ? "error" : "ok", invalidJson ? "a manifest, MCP file, or hook file is not valid JSON" : "plugin manifest, MCP and hook wiring parse successfully");
 

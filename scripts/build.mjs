@@ -17,6 +17,7 @@ const entries = [
   ["mcp-server", path.join(pluginRoot, "src", "mcp", "server.ts")],
   ["claude-hook", path.join(pluginRoot, "src", "hosts", "claude-adapter.ts")],
   ["codex-hook", path.join(pluginRoot, "src", "hosts", "codex-adapter.ts")],
+  ["kimi-hook", path.join(pluginRoot, "src", "hosts", "kimi-adapter.ts")],
 ];
 
 await Promise.all(

@@ -1,6 +1,6 @@
 # Dev Flow 4.0 架构
 
-Dev Flow 4.0 是一个同时服务 Claude Code 与 Codex CLI 的本地插件。两个宿主共享同一套 Skills、MCP 与 policy 合同；宿主只归一化工具事件，Core 才拥有路线、阶段、义务、决策、审查和交付状态的判断权。
+Dev Flow 4.0 是一个同时服务 Claude Code、Codex CLI 与 Kimi Code（实验性）的本地插件。三个宿主共享同一套 Skills、MCP 与 policy 合同；宿主只归一化工具事件，Core 才拥有路线、阶段、义务、决策、审查和交付状态的判断权。
 
 ## 分层
 
@@ -64,6 +64,6 @@ Host adapter 对普通实现写入只做语义审计；intake、`.dev-flow` 控�
 
 策略层返回显式 `allow` / `block` outcome。block 固定携带原因、影响、解决方案、确认模式和 `retryOriginal`，adapter 不再把异常或字符串猜测映射成状态损坏。`DEV_FLOW_WORKFLOW_STATE_UNREADABLE` 只在 active、project、state、revision 或 recovery 读取证据失败时使用，并给出来源；普通意外分析失败 fail-open 并作为诊断 advisory。Claude PreToolUse 使用 `hookSpecificOutput.permissionDecision = "deny"`，Codex 使用 `{ decision: "block", reason }`；允许且无 advisory 时两个宿主都退出 0 且无 stdout，Codex 不使用 `continue`、`stopReason` 或伪造 ask。
 
-`PermissionRequest` 只在宿主本来准备询问时参与：首次风险请求不代决，成功的 `PostToolUse` 才能把 `task-reusable` 风险指纹追加到 active feature 的 Core 事件账本；`always-confirm`、feature 切换、finalize/abandon 和宿主 bypass 模式不产生或不复用 grant。宿主支持矩阵只有 Claude Code（manifest+MCP+claude-hook）与 Codex CLI（manifest+MCP+codex-hook）；其他 MCP 客户端未支持，直连仅诊断，不具备写入守卫与可信用户证据。模型代决、手工调 hook、仅 MCP happy path、`doctor` 静态检查都不是兼容证据。`dev_flow_doctor` 只读报告损坏状态、开放恢复事务、遗留 v1 feature、插件接线和 bundle 完整性，并给出可执行 recovery action。
+`PermissionRequest` 只在宿主本来准备询问时参与：首次风险请求不代决，成功的 `PostToolUse` 才能把 `task-reusable` 风险指纹追加到 active feature 的 Core 事件账本；`always-confirm`、feature 切换、finalize/abandon 和宿主 bypass 模式不产生或不复用 grant。宿主支持矩阵只有 Claude Code（manifest+MCP+claude-hook）与 Codex CLI（manifest+MCP+codex-hook）为「支持」；**Kimi Code（实验性）**需 `.kimi-plugin` manifest（MCP+hooks+`sessionStart.skill`），其 `PermissionRequest`/`PermissionResult` 是观察型事件，只写入审计账本、不代发 allow，授权记忆不生效，且 hook 脚本错误/超时默认放行（fail-open）；其他 MCP 客户端未支持，直连仅诊断，不具备写入守卫与可信用户证据。模型代决、手工调 hook、仅 MCP happy path、`doctor` 静态检查都不是兼容证据。`dev_flow_doctor` 只读报告损坏状态、开放恢复事务、遗留 v1 feature、插件接线和 bundle 完整性，并给出可执行 recovery action。
 
-发布包包含 `dist/mcp-server.mjs`、`dist/claude-hook.mjs`、`dist/codex-hook.mjs`，版本由根 `package.json` 统一同步；发布前必须通过 schema、路线、跨宿主和构建检查。
+发布包包含 `dist/mcp-server.mjs`、`dist/claude-hook.mjs`、`dist/codex-hook.mjs`、`dist/kimi-hook.mjs`（实验性），版本由根 `package.json` 统一同步；发布前必须通过 schema、路线、跨宿主和构建检查。

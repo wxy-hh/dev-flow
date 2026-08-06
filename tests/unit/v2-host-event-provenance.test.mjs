@@ -44,3 +44,34 @@ test("a prompt event captured by another host cannot be consumed by approval", a
     await rm(root, { recursive: true, force: true });
   }
 });
+
+test("kimi prompt events are consumable by kimi confirmations only", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "dev-flow-host-provenance-kimi-"));
+  try {
+    await mkdir(path.join(root, "src"));
+    await stateStore.initProject(root, config);
+    let state = await stateStore.startFeature(root, {
+      featureId: "host",
+      host: "kimi",
+      level: "XS",
+      topology: "local",
+      riskLabels: ["security"],
+    });
+    state = await stateStore.mutate(root, state.featureId, state.revision, "step-recorded", (draft) => {
+      draft.steps.locate = { status: "satisfied" };
+      draft.currentStage = "implementation";
+    });
+    const approval = state.obligations.find((item) => item.kind === "approval");
+    const presentation = await approvals.presentApproval(root, state.featureId, state.revision, approval.id);
+    await stateStore.recordHostEvent(root, { eventId: "prompt-claude", type: "user-prompt", host: "claude", text: "批准实现" });
+    await assert.rejects(
+      () => approvals.confirmApproval(root, state.featureId, presentation.revision, approval.id, "批准实现", { promptEventId: "prompt-claude" }, "kimi"),
+      (error) => error.code === "HOST_EVENT_HOST_MISMATCH",
+    );
+    await stateStore.recordHostEvent(root, { eventId: "prompt-kimi", type: "user-prompt", host: "kimi", text: "批准实现" });
+    const confirmed = await approvals.confirmApproval(root, state.featureId, presentation.revision, approval.id, "批准实现", { promptEventId: "prompt-kimi" }, "kimi");
+    assert.equal(confirmed.humanGates[approval.id].status, "confirmed");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});

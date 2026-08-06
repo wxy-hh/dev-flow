@@ -1,0 +1,11 @@
+{
+  "description": "Dev Flow lifecycle adapter for Kimi Code CLI (mirrors .kimi-plugin/plugin.json hooks).",
+  "hooks": {
+    "PreToolUse": [{ "hooks": [{ "type": "command", "command": "node ./dist/kimi-hook.mjs" }] }],
+    "UserPromptSubmit": [{ "hooks": [{ "type": "command", "command": "node ./dist/kimi-hook.mjs" }] }],
+    "PostToolUse": [{ "hooks": [{ "type": "command", "command": "node ./dist/kimi-hook.mjs" }] }],
+    "Stop": [{ "hooks": [{ "type": "command", "command": "node ./dist/kimi-hook.mjs" }] }],
+    "PermissionRequest": [{ "hooks": [{ "type": "command", "command": "node ./dist/kimi-hook.mjs" }] }],
+    "PermissionResult": [{ "hooks": [{ "type": "command", "command": "node ./dist/kimi-hook.mjs" }] }]
+  }
+}

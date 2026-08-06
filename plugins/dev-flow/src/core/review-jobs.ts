@@ -4,6 +4,7 @@ import path from "node:path";
 import { toPublicReviewJob, type ReviewAgentAttestation, type ReviewBasis, type ReviewBatch, type ReviewFindingEvent, type ReviewJob, type ReviewLedger, type ReviewSamplingAttempt, type PublicReviewJob } from "../policy/review.js";
 import type { ReviewAssurance, ReviewFinding, ReviewFindingInput, ReviewFindingResolutionInput } from "../policy/types.js";
 import { pathWithinFileScope } from "../policy/rollback.js";
+import type { HostId } from "./host-id.js";
 import {
   assuranceForReview2a,
   assuranceForReviewBatch,
@@ -1115,7 +1116,7 @@ export function assertReviewRiskAcceptanceEvidence(
   interaction: Pick<UserInteraction, "presentedAt">,
   promptEventId: string | undefined,
   userReply: string,
-  host: "claude" | "codex",
+  host: HostId,
 ): void {
   if (!event) {
     throw new DevFlowError("INTERACTION_PROVENANCE_UNAVAILABLE", "no matching user prompt event was captured", {
@@ -1160,7 +1161,7 @@ export async function resolveReviewRiskAcceptanceAnswer(
   expectedRevision: number,
   interactionId: string,
   userReply: string,
-  host: "claude" | "codex",
+  host: HostId,
 ): Promise<ResolvedReviewRiskAcceptance> {
   let result: Omit<ResolvedReviewRiskAcceptance, "state"> | undefined;
   const state = await mutatePrepared(root, id, expectedRevision, "review-risk-acceptance-resolved", async (current, nextStateRevision) => {

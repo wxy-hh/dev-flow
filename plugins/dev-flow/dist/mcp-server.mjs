@@ -1,4 +1,4 @@
-/* dev-flow 4.0.0; built from source, deterministic build */
+/* dev-flow 4.1.0; built from source, deterministic build */
 
 // plugins/dev-flow/src/mcp/server.ts
 import readline from "node:readline";
@@ -785,6 +785,11 @@ function deriveRiskRequirements(riskLabels) {
     verification2.add(enhancement.verification);
   }
   return { checks: [...checks].sort(), verification: [...verification2].sort() };
+}
+
+// plugins/dev-flow/src/core/host-id.ts
+function isHostId(value) {
+  return value === "claude" || value === "codex" || value === "kimi";
 }
 
 // plugins/dev-flow/src/core/fingerprint.ts
@@ -1927,7 +1932,7 @@ function evidenceSourcesForReviewBatch(batch) {
   return sources;
 }
 function parseHostAttestation(value) {
-  if (!isRecord3(value) || Object.keys(value).some((key) => !["host", "agentId", "issuedAt", "raw"].includes(key)) || value.host !== "claude" && value.host !== "codex" || typeof value.agentId !== "string" || !value.agentId.trim() || typeof value.issuedAt !== "string" || !value.issuedAt.trim() || Number.isNaN(Date.parse(value.issuedAt)) || typeof value.raw !== "string" || !value.raw.trim()) {
+  if (!isRecord3(value) || Object.keys(value).some((key) => !["host", "agentId", "issuedAt", "raw"].includes(key)) || !isHostId(value.host) || typeof value.agentId !== "string" || !value.agentId.trim() || typeof value.issuedAt !== "string" || !value.issuedAt.trim() || Number.isNaN(Date.parse(value.issuedAt)) || typeof value.raw !== "string" || !value.raw.trim()) {
     protocolInvalid("host attestation has an invalid shape");
   }
   return {
@@ -2070,7 +2075,7 @@ function validSamplingAttempts(value, status, submission) {
   return attempts.every((attempt) => attempt.status === "failed" || attempt.status === "submitted") && attempts.filter((attempt) => attempt.status === "submitted").length === 1 && attempts.some((attempt) => attempt.status === "submitted" && attempt.requestSha256 === submission.samplingProvenance.requestSha256 && attempt.issuedAt === submission.samplingProvenance.issuedAt && attempt.completedAt === submission.samplingProvenance.completedAt && attempt.payloadSha256 === submission.payloadSha256);
 }
 function validAttestation(value) {
-  return isRecord4(value) && (value.host === "claude" || value.host === "codex") && typeof value.agentId === "string" && value.agentId.trim().length > 0 && typeof value.issuedAt === "string" && !Number.isNaN(Date.parse(value.issuedAt)) && typeof value.raw === "string" && value.raw.trim().length > 0 && validHash(value.rawSha256) && typeof value.acceptedAt === "string" && digest2(value.raw) === value.rawSha256;
+  return isRecord4(value) && isHostId(value.host) && typeof value.agentId === "string" && value.agentId.trim().length > 0 && typeof value.issuedAt === "string" && !Number.isNaN(Date.parse(value.issuedAt)) && typeof value.raw === "string" && value.raw.trim().length > 0 && validHash(value.rawSha256) && typeof value.acceptedAt === "string" && digest2(value.raw) === value.rawSha256;
 }
 function validateBatch(value) {
   if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
@@ -2793,7 +2798,7 @@ function validateFeatureState(value) {
   if (typeof state.featureId !== "string" || !state.featureId || !Number.isInteger(state.revision) || (state.revision ?? -1) < 0 || !lifecycles.has(state.lifecycle) || !state.scope || !Array.isArray(state.scope.inScope) || !Array.isArray(state.scope.outOfScope) || !state.steps || !state.humanGates || !state.artifacts || !state.verification || !Array.isArray(state.verification.attempts) || state.interactions !== void 0 && (typeof state.interactions !== "object" || state.interactions === null || Array.isArray(state.interactions)) || !state.featureCheck || !Array.isArray(state.blockingFindings) || typeof state.logicComplete !== "boolean" || !state.lastUpdatedBy || !state.workspace || !state.evidenceFreshness || !Array.isArray(state.qualityExceptions)) {
     throw new DevFlowError("INVALID_STATE_SCHEMA", "state is not a valid v3 feature state");
   }
-  if (state.lastUpdatedBy.host !== "claude" && state.lastUpdatedBy.host !== "codex") throw new DevFlowError("INVALID_STATE_SCHEMA", "lastUpdatedBy host is invalid");
+  if (!isHostId(state.lastUpdatedBy.host)) throw new DevFlowError("INVALID_STATE_SCHEMA", "lastUpdatedBy host is invalid");
   const pendingInteractions = Object.values(state.interactions ?? {}).filter((item) => item.status === "pending");
   if (pendingInteractions.length > 1) throw new DevFlowError("MULTIPLE_PENDING_DECISIONS", "v3 state contains more than one pending decision", { userMessage: "\u5F53\u524D\u72B6\u6001\u540C\u65F6\u5B58\u5728\u591A\u4E2A\u5F85\u51B3\u95EE\u9898\uFF0C\u6D41\u7A0B\u5DF2\u5B89\u5168\u505C\u6B62\u3002", cause: "\u51B3\u7B56\u8D26\u672C\u4E0D\u662F\u5355\u4E00\u5F85\u51B3\u95EE\u9898\u3002", impact: "\u7CFB\u7EDF\u4E0D\u4F1A\u4EFB\u9009\u4E00\u4E2A\u95EE\u9898\u6D88\u8D39\u3002", recoveryKind: "repair", recoveryInstruction: "\u8FD0\u884C doctor \u68C0\u67E5\u51B3\u7B56\u8D26\u672C\uFF0C\u7136\u540E\u901A\u8FC7\u516C\u5F00\u56DE\u7B54\u63A5\u53E3\u6062\u590D\u3002", retryOriginal: false });
   if (state.pendingDecision !== void 0) {
@@ -3184,7 +3189,7 @@ ${objectiveForSwitch(input)}`).digest("hex"),
         decisionLedger: [],
         blockingFindings: [],
         logicComplete: false,
-        lastUpdatedBy: { host: input.host, pluginVersion: "4.0.0" }
+        lastUpdatedBy: { host: input.host, pluginVersion: "4.1.0" }
       };
       const ownershipPath = Object.keys(capturedWorkspace.startedDirty).find((file) => capturedWorkspace.ownership[file] === void 0);
       if (ownershipPath) {
@@ -3296,7 +3301,7 @@ async function recordDecision(root2, id, expectedRevision, question, factRefs = 
     const ledger = draft.decisionLedger ?? [];
     if (ledger.some((candidate) => candidate.id === decision.id)) return;
     draft.decisionLedger = [...ledger, decision];
-    draft.lastUpdatedBy = { host, pluginVersion: "4.0.0" };
+    draft.lastUpdatedBy = { host, pluginVersion: "4.1.0" };
   }, { decisionId: decision.id });
 }
 async function resolveRecordedDecision(root2, id, expectedRevision, decisionId, evidence, conclusion, host) {
@@ -3307,7 +3312,7 @@ async function resolveRecordedDecision(root2, id, expectedRevision, decisionId, 
     const next = [...ledger];
     next[index] = resolveDecision(next[index], evidence, conclusion);
     draft.decisionLedger = next;
-    draft.lastUpdatedBy = { host, pluginVersion: "4.0.0" };
+    draft.lastUpdatedBy = { host, pluginVersion: "4.1.0" };
   }, { decisionId });
 }
 async function mutate(root2, id, expectedRevision, operation, mutator, eventData = {}) {
@@ -3373,7 +3378,7 @@ async function pauseFeature(root2, id, expectedRevision, reason, host) {
     if (state.lifecycle !== "active") throw new DevFlowError("INVALID_LIFECYCLE", "\u53EA\u6709\u8FDB\u884C\u4E2D\u7684 feature \u53EF\u4EE5\u6682\u505C\u3002", { userMessage: "\u5F53\u524D feature \u4E0D\u80FD\u6682\u505C\u3002", recoveryKind: "refresh", recoveryInstruction: "\u5237\u65B0\u72B6\u6001\u540E\u4ECE\u5F53\u524D\u9636\u6BB5\u7EE7\u7EED\u3002", retryOriginal: false });
     state.lifecycle = "paused";
     state.resumeSummary = `\u6682\u505C\u539F\u56E0\uFF1A${reason.trim()}\u3002\u6062\u590D\u540E\u5148\u5BF9\u8D26\u5DE5\u4F5C\u533A\uFF0C\u518D\u4ECE${state.currentStage ? `\u201C${state.currentStage}\u201D` : "\u5F53\u524D\u9636\u6BB5"}\u7EE7\u7EED\u3002`;
-    state.lastUpdatedBy = { host, pluginVersion: "4.0.0" };
+    state.lastUpdatedBy = { host, pluginVersion: "4.1.0" };
   }, { reason: reason.trim() });
 }
 async function reconcileWorkspace(root2, id, expectedRevision, host) {
@@ -3385,7 +3390,7 @@ async function reconcileWorkspace(root2, id, expectedRevision, host) {
     if (contentChanged) {
       markEvidenceStale(draft);
     }
-    draft.lastUpdatedBy = { host, pluginVersion: "4.0.0" };
+    draft.lastUpdatedBy = { host, pluginVersion: "4.1.0" };
   }, { observedHead: workspace.observedHead, commitCount: workspace.observedCommits.length, manualAdoptionCount: Object.values(workspace.ownershipSource).filter((source) => source === "manual-commit").length });
 }
 function markEvidenceStale(draft) {
@@ -3423,7 +3428,7 @@ async function resumeFeature(root2, id, host) {
       markEvidenceStale(state);
     }
     state.resumeSummary = `\u5DF2\u6062\u590D${state.currentStage ? `\uFF0C\u4ECE\u201C${state.currentStage}\u201D\u7EE7\u7EED` : "\u5F53\u524D\u4EFB\u52A1"}\u3002${contentChanged ? "\u5DE5\u4F5C\u533A\u5185\u5BB9\u6709\u53D8\u5316\uFF0C\u76F8\u5173\u8BC1\u636E\u5DF2\u6807\u8BB0\u4E3A\u5F85\u66F4\u65B0\u3002" : ""}`;
-    state.lastUpdatedBy = { host, pluginVersion: "4.0.0" };
+    state.lastUpdatedBy = { host, pluginVersion: "4.1.0" };
   }, { observedHead: workspace.observedHead, contentChanged });
 }
 async function abandonFeature(root2, id, expectedRevision, reason, userEvidence) {
@@ -3439,7 +3444,7 @@ function isRecoveryPhase(value) {
 }
 function validateRecoveryTransaction(value) {
   const transaction = value;
-  if (transaction?.schemaVersion !== 1 || typeof transaction.transactionId !== "string" || !transaction.transactionId || !isRecoveryPhase(transaction.phase) || typeof transaction.featureId !== "string" || !transaction.featureId || typeof transaction.stateSha256 !== "string" || !transaction.stateSha256 || typeof transaction.recoveredTo !== "string" || !path8.isAbsolute(transaction.recoveredTo) || typeof transaction.reason !== "string" || typeof transaction.userEvidence !== "string" || transaction.host !== "claude" && transaction.host !== "codex" || typeof transaction.at !== "string" || transaction.activeSha256 !== void 0 && typeof transaction.activeSha256 !== "string") {
+  if (transaction?.schemaVersion !== 1 || typeof transaction.transactionId !== "string" || !transaction.transactionId || !isRecoveryPhase(transaction.phase) || typeof transaction.featureId !== "string" || !transaction.featureId || typeof transaction.stateSha256 !== "string" || !transaction.stateSha256 || typeof transaction.recoveredTo !== "string" || !path8.isAbsolute(transaction.recoveredTo) || typeof transaction.reason !== "string" || typeof transaction.userEvidence !== "string" || !isHostId(transaction.host) || typeof transaction.at !== "string" || transaction.activeSha256 !== void 0 && typeof transaction.activeSha256 !== "string") {
     throw new DevFlowError("RECOVERY_TRANSACTION_UNREADABLE", "recovery journal is invalid", {
       recoveryHint: "Run dev_flow_doctor; do not start a new feature or hand-edit .dev-flow"
     });
@@ -4882,7 +4887,7 @@ async function createDeliverySnapshot(root2, featureId, state, config) {
 function promptFrom(record) {
   if (record.type !== "host-event" || !record.data || typeof record.data !== "object" || Array.isArray(record.data)) return void 0;
   const data = record.data;
-  if (data.type !== "user-prompt" || typeof data.eventId !== "string" || typeof data.text !== "string" || data.host !== "claude" && data.host !== "codex") return void 0;
+  if (data.type !== "user-prompt" || typeof data.eventId !== "string" || typeof data.text !== "string" || !isHostId(data.host)) return void 0;
   const at = typeof data.at === "string" ? data.at : record.at;
   if (Number.isNaN(Date.parse(at))) return void 0;
   return { eventId: data.eventId, text: data.text, host: data.host, at };
@@ -4964,7 +4969,7 @@ async function requestGrillDecision(root2, id, expectedRevision, input) {
     if (index >= 0) ledger[index] = { ...ledger[index], question: input.question, status: "open", evidence: void 0, conclusion: void 0, source: "grill" };
     else ledger.push({ id: input.questionId, question: input.question, status: "open", source: "grill" });
     draft.decisionLedger = ledger;
-    draft.lastUpdatedBy = { host: input.host, pluginVersion: "4.0.0" };
+    draft.lastUpdatedBy = { host: input.host, pluginVersion: "4.1.0" };
   }, () => ({ questionId: input.questionId, mode: "decision" }));
   if (!interaction) throw new DevFlowError("INTERACTION_NOT_CREATED", target);
   return { state, interaction: toPublicInteraction(interaction), interactionId: interaction.id };
@@ -4995,7 +5000,7 @@ async function resolveGrillDecision(root2, id, expectedRevision, interactionId, 
       next[index] = resolveDecision(next[index], input.source === "elicitation" ? input.comment ?? "\u7528\u6237\u9009\u62E9" : input.userReply, response.action);
       draft.decisionLedger = next;
     }
-    draft.lastUpdatedBy = { host, pluginVersion: "4.0.0" };
+    draft.lastUpdatedBy = { host, pluginVersion: "4.1.0" };
   }, { interactionId, mode: "decision" });
   if (!response) throw new DevFlowError("INTERACTION_NOT_RESOLVED", "\u5F53\u524D\u95EE\u9898\u6CA1\u6709\u5B8C\u6210\u56DE\u7B54\u3002", { interactionId });
   return { state, interaction: toPublicInteraction(getInteraction(state, interactionId)), response, interactionId };
@@ -5255,7 +5260,7 @@ async function runVerification(root2, id, expectedRevision, host, commandIds, ma
       const signature = `${exitCode}:${createHash12("sha256").update(fullOutput).digest("hex").slice(0, 16)}`;
       state.repair = recordRepairAttempt(state.repair ?? startRepairLoop(), signature, output.slice(-3));
     }
-    state.lastUpdatedBy = { host, pluginVersion: "4.0.0" };
+    state.lastUpdatedBy = { host, pluginVersion: "4.1.0" };
   });
 }
 async function readVerificationFreshness(root2, state) {
@@ -5363,7 +5368,7 @@ async function resolveQualityExceptionAnswer(root2, featureId, expectedRevision,
         state.obligations = satisfyObligations(state.obligations, [kind]);
       }
     }
-    state.lastUpdatedBy = { host, pluginVersion: "4.0.0" };
+    state.lastUpdatedBy = { host, pluginVersion: "4.1.0" };
   }, { interactionId });
 }
 
@@ -6774,7 +6779,7 @@ async function resolveApprovalResponse(root2, id, expectedRevision, interactionI
     } else {
       throw new DevFlowError("INTERACTION_ACTION_INVALID", response.action);
     }
-    state.lastUpdatedBy = { host, pluginVersion: "4.0.0" };
+    state.lastUpdatedBy = { host, pluginVersion: "4.1.0" };
   }, () => ({ approval, interactionId, response }));
 }
 async function resolveApprovalElicitation(root2, id, expectedRevision, interactionId, action, comment, host) {
@@ -8269,7 +8274,7 @@ async function resolveRollbackGateResponse(root2, featureId, expectedRevision, i
     } else {
       throw new DevFlowError("INTERACTION_ACTION_INVALID", response.action);
     }
-    state.lastUpdatedBy = { host, pluginVersion: "4.0.0" };
+    state.lastUpdatedBy = { host, pluginVersion: "4.1.0" };
   }, () => ({ gate: "rollback-confirmation", interactionId, response }));
 }
 async function resolveRollbackGateElicitation(root2, featureId, expectedRevision, interactionId, action, comment, host) {
@@ -9289,17 +9294,20 @@ async function collectDoctorReport(root2, pluginRoot2, version, tools2) {
   const paths = {
     claudeManifest: path15.join(pluginRoot2, ".claude-plugin", "plugin.json"),
     codexManifest: path15.join(pluginRoot2, ".codex-plugin", "plugin.json"),
+    kimiManifest: path15.join(pluginRoot2, ".kimi-plugin", "plugin.json"),
     mcp: path15.join(pluginRoot2, ".mcp.json"),
     claudeHooks: path15.join(pluginRoot2, "hosts", "claude", "hooks.json"),
     codexHooks: path15.join(pluginRoot2, "hosts", "codex", "hooks.json"),
+    kimiHooks: path15.join(pluginRoot2, "hosts", "kimi", "hooks.json"),
     mcpBundle: path15.join(pluginRoot2, "dist", "mcp-server.mjs"),
     claudeBundle: path15.join(pluginRoot2, "dist", "claude-hook.mjs"),
-    codexBundle: path15.join(pluginRoot2, "dist", "codex-hook.mjs")
+    codexBundle: path15.join(pluginRoot2, "dist", "codex-hook.mjs"),
+    kimiBundle: path15.join(pluginRoot2, "dist", "kimi-hook.mjs")
   };
   const files = await Promise.all(Object.entries(paths).map(async ([name, file]) => [name, await readable(file)]));
   const missing = files.filter(([, exists]) => !exists).map(([name]) => name);
   add2(missing.length ? "PLUGIN_FILES_MISSING" : "PLUGIN_FILES_PRESENT", missing.length ? "error" : "ok", missing.length ? `missing plugin files: ${missing.join(", ")}` : "manifests, hooks, MCP configuration and bundles are present");
-  const jsonFiles = [paths.claudeManifest, paths.codexManifest, paths.mcp, paths.claudeHooks, paths.codexHooks];
+  const jsonFiles = [paths.claudeManifest, paths.codexManifest, paths.kimiManifest, paths.mcp, paths.claudeHooks, paths.codexHooks, paths.kimiHooks];
   const invalidJson = (await Promise.all(jsonFiles.map(async (file) => !await validJson(file)))).some(Boolean);
   add2(invalidJson ? "PLUGIN_WIRING_INVALID" : "PLUGIN_WIRING_VALID", invalidJson ? "error" : "ok", invalidJson ? "a manifest, MCP file, or hook file is not valid JSON" : "plugin manifest, MCP and hook wiring parse successfully");
   const legacyFeatures = [];
@@ -10818,7 +10826,7 @@ async function call(name, a, connection2) {
     case "dev_flow_enable_windows_notifications":
       return enableWindowsNotifications({ nodeExecutable: process.execPath });
     case "dev_flow_doctor":
-      return collectDoctorReport(root, pluginRoot, "4.0.0", tools);
+      return collectDoctorReport(root, pluginRoot, "4.1.0", tools);
     case "dev_flow_recover_corrupt_feature":
       return recoverCorruptFeature(root, {
         featureId: a.featureId,
@@ -10842,7 +10850,7 @@ async function dispatchRequest(message) {
       connection.configure(message.params?.capabilities);
       protocolResult(message.id, {
         protocolVersion: message.params?.protocolVersion || "2024-11-05",
-        serverInfo: { name: "dev-flow", version: "4.0.0" },
+        serverInfo: { name: "dev-flow", version: "4.1.0" },
         capabilities: { tools: {} },
         instructions: "\u5148\u5B8C\u6210\u4E8B\u5B9E\u8C03\u67E5\u548C\u8DEF\u7EBF\u5206\u7C7B\u3002\u65E5\u5E38\u8BFB\u53D6 dev_flow_status\uFF1B\u5B83\u4F1A\u663E\u793A\u4E2D\u6587\u9636\u6BB5\u3001\u5F53\u524D\u4E0B\u4E00\u6B65\u548C\u552F\u4E00\u5F85\u51B3\u95EE\u9898\u3002\u6240\u6709\u7528\u6237\u51B3\u5B9A\u7EDF\u4E00\u4F7F\u7528 dev_flow_answer\uFF0C\u7CFB\u7EDF\u4F1A\u81EA\u52A8\u6309\u95EE\u9898\u7C7B\u578B\u5904\u7406\u3002\u6CA1\u6709\u771F\u5B9E\u51B3\u7B56\u7F3A\u53E3\u65F6\u6D41\u7A0B\u4F1A\u81EA\u52A8\u63A8\u8FDB\u3002\u5148\u8C03\u7528 dev_flow_init_project\uFF0C\u518D\u5F00\u59CB feature\u3002"
       });

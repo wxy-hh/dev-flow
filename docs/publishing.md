@@ -31,9 +31,10 @@ codex plugin add dev-flow@dev-flow-marketplace
 ## 真机与 smoke
 
 - 本地可选：`npm run test:host-e2e`（需本机 Claude Code 与 Codex CLI）。
+- Kimi Code（实验性）：真机验证为隔离 `$KIMI_CODE_HOME` 下的 `/plugins install` + `kimi -p` 路线回放与 `PermissionRequest`/`PermissionResult` payload 实录（人工验收清单见 `docs/plans/2026-08-06-kimi-code-宿主支持实施计划.md` 阶段 5）。
 - 日常 `npm test` **跳过**该层，仍跑完整路线与适配器测试。  
 - CI 工作流 `release-smoke.yml`（手动触发）：隔离 HOME、从临时 Git marketplace 用两宿主原生命令安装、升级，并完成 Claude→Codex / Codex→Claude 接力。  
-- 当前 release-smoke 钉住的最低验证版本见根 [README.md](../README.md)（Claude **2.1.215**、Codex **0.144.4**、Node **≥ 20**）。
+- 当前 release-smoke 钉住的最低验证版本见根 [README.md](../README.md)（Claude **2.1.215**、Codex **0.144.4**、Kimi Code **0.33.0**（实验性）、Node **≥ 20**）。
 
 ## 建议顺序
 

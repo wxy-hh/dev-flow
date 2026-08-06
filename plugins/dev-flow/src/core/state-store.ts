@@ -10,6 +10,7 @@ import type { TraceabilityPointer } from "../policy/traceability.js";
 import type { ReviewPointer } from "../policy/review.js";
 import type { ImplementationUnitState } from "../policy/rollback.js";
 import { DevFlowError } from "./errors.js";
+import { isHostId, type HostId } from "./host-id.js";
 import type { DeliveryBaseline, DeliverySnapshot } from "./delivery-snapshot.js";
 import { fingerprintProtectedRoots } from "./fingerprint.js";
 import { validateProjectConfig, type ProjectConfig } from "./project-config.js";
@@ -57,7 +58,7 @@ export interface FeatureState {
   deliveryBaseline?: DeliveryBaseline; deliverySnapshot?: DeliverySnapshot;
   abandonment?: { reason: string; userEvidence: string; at: string };
   blockingFindings: Array<{ blocking: boolean; message: string }>;
-  logicComplete: boolean; lastUpdatedBy: { host: "claude" | "codex"; pluginVersion: string };
+  logicComplete: boolean; lastUpdatedBy: { host: HostId; pluginVersion: string };
   pendingDecision?: PendingDecision;
   workspace: WorkspaceLineage;
   evidenceFreshness: EvidenceFreshness;
@@ -104,7 +105,7 @@ export function validateFeatureState(value: unknown): asserts value is FeatureSt
   if (typeof state.featureId !== "string" || !state.featureId || !Number.isInteger(state.revision) || (state.revision ?? -1) < 0 || !lifecycles.has(state.lifecycle as Lifecycle) || !state.scope || !Array.isArray(state.scope.inScope) || !Array.isArray(state.scope.outOfScope) || !state.steps || !state.humanGates || !state.artifacts || !state.verification || !Array.isArray(state.verification.attempts) || (state.interactions !== undefined && (typeof state.interactions !== "object" || state.interactions === null || Array.isArray(state.interactions))) || !state.featureCheck || !Array.isArray(state.blockingFindings) || typeof state.logicComplete !== "boolean" || !state.lastUpdatedBy || !state.workspace || !state.evidenceFreshness || !Array.isArray(state.qualityExceptions)) {
     throw new DevFlowError("INVALID_STATE_SCHEMA", "state is not a valid v3 feature state");
   }
-  if (state.lastUpdatedBy.host !== "claude" && state.lastUpdatedBy.host !== "codex") throw new DevFlowError("INVALID_STATE_SCHEMA", "lastUpdatedBy host is invalid");
+  if (!isHostId(state.lastUpdatedBy.host)) throw new DevFlowError("INVALID_STATE_SCHEMA", "lastUpdatedBy host is invalid");
   const pendingInteractions = Object.values(state.interactions ?? {}).filter((item) => (item as { status?: unknown }).status === "pending");
   if (pendingInteractions.length > 1) throw new DevFlowError("MULTIPLE_PENDING_DECISIONS", "v3 state contains more than one pending decision", { userMessage: "当前状态同时存在多个待决问题，流程已安全停止。", cause: "决策账本不是单一待决问题。", impact: "系统不会任选一个问题消费。", recoveryKind: "repair", recoveryInstruction: "运行 doctor 检查决策账本，然后通过公开回答接口恢复。", retryOriginal: false });
   if (state.pendingDecision !== undefined) {
@@ -352,7 +353,7 @@ export async function stateFileSha256(root: string, featureId: string): Promise<
   const contents = await readFile(statePath(root, featureId));
   return createHash("sha256").update(contents).digest("hex");
 }
-export interface HostEvent { eventId: string; type: "user-prompt" | "turn-boundary" | "tool"; host: "claude" | "codex"; text?: string; at?: string; }
+export interface HostEvent { eventId: string; type: "user-prompt" | "turn-boundary" | "tool"; host: HostId; text?: string; at?: string; }
 export async function recordHostEvent(root: string, hostEvent: HostEvent): Promise<void> {
   const active = await readActive(root); if (!active) return;
   const release = await lock(root, active.featureId, "host-event");
@@ -368,16 +369,19 @@ export async function recordHostEvent(root: string, hostEvent: HostEvent): Promi
   finally { await release(); }
 }
 
-export type HostAuthorizationEventType = "host-authorization-pending" | "host-authorization-granted";
+export type HostAuthorizationEventType = "host-authorization-pending" | "host-authorization-granted" | "host-authorization-result";
 export type HostAuthorizationRiskClass = "task-reusable" | "always-confirm";
 export interface HostAuthorizationRecord {
-  host: "claude" | "codex";
+  host: HostId;
   featureId: string;
   riskClass: HostAuthorizationRiskClass;
   commandFingerprint: string;
   sourceToolEvent: string;
   requestedAt?: string;
   grantedAt?: string;
+  /** Kimi PermissionResult outcome; observation-only, never read by grant logic. */
+  decision?: "allowed" | "denied";
+  decidedAt?: string;
 }
 
 /** Persist host authorization as an append-only Core event, never in state.json. */
@@ -429,7 +433,7 @@ export interface StartFeatureOptions {
 
 export async function startFeature(
   root: string,
-  input: ClassificationInput & { featureId?: string; activation?: "active" | "paused"; scope?: { inScope: string[]; outOfScope: string[] }; host: "claude" | "codex" },
+  input: ClassificationInput & { featureId?: string; activation?: "active" | "paused"; scope?: { inScope: string[]; outOfScope: string[] }; host: HostId },
   options: StartFeatureOptions = {},
 ): Promise<FeatureState> {
   await readProjectConfig(root);
@@ -616,7 +620,7 @@ export async function recordDecision(
   expectedRevision: number,
   question: string,
   factRefs: string[] = [],
-  host: "claude" | "codex",
+  host: HostId,
 ): Promise<FeatureState> {
   const decision = createDecision(question, factRefs);
   return mutate(root, id, expectedRevision, "decision-opened", (draft) => {
@@ -634,7 +638,7 @@ export async function resolveRecordedDecision(
   decisionId: string,
   evidence: string,
   conclusion: string,
-  host: "claude" | "codex",
+  host: HostId,
 ): Promise<FeatureState> {
   return mutate(root, id, expectedRevision, "decision-resolved", (draft) => {
     const ledger = draft.decisionLedger ?? [];
@@ -760,7 +764,7 @@ export async function pauseFeature(
   id: string,
   expectedRevision: number,
   reason: string,
-  host: "claude" | "codex",
+  host: HostId,
 ): Promise<FeatureState> {
   if (!reason.trim()) throw new DevFlowError("PAUSE_REASON_REQUIRED", "暂停需要说明原因。", { userMessage: "请说明为什么暂停当前任务。", recoveryKind: "ask-user", recoveryInstruction: "补充一句暂停原因后重试。", retryOriginal: true });
   return mutate(root, id, expectedRevision, "feature-paused", (state) => {
@@ -775,7 +779,7 @@ export async function reconcileWorkspace(
   root: string,
   id: string,
   expectedRevision: number,
-  host: "claude" | "codex",
+  host: HostId,
 ): Promise<FeatureState> {
   const state = await readState(root, id);
   const config = await readProjectConfig(root);
@@ -800,7 +804,7 @@ function markEvidenceStale(draft: FeatureState): void {
   draft.qualityExceptions = draft.qualityExceptions.map((exception) => ({ ...exception, status: "stale" as const }));
 }
 
-export async function resumeFeature(root: string, id: string, host: "claude" | "codex"): Promise<FeatureState> {
+export async function resumeFeature(root: string, id: string, host: HostId): Promise<FeatureState> {
   const current = await readState(root, id);
   if (current.lifecycle !== "paused") throw new DevFlowError("INVALID_LIFECYCLE", "只有已暂停的 feature 可以恢复。", { userMessage: "当前 feature 不在暂停状态。", recoveryKind: "refresh", recoveryInstruction: "刷新状态并继续当前 active feature。", retryOriginal: false });
   const active = await readActive(root);
@@ -847,7 +851,7 @@ interface RecoveryTransaction {
   recoveredTo: string;
   reason: string;
   userEvidence: string;
-  host: "claude" | "codex";
+  host: HostId;
   at: string;
   activeSha256?: string;
   completedAt?: string;
@@ -861,7 +865,7 @@ function validateRecoveryTransaction(value: unknown): asserts value is RecoveryT
     || !isRecoveryPhase(transaction.phase) || typeof transaction.featureId !== "string" || !transaction.featureId
     || typeof transaction.stateSha256 !== "string" || !transaction.stateSha256 || typeof transaction.recoveredTo !== "string"
     || !path.isAbsolute(transaction.recoveredTo) || typeof transaction.reason !== "string" || typeof transaction.userEvidence !== "string"
-    || (transaction.host !== "claude" && transaction.host !== "codex") || typeof transaction.at !== "string"
+    || !isHostId(transaction.host) || typeof transaction.at !== "string"
     || (transaction.activeSha256 !== undefined && typeof transaction.activeSha256 !== "string")) {
     throw new DevFlowError("RECOVERY_TRANSACTION_UNREADABLE", "recovery journal is invalid", {
       recoveryHint: "Run dev_flow_doctor; do not start a new feature or hand-edit .dev-flow",
@@ -1416,7 +1420,7 @@ export async function appendFeatureEvent(root: string, id: string, revision: num
 }
 
 export async function recoverCorruptFeature(root: string, input: {
-  featureId: string; stateSha256: string; activeSha256?: string; action: "abandon"; reason: string; userEvidence: string; host: "claude" | "codex";
+  featureId: string; stateSha256: string; activeSha256?: string; action: "abandon"; reason: string; userEvidence: string; host: HostId;
 }): Promise<{ recoveredTo: string; featureId: string; stateSha256: string }> {
   if (input.action !== "abandon") throw new DevFlowError("INVALID_RECOVERY_ACTION", "only abandon is supported in 1.3");
   if (!input.reason || !input.userEvidence) throw new DevFlowError("RECOVERY_EVIDENCE_REQUIRED", "reason and userEvidence are required");

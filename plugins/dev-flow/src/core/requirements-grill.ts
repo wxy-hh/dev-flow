@@ -4,6 +4,7 @@ import { mutate, readFeatureEvents, readState, type FeatureState } from "./state
 import { resolveDecision } from "./decision-ledger.js";
 import { decisionBasisHash } from "../policy/obligations.js";
 import { resolvePromptEvent } from "./interaction-provenance.js";
+import type { HostId } from "./host-id.js";
 import {
   createInteraction,
   findInteractionForTarget,
@@ -20,7 +21,7 @@ export interface GrillDecisionInput {
   questionId: string;
   question: string;
   options: InteractionOption[];
-  host: "claude" | "codex";
+  host: HostId;
 }
 
 export interface GrillDecisionResult {
@@ -74,7 +75,7 @@ async function resolveGrillDecision(
   id: string,
   expectedRevision: number,
   interactionId: string,
-  host: "claude" | "codex",
+  host: HostId,
   input: { source: "elicitation"; action: string; comment?: string } | { source: "text"; userReply: string },
 ): Promise<GrillDecisionResult> {
   const initial = await readState(root, id);
@@ -110,11 +111,11 @@ async function resolveGrillDecision(
   return { state, interaction: toPublicInteraction(getInteraction(state, interactionId)), response, interactionId };
 }
 
-export async function resolveGrillElicitation(root: string, id: string, expectedRevision: number, interactionId: string, action: string, comment: string | undefined, host: "claude" | "codex"): Promise<GrillDecisionResult> {
+export async function resolveGrillElicitation(root: string, id: string, expectedRevision: number, interactionId: string, action: string, comment: string | undefined, host: HostId): Promise<GrillDecisionResult> {
   return resolveGrillDecision(root, id, expectedRevision, interactionId, host, { source: "elicitation", action, comment });
 }
 
-export async function resolveGrillAnswer(root: string, id: string, expectedRevision: number, interactionId: string, userReply: string, host: "claude" | "codex"): Promise<GrillDecisionResult> {
+export async function resolveGrillAnswer(root: string, id: string, expectedRevision: number, interactionId: string, userReply: string, host: HostId): Promise<GrillDecisionResult> {
   return resolveGrillDecision(root, id, expectedRevision, interactionId, host, { source: "text", userReply });
 }
 

@@ -12,6 +12,7 @@ import type {
   RiskLabel,
   RouteId,
 } from "./types.js";
+import { isHostId, type HostId } from "../core/host-id.js";
 
 export interface ReviewSummary {
   batches: number;
@@ -134,7 +135,7 @@ export interface ReviewSamplingProvenance {
 
 /** Persisted host subagent proof. Callers cannot write assuranceLevel or verified. */
 export interface ReviewAgentAttestation {
-  host: "claude" | "codex";
+  host: HostId;
   agentId: string;
   issuedAt: string;
   raw: string;
@@ -268,7 +269,7 @@ export function evidenceSourcesForReviewBatch(batch: Pick<ReviewBatch, "jobs"> |
 export function parseHostAttestation(value: unknown): Omit<ReviewAgentAttestation, "rawSha256" | "acceptedAt"> {
   if (!isRecord(value)
     || Object.keys(value).some((key) => !["host", "agentId", "issuedAt", "raw"].includes(key))
-    || (value.host !== "claude" && value.host !== "codex")
+    || !isHostId(value.host)
     || typeof value.agentId !== "string" || !value.agentId.trim()
     || typeof value.issuedAt !== "string" || !value.issuedAt.trim()
     || Number.isNaN(Date.parse(value.issuedAt))

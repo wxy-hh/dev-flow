@@ -2,6 +2,7 @@ import readline from "node:readline";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
 import { recordArtifact, recordArtifactWithTrace, scaffoldArtifact } from "../core/artifacts.js";
+import type { HostId } from "../core/host-id.js";
 import { DevFlowError, failureFrom } from "../core/errors.js";
 import { featureCheck, finalize, recordStep } from "../core/feature-check.js";
 import { presentApproval, resolveApprovalAnswer, resolveApprovalElicitation } from "../core/approval-interactions.js";
@@ -972,7 +973,7 @@ async function call(name: string, a: any, connection: McpConnection) {
       if (!selection) return { ...interactionEnvelope(presentation.state, presentation.interaction, "pending"), preview: presentation.preview };
       const state = await resolveRollbackGateElicitation(
         root, a.featureId, presentation.state.revision, presentation.interactionId,
-         selection.action, selection.comment, a.host as "claude" | "codex",
+         selection.action, selection.comment, a.host as HostId,
       );
       return {
         ...interactionEnvelope(

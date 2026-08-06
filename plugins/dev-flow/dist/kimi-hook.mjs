@@ -1696,13 +1696,6 @@ async function recordHostAuthorizationEvent(root, type, record) {
     await release();
   }
 }
-async function readHostAuthorizationEvents(root, featureId) {
-  const events = await readFeatureEvents(root, featureId);
-  return events.flatMap((event2) => {
-    if (event2.type !== "host-authorization-pending" && event2.type !== "host-authorization-granted") return [];
-    return [{ type: event2.type, data: event2.data }];
-  });
-}
 async function readFeatureEvents(root, id) {
   try {
     return (await readFile5(eventPath(root, id), "utf8")).split("\n").filter(Boolean).map((line) => JSON.parse(line));
@@ -3151,81 +3144,77 @@ async function activeFeature(root) {
   if (state.lifecycle !== "active" || state.revision !== active.revision) return void 0;
   return { featureId: active.featureId, revision: active.revision };
 }
-function sameFeatureRisk(record, featureId, assessment) {
-  return record.featureId === featureId && record.riskClass === assessment.riskClass;
-}
-function sameRequest(record, host, featureId, assessment) {
-  return record.host === host && sameFeatureRisk(record, featureId, assessment) && record.commandFingerprint === assessment.commandFingerprint;
-}
-async function evaluatePermissionRequest(root, event2, host) {
-  if (event2.hook_event_name !== "PermissionRequest") return void 0;
-  const assessment = classifyRisk({ toolName: event2.tool_name, toolInput: event2.tool_input }, root);
-  if (!assessment) return void 0;
-  const feature = await activeFeature(root);
-  if (!feature) return void 0;
-  const events = await readHostAuthorizationEvents(root, feature.featureId);
-  const granted = events.some((item) => item.type === "host-authorization-granted" && sameFeatureRisk(item.data, feature.featureId, assessment));
-  if (granted) return { kind: "allow", assessment };
-  const sourceToolEvent = eventId(event2, assessment, "permission-request");
-  await recordHostAuthorizationEvent(root, "host-authorization-pending", {
-    host,
-    featureId: feature.featureId,
-    riskClass: assessment.riskClass,
-    commandFingerprint: assessment.commandFingerprint,
-    sourceToolEvent,
-    requestedAt: (/* @__PURE__ */ new Date()).toISOString()
-  });
-  return { kind: "defer", assessment };
-}
-function postToolSucceeded(event2) {
+function extractKimiPermissionDecision(event2) {
   const value = event2;
-  if (value.error !== void 0 && value.error !== null) return false;
-  for (const response of [value.tool_response, value.tool_result]) {
-    if (!response || typeof response !== "object") continue;
-    const candidate = response;
-    if (candidate.is_error === true || candidate.isError === true || candidate.success === false || candidate.error !== void 0) return false;
+  for (const candidate of [value.decision, value.result, value.granted, value.allowed, value.permission_decision]) {
+    if (candidate === true || candidate === "allow" || candidate === "allowed" || candidate === "approve" || candidate === "approved" || candidate === "granted") return "allowed";
+    if (candidate === false || candidate === "deny" || candidate === "denied" || candidate === "reject" || candidate === "rejected") return "denied";
   }
-  return true;
+  return void 0;
 }
-async function recordPermissionPostToolUse(root, event2, host) {
-  if (event2.hook_event_name !== "PostToolUse" || !postToolSucceeded(event2)) return;
+async function recordKimiPermissionRequest(root, event2) {
+  if (event2.hook_event_name !== "PermissionRequest") return;
   const assessment = classifyRisk({ toolName: event2.tool_name, toolInput: event2.tool_input }, root);
-  if (!assessment || assessment.riskClass !== "task-reusable") return;
+  if (!assessment) return;
   const feature = await activeFeature(root);
   if (!feature) return;
-  const events = await readHostAuthorizationEvents(root, feature.featureId);
-  const pending = [...events].reverse().find((item) => item.type === "host-authorization-pending" && sameRequest(item.data, host, feature.featureId, assessment));
-  if (!pending) return;
-  const alreadyGranted = events.some((item) => item.type === "host-authorization-granted" && sameRequest(item.data, host, feature.featureId, assessment));
-  if (alreadyGranted) return;
-  await recordHostAuthorizationEvent(root, "host-authorization-granted", {
-    host,
+  await recordHostAuthorizationEvent(root, "host-authorization-pending", {
+    host: "kimi",
     featureId: feature.featureId,
     riskClass: assessment.riskClass,
     commandFingerprint: assessment.commandFingerprint,
-    sourceToolEvent: pending.data.sourceToolEvent,
-    grantedAt: (/* @__PURE__ */ new Date()).toISOString()
+    sourceToolEvent: eventId(event2, assessment, "kimi-permission-request"),
+    requestedAt: (/* @__PURE__ */ new Date()).toISOString()
+  });
+}
+async function recordKimiPermissionResult(root, event2) {
+  if (event2.hook_event_name !== "PermissionResult") return;
+  const assessment = classifyRisk({ toolName: event2.tool_name, toolInput: event2.tool_input }, root);
+  if (!assessment) return;
+  const feature = await activeFeature(root);
+  if (!feature) return;
+  await recordHostAuthorizationEvent(root, "host-authorization-result", {
+    host: "kimi",
+    featureId: feature.featureId,
+    riskClass: assessment.riskClass,
+    commandFingerprint: assessment.commandFingerprint,
+    sourceToolEvent: eventId(event2, assessment, "kimi-permission-result"),
+    decision: extractKimiPermissionDecision(event2),
+    decidedAt: (/* @__PURE__ */ new Date()).toISOString()
   });
 }
 
-// plugins/dev-flow/src/hosts/claude-adapter.ts
+// plugins/dev-flow/src/hosts/kimi-adapter.ts
 var chunks = [];
 for await (const chunk of process.stdin) chunks.push(Buffer.from(chunk));
 var event = JSON.parse(Buffer.concat(chunks).toString("utf8") || "{}");
 var cwd = event.cwd ?? process.cwd();
+function extractText(value) {
+  if (typeof value === "string") return value;
+  if (Array.isArray(value)) {
+    const parts = value.flatMap((block) => {
+      if (block && typeof block === "object" && typeof block.text === "string") {
+        return [block.text];
+      }
+      return [];
+    });
+    return parts.length ? parts.join("\n") : void 0;
+  }
+  return void 0;
+}
 if (event.hook_event_name === "PermissionRequest") {
   try {
-    const outcome = await evaluatePermissionRequest(cwd, event, "claude");
-    if (outcome?.kind === "allow") {
-      process.stdout.write(JSON.stringify({
-        hookSpecificOutput: {
-          hookEventName: "PermissionRequest",
-          decision: { behavior: "allow" }
-        }
-      }) + "\n");
-    }
+    await recordKimiPermissionRequest(cwd, event);
   } catch (error) {
-    process.stderr.write(`Dev Flow Claude permission evaluation failed: ${String(error)}
+    process.stderr.write(`Dev Flow Kimi permission observation failed: ${String(error)}
+`);
+  }
+}
+if (event.hook_event_name === "PermissionResult") {
+  try {
+    await recordKimiPermissionResult(cwd, event);
+  } catch (error) {
+    process.stderr.write(`Dev Flow Kimi permission observation failed: ${String(error)}
 `);
   }
 }
@@ -3235,7 +3224,6 @@ if (event.hook_event_name === "PreToolUse") {
     if (outcome.kind === "block") {
       process.stdout.write(JSON.stringify({
         hookSpecificOutput: {
-          hookEventName: "PreToolUse",
           permissionDecision: "deny",
           permissionDecisionReason: formatPreToolBlock(outcome.block)
         }
@@ -3243,30 +3231,22 @@ if (event.hook_event_name === "PreToolUse") {
     } else if (outcome.advisory) {
       process.stdout.write(JSON.stringify({
         hookSpecificOutput: {
-          hookEventName: "PreToolUse",
           additionalContext: outcome.advisory.message
         }
       }) + "\n");
     }
   } catch (error) {
-    process.stderr.write(`Dev Flow Claude hook evaluation failed: ${String(error)}
+    process.stderr.write(`Dev Flow Kimi hook evaluation failed: ${String(error)}
 `);
   }
 }
 if (event.hook_event_name === "UserPromptSubmit" || event.hook_event_name === "Stop" || event.hook_event_name === "PostToolUse") {
-  if (event.hook_event_name === "PostToolUse") {
-    try {
-      await recordPermissionPostToolUse(cwd, event, "claude");
-    } catch {
-    }
-  }
   try {
-    const text = event.prompt ?? event.user_prompt ?? event.tool_input?.prompt;
     await recordHostEvent(cwd, {
-      eventId: event.event_id ?? `${event.hook_event_name}-${Date.now()}`,
+      eventId: event.event_id ?? event.tool_call_id ?? `${event.hook_event_name}-${Date.now()}`,
       type: event.hook_event_name === "UserPromptSubmit" ? "user-prompt" : event.hook_event_name === "Stop" ? "turn-boundary" : "tool",
-      host: "claude",
-      text: typeof text === "string" ? text : void 0
+      host: "kimi",
+      text: extractText(event.prompt ?? event.user_prompt)
     });
   } catch {
   }

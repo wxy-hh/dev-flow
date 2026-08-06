@@ -1,4 +1,5 @@
 import type { HookEvent } from "./adapter-policy.js";
+import type { HostId } from "../core/host-id.js";
 import { classifyRisk, type RiskAssessment } from "./risk-policy.js";
 import {
   readActive,
@@ -13,11 +14,11 @@ export interface HostPermissionOutcome {
   assessment: RiskAssessment;
 }
 
-type Host = "claude" | "codex";
+type Host = HostId;
 
 function eventId(event: HookEvent, assessment: RiskAssessment, kind: string): string {
-  const value = (event as HookEvent & { event_id?: unknown; tool_use_id?: unknown; permission_request_id?: unknown });
-  const supplied = [value.event_id, value.tool_use_id, value.permission_request_id].find((candidate): candidate is string => typeof candidate === "string" && candidate.length > 0);
+  const value = (event as HookEvent & { event_id?: unknown; tool_use_id?: unknown; permission_request_id?: unknown; tool_call_id?: unknown });
+  const supplied = [value.event_id, value.tool_use_id, value.permission_request_id, value.tool_call_id].find((candidate): candidate is string => typeof candidate === "string" && candidate.length > 0);
   return supplied ?? `${kind}:${assessment.commandFingerprint}`;
 }
 
@@ -93,5 +94,53 @@ export async function recordPermissionPostToolUse(root: string, event: HookEvent
     commandFingerprint: assessment.commandFingerprint,
     sourceToolEvent: pending.data.sourceToolEvent,
     grantedAt: new Date().toISOString(),
+  });
+}
+
+function extractKimiPermissionDecision(event: HookEvent): "allowed" | "denied" | undefined {
+  const value = event as HookEvent & Record<string, unknown>;
+  for (const candidate of [value.decision, value.result, value.granted, value.allowed, value.permission_decision]) {
+    if (candidate === true || candidate === "allow" || candidate === "allowed" || candidate === "approve" || candidate === "approved" || candidate === "granted") return "allowed";
+    if (candidate === false || candidate === "deny" || candidate === "denied" || candidate === "reject" || candidate === "rejected") return "denied";
+  }
+  return undefined;
+}
+
+/**
+ * Kimi's PermissionRequest/PermissionResult are observation-only events: hooks
+ * cannot make the host's approval decision, so this path never emits an allow
+ * and only persists the native request for audit.
+ */
+export async function recordKimiPermissionRequest(root: string, event: HookEvent): Promise<void> {
+  if (event.hook_event_name !== "PermissionRequest") return;
+  const assessment = classifyRisk({ toolName: event.tool_name, toolInput: event.tool_input }, root);
+  if (!assessment) return;
+  const feature = await activeFeature(root);
+  if (!feature) return;
+  await recordHostAuthorizationEvent(root, "host-authorization-pending", {
+    host: "kimi",
+    featureId: feature.featureId,
+    riskClass: assessment.riskClass,
+    commandFingerprint: assessment.commandFingerprint,
+    sourceToolEvent: eventId(event, assessment, "kimi-permission-request"),
+    requestedAt: new Date().toISOString(),
+  });
+}
+
+/** Persist Kimi's real PermissionResult outcome as a write-only audit record. */
+export async function recordKimiPermissionResult(root: string, event: HookEvent): Promise<void> {
+  if (event.hook_event_name !== "PermissionResult") return;
+  const assessment = classifyRisk({ toolName: event.tool_name, toolInput: event.tool_input }, root);
+  if (!assessment) return;
+  const feature = await activeFeature(root);
+  if (!feature) return;
+  await recordHostAuthorizationEvent(root, "host-authorization-result", {
+    host: "kimi",
+    featureId: feature.featureId,
+    riskClass: assessment.riskClass,
+    commandFingerprint: assessment.commandFingerprint,
+    sourceToolEvent: eventId(event, assessment, "kimi-permission-result"),
+    decision: extractKimiPermissionDecision(event),
+    decidedAt: new Date().toISOString(),
   });
 }
