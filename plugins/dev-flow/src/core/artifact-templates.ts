@@ -25,7 +25,7 @@ function requirementsTemplate(context: ArtifactTemplateContext): string {
 }
 
 function implementationPlanTemplate(context: ArtifactTemplateContext): string {
-  const rollback = ["standard-m", "standard-l"].includes(context.route)
+  const rollback = ["standard-m", "standard-l", "light-l"].includes(context.route)
     ? "\n<!-- dev-flow:id=RU-001 kind=rollback -->\n### RU-001：回撤单元\n\n- tasks: [TASK-001]\n- depends_on: []\n- file_scope: []\n- covers: [REQ-001]\n- forward_verification: [unit]\n- rollback_verification: [unit]\n"
     : "";
   const test = ["standard-m", "standard-l"].includes(context.route)

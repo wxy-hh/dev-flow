@@ -16,6 +16,7 @@ import { prepareReviewInvalidation } from "./review-store.js";
 import { reopenObligations } from "../policy/obligations.js";
 import { normalizeUnicode } from "./path-normalization.js";
 import { detectRollbackSplitWarning } from "../policy/rollback-warnings.js";
+import { validatePlanTaskGraph } from "./plan-graph.js";
 
 const names: Record<string, string> = {
   requirements: "需求文档.md",
@@ -170,6 +171,15 @@ export async function recordArtifact(root: string, id: string, expectedRevision:
   assertPlanRevisionQuiescent(state, kind);
   const artifact = state.artifacts[kind]; if (!artifact) throw new DevFlowError("MISSING_REQUIRED_ARTIFACT", kind);
   const contents = await readFile(path.join(featureDirectory(root, id), normalizeUnicode(artifact.path)), "utf8"); const checksum = hash(contents);
+  if (kind === "implementation-plan" && state.route === "light-l") {
+    const errors = validatePlanTaskGraph(contents);
+    if (errors.length) {
+      throw new DevFlowError("PLAN_TASK_GRAPH_INVALID", "实施计划的任务间关系校验未通过", {
+        errors,
+        recoveryHint: "修正计划中每个任务声明的 rollback_unit、每个 RU 的 tasks/depends_on，确保引用闭合且依赖无环后重新登记",
+      });
+    }
+  }
   return mutate(root, id, expectedRevision, "artifact-recorded", (current) => {
     assertPlanRevisionQuiescent(current, kind);
     current.artifacts[kind] = { ...artifact, path: normalizeUnicode(artifact.path), sha256: checksum };

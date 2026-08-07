@@ -1,4 +1,4 @@
-/* dev-flow 4.0.2; built from source, deterministic build */
+/* dev-flow 4.0.3; built from source, deterministic build */
 
 // plugins/dev-flow/src/mcp/server.ts
 import readline from "node:readline";
@@ -219,7 +219,7 @@ function requirementsTemplate(context) {
 `;
 }
 function implementationPlanTemplate(context) {
-  const rollback = ["standard-m", "standard-l"].includes(context.route) ? "\n<!-- dev-flow:id=RU-001 kind=rollback -->\n### RU-001\uFF1A\u56DE\u64A4\u5355\u5143\n\n- tasks: [TASK-001]\n- depends_on: []\n- file_scope: []\n- covers: [REQ-001]\n- forward_verification: [unit]\n- rollback_verification: [unit]\n" : "";
+  const rollback = ["standard-m", "standard-l", "light-l"].includes(context.route) ? "\n<!-- dev-flow:id=RU-001 kind=rollback -->\n### RU-001\uFF1A\u56DE\u64A4\u5355\u5143\n\n- tasks: [TASK-001]\n- depends_on: []\n- file_scope: []\n- covers: [REQ-001]\n- forward_verification: [unit]\n- rollback_verification: [unit]\n" : "";
   const test = ["standard-m", "standard-l"].includes(context.route) ? "\n<!-- dev-flow:id=TEST-001 kind=test -->\n### TEST-001\uFF1A\u9A8C\u8BC1\u573A\u666F\uFF08verifies: AC-001\uFF09\n\n- \u9A8C\u8BC1\u65B9\u6CD5\uFF1A\n" : "";
   return `${frontMatter(context, "implementation-plan")}# \u5B9E\u73B0\u8BA1\u5212
 
@@ -3234,7 +3234,7 @@ ${objectiveForSwitch(input)}`).digest("hex"),
         decisionLedger: [],
         blockingFindings: [],
         logicComplete: false,
-        lastUpdatedBy: { host: input.host, pluginVersion: "4.0.2" }
+        lastUpdatedBy: { host: input.host, pluginVersion: "4.0.3" }
       };
       const ownershipPath = Object.keys(capturedWorkspace.startedDirty).find((file) => capturedWorkspace.ownership[file] === void 0);
       if (ownershipPath) {
@@ -3357,7 +3357,7 @@ async function recordDecision(root2, id, expectedRevision, question, factRefs = 
       const ledger = draft.decisionLedger ?? [];
       if (ledger.some((candidate) => candidate.id === decision.id)) return;
       draft.decisionLedger = [...ledger, decision];
-      draft.lastUpdatedBy = { host, pluginVersion: "4.0.2" };
+      draft.lastUpdatedBy = { host, pluginVersion: "4.0.3" };
     },
     eventData: { decisionId: decision.id }
   }));
@@ -3379,7 +3379,7 @@ async function resolveRecordedDecision(root2, id, expectedRevision, decisionId, 
     const next = [...ledger];
     next[index] = resolveDecision(next[index], evidence, conclusion);
     draft.decisionLedger = next;
-    draft.lastUpdatedBy = { host, pluginVersion: "4.0.2" };
+    draft.lastUpdatedBy = { host, pluginVersion: "4.0.3" };
   }, { decisionId });
 }
 async function mutate(root2, id, expectedRevision, operation, mutator, eventData = {}) {
@@ -3445,7 +3445,7 @@ async function pauseFeature(root2, id, expectedRevision, reason, host) {
     if (state.lifecycle !== "active") throw new DevFlowError("INVALID_LIFECYCLE", "\u53EA\u6709\u8FDB\u884C\u4E2D\u7684 feature \u53EF\u4EE5\u6682\u505C\u3002", { userMessage: "\u5F53\u524D feature \u4E0D\u80FD\u6682\u505C\u3002", recoveryKind: "refresh", recoveryInstruction: "\u5237\u65B0\u72B6\u6001\u540E\u4ECE\u5F53\u524D\u9636\u6BB5\u7EE7\u7EED\u3002", retryOriginal: false });
     state.lifecycle = "paused";
     state.resumeSummary = `\u6682\u505C\u539F\u56E0\uFF1A${reason.trim()}\u3002\u6062\u590D\u540E\u5148\u5BF9\u8D26\u5DE5\u4F5C\u533A\uFF0C\u518D\u4ECE${state.currentStage ? `\u201C${state.currentStage}\u201D` : "\u5F53\u524D\u9636\u6BB5"}\u7EE7\u7EED\u3002`;
-    state.lastUpdatedBy = { host, pluginVersion: "4.0.2" };
+    state.lastUpdatedBy = { host, pluginVersion: "4.0.3" };
   }, { reason: reason.trim() });
 }
 async function reconcileWorkspace(root2, id, expectedRevision, host) {
@@ -3457,7 +3457,7 @@ async function reconcileWorkspace(root2, id, expectedRevision, host) {
     if (contentChanged) {
       markEvidenceStale(draft);
     }
-    draft.lastUpdatedBy = { host, pluginVersion: "4.0.2" };
+    draft.lastUpdatedBy = { host, pluginVersion: "4.0.3" };
   }, { observedHead: workspace.observedHead, commitCount: workspace.observedCommits.length, manualAdoptionCount: Object.values(workspace.ownershipSource).filter((source) => source === "manual-commit").length });
 }
 function markEvidenceStale(draft) {
@@ -3495,7 +3495,7 @@ async function resumeFeature(root2, id, host) {
       markEvidenceStale(state);
     }
     state.resumeSummary = `\u5DF2\u6062\u590D${state.currentStage ? `\uFF0C\u4ECE\u201C${state.currentStage}\u201D\u7EE7\u7EED` : "\u5F53\u524D\u4EFB\u52A1"}\u3002${contentChanged ? "\u5DE5\u4F5C\u533A\u5185\u5BB9\u6709\u53D8\u5316\uFF0C\u76F8\u5173\u8BC1\u636E\u5DF2\u6807\u8BB0\u4E3A\u5F85\u66F4\u65B0\u3002" : ""}`;
-    state.lastUpdatedBy = { host, pluginVersion: "4.0.2" };
+    state.lastUpdatedBy = { host, pluginVersion: "4.0.3" };
   }, { observedHead: workspace.observedHead, contentChanged });
 }
 async function abandonFeature(root2, id, expectedRevision, reason, userEvidence) {
@@ -4404,6 +4404,136 @@ function detectRollbackSplitWarning(nodes) {
   return splits.length === 0 ? [] : [`\u6D4B\u8BD5\u4E0E\u5B9E\u73B0\u62C6\u4E3A\u4E0D\u540C\u56DE\u64A4\u5355\u5143\uFF0C${[...new Set(splits)].sort().join(",")}\uFF1AA \u7684\u524D\u5411\u9A8C\u8BC1\u7EA2\u6D4B\u8BD5\u671F\u5FC5\u5931\u8D25\u6B7B\u9501\uFF1B\u5EFA\u8BAE\u5408\u5E76\u539F\u5B50\u5355\u5143`];
 }
 
+// plugins/dev-flow/src/core/plan-graph.ts
+var TRACE_ANCHOR2 = /<!-- dev-flow:id=(REQ|AC|TASK|TEST|RU)-([0-9]{3,}) kind=(requirement|acceptance-criterion|task|test|rollback) -->/g;
+function parseField(line) {
+  const match = /^-\s+([A-Za-z_]+):\s*(.*)$/.exec(line.trim());
+  if (!match) return void 0;
+  const raw = match[2].trim();
+  if (raw.startsWith("[") && raw.endsWith("]")) {
+    const inner = raw.slice(1, -1).trim();
+    return {
+      key: match[1],
+      value: inner.length ? inner.split(",").map((item) => item.trim()).filter((item) => item.length > 0) : []
+    };
+  }
+  return { key: match[1], value: raw.length ? [raw] : [] };
+}
+function parseBlock(blockText) {
+  const fields = {};
+  for (const line of blockText.split("\n")) {
+    const parsed = parseField(line);
+    if (parsed) fields[parsed.key] = parsed.value;
+  }
+  return fields;
+}
+function parsePlanBlocks(markdown) {
+  TRACE_ANCHOR2.lastIndex = 0;
+  const anchors = [];
+  let match;
+  while ((match = TRACE_ANCHOR2.exec(markdown)) !== null) {
+    const [, prefix, suffix, kind] = match;
+    anchors.push({ id: `${prefix}-${suffix}`, kind, index: match.index });
+  }
+  const blocks = /* @__PURE__ */ new Map();
+  for (let index = 0; index < anchors.length; index += 1) {
+    const anchor = anchors[index];
+    const end = anchors[index + 1]?.index ?? markdown.length;
+    blocks.set(anchor.id, { kind: anchor.kind, text: markdown.slice(anchor.index, end) });
+  }
+  return blocks;
+}
+function collectGraph(markdown) {
+  const blocks = parsePlanBlocks(markdown);
+  const tasks = /* @__PURE__ */ new Map();
+  const rollbacks = /* @__PURE__ */ new Map();
+  for (const [id, block] of blocks) {
+    const fields = parseBlock(block.text);
+    if (block.kind === "task") {
+      tasks.set(id, { id, rollbackUnit: fields["rollback_unit"]?.[0] });
+    } else if (block.kind === "rollback") {
+      rollbacks.set(id, {
+        id,
+        tasks: fields["tasks"] ?? [],
+        dependsOn: fields["depends_on"] ?? []
+      });
+    }
+  }
+  return { tasks, rollbacks };
+}
+function validatePlanTaskGraph(markdown) {
+  const { tasks, rollbacks } = collectGraph(markdown);
+  const errors = [];
+  if (tasks.size === 0) errors.push("\u8BA1\u5212\u4E2D\u6CA1\u6709\u4EFB\u4F55 TASK \u951A\u70B9\uFF1B\u8BF7\u4E3A\u6BCF\u4E2A\u4EFB\u52A1\u58F0\u660E dev-flow:id=TASK-xxx kind=task");
+  if (rollbacks.size === 0) errors.push("\u8BA1\u5212\u4E2D\u6CA1\u6709\u4EFB\u4F55 RU \u951A\u70B9\uFF1B\u8BF7\u4E3A\u6BCF\u4E2A\u56DE\u64A4\u5355\u5143\u58F0\u660E dev-flow:id=RU-xxx kind=rollback");
+  for (const task of tasks.values()) {
+    const unit = task.rollbackUnit;
+    if (!unit) {
+      errors.push(`${task.id} \u672A\u58F0\u660E rollback_unit`);
+      continue;
+    }
+    if (!rollbacks.has(unit)) {
+      errors.push(`${task.id} \u5F15\u7528\u4E86\u4E0D\u5B58\u5728\u7684\u56DE\u64A4\u5355\u5143 ${unit}`);
+      continue;
+    }
+    const declared = rollbacks.get(unit);
+    if (!declared.tasks.includes(task.id)) {
+      errors.push(`RU-${unit} \u7684 tasks \u672A\u5305\u542B\u5F15\u7528\u5B83\u7684 ${task.id}\uFF08\u53CC\u5411\u4E0D\u4E00\u81F4\uFF09`);
+    }
+  }
+  for (const rollback of rollbacks.values()) {
+    for (const taskId of rollback.tasks) {
+      const task = tasks.get(taskId);
+      if (!task) {
+        errors.push(`${rollback.id} \u7684 tasks \u5F15\u7528\u4E86\u4E0D\u5B58\u5728\u7684\u4EFB\u52A1 ${taskId}`);
+      } else if (task.rollbackUnit !== rollback.id) {
+        errors.push(`${rollback.id} \u5217\u51FA ${taskId}\uFF0C\u4F46\u8BE5\u4EFB\u52A1\u58F0\u660E\u7684 rollback_unit \u662F ${task.rollbackUnit ?? "\u7A7A"}\uFF08\u53CC\u5411\u4E0D\u4E00\u81F4\uFF09`);
+      }
+    }
+    for (const dependency of rollback.dependsOn) {
+      if (!rollbacks.has(dependency)) {
+        errors.push(`${rollback.id} \u7684 depends_on \u5F15\u7528\u4E86\u4E0D\u5B58\u5728\u7684\u56DE\u64A4\u5355\u5143 ${dependency}`);
+      }
+    }
+  }
+  const cycle = findCycle(rollbacks);
+  if (cycle) errors.push(`\u56DE\u64A4\u5355\u5143\u4F9D\u8D56\u6210\u73AF\uFF1A${cycle.join(" \u2192 ")}`);
+  return errors;
+}
+function findCycle(rollbacks) {
+  const WHITE = 0;
+  const GRAY = 1;
+  const BLACK = 2;
+  const color = /* @__PURE__ */ new Map();
+  const stack = [];
+  function visit(nodeId) {
+    color.set(nodeId, GRAY);
+    stack.push(nodeId);
+    for (const dependency of rollbacks.get(nodeId)?.dependsOn ?? []) {
+      if (!rollbacks.has(dependency)) continue;
+      const state = color.get(dependency) ?? WHITE;
+      if (state === GRAY) {
+        const start = stack.indexOf(dependency);
+        return [...stack.slice(start), dependency];
+      }
+      if (state === WHITE) {
+        const cycle = visit(dependency);
+        if (cycle) return cycle;
+      }
+    }
+    stack.pop();
+    color.set(nodeId, BLACK);
+    return void 0;
+  }
+  for (const nodeId of rollbacks.keys()) {
+    if ((color.get(nodeId) ?? WHITE) === WHITE) {
+      const cycle = visit(nodeId);
+      if (cycle) return cycle;
+    }
+  }
+  return void 0;
+}
+
 // plugins/dev-flow/src/core/artifacts.ts
 var names = {
   requirements: "\u9700\u6C42\u6587\u6863.md",
@@ -4543,6 +4673,15 @@ async function recordArtifact(root2, id, expectedRevision, kind) {
   if (!artifact) throw new DevFlowError("MISSING_REQUIRED_ARTIFACT", kind);
   const contents = await readFile7(path9.join(featureDirectory(root2, id), normalizeUnicode(artifact.path)), "utf8");
   const checksum = hash(contents);
+  if (kind === "implementation-plan" && state.route === "light-l") {
+    const errors = validatePlanTaskGraph(contents);
+    if (errors.length) {
+      throw new DevFlowError("PLAN_TASK_GRAPH_INVALID", "\u5B9E\u65BD\u8BA1\u5212\u7684\u4EFB\u52A1\u95F4\u5173\u7CFB\u6821\u9A8C\u672A\u901A\u8FC7", {
+        errors,
+        recoveryHint: "\u4FEE\u6B63\u8BA1\u5212\u4E2D\u6BCF\u4E2A\u4EFB\u52A1\u58F0\u660E\u7684 rollback_unit\u3001\u6BCF\u4E2A RU \u7684 tasks/depends_on\uFF0C\u786E\u4FDD\u5F15\u7528\u95ED\u5408\u4E14\u4F9D\u8D56\u65E0\u73AF\u540E\u91CD\u65B0\u767B\u8BB0"
+      });
+    }
+  }
   return mutate(root2, id, expectedRevision, "artifact-recorded", (current) => {
     assertPlanRevisionQuiescent(current, kind);
     current.artifacts[kind] = { ...artifact, path: normalizeUnicode(artifact.path), sha256: checksum };
@@ -5036,7 +5175,7 @@ async function requestGrillDecision(root2, id, expectedRevision, input) {
     if (index >= 0) ledger[index] = { ...ledger[index], question: input.question, status: "open", evidence: void 0, conclusion: void 0, source: "grill" };
     else ledger.push({ id: input.questionId, question: input.question, status: "open", source: "grill" });
     draft.decisionLedger = ledger;
-    draft.lastUpdatedBy = { host: input.host, pluginVersion: "4.0.2" };
+    draft.lastUpdatedBy = { host: input.host, pluginVersion: "4.0.3" };
   }, () => ({ questionId: input.questionId, mode: "decision" }));
   if (!interaction) throw new DevFlowError("INTERACTION_NOT_CREATED", target);
   return { state, interaction: toPublicInteraction(interaction), interactionId: interaction.id };
@@ -5067,7 +5206,7 @@ async function resolveGrillDecision(root2, id, expectedRevision, interactionId, 
       next[index] = resolveDecision(next[index], input.source === "elicitation" ? input.comment ?? "\u7528\u6237\u9009\u62E9" : input.userReply, response.action);
       draft.decisionLedger = next;
     }
-    draft.lastUpdatedBy = { host, pluginVersion: "4.0.2" };
+    draft.lastUpdatedBy = { host, pluginVersion: "4.0.3" };
   }, { interactionId, mode: "decision" });
   if (!response) throw new DevFlowError("INTERACTION_NOT_RESOLVED", "\u5F53\u524D\u95EE\u9898\u6CA1\u6709\u5B8C\u6210\u56DE\u7B54\u3002", { interactionId });
   return { state, interaction: toPublicInteraction(getInteraction(state, interactionId)), response, interactionId };
@@ -5327,7 +5466,7 @@ async function runVerification(root2, id, expectedRevision, host, commandIds, ma
       const signature = `${exitCode}:${createHash12("sha256").update(fullOutput).digest("hex").slice(0, 16)}`;
       state.repair = recordRepairAttempt(state.repair ?? startRepairLoop(), signature, output.slice(-3));
     }
-    state.lastUpdatedBy = { host, pluginVersion: "4.0.2" };
+    state.lastUpdatedBy = { host, pluginVersion: "4.0.3" };
   });
 }
 async function readVerificationFreshness(root2, state) {
@@ -5435,7 +5574,7 @@ async function resolveQualityExceptionAnswer(root2, featureId, expectedRevision,
         state.obligations = satisfyObligations(state.obligations, [kind]);
       }
     }
-    state.lastUpdatedBy = { host, pluginVersion: "4.0.2" };
+    state.lastUpdatedBy = { host, pluginVersion: "4.0.3" };
   }, { interactionId });
 }
 
@@ -6846,7 +6985,7 @@ async function resolveApprovalResponse(root2, id, expectedRevision, interactionI
     } else {
       throw new DevFlowError("INTERACTION_ACTION_INVALID", response.action);
     }
-    state.lastUpdatedBy = { host, pluginVersion: "4.0.2" };
+    state.lastUpdatedBy = { host, pluginVersion: "4.0.3" };
   }, () => ({ approval, interactionId, response }));
 }
 async function resolveApprovalElicitation(root2, id, expectedRevision, interactionId, action, comment, host) {
@@ -8341,7 +8480,7 @@ async function resolveRollbackGateResponse(root2, featureId, expectedRevision, i
     } else {
       throw new DevFlowError("INTERACTION_ACTION_INVALID", response.action);
     }
-    state.lastUpdatedBy = { host, pluginVersion: "4.0.2" };
+    state.lastUpdatedBy = { host, pluginVersion: "4.0.3" };
   }, () => ({ gate: "rollback-confirmation", interactionId, response }));
 }
 async function resolveRollbackGateElicitation(root2, featureId, expectedRevision, interactionId, action, comment, host) {
@@ -10901,7 +11040,7 @@ async function call(name, a, connection2) {
     case "dev_flow_enable_windows_notifications":
       return enableWindowsNotifications({ nodeExecutable: process.execPath });
     case "dev_flow_doctor":
-      return collectDoctorReport(root, pluginRoot, "4.0.2", tools);
+      return collectDoctorReport(root, pluginRoot, "4.0.3", tools);
     case "dev_flow_recover_corrupt_feature":
       return recoverCorruptFeature(root, {
         featureId: a.featureId,
@@ -10925,7 +11064,7 @@ async function dispatchRequest(message) {
       connection.configure(message.params?.capabilities);
       protocolResult(message.id, {
         protocolVersion: message.params?.protocolVersion || "2024-11-05",
-        serverInfo: { name: "dev-flow", version: "4.0.2" },
+        serverInfo: { name: "dev-flow", version: "4.0.3" },
         capabilities: { tools: {} },
         instructions: "\u5148\u5B8C\u6210\u4E8B\u5B9E\u8C03\u67E5\u548C\u8DEF\u7EBF\u5206\u7C7B\u3002\u65E5\u5E38\u8BFB\u53D6 dev_flow_status\uFF1B\u5B83\u4F1A\u663E\u793A\u4E2D\u6587\u9636\u6BB5\u3001\u5F53\u524D\u4E0B\u4E00\u6B65\u548C\u552F\u4E00\u5F85\u51B3\u95EE\u9898\u3002\u6240\u6709\u7528\u6237\u51B3\u5B9A\u7EDF\u4E00\u4F7F\u7528 dev_flow_answer\uFF0C\u7CFB\u7EDF\u4F1A\u81EA\u52A8\u6309\u95EE\u9898\u7C7B\u578B\u5904\u7406\u3002\u6CA1\u6709\u771F\u5B9E\u51B3\u7B56\u7F3A\u53E3\u65F6\u6D41\u7A0B\u4F1A\u81EA\u52A8\u63A8\u8FDB\u3002\u5148\u8C03\u7528 dev_flow_init_project\uFF0C\u518D\u5F00\u59CB feature\u3002"
       });

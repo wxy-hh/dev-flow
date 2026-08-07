@@ -12,6 +12,7 @@
 - **4.0.0+** grill 完成态由 Decision Ledger 推导，需求文档不保存 grill 控制字段；每回合只问一道题，没有合并剩余选项
 - **1.10.0+** `dev_flow_record_artifact_with_trace` 原子登记 Trace source，`dev_flow_get_traceability` 只读查看 pointer/ledger/blocker；snapshot 与 state pointer 都是 MCP 控制文件，generated status 仅由 Core 更新，standard L 以 `dev_flow_status` 为准
 - **4.0.0+** `dev_flow_status` 返回 compact 中文状态，细节按 `dev_flow_inspect` topic 获取；所有用户决定统一由 `dev_flow_answer` 处理；review blocker 使用显式 finding events 结转；支持 WIP/manual commit、dirty-start、pause/resume 和祖先提交链 finalize。
+- **4.0.3+** light L 实施计划在登记时校验任务间关系：每个任务声明 `rollback_unit`、每个 RU 声明 `tasks`/`depends_on`，引用闭合且依赖无环才允许登记（`PLAN_TASK_GRAPH_INVALID`）。
 - 技能 id 为短名（如 `task`、`plan`）；斜杠为 `/dev-flow:task`；description 保留 `df-*` / `dev-flow-*` 作匹配兼容
 
 ## 宿主支持边界
