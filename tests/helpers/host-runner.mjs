@@ -23,7 +23,7 @@ export function run(command, args, { cwd, env, input, timeout = 90_000 } = {}) {
   });
 }
 
-export async function mcpCall(serverPath, cwd, name, arguments_ = {}) {
+export async function mcpCall(serverPath, cwd, name, arguments_ = {}, options = {}) {
   const response = await run(process.execPath, [serverPath], {
     cwd,
     input: `${JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name, arguments: arguments_ } })}\n`,
@@ -40,7 +40,7 @@ export async function mcpCall(serverPath, cwd, name, arguments_ = {}) {
       structuredContent: value,
     });
   }
-  return message.result.structuredContent;
+  return options.raw ? message.result : message.result.structuredContent;
 }
 
 export async function invokeHook(hookPath, cwd, event) {

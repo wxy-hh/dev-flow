@@ -35,18 +35,18 @@ test("Claude/Codex 共享 intake、decision ledger 与锁定后的 v2 状态", a
   });
   const opened = await state.recordDecision(root, intake.featureId, intake.revision, "是否允许共享契约变更？", ["scope"], "claude");
   await assert.rejects(
-    () => state.lockClassification(root, intake.featureId, opened.revision, {
+    () => state.lockClassification(root, intake.featureId, opened.state.revision, {
       level: "M", topology: "shared-contract", execution: "standard", requirements: "provided-confirmed",
       scopeFacts: ["共享契约会影响多个调用方"], topologyFacts: ["存在共享调用方"], uncertaintyFacts: [],
-      riskFacts: {}, decisionRefs: [opened.decisionLedger[0].id],
+      riskFacts: {}, decisionRefs: [opened.decisionId],
     }),
     /OPEN_CLASSIFICATION_DECISIONS/,
   );
-  const resolved = await state.resolveRecordedDecision(root, intake.featureId, opened.revision, opened.decisionLedger[0].id, "调用方兼容性已核实", "允许共享契约变更", "codex");
+  const resolved = await state.resolveRecordedDecision(root, intake.featureId, opened.state.revision, opened.decisionId, "调用方兼容性已核实", "允许共享契约变更", "codex");
   const routed = await state.lockClassification(root, intake.featureId, resolved.revision, {
     level: "M", topology: "shared-contract", execution: "standard", requirements: "provided-confirmed",
     scopeFacts: ["共享契约会影响多个调用方"], topologyFacts: ["存在共享调用方"], uncertaintyFacts: [],
-    riskFacts: {}, decisionRefs: [opened.decisionLedger[0].id],
+    riskFacts: {}, decisionRefs: [opened.decisionId],
   });
   const handedOff = await state.readState(root, routed.featureId);
   assert.equal(handedOff.mode, "routed");

@@ -171,7 +171,15 @@ export async function readProjectConfigSnapshot(root: string): Promise<{ config:
   const file = path.join(root, ".dev-flow", "project.json");
   let raw: string;
   try { raw = await readFile(file, "utf8"); }
-  catch { throw new DevFlowError("PROJECT_NOT_INITIALIZED", "run dev_flow_init_project first"); }
+  catch { throw new DevFlowError("PROJECT_NOT_INITIALIZED", "run dev_flow_init_project first", {
+    userMessage: "项目尚未初始化，请先运行 dev_flow_init_project。",
+    cause: "当前业务目录缺少 .dev-flow/project.json。",
+    impact: "未初始化项目前无法读取追溯投影。",
+    recoveryKind: "retry",
+    recoveryInstruction: "运行 dev_flow_init_project 初始化项目后重试。",
+    retryOriginal: true,
+    requiresUserDecision: false,
+  }); }
   let config: unknown;
   try { config = JSON.parse(raw); validateProjectConfig(config); }
   catch (error) {

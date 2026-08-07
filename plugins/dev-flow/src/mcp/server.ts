@@ -239,7 +239,7 @@ const toolSchemas: Record<string, { description: string; inputSchema: Record<str
     inputSchema: featureMutation({ classification: classificationInputSchema }, ["classification"]),
   },
   dev_flow_record_decision: {
-    description: "Record one unresolved user-owned decision in the shared ledger.",
+    description: "Record one unresolved user-owned decision in the shared ledger. Returns the decisionId, which you can feed back into dev_flow_lock_classification decisionRefs. Conflict-tolerant: on a stale expectedRevision it re-reads and retries once internally, so parallel calls are safe.",
     inputSchema: featureMutation({ question: string, factRefs: { type: "array", items: string }, host: { enum: ["claude", "codex"] } }, ["question", "host"]),
   },
   dev_flow_resolve_decision: {
@@ -446,7 +446,8 @@ function compactMutationResult(toolName: string, value: unknown): unknown {
   const record = value as Record<string, unknown>;
   if (isFeatureState(record.state)) {
     const summary = buildFeatureMutationSummary(record.state);
-    return { contentView: mutationContent(summary, record.interaction as PublicInteraction | undefined), structuredContentView: { ...record, ...summary, state: summary, control: { featureId: summary.featureId, expectedRevision: summary.revision, stage: summary.stage, lifecycle: summary.lifecycle } } };
+    const content = mutationContent(summary, record.interaction as PublicInteraction | undefined);
+    return { contentView: record.decisionId ? { 决策ID: record.decisionId, ...content } : content, structuredContentView: { ...record, ...summary, state: summary, control: { featureId: summary.featureId, expectedRevision: summary.revision, stage: summary.stage, lifecycle: summary.lifecycle } } };
   }
   return value;
 }
@@ -823,7 +824,10 @@ function samplingFailureCode(error: unknown): "client-error" | "timeout" | "inva
 
 async function call(name: string, a: any, connection: McpConnection) {
   switch (name) {
-    case "dev_flow_init_project": return initProject(root, a.config);
+    case "dev_flow_init_project": {
+      await initProject(root, a.config);
+      return { 状态: "已初始化", 配置路径: path.join(root, ".dev-flow", "project.json"), 下一步: "调用 dev_flow_start 开始一个需求。" };
+    }
     case "dev_flow_classify": {
       if (a.classificationBasis?.signals) {
         const preview = recommendClassification(a.classificationBasis);

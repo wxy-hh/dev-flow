@@ -234,8 +234,34 @@ const recoveryEventsPath = (root: string) => path.join(devFlow(root), "recovery-
 const rollbackTxnPath = (root: string, featureId: string) => path.join(features(root), featureId, "rollback-transaction.json");
 
 export async function readProjectConfig(root: string): Promise<ProjectConfig> {
-  try { const value = JSON.parse(await readFile(path.join(devFlow(root), "project.json"), "utf8")); validateProjectConfig(value); return value; }
-  catch (error) { if (error instanceof DevFlowError) throw error; throw new DevFlowError("PROJECT_NOT_INITIALIZED", "run dev_flow_init_project first"); }
+  try {
+    const raw = await readFile(path.join(devFlow(root), "project.json"), "utf8");
+    const value = JSON.parse(raw);
+    validateProjectConfig(value);
+    return value;
+  } catch (error) {
+    if (error instanceof DevFlowError) throw error;
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      throw new DevFlowError("PROJECT_NOT_INITIALIZED", "run dev_flow_init_project first", {
+        userMessage: "项目尚未初始化，请先运行 dev_flow_init_project。",
+        cause: "当前业务目录缺少 .dev-flow/project.json。",
+        impact: "未初始化项目前无法开始或推进任何需求。",
+        recoveryKind: "retry",
+        recoveryInstruction: "运行 dev_flow_init_project 初始化项目，然后重新 dev_flow_start。",
+        retryOriginal: true,
+        requiresUserDecision: false,
+      });
+    }
+    throw new DevFlowError("INVALID_PROJECT_CONFIG", "project.json exists but is unreadable", {
+      userMessage: "项目配置文件无法读取。",
+      cause: ".dev-flow/project.json 存在但内容损坏或无法解析。",
+      impact: "无法确认项目的强制配置与受保护路径，流程已停止。",
+      recoveryKind: "repair",
+      recoveryInstruction: "运行 dev_flow_doctor 检查，或修复 project.json 后重试。",
+      retryOriginal: false,
+      requiresUserDecision: false,
+    });
+  }
 }
 export async function initProject(root: string, config: ProjectConfig): Promise<void> {
   validateProjectConfig(config); await mkdir(devFlow(root), { recursive: true });
@@ -290,7 +316,15 @@ export async function readState(root: string, featureId: string): Promise<Featur
     return state;
   } catch (error) {
     if (error instanceof DevFlowError) throw error;
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") throw new DevFlowError("FEATURE_NOT_FOUND", `feature ${featureId} does not exist`);
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") throw new DevFlowError("FEATURE_NOT_FOUND", `feature ${featureId} does not exist`, {
+      userMessage: "找不到该 feature。",
+      cause: `feature ${featureId} 不存在，或尚未通过 dev_flow_start 创建。`,
+      impact: "未创建该 feature 前无法查看其状态。",
+      recoveryKind: "retry",
+      recoveryInstruction: "先 dev_flow_start 创建该 feature；如已创建，核对 featureId。",
+      retryOriginal: true,
+      requiresUserDecision: false,
+    });
     throw new DevFlowError("INVALID_STATE_SCHEMA", `feature ${featureId} state is unreadable`, {
       recoveryHint: "Run dev_flow_doctor; if corrupt, use dev_flow_recover_corrupt_feature then start a new feature",
     });
@@ -617,14 +651,31 @@ export async function recordDecision(
   question: string,
   factRefs: string[] = [],
   host: "claude" | "codex",
-): Promise<FeatureState> {
+): Promise<{ state: FeatureState; decisionId: string }> {
   const decision = createDecision(question, factRefs);
-  return mutate(root, id, expectedRevision, "decision-opened", (draft) => {
-    const ledger = draft.decisionLedger ?? [];
-    if (ledger.some((candidate) => candidate.id === decision.id)) return;
-    draft.decisionLedger = [...ledger, decision];
-    draft.lastUpdatedBy = { host, pluginVersion: __DEV_FLOW_VERSION__ };
-  }, { decisionId: decision.id });
+  const attempt = (revision: number) => mutatePrepared(root, id, revision, "decision-opened", async (current) => ({
+    unchanged: (current.decisionLedger ?? []).some((candidate) => candidate.id === decision.id),
+    mutate: (draft) => {
+      const ledger = draft.decisionLedger ?? [];
+      if (ledger.some((candidate) => candidate.id === decision.id)) return;
+      draft.decisionLedger = [...ledger, decision];
+      draft.lastUpdatedBy = { host, pluginVersion: __DEV_FLOW_VERSION__ };
+    },
+    eventData: { decisionId: decision.id },
+  }));
+  try {
+    const state = await attempt(expectedRevision);
+    return { state, decisionId: decision.id };
+  } catch (error) {
+    // Decisions are content-addressed idempotent appends; a concurrent writer may
+    // have committed between read and write. Retry once against the fresh revision
+    // reported by the CAS conflict; prepare() already treats an identical decision
+    // as unchanged, so a duplicate never fakes a revision/event.
+    if (!(error instanceof DevFlowError) || error.code !== "STATE_REVISION_CONFLICT") throw error;
+    const currentRevision = typeof error.details?.currentRevision === "number" ? error.details.currentRevision : expectedRevision;
+    const state = await attempt(currentRevision);
+    return { state, decisionId: decision.id };
+  }
 }
 
 export async function resolveRecordedDecision(

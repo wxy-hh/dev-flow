@@ -25,3 +25,21 @@ test("compact status keeps user content short and control data separate", async 
     await fixture.dispose();
   }
 });
+
+test("status for a nonexistent feature reports an explicit FEATURE_NOT_FOUND message", async () => {
+  const fixture = await createTinyApp();
+  try {
+    await store.initProject(fixture.root, strictProjectConfig);
+    await assert.rejects(
+      () => projection.readCompactStatus(fixture.root, "missing"),
+      (error) => {
+        assert.equal(error.code, "FEATURE_NOT_FOUND");
+        assert.match(error.userMessage, /找不到该 feature/);
+        assert.doesNotMatch(error.cause, /条件尚未满足/);
+        return true;
+      },
+    );
+  } finally {
+    await fixture.dispose();
+  }
+});

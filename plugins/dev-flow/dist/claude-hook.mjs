@@ -1,4 +1,4 @@
-/* dev-flow 4.0.0; built from source, deterministic build */
+/* dev-flow 4.0.1; built from source, deterministic build */
 
 // plugins/dev-flow/src/core/state-store.ts
 import { randomUUID as randomUUID4, createHash as createHash5 } from "node:crypto";
@@ -839,7 +839,15 @@ async function readProjectConfigSnapshot(root) {
   try {
     raw = await readFile2(file, "utf8");
   } catch {
-    throw new DevFlowError("PROJECT_NOT_INITIALIZED", "run dev_flow_init_project first");
+    throw new DevFlowError("PROJECT_NOT_INITIALIZED", "run dev_flow_init_project first", {
+      userMessage: "\u9879\u76EE\u5C1A\u672A\u521D\u59CB\u5316\uFF0C\u8BF7\u5148\u8FD0\u884C dev_flow_init_project\u3002",
+      cause: "\u5F53\u524D\u4E1A\u52A1\u76EE\u5F55\u7F3A\u5C11 .dev-flow/project.json\u3002",
+      impact: "\u672A\u521D\u59CB\u5316\u9879\u76EE\u524D\u65E0\u6CD5\u8BFB\u53D6\u8FFD\u6EAF\u6295\u5F71\u3002",
+      recoveryKind: "retry",
+      recoveryInstruction: "\u8FD0\u884C dev_flow_init_project \u521D\u59CB\u5316\u9879\u76EE\u540E\u91CD\u8BD5\u3002",
+      retryOriginal: true,
+      requiresUserDecision: false
+    });
   }
   let config;
   try {
@@ -1507,12 +1515,32 @@ var recoveryTxnPath = (root) => path7.join(devFlow(root), "recovery-transaction.
 var rollbackTxnPath = (root, featureId) => path7.join(features(root), featureId, "rollback-transaction.json");
 async function readProjectConfig(root) {
   try {
-    const value = JSON.parse(await readFile5(path7.join(devFlow(root), "project.json"), "utf8"));
+    const raw = await readFile5(path7.join(devFlow(root), "project.json"), "utf8");
+    const value = JSON.parse(raw);
     validateProjectConfig(value);
     return value;
   } catch (error) {
     if (error instanceof DevFlowError) throw error;
-    throw new DevFlowError("PROJECT_NOT_INITIALIZED", "run dev_flow_init_project first");
+    if (error.code === "ENOENT") {
+      throw new DevFlowError("PROJECT_NOT_INITIALIZED", "run dev_flow_init_project first", {
+        userMessage: "\u9879\u76EE\u5C1A\u672A\u521D\u59CB\u5316\uFF0C\u8BF7\u5148\u8FD0\u884C dev_flow_init_project\u3002",
+        cause: "\u5F53\u524D\u4E1A\u52A1\u76EE\u5F55\u7F3A\u5C11 .dev-flow/project.json\u3002",
+        impact: "\u672A\u521D\u59CB\u5316\u9879\u76EE\u524D\u65E0\u6CD5\u5F00\u59CB\u6216\u63A8\u8FDB\u4EFB\u4F55\u9700\u6C42\u3002",
+        recoveryKind: "retry",
+        recoveryInstruction: "\u8FD0\u884C dev_flow_init_project \u521D\u59CB\u5316\u9879\u76EE\uFF0C\u7136\u540E\u91CD\u65B0 dev_flow_start\u3002",
+        retryOriginal: true,
+        requiresUserDecision: false
+      });
+    }
+    throw new DevFlowError("INVALID_PROJECT_CONFIG", "project.json exists but is unreadable", {
+      userMessage: "\u9879\u76EE\u914D\u7F6E\u6587\u4EF6\u65E0\u6CD5\u8BFB\u53D6\u3002",
+      cause: ".dev-flow/project.json \u5B58\u5728\u4F46\u5185\u5BB9\u635F\u574F\u6216\u65E0\u6CD5\u89E3\u6790\u3002",
+      impact: "\u65E0\u6CD5\u786E\u8BA4\u9879\u76EE\u7684\u5F3A\u5236\u914D\u7F6E\u4E0E\u53D7\u4FDD\u62A4\u8DEF\u5F84\uFF0C\u6D41\u7A0B\u5DF2\u505C\u6B62\u3002",
+      recoveryKind: "repair",
+      recoveryInstruction: "\u8FD0\u884C dev_flow_doctor \u68C0\u67E5\uFF0C\u6216\u4FEE\u590D project.json \u540E\u91CD\u8BD5\u3002",
+      retryOriginal: false,
+      requiresUserDecision: false
+    });
   }
 }
 async function writeAtomic(file, value) {
@@ -1621,7 +1649,15 @@ async function readState(root, featureId) {
     return state;
   } catch (error) {
     if (error instanceof DevFlowError) throw error;
-    if (error.code === "ENOENT") throw new DevFlowError("FEATURE_NOT_FOUND", `feature ${featureId} does not exist`);
+    if (error.code === "ENOENT") throw new DevFlowError("FEATURE_NOT_FOUND", `feature ${featureId} does not exist`, {
+      userMessage: "\u627E\u4E0D\u5230\u8BE5 feature\u3002",
+      cause: `feature ${featureId} \u4E0D\u5B58\u5728\uFF0C\u6216\u5C1A\u672A\u901A\u8FC7 dev_flow_start \u521B\u5EFA\u3002`,
+      impact: "\u672A\u521B\u5EFA\u8BE5 feature \u524D\u65E0\u6CD5\u67E5\u770B\u5176\u72B6\u6001\u3002",
+      recoveryKind: "retry",
+      recoveryInstruction: "\u5148 dev_flow_start \u521B\u5EFA\u8BE5 feature\uFF1B\u5982\u5DF2\u521B\u5EFA\uFF0C\u6838\u5BF9 featureId\u3002",
+      retryOriginal: true,
+      requiresUserDecision: false
+    });
     throw new DevFlowError("INVALID_STATE_SCHEMA", `feature ${featureId} state is unreadable`, {
       recoveryHint: "Run dev_flow_doctor; if corrupt, use dev_flow_recover_corrupt_feature then start a new feature"
     });

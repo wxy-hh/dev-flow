@@ -12,6 +12,13 @@ Dev Flow 4.0 同时支持 Claude Code 与 Codex CLI。Core 共享路线、阶段
 6. 需要用户决定时只展示一道问题和 2-3 个选项，用户用中文回答，统一调用 `dev_flow_answer`。
 7. 完成验证、审查和交付收尾后调用 `dev_flow_finalize`。
 
+### 恢复动作：手动删除 `.dev-flow` 后
+
+升级插件后手动删除业务目录下的 `.dev-flow/`（隔离旧任务状态）属正常操作。此后若直接调用 `dev_flow_start` 会返回「项目尚未初始化」。标准恢复动作：
+
+1. 调用 `dev_flow_init_project` 重新初始化。
+2. 调用 `dev_flow_start` 开启新需求（旧 feature 状态已被删除，无需清理）。
+
 ## 路线
 
 | 内部路线 | 用户显示 | 主要阶段 |

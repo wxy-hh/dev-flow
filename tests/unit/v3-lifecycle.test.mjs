@@ -66,3 +66,39 @@ test("starting another task never silently switches the active feature", async (
     await fixture.dispose();
   }
 });
+
+test("start on an uninitialized project reports an explicit not-initialized message", async () => {
+  const fixture = await createTinyApp();
+  try {
+    await assert.rejects(
+      () => store.startFeature(fixture.root, { featureId: "f", host: "codex" }),
+      (error) => {
+        assert.equal(error.code, "PROJECT_NOT_INITIALIZED");
+        assert.match(error.userMessage, /尚未初始化/);
+        assert.doesNotMatch(error.cause, /条件尚未满足/);
+        assert.match(error.recovery.instruction, /dev_flow_init_project/);
+        return true;
+      },
+    );
+  } finally {
+    await fixture.dispose();
+  }
+});
+
+test("a corrupt project.json reports INVALID_PROJECT_CONFIG, not not-initialized", async () => {
+  const fixture = await createTinyApp();
+  try {
+    await store.initProject(fixture.root, strictProjectConfig);
+    await writeFile(path.join(fixture.root, ".dev-flow", "project.json"), "{ not valid json");
+    await assert.rejects(
+      () => store.startFeature(fixture.root, { featureId: "f", host: "codex" }),
+      (error) => {
+        assert.equal(error.code, "INVALID_PROJECT_CONFIG");
+        assert.doesNotMatch(error.cause, /缺少/);
+        return true;
+      },
+    );
+  } finally {
+    await fixture.dispose();
+  }
+});
