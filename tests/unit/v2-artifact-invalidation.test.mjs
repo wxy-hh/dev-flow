@@ -6,6 +6,7 @@ const artifacts = await loadSource("plugins/dev-flow/src/core/artifacts.ts");
 
 function standardMState() {
   return {
+    mode: "routed",
     route: "standard-m",
     workflowCapabilities: { trace: 1, review: 1, checkpoints: 1, rollbackExecution: 1 },
     steps: {

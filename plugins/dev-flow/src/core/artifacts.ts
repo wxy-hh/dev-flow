@@ -1,13 +1,13 @@
 import { createHash } from "node:crypto";
 import { readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { reviewEnforcementRequired, routeDefinitionForFeature, traceEnforcementRequired } from "../policy/contract.js";
+import { reviewEnforcementRequired, traceEnforcementRequired } from "../policy/contract.js";
 import type { TraceArtifactKind, TraceDelta } from "../policy/traceability.js";
 import { renderArtifactTemplate } from "./artifact-templates.js";
 import { DevFlowError } from "./errors.js";
 import { approvalIds } from "./approval-basis.js";
 import { mutate, mutatePrepared, readState, type FeatureState, type PreparedMutationOptions } from "./state-store.js";
-import { currentOpenStep } from "./step-order.js";
+import { currentOpenStep, routeDefinitionForState } from "./step-order.js";
 import { parseTraceSourceBlocks } from "./traceability-anchors.js";
 import { applyTraceDelta } from "./traceability.js";
 import { readProjectConfigSnapshot, readTraceabilityForArtifactReplacement, type TraceStoreOptions, writeTraceSnapshot } from "./traceability-store.js";
@@ -56,7 +56,7 @@ function template(state: FeatureState, id: string, kind: string): string {
 }
 
 function effectiveRoute(state: FeatureState) {
-  return routeDefinitionForFeature(state.route, state.workflowCapabilities);
+  return routeDefinitionForState(state);
 }
 
 function artifactKinds(definition: ReturnType<typeof effectiveRoute>): string[] {

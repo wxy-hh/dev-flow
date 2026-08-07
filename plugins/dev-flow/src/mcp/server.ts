@@ -208,20 +208,17 @@ const interactionOptionSchema = object(["id", "label"], {
 const toolSchemas: Record<string, { description: string; inputSchema: Record<string, unknown>; annotations?: Record<string, boolean> }> = {
   dev_flow_init_project: { description: "Create strict project configuration.", inputSchema: object(["config"], { config: { type: "object" } }) },
   dev_flow_classify: {
-    description: "Pure route classification.",
-    inputSchema: { type: "object", oneOf: [
-      object(["classificationBasis"], { classificationBasis: recommendedClassificationBasisSchema }),
-      object(["level", "topology"], {
-        level: { enum: ["XS", "S", "M", "L"] },
-        topology: { enum: ["local", "shared-contract", "multi-chain", "coordinated-rollback"] },
-        execution: { enum: ["light", "standard"] },
-        requirements: { enum: ["missing-or-unclear", "documented-unconfirmed", "provided-confirmed"] },
-        riskLabels: riskLabelsSchema,
-        classificationBasis: classificationBasisSchema,
-        acceptanceAssistSuggested: { type: "boolean", description: "Offer optional browser/user acceptance help; never blocks the route." },
-        manualAcceptanceRequired: { type: "boolean" },
-      }),
-    ] },
+    description: "Pure route classification (read-only preview).",
+    inputSchema: object([], {
+      classificationBasis: recommendedClassificationBasisSchema,
+      level: { enum: ["XS", "S", "M", "L"] },
+      topology: { enum: ["local", "shared-contract", "multi-chain", "coordinated-rollback"] },
+      execution: { enum: ["light", "standard"] },
+      requirements: { enum: ["missing-or-unclear", "documented-unconfirmed", "provided-confirmed"] },
+      riskLabels: riskLabelsSchema,
+      acceptanceAssistSuggested: { type: "boolean", description: "Offer optional browser/user acceptance help; never blocks the route." },
+      manualAcceptanceRequired: { type: "boolean" },
+    }),
     annotations: { readOnlyHint: true },
   },
   dev_flow_start: {
@@ -829,6 +826,17 @@ async function call(name: string, a: any, connection: McpConnection) {
       return { 状态: "已初始化", 配置路径: path.join(root, ".dev-flow", "project.json"), 下一步: "调用 dev_flow_start 开始一个需求。" };
     }
     case "dev_flow_classify": {
+      if (!a.classificationBasis && (a.level === undefined || a.topology === undefined)) {
+        throw new DevFlowError("CLASSIFICATION_ARGS_INVALID", "classify requires classificationBasis or level+topology", {
+          userMessage: "分类预览参数不足。",
+          cause: "需提供 classificationBasis（推荐模式）或 level+topology。",
+          impact: "无法生成分类预览。",
+          recoveryKind: "retry",
+          recoveryInstruction: "补齐 classificationBasis 或 level+topology 后重试 dev_flow_classify。",
+          retryOriginal: true,
+          requiresUserDecision: false,
+        });
+      }
       if (a.classificationBasis?.signals) {
         const preview = recommendClassification(a.classificationBasis);
         return preview.readyToLock

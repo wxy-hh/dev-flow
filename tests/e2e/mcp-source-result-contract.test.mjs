@@ -6,7 +6,7 @@ import path from "node:path";
 import { after, test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { createTinyApp, strictProjectConfig } from "../helpers/fixture-repo.mjs";
-import { mcpCall } from "../helpers/host-runner.mjs";
+import { mcpCall, run } from "../helpers/host-runner.mjs";
 
 const repositoryRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 const serverEntry = path.join(repositoryRoot, "plugins", "dev-flow", "src", "mcp", "server.ts");
@@ -30,6 +30,16 @@ async function bundleSourceServer(directory) {
 const staging = await mkdtemp(path.join(os.tmpdir(), "dev-flow-source-server-"));
 const server = await bundleSourceServer(staging);
 after(() => rm(staging, { recursive: true, force: true }));
+
+async function rawListTools(cwd) {
+  const response = await run(process.execPath, [server], {
+    cwd,
+    input: `${JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list", params: {} })}\n`,
+  });
+  const message = response.stdout.split("\n").filter(Boolean).map((line) => JSON.parse(line)).find((candidate) => candidate.id === 1);
+  if (!message) throw new Error(`MCP did not return a response for tools/list: ${response.stdout}`);
+  return message.result.tools;
+}
 
 test("dev_flow_init_project returns a well-formed result (P2)", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "dev-flow-p2-init-"));
@@ -73,5 +83,33 @@ test("dev_flow_record_decision exposes a decisionId usable end-to-end (P5)", asy
     assert.equal(locked.control.stage, "planning");
   } finally {
     await fixture.dispose();
+  }
+});
+
+test("dev_flow_classify uses a properties-based schema, not top-level oneOf (P3)", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "dev-flow-p3-schema-"));
+  try {
+    const tools = await rawListTools(root);
+    const classify = tools.find((tool) => tool.name === "dev_flow_classify");
+    assert.ok(classify, "dev_flow_classify must be advertised in tools/list");
+    const schema = classify.inputSchema;
+    assert.equal(schema.oneOf, undefined, "classify schema must not use top-level oneOf");
+    assert.ok(schema.properties, "classify schema must have properties at root");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("dev_flow_classify rejects empty args with CLASSIFICATION_ARGS_INVALID (P3)", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "dev-flow-p3-args-"));
+  try {
+    await assert.rejects(
+      () => mcpCall(server, root, "dev_flow_classify", {}),
+      (error) => error.code === "CLASSIFICATION_ARGS_INVALID",
+    );
+    const preview = await mcpCall(server, root, "dev_flow_classify", { level: "M", topology: "local", execution: "light", requirements: "provided-confirmed" });
+    assert.equal(preview.route, "light-m");
+  } finally {
+    await rm(root, { recursive: true, force: true });
   }
 });

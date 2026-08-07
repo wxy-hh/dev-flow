@@ -43,3 +43,15 @@ test("status for a nonexistent feature reports an explicit FEATURE_NOT_FOUND mes
     await fixture.dispose();
   }
 });
+
+test("intake status next step points to lock_classification", async () => {
+  const fixture = await createTinyApp();
+  try {
+    await store.initProject(fixture.root, strictProjectConfig);
+    const intake = await store.startFeature(fixture.root, { featureId: "status-intake", host: "codex" });
+    const view = await projection.readCompactStatus(fixture.root, intake.featureId);
+    assert.match(view.contentView.下一步, /dev_flow_lock_classification/);
+  } finally {
+    await fixture.dispose();
+  }
+});

@@ -41,7 +41,7 @@ export interface StatusMcpView {
 function actionText(state: FeatureState, action: NextAction): string {
   switch (action.kind) {
     case "done": return "当前任务已完成。";
-    case "intake": return action.activity === "resolve-decision" ? "回答当前唯一待决问题。" : "继续调查事实并锁定路线。";
+    case "intake": return action.activity === "resolve-decision" ? "回答当前唯一待决问题。" : "调查事实后调用 dev_flow_lock_classification 锁定路线（锁定前不要调用 record_step 等步骤工具）。";
     case "scaffold-artifact": return `生成${artifactLabel(action.step)}，然后填写并登记。`;
     case "present-human-gate": return "回答当前执行确认问题。";
     case "wait-human-gate": return "等待当前用户决定。";

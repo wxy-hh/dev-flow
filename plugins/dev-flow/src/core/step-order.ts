@@ -1,6 +1,23 @@
 import { routeDefinitionForFeature } from "../policy/contract.js";
+import type { RouteDefinition } from "../policy/types.js";
 import { DevFlowError } from "./errors.js";
 import type { FeatureState } from "./state-store.js";
+
+/** Route access with an explicit intake boundary: throws instead of crashing on undefined route. */
+export function routeDefinitionForState(state: FeatureState): RouteDefinition {
+  if (state.mode !== "routed") {
+    throw new DevFlowError("ROUTE_NOT_DETERMINED", "route is not determined yet", {
+      userMessage: "当前 feature 尚未锁定路线。",
+      cause: `feature ${state.featureId} 处于 intake 阶段，route 尚未确定。`,
+      impact: "锁定路线前无法推进任何路线步骤。",
+      recoveryKind: "retry",
+      recoveryInstruction: "先调用 dev_flow_lock_classification 锁定路线，再继续当前操作。",
+      retryOriginal: true,
+      requiresUserDecision: false,
+    });
+  }
+  return routeDefinitionForFeature(state.route, state.workflowCapabilities);
+}
 
 export function currentOpenStep(state: FeatureState): string | undefined {
   // Intake deliberately has no route. FeatureState keeps route required for
@@ -14,7 +31,7 @@ export function assertCurrentStep(state: FeatureState, step: string): void {
 }
 
 export function artifactsRequiredBeforeApproval(state: FeatureState, stage: string): string[] {
-  const definition = routeDefinitionForFeature(state.route, state.workflowCapabilities);
+  const definition = routeDefinitionForState(state);
   const index = definition.orderedSteps.indexOf(stage);
   const required = [...new Set(definition.orderedSteps.slice(0, index).flatMap((step) => [
     ...(definition.artifactSteps?.[step] ?? []),

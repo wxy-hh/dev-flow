@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { reviewEnforcementRequired, routeDefinitionForFeature } from "../policy/contract.js";
+import { reviewEnforcementRequired } from "../policy/contract.js";
 import { DevFlowError } from "./errors.js";
 import {
   approvalPhrases,
@@ -12,6 +12,7 @@ import { assertRequirementsGrillSatisfied } from "./requirements-grill.js";
 import { mutate, readFeatureEvents, readState, type FeatureState } from "./state-store.js";
 import { assertTraceGateCurrent } from "./traceability-gates.js";
 import { assertCurrentReviewProjection } from "./review-projection.js";
+import { routeDefinitionForState } from "./step-order.js";
 import { satisfyObligations } from "../policy/obligations.js";
 import {
   clearInteractionsForTarget,
@@ -61,7 +62,7 @@ export async function presentApproval(
     }
     const obligation = state.obligations?.find((candidate) => candidate.id === selectedApproval && candidate.kind === "approval");
     if (!obligation || obligation.status === "satisfied") throw new DevFlowError("INVALID_APPROVAL", selectedApproval);
-    const definition = routeDefinitionForFeature(state.route, state.workflowCapabilities);
+    const definition = routeDefinitionForState(state);
     const implementationIndex = definition.orderedSteps.indexOf("implementation");
     if (implementationIndex < 0 || !definition.orderedSteps.slice(0, implementationIndex).every((step) => state.steps[step]?.status === "satisfied")) {
       throw new DevFlowError("APPROVAL_NOT_READY", "approval is only available after planning prerequisites are complete", { expectedStage: definition.orderedSteps[implementationIndex - 1] });

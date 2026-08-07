@@ -1,10 +1,11 @@
-import { checkpointsEnforcementRequired, routeDefinitionForFeature } from "../policy/contract.js";
+import { checkpointsEnforcementRequired } from "../policy/contract.js";
 import type { NextAction, RequiredEvidence, StageCapabilityView } from "../policy/types.js";
 import type { RollbackNode, TraceSummary, TraceabilityPointer } from "../policy/traceability.js";
 import { DevFlowError } from "./errors.js";
 import { approvalReplyHint, type ApprovalId } from "./approval.js";
 import { nextAction } from "./next.js";
 import { pendingDecisionForState } from "./decision-interactions.js";
+import { routeDefinitionForState } from "./step-order.js";
 import { readProjectConfig, readState, type FeatureState } from "./state-store.js";
 import { inspectCurrentTrace, type TraceBlocker } from "./traceability-gates.js";
 import { readTraceability } from "./traceability-store.js";
@@ -141,7 +142,7 @@ export async function buildProgress(
       acceptanceAssist: { suggested: false, blocking: false },
     };
   }
-  const ordered = routeDefinitionForFeature(state.route, state.workflowCapabilities).orderedSteps;
+  const ordered = routeDefinitionForState(state).orderedSteps;
   const stepTotal = ordered.length;
   let currentStep: string | undefined;
   let stepIndex = stepTotal;

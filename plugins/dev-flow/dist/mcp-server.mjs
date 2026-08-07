@@ -1,4 +1,4 @@
-/* dev-flow 4.0.1; built from source, deterministic build */
+/* dev-flow 4.0.2; built from source, deterministic build */
 
 // plugins/dev-flow/src/mcp/server.ts
 import readline from "node:readline";
@@ -1656,6 +1656,20 @@ function assertTraceSliceCurrent(ledger, route, step, currentProjectConfigSha256
 }
 
 // plugins/dev-flow/src/core/step-order.ts
+function routeDefinitionForState(state) {
+  if (state.mode !== "routed") {
+    throw new DevFlowError("ROUTE_NOT_DETERMINED", "route is not determined yet", {
+      userMessage: "\u5F53\u524D feature \u5C1A\u672A\u9501\u5B9A\u8DEF\u7EBF\u3002",
+      cause: `feature ${state.featureId} \u5904\u4E8E intake \u9636\u6BB5\uFF0Croute \u5C1A\u672A\u786E\u5B9A\u3002`,
+      impact: "\u9501\u5B9A\u8DEF\u7EBF\u524D\u65E0\u6CD5\u63A8\u8FDB\u4EFB\u4F55\u8DEF\u7EBF\u6B65\u9AA4\u3002",
+      recoveryKind: "retry",
+      recoveryInstruction: "\u5148\u8C03\u7528 dev_flow_lock_classification \u9501\u5B9A\u8DEF\u7EBF\uFF0C\u518D\u7EE7\u7EED\u5F53\u524D\u64CD\u4F5C\u3002",
+      retryOriginal: true,
+      requiresUserDecision: false
+    });
+  }
+  return routeDefinitionForFeature(state.route, state.workflowCapabilities);
+}
 function currentOpenStep(state) {
   if (state.mode !== "routed") return void 0;
   return routeDefinitionForFeature(state.route, state.workflowCapabilities).orderedSteps.find((step) => state.steps[step]?.status !== "satisfied");
@@ -3220,7 +3234,7 @@ ${objectiveForSwitch(input)}`).digest("hex"),
         decisionLedger: [],
         blockingFindings: [],
         logicComplete: false,
-        lastUpdatedBy: { host: input.host, pluginVersion: "4.0.1" }
+        lastUpdatedBy: { host: input.host, pluginVersion: "4.0.2" }
       };
       const ownershipPath = Object.keys(capturedWorkspace.startedDirty).find((file) => capturedWorkspace.ownership[file] === void 0);
       if (ownershipPath) {
@@ -3286,7 +3300,16 @@ function objectiveForSwitch(input) {
 async function lockClassification(root2, id, expectedRevision, facts) {
   const selected = selectBaseRoute(facts);
   if (selected.contradictions.length) {
-    throw new DevFlowError("CLASSIFICATION_CONTRADICTION", "classification facts contain unresolved contradictions", { contradictions: selected.contradictions });
+    throw new DevFlowError("CLASSIFICATION_CONTRADICTION", "classification facts contain unresolved contradictions", {
+      contradictions: selected.contradictions,
+      userMessage: "\u5206\u7C7B\u53C2\u6570\u5B58\u5728\u51B2\u7A81\u6216\u7F3A\u5931\uFF0C\u65E0\u6CD5\u9501\u5B9A\u8DEF\u7EBF\u3002",
+      cause: `\u5206\u7C7B\u4E8B\u5B9E\u5B58\u5728 ${selected.contradictions.length} \u5904\u77DB\u76FE\uFF1A${selected.contradictions.join("\uFF1B")}`,
+      impact: "\u8DEF\u7EBF\u4E0D\u4F1A\u9501\u5B9A\uFF0C\u4ECD\u505C\u7559\u5728 intake \u9636\u6BB5\u3002",
+      recoveryKind: "retry",
+      recoveryInstruction: "\u4FEE\u6B63\u5206\u7C7B\u53C2\u6570\uFF08\u8865\u9F50 execution/requirements\u3001\u907F\u514D\u5B57\u6BB5\u91CD\u590D\u6216\u4E0E classificationBasis \u51B2\u7A81\uFF09\u540E\u91CD\u65B0 dev_flow_lock_classification\u3002",
+      retryOriginal: true,
+      requiresUserDecision: false
+    });
   }
   const release = await lock(root2, id, "lock-classification");
   try {
@@ -3334,7 +3357,7 @@ async function recordDecision(root2, id, expectedRevision, question, factRefs = 
       const ledger = draft.decisionLedger ?? [];
       if (ledger.some((candidate) => candidate.id === decision.id)) return;
       draft.decisionLedger = [...ledger, decision];
-      draft.lastUpdatedBy = { host, pluginVersion: "4.0.1" };
+      draft.lastUpdatedBy = { host, pluginVersion: "4.0.2" };
     },
     eventData: { decisionId: decision.id }
   }));
@@ -3356,7 +3379,7 @@ async function resolveRecordedDecision(root2, id, expectedRevision, decisionId, 
     const next = [...ledger];
     next[index] = resolveDecision(next[index], evidence, conclusion);
     draft.decisionLedger = next;
-    draft.lastUpdatedBy = { host, pluginVersion: "4.0.1" };
+    draft.lastUpdatedBy = { host, pluginVersion: "4.0.2" };
   }, { decisionId });
 }
 async function mutate(root2, id, expectedRevision, operation, mutator, eventData = {}) {
@@ -3422,7 +3445,7 @@ async function pauseFeature(root2, id, expectedRevision, reason, host) {
     if (state.lifecycle !== "active") throw new DevFlowError("INVALID_LIFECYCLE", "\u53EA\u6709\u8FDB\u884C\u4E2D\u7684 feature \u53EF\u4EE5\u6682\u505C\u3002", { userMessage: "\u5F53\u524D feature \u4E0D\u80FD\u6682\u505C\u3002", recoveryKind: "refresh", recoveryInstruction: "\u5237\u65B0\u72B6\u6001\u540E\u4ECE\u5F53\u524D\u9636\u6BB5\u7EE7\u7EED\u3002", retryOriginal: false });
     state.lifecycle = "paused";
     state.resumeSummary = `\u6682\u505C\u539F\u56E0\uFF1A${reason.trim()}\u3002\u6062\u590D\u540E\u5148\u5BF9\u8D26\u5DE5\u4F5C\u533A\uFF0C\u518D\u4ECE${state.currentStage ? `\u201C${state.currentStage}\u201D` : "\u5F53\u524D\u9636\u6BB5"}\u7EE7\u7EED\u3002`;
-    state.lastUpdatedBy = { host, pluginVersion: "4.0.1" };
+    state.lastUpdatedBy = { host, pluginVersion: "4.0.2" };
   }, { reason: reason.trim() });
 }
 async function reconcileWorkspace(root2, id, expectedRevision, host) {
@@ -3434,7 +3457,7 @@ async function reconcileWorkspace(root2, id, expectedRevision, host) {
     if (contentChanged) {
       markEvidenceStale(draft);
     }
-    draft.lastUpdatedBy = { host, pluginVersion: "4.0.1" };
+    draft.lastUpdatedBy = { host, pluginVersion: "4.0.2" };
   }, { observedHead: workspace.observedHead, commitCount: workspace.observedCommits.length, manualAdoptionCount: Object.values(workspace.ownershipSource).filter((source) => source === "manual-commit").length });
 }
 function markEvidenceStale(draft) {
@@ -3472,7 +3495,7 @@ async function resumeFeature(root2, id, host) {
       markEvidenceStale(state);
     }
     state.resumeSummary = `\u5DF2\u6062\u590D${state.currentStage ? `\uFF0C\u4ECE\u201C${state.currentStage}\u201D\u7EE7\u7EED` : "\u5F53\u524D\u4EFB\u52A1"}\u3002${contentChanged ? "\u5DE5\u4F5C\u533A\u5185\u5BB9\u6709\u53D8\u5316\uFF0C\u76F8\u5173\u8BC1\u636E\u5DF2\u6807\u8BB0\u4E3A\u5F85\u66F4\u65B0\u3002" : ""}`;
-    state.lastUpdatedBy = { host, pluginVersion: "4.0.1" };
+    state.lastUpdatedBy = { host, pluginVersion: "4.0.2" };
   }, { observedHead: workspace.observedHead, contentChanged });
 }
 async function abandonFeature(root2, id, expectedRevision, reason, userEvidence) {
@@ -4411,7 +4434,7 @@ dev_flow:
 `;
 }
 function effectiveRoute(state) {
-  return routeDefinitionForFeature(state.route, state.workflowCapabilities);
+  return routeDefinitionForState(state);
 }
 function artifactKinds(definition) {
   return [.../* @__PURE__ */ new Set([...definition.requiredArtifacts, ...definition.generatedArtifacts ?? []])];
@@ -5013,7 +5036,7 @@ async function requestGrillDecision(root2, id, expectedRevision, input) {
     if (index >= 0) ledger[index] = { ...ledger[index], question: input.question, status: "open", evidence: void 0, conclusion: void 0, source: "grill" };
     else ledger.push({ id: input.questionId, question: input.question, status: "open", source: "grill" });
     draft.decisionLedger = ledger;
-    draft.lastUpdatedBy = { host: input.host, pluginVersion: "4.0.1" };
+    draft.lastUpdatedBy = { host: input.host, pluginVersion: "4.0.2" };
   }, () => ({ questionId: input.questionId, mode: "decision" }));
   if (!interaction) throw new DevFlowError("INTERACTION_NOT_CREATED", target);
   return { state, interaction: toPublicInteraction(interaction), interactionId: interaction.id };
@@ -5044,7 +5067,7 @@ async function resolveGrillDecision(root2, id, expectedRevision, interactionId, 
       next[index] = resolveDecision(next[index], input.source === "elicitation" ? input.comment ?? "\u7528\u6237\u9009\u62E9" : input.userReply, response.action);
       draft.decisionLedger = next;
     }
-    draft.lastUpdatedBy = { host, pluginVersion: "4.0.1" };
+    draft.lastUpdatedBy = { host, pluginVersion: "4.0.2" };
   }, { interactionId, mode: "decision" });
   if (!response) throw new DevFlowError("INTERACTION_NOT_RESOLVED", "\u5F53\u524D\u95EE\u9898\u6CA1\u6709\u5B8C\u6210\u56DE\u7B54\u3002", { interactionId });
   return { state, interaction: toPublicInteraction(getInteraction(state, interactionId)), response, interactionId };
@@ -5304,7 +5327,7 @@ async function runVerification(root2, id, expectedRevision, host, commandIds, ma
       const signature = `${exitCode}:${createHash12("sha256").update(fullOutput).digest("hex").slice(0, 16)}`;
       state.repair = recordRepairAttempt(state.repair ?? startRepairLoop(), signature, output.slice(-3));
     }
-    state.lastUpdatedBy = { host, pluginVersion: "4.0.1" };
+    state.lastUpdatedBy = { host, pluginVersion: "4.0.2" };
   });
 }
 async function readVerificationFreshness(root2, state) {
@@ -5412,7 +5435,7 @@ async function resolveQualityExceptionAnswer(root2, featureId, expectedRevision,
         state.obligations = satisfyObligations(state.obligations, [kind]);
       }
     }
-    state.lastUpdatedBy = { host, pluginVersion: "4.0.1" };
+    state.lastUpdatedBy = { host, pluginVersion: "4.0.2" };
   }, { interactionId });
 }
 
@@ -6409,7 +6432,7 @@ function assertRecordableStep(state, step) {
   if (state.lifecycle !== "active") {
     throw new DevFlowError("INVALID_LIFECYCLE", "only active features can record steps");
   }
-  const route = routeDefinitionForFeature(state.route, state.workflowCapabilities);
+  const route = routeDefinitionForState(state);
   if (["verification", "feature_check", "finalize"].includes(step) || !route.orderedSteps.includes(step)) {
     const recoveryHint = step === "verification" ? "\u8BF7\u8C03\u7528 dev_flow_verify" : step === "feature_check" ? "\u8BF7\u8C03\u7528 dev_flow_feature_check" : step === "finalize" ? "\u8BF7\u8C03\u7528 dev_flow_finalize" : "\u8BF7\u4F7F\u7528\u5F53\u524D\u8DEF\u7EBF\u5141\u8BB8\u7684 record_step \u9636\u6BB5";
     throw new DevFlowError("INVALID_STEP", step, { recoveryHint });
@@ -6451,7 +6474,7 @@ async function recordStep(root2, id, expectedRevision, step, evidence) {
   }
   const next = await mutate(root2, id, expectedRevision, "step-recorded", async (state) => {
     assertRecordableStep(state, step);
-    const route = routeDefinitionForFeature(state.route, state.workflowCapabilities);
+    const route = routeDefinitionForState(state);
     await assertRequirementsGrillSatisfied(root2, id, state);
     await assertTraceGateCurrent(root2, state, step);
     if (step === "implementation" && state.schemaVersion === 3 && checkpointsEnforcementRequired(state.route, state.workflowCapabilities)) {
@@ -6526,7 +6549,7 @@ async function featureCheck(root2, id, expectedRevision) {
     if (state.verification.verifiedFingerprint !== state.businessFingerprint && !hasCurrentQualityException(state, "verification")) {
       throw new DevFlowError("VERIFICATION_STALE", "protected files changed or verification did not pass");
     }
-    const orderedSteps = routeDefinitionForFeature(state.route, state.workflowCapabilities).orderedSteps;
+    const orderedSteps = routeDefinitionForState(state).orderedSteps;
     const featureCheckIndex = orderedSteps.indexOf("feature_check");
     for (const step of orderedSteps.slice(0, featureCheckIndex)) {
       const required = requiredEvidenceForStep(
@@ -6562,7 +6585,7 @@ async function finalize(root2, id, expectedRevision) {
   return mutate(root2, id, expectedRevision, "finalized", async (state) => {
     await assertRequirementsGrillSatisfied(root2, id, state);
     assertVerificationWasNotInvalidated(state);
-    const route = routeDefinitionForFeature(state.route, state.workflowCapabilities);
+    const route = routeDefinitionForState(state);
     state.workspace = reconciledWorkspace;
     assertCurrentStep(state, "finalize");
     await assertTraceGateCurrent(root2, state, "finalize");
@@ -6644,7 +6667,7 @@ async function presentApproval(root2, id, expectedRevision, requestedApprovalId)
     }
     const obligation = state2.obligations?.find((candidate) => candidate.id === selectedApproval && candidate.kind === "approval");
     if (!obligation || obligation.status === "satisfied") throw new DevFlowError("INVALID_APPROVAL", selectedApproval);
-    const definition = routeDefinitionForFeature(state2.route, state2.workflowCapabilities);
+    const definition = routeDefinitionForState(state2);
     const implementationIndex = definition.orderedSteps.indexOf("implementation");
     if (implementationIndex < 0 || !definition.orderedSteps.slice(0, implementationIndex).every((step) => state2.steps[step]?.status === "satisfied")) {
       throw new DevFlowError("APPROVAL_NOT_READY", "approval is only available after planning prerequisites are complete", { expectedStage: definition.orderedSteps[implementationIndex - 1] });
@@ -6823,7 +6846,7 @@ async function resolveApprovalResponse(root2, id, expectedRevision, interactionI
     } else {
       throw new DevFlowError("INTERACTION_ACTION_INVALID", response.action);
     }
-    state.lastUpdatedBy = { host, pluginVersion: "4.0.1" };
+    state.lastUpdatedBy = { host, pluginVersion: "4.0.2" };
   }, () => ({ approval, interactionId, response }));
 }
 async function resolveApprovalElicitation(root2, id, expectedRevision, interactionId, action, comment, host) {
@@ -7022,11 +7045,11 @@ async function nextAction(root2, id) {
   const state = await readState(root2, id);
   if (state.mode === "intake") {
     const openDecisions = (state.decisionLedger ?? []).filter((decision) => decision.status === "open");
-    return openDecisions.length ? { kind: "intake", activity: "resolve-decision", reason: `${openDecisions.length} \u4E2A\u51B3\u7B56\u4ECD\u5F85\u7528\u6237\u786E\u8BA4` } : { kind: "intake", activity: "investigate", reason: "\u8BFB\u53D6\u9700\u6C42\u3001\u4EE3\u7801\u3001\u6587\u6863\u548C\u6D4B\u8BD5\uFF0C\u751F\u6210 classificationBasis \u540E\u9501\u5B9A\u8DEF\u7EBF" };
+    return openDecisions.length ? { kind: "intake", activity: "resolve-decision", reason: `${openDecisions.length} \u4E2A\u51B3\u7B56\u4ECD\u5F85\u7528\u6237\u786E\u8BA4` } : { kind: "intake", activity: "investigate", reason: "\u8BFB\u53D6\u9700\u6C42\u3001\u4EE3\u7801\u3001\u6587\u6863\u548C\u6D4B\u8BD5\u5B8C\u6210\u8C03\u67E5\u540E\uFF0C\u8C03\u7528 dev_flow_lock_classification \u9501\u5B9A\u8DEF\u7EBF\uFF08\u9501\u5B9A\u524D\u4E0D\u8981\u8C03\u7528 record_step \u7B49\u8DEF\u7EBF\u6B65\u9AA4\u5DE5\u5177\uFF09" };
   }
   const action = deriveNext(toDerivedState(state, await verificationIsStale(root2, state)));
   if (action.kind === "run-step" || action.kind === "present-human-gate") {
-    const definition = routeDefinitionForFeature(state.route, state.workflowCapabilities);
+    const definition = routeDefinitionForState(state);
     const requiredNow = [
       ...definition.artifactSteps?.[action.step] ?? [],
       ...definition.generatedArtifactSteps?.[action.step] ?? []
@@ -7200,7 +7223,7 @@ function actionText(state, action) {
     case "done":
       return "\u5F53\u524D\u4EFB\u52A1\u5DF2\u5B8C\u6210\u3002";
     case "intake":
-      return action.activity === "resolve-decision" ? "\u56DE\u7B54\u5F53\u524D\u552F\u4E00\u5F85\u51B3\u95EE\u9898\u3002" : "\u7EE7\u7EED\u8C03\u67E5\u4E8B\u5B9E\u5E76\u9501\u5B9A\u8DEF\u7EBF\u3002";
+      return action.activity === "resolve-decision" ? "\u56DE\u7B54\u5F53\u524D\u552F\u4E00\u5F85\u51B3\u95EE\u9898\u3002" : "\u8C03\u67E5\u4E8B\u5B9E\u540E\u8C03\u7528 dev_flow_lock_classification \u9501\u5B9A\u8DEF\u7EBF\uFF08\u9501\u5B9A\u524D\u4E0D\u8981\u8C03\u7528 record_step \u7B49\u6B65\u9AA4\u5DE5\u5177\uFF09\u3002";
     case "scaffold-artifact":
       return `\u751F\u6210${artifactLabel(action.step)}\uFF0C\u7136\u540E\u586B\u5199\u5E76\u767B\u8BB0\u3002`;
     case "present-human-gate":
@@ -8318,7 +8341,7 @@ async function resolveRollbackGateResponse(root2, featureId, expectedRevision, i
     } else {
       throw new DevFlowError("INTERACTION_ACTION_INVALID", response.action);
     }
-    state.lastUpdatedBy = { host, pluginVersion: "4.0.1" };
+    state.lastUpdatedBy = { host, pluginVersion: "4.0.2" };
   }, () => ({ gate: "rollback-confirmation", interactionId, response }));
 }
 async function resolveRollbackGateElicitation(root2, featureId, expectedRevision, interactionId, action, comment, host) {
@@ -9953,20 +9976,17 @@ var interactionOptionSchema = object(["id", "label"], {
 var toolSchemas = {
   dev_flow_init_project: { description: "Create strict project configuration.", inputSchema: object(["config"], { config: { type: "object" } }) },
   dev_flow_classify: {
-    description: "Pure route classification.",
-    inputSchema: { type: "object", oneOf: [
-      object(["classificationBasis"], { classificationBasis: recommendedClassificationBasisSchema }),
-      object(["level", "topology"], {
-        level: { enum: ["XS", "S", "M", "L"] },
-        topology: { enum: ["local", "shared-contract", "multi-chain", "coordinated-rollback"] },
-        execution: { enum: ["light", "standard"] },
-        requirements: { enum: ["missing-or-unclear", "documented-unconfirmed", "provided-confirmed"] },
-        riskLabels: riskLabelsSchema,
-        classificationBasis: classificationBasisSchema,
-        acceptanceAssistSuggested: { type: "boolean", description: "Offer optional browser/user acceptance help; never blocks the route." },
-        manualAcceptanceRequired: { type: "boolean" }
-      })
-    ] },
+    description: "Pure route classification (read-only preview).",
+    inputSchema: object([], {
+      classificationBasis: recommendedClassificationBasisSchema,
+      level: { enum: ["XS", "S", "M", "L"] },
+      topology: { enum: ["local", "shared-contract", "multi-chain", "coordinated-rollback"] },
+      execution: { enum: ["light", "standard"] },
+      requirements: { enum: ["missing-or-unclear", "documented-unconfirmed", "provided-confirmed"] },
+      riskLabels: riskLabelsSchema,
+      acceptanceAssistSuggested: { type: "boolean", description: "Offer optional browser/user acceptance help; never blocks the route." },
+      manualAcceptanceRequired: { type: "boolean" }
+    }),
     annotations: { readOnlyHint: true }
   },
   dev_flow_start: {
@@ -10493,6 +10513,17 @@ async function call(name, a, connection2) {
       return { \u72B6\u6001: "\u5DF2\u521D\u59CB\u5316", \u914D\u7F6E\u8DEF\u5F84: path17.join(root, ".dev-flow", "project.json"), \u4E0B\u4E00\u6B65: "\u8C03\u7528 dev_flow_start \u5F00\u59CB\u4E00\u4E2A\u9700\u6C42\u3002" };
     }
     case "dev_flow_classify": {
+      if (!a.classificationBasis && (a.level === void 0 || a.topology === void 0)) {
+        throw new DevFlowError("CLASSIFICATION_ARGS_INVALID", "classify requires classificationBasis or level+topology", {
+          userMessage: "\u5206\u7C7B\u9884\u89C8\u53C2\u6570\u4E0D\u8DB3\u3002",
+          cause: "\u9700\u63D0\u4F9B classificationBasis\uFF08\u63A8\u8350\u6A21\u5F0F\uFF09\u6216 level+topology\u3002",
+          impact: "\u65E0\u6CD5\u751F\u6210\u5206\u7C7B\u9884\u89C8\u3002",
+          recoveryKind: "retry",
+          recoveryInstruction: "\u8865\u9F50 classificationBasis \u6216 level+topology \u540E\u91CD\u8BD5 dev_flow_classify\u3002",
+          retryOriginal: true,
+          requiresUserDecision: false
+        });
+      }
       if (a.classificationBasis?.signals) {
         const preview = recommendClassification(a.classificationBasis);
         return preview.readyToLock ? { ...preview, riskRequirements: deriveRiskRequirements(preview.classification.riskLabels) } : preview;
@@ -10870,7 +10901,7 @@ async function call(name, a, connection2) {
     case "dev_flow_enable_windows_notifications":
       return enableWindowsNotifications({ nodeExecutable: process.execPath });
     case "dev_flow_doctor":
-      return collectDoctorReport(root, pluginRoot, "4.0.1", tools);
+      return collectDoctorReport(root, pluginRoot, "4.0.2", tools);
     case "dev_flow_recover_corrupt_feature":
       return recoverCorruptFeature(root, {
         featureId: a.featureId,
@@ -10894,7 +10925,7 @@ async function dispatchRequest(message) {
       connection.configure(message.params?.capabilities);
       protocolResult(message.id, {
         protocolVersion: message.params?.protocolVersion || "2024-11-05",
-        serverInfo: { name: "dev-flow", version: "4.0.1" },
+        serverInfo: { name: "dev-flow", version: "4.0.2" },
         capabilities: { tools: {} },
         instructions: "\u5148\u5B8C\u6210\u4E8B\u5B9E\u8C03\u67E5\u548C\u8DEF\u7EBF\u5206\u7C7B\u3002\u65E5\u5E38\u8BFB\u53D6 dev_flow_status\uFF1B\u5B83\u4F1A\u663E\u793A\u4E2D\u6587\u9636\u6BB5\u3001\u5F53\u524D\u4E0B\u4E00\u6B65\u548C\u552F\u4E00\u5F85\u51B3\u95EE\u9898\u3002\u6240\u6709\u7528\u6237\u51B3\u5B9A\u7EDF\u4E00\u4F7F\u7528 dev_flow_answer\uFF0C\u7CFB\u7EDF\u4F1A\u81EA\u52A8\u6309\u95EE\u9898\u7C7B\u578B\u5904\u7406\u3002\u6CA1\u6709\u771F\u5B9E\u51B3\u7B56\u7F3A\u53E3\u65F6\u6D41\u7A0B\u4F1A\u81EA\u52A8\u63A8\u8FDB\u3002\u5148\u8C03\u7528 dev_flow_init_project\uFF0C\u518D\u5F00\u59CB feature\u3002"
       });

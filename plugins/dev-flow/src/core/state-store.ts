@@ -599,7 +599,16 @@ export async function lockClassification(
 ): Promise<FeatureState> {
   const selected = selectBaseRoute(facts);
   if (selected.contradictions.length) {
-    throw new DevFlowError("CLASSIFICATION_CONTRADICTION", "classification facts contain unresolved contradictions", { contradictions: selected.contradictions });
+    throw new DevFlowError("CLASSIFICATION_CONTRADICTION", "classification facts contain unresolved contradictions", {
+      contradictions: selected.contradictions,
+      userMessage: "分类参数存在冲突或缺失，无法锁定路线。",
+      cause: `分类事实存在 ${selected.contradictions.length} 处矛盾：${selected.contradictions.join("；")}`,
+      impact: "路线不会锁定，仍停留在 intake 阶段。",
+      recoveryKind: "retry",
+      recoveryInstruction: "修正分类参数（补齐 execution/requirements、避免字段重复或与 classificationBasis 冲突）后重新 dev_flow_lock_classification。",
+      retryOriginal: true,
+      requiresUserDecision: false,
+    });
   }
   const release = await lock(root, id, "lock-classification");
   try {

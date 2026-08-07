@@ -53,17 +53,15 @@ test("every tool exposes an MCP-conformant object inputSchema", async () => {
   }
 });
 
-test("dev_flow_classify keeps its either-or branches under a top-level object schema", async () => {
+test("dev_flow_classify exposes a properties-based schema with both call modes", async () => {
   const tools = await toolDefinitions();
   const classify = tools.find((tool) => tool.name === "dev_flow_classify");
   assert.ok(classify, "dev_flow_classify must be present");
   assert.equal(classify.inputSchema.type, "object");
-  assert.ok(Array.isArray(classify.inputSchema.oneOf), "classify must keep its oneOf branches");
-  assert.equal(classify.inputSchema.oneOf.length, 2);
-  for (const branch of classify.inputSchema.oneOf) {
-    assert.equal(branch.type, "object", "each classify branch must be an object schema");
-    assert.ok(Array.isArray(branch.required), "each classify branch must declare required");
-  }
+  assert.equal(classify.inputSchema.oneOf, undefined, "classify must not use top-level oneOf");
+  assert.ok(classify.inputSchema.properties, "classify must declare root properties");
+  assert.ok("classificationBasis" in classify.inputSchema.properties, "recommend mode via classificationBasis");
+  assert.ok("level" in classify.inputSchema.properties && "topology" in classify.inputSchema.properties, "flat mode via level/topology");
 });
 
 test("v3 public MCP surface has one answer tool and no token or legacy resolve tools", async () => {

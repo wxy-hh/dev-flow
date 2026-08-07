@@ -1,4 +1,4 @@
-import { checkpointsEnforcementRequired, reviewEnforcementRequired, routeDefinitionForFeature } from "../policy/contract.js";
+import { checkpointsEnforcementRequired, reviewEnforcementRequired } from "../policy/contract.js";
 import { deriveNext } from "../policy/derive-next.js";
 import { requiredEvidenceForStep, requiredEvidenceIsEmpty } from "../policy/evidence.js";
 import type { NextAction } from "../policy/types.js";
@@ -10,6 +10,7 @@ import { verificationIsStale } from "./verification.js";
 import { assertReviewComplete } from "./review-jobs.js";
 import { readReviewLedger } from "./review-store.js";
 import { assertCurrentReviewProjection } from "./review-projection.js";
+import { routeDefinitionForState } from "./step-order.js";
 
 function toDerivedState(state: FeatureState, verificationStale: boolean) {
   const steps: Record<string, { status: "pending" | "satisfied"; artifactReady?: boolean }> = { ...state.steps };
@@ -141,12 +142,12 @@ export async function nextAction(root: string, id: string): Promise<NextAction> 
     const openDecisions = (state.decisionLedger ?? []).filter((decision) => decision.status === "open");
     return openDecisions.length
       ? { kind: "intake", activity: "resolve-decision", reason: `${openDecisions.length} 个决策仍待用户确认` }
-      : { kind: "intake", activity: "investigate", reason: "读取需求、代码、文档和测试，生成 classificationBasis 后锁定路线" };
+      : { kind: "intake", activity: "investigate", reason: "读取需求、代码、文档和测试完成调查后，调用 dev_flow_lock_classification 锁定路线（锁定前不要调用 record_step 等路线步骤工具）" };
   }
   const action = deriveNext(toDerivedState(state, await verificationIsStale(root, state)));
 
   if (action.kind === "run-step" || action.kind === "present-human-gate") {
-    const definition = routeDefinitionForFeature(state.route, state.workflowCapabilities);
+    const definition = routeDefinitionForState(state);
     const requiredNow = [
       ...(definition.artifactSteps?.[action.step] ?? []),
       ...(definition.generatedArtifactSteps?.[action.step] ?? []),

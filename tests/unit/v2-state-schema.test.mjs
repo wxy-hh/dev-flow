@@ -39,3 +39,23 @@ test("v1 state is rejected with an actionable hard-cut error", async () => {
   await writeFile(path.join(root, ".dev-flow", "features", "legacy", "state.json"), JSON.stringify({ schemaVersion: 1 }));
   await assert.rejects(() => state.readState(root, "legacy"), /LEGACY_STATE_UNSUPPORTED/);
 });
+
+test("lock with contradictory classification args reports a readable contradiction", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "dev-flow-v2-lock-contradiction-"));
+  await mkdir(path.join(root, "src"));
+  await state.initProject(root, config);
+  const intake = await state.startFeature(root, { featureId: "f", host: "codex" });
+  await assert.rejects(
+    () => state.lockClassification(root, "f", intake.revision, {
+      level: "M", topology: "local", // 缺 execution：M/L 必须指定
+      scopeFacts: ["只改一个模块"], topologyFacts: ["没有共享契约"], uncertaintyFacts: [],
+      riskFacts: {}, decisionRefs: [],
+    }),
+    (error) => {
+      assert.equal(error.code, "CLASSIFICATION_CONTRADICTION");
+      assert.match(error.userMessage, /分类参数/);
+      assert.doesNotMatch(error.cause, /条件尚未满足/);
+      return true;
+    },
+  );
+});

@@ -8,6 +8,9 @@ import { createTinyApp, strictProjectConfig } from "../helpers/fixture-repo.mjs"
 import { loadSource } from "../helpers/load-source.mjs";
 
 const store = await loadSource("plugins/dev-flow/src/core/state-store.ts");
+const featureCheck = await loadSource("plugins/dev-flow/src/core/feature-check.ts");
+const artifacts = await loadSource("plugins/dev-flow/src/core/artifacts.ts");
+const approvals = await loadSource("plugins/dev-flow/src/core/approval-interactions.ts");
 const run = promisify(execFile);
 
 test("pause removes the active pointer without requiring commit or finalize, resume reconciles it", async () => {
@@ -97,6 +100,37 @@ test("a corrupt project.json reports INVALID_PROJECT_CONFIG, not not-initialized
         assert.doesNotMatch(error.cause, /缺少/);
         return true;
       },
+    );
+  } finally {
+    await fixture.dispose();
+  }
+});
+
+test("intake tool calls reject with ROUTE_NOT_DETERMINED instead of crashing", async () => {
+  const fixture = await createTinyApp();
+  try {
+    await store.initProject(fixture.root, strictProjectConfig);
+    const intake = await store.startFeature(fixture.root, { featureId: "intake", host: "codex" });
+    const revision = intake.revision;
+    await assert.rejects(
+      () => featureCheck.recordStep(fixture.root, "intake", revision, "planning", {}),
+      (error) => { assert.equal(error.code, "ROUTE_NOT_DETERMINED"); return true; },
+    );
+    await assert.rejects(
+      () => featureCheck.finalize(fixture.root, "intake", revision),
+      (error) => { assert.equal(error.code, "ROUTE_NOT_DETERMINED"); return true; },
+    );
+    await assert.rejects(
+      () => artifacts.scaffoldArtifact(fixture.root, "intake", revision, "implementation-plan"),
+      (error) => { assert.equal(error.code, "ROUTE_NOT_DETERMINED"); return true; },
+    );
+    await assert.rejects(
+      () => featureCheck.featureCheck(fixture.root, "intake", revision),
+      (error) => { assert.equal(typeof error.code, "string"); return true; },
+    );
+    await assert.rejects(
+      () => approvals.presentApproval(fixture.root, "intake", revision, "approval:aaaaaaaaaaaaaaaaaaaa"),
+      (error) => { assert.equal(typeof error.code, "string"); return true; },
     );
   } finally {
     await fixture.dispose();

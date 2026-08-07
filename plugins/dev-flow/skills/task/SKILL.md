@@ -10,7 +10,7 @@ description: 启动 Dev Flow 4.0 任务并进入需求了解。触发：开任�
 1. 收集用户目标、初始范围和排除范围，调用 `dev_flow_start`，并显式传当前宿主 `host`（scope 可选）。
 2. 读取代码、文档、测试和 Git 状态，整理 `classificationBasis`：scopeFacts、topologyFacts、uncertaintyFacts、riskFacts、decisionRefs；可进一步提供结构化 `signals` 使用推荐模式。
 3. 只有必须由用户决定的边界才调用 `grillme`；问题和答案通过 decision ledger 记录。能从仓库查明的事实不提问。
-4. 优先用含 `classificationBasis.signals` 的推荐模式调用 `dev_flow_classify` 做纯预览，操作者核实 reasons 后再 lock；兼容模式仍需检查矛盾和风险依据，没有事实依据的 risk label 不得提交。
+4. 若宿主暴露 `dev_flow_classify`，优先用含 `classificationBasis.signals` 的推荐模式做纯预览，操作者核实 reasons 后再 lock；若该工具不可用（如 Claude 宿主暂未注册），跳过预览、直接 `dev_flow_lock_classification`，以其返回的 route/level 作为向用户声明的依据。兼容模式仍需检查矛盾和风险依据，没有事实依据的 risk label 不得提交。
 5. 所有影响分类的 decision 已收敛后，调用 `dev_flow_lock_classification`。锁定失败时按中文恢复动作处理，不手改状态。
 6. 锁定成功后必须用可见文本向用户声明本次分级：level、route、topology、execution，以及该路线的门禁强度（XS/S/light M 无人工门禁；standard M 及以上有计划审查、执行确认）。级别只存在于 MCP 返回或内部推理不算完成——用户应在流程开始时知道当前任务走的路线与后续义务。
 7. 之后读取 `dev_flow_status` 的 compact 中文状态；需要细节时按主题调用 `dev_flow_inspect`，不要寻找或重建 full-state API。用户决定统一调用 `dev_flow_answer`。

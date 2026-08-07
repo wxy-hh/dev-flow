@@ -16,7 +16,7 @@ import {
 } from "./delivery-snapshot.js";
 import { assertRequirementsGrillSatisfied } from "./requirements-grill.js";
 import { mutate, readProjectConfig, readState, type FeatureState } from "./state-store.js";
-import { assertCurrentStep } from "./step-order.js";
+import { assertCurrentStep, routeDefinitionForState } from "./step-order.js";
 import { assertTraceGateCurrent } from "./traceability-gates.js";
 import { readTraceability } from "./traceability-store.js";
 import { invalidateStaleVerification } from "./verification.js";
@@ -40,7 +40,7 @@ function assertRecordableStep(state: FeatureState, step: string): void {
   if (state.lifecycle !== "active") {
     throw new DevFlowError("INVALID_LIFECYCLE", "only active features can record steps");
   }
-  const route = routeDefinitionForFeature(state.route, state.workflowCapabilities);
+  const route = routeDefinitionForState(state);
   if (["verification", "feature_check", "finalize"].includes(step)
     || !route.orderedSteps.includes(step)) {
     const recoveryHint = step === "verification"
@@ -110,7 +110,7 @@ export async function recordStep(
   }
   const next = await mutate(root, id, expectedRevision, "step-recorded", async (state) => {
     assertRecordableStep(state, step);
-    const route = routeDefinitionForFeature(state.route, state.workflowCapabilities);
+    const route = routeDefinitionForState(state);
     await assertRequirementsGrillSatisfied(root, id, state);
     await assertTraceGateCurrent(root, state, step);
     if (step === "implementation" && state.schemaVersion === 3 && checkpointsEnforcementRequired(state.route, state.workflowCapabilities)) {
@@ -196,7 +196,7 @@ export async function featureCheck(
     if (state.verification.verifiedFingerprint !== state.businessFingerprint && !hasCurrentQualityException(state, "verification")) {
       throw new DevFlowError("VERIFICATION_STALE", "protected files changed or verification did not pass");
     }
-    const orderedSteps = routeDefinitionForFeature(state.route, state.workflowCapabilities).orderedSteps;
+    const orderedSteps = routeDefinitionForState(state).orderedSteps;
     const featureCheckIndex = orderedSteps.indexOf("feature_check");
     for (const step of orderedSteps.slice(0, featureCheckIndex)) {
       const required = requiredEvidenceForStep(
@@ -239,7 +239,7 @@ export async function finalize(
   return mutate(root, id, expectedRevision, "finalized", async (state) => {
     await assertRequirementsGrillSatisfied(root, id, state);
     assertVerificationWasNotInvalidated(state);
-    const route = routeDefinitionForFeature(state.route, state.workflowCapabilities);
+    const route = routeDefinitionForState(state);
     state.workspace = reconciledWorkspace;
     assertCurrentStep(state, "finalize");
     await assertTraceGateCurrent(root, state, "finalize");

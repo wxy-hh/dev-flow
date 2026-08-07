@@ -1,4 +1,4 @@
-/* dev-flow 4.0.1; built from source, deterministic build */
+/* dev-flow 4.0.2; built from source, deterministic build */
 
 // plugins/dev-flow/src/core/state-store.ts
 import { randomUUID as randomUUID4, createHash as createHash5 } from "node:crypto";
