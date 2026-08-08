@@ -4,7 +4,7 @@ Dev Flow 5.0 是面向 **Claude Code** 与 **Codex CLI** 的动态治理插件�
 
 模型负责读取代码、文档、测试和 Git 完成调查。Core 根据变更表面、行为复杂度与拓扑计算 `XS / S / M / L` 最低级别，再独立派生需求、计划、Trace、计划审查、执行确认、checkpoint、恢复、代码审查与验证控制，编译确定的完整路线。风险只增加控制，不抬高 level；5.0 不再有 `light/standard` 轴。
 
-详细合同见 [路线说明](docs/routes.md)、[架构](docs/architecture.md)、[入门与 FAQ](docs/dev-flow-guide.md) 和 [5.0 发布说明](docs/release-notes-5.0.0.md)。
+详细合同见 [路线说明](docs/routes.md)、[架构](docs/architecture.md)。
 
 ## 宿主支持
 
