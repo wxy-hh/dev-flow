@@ -62,18 +62,26 @@ test("dev_flow_classify exposes a properties-based schema with both call modes",
   assert.ok(classify.inputSchema.properties, "classify must declare root properties");
   assert.ok("classificationBasis" in classify.inputSchema.properties, "recommend mode via classificationBasis");
   assert.ok("level" in classify.inputSchema.properties && "topology" in classify.inputSchema.properties, "flat mode via level/topology");
+  assert.ok("controlEnhancements" in classify.inputSchema.properties, "flat mode must expose additive control enhancements");
+  assert.ok("controlEnhancements" in classify.inputSchema.properties.classificationBasis.properties,
+    "classificationBasis must expose additive control enhancements");
+  assert.equal(classify.inputSchema.properties.controlEnhancements.properties.requirements.const, true);
+  assert.equal(classify.inputSchema.properties.controlEnhancements.additionalProperties, false);
 });
 
-test("v3 public MCP surface has one answer tool and no token or legacy resolve tools", async () => {
+test("v5 public MCP surface removes split decisions and feature-check, and exposes derived repair", async () => {
   const tools = await toolDefinitions();
   const names = new Set(tools.map((tool) => tool.name));
   assert.equal(names.has("dev_flow_answer"), true);
   assert.equal(names.has("dev_flow_status"), true);
   assert.equal(names.has("dev_flow_inspect"), true);
-  for (const removed of ["dev_flow_next", "dev_flow_confirm_approval", "dev_flow_respond_interaction", "dev_flow_resolve_grill_decision", "dev_flow_resolve_review_risk_acceptance", "dev_flow_switch_active"]) {
-    assert.equal(names.has(removed), false, `${removed} must not be public in v3`);
+  assert.equal(names.has("dev_flow_repair_feature"), true);
+  for (const removed of ["dev_flow_next", "dev_flow_confirm_approval", "dev_flow_respond_interaction", "dev_flow_resolve_decision", "dev_flow_resolve_grill_decision", "dev_flow_resolve_review_risk_acceptance", "dev_flow_feature_check", "dev_flow_switch_active"]) {
+    assert.equal(names.has(removed), false, `${removed} must not be public in v5`);
   }
   const answer = tools.find((tool) => tool.name === "dev_flow_answer");
   assert.equal("promptEventId" in answer.inputSchema.properties, false);
   assert.equal("fallbackToken" in answer.inputSchema.properties, false);
+  const approval = tools.find((tool) => tool.name === "dev_flow_present_approval");
+  assert.equal("approvalId" in approval.inputSchema.properties, false);
 });

@@ -2,8 +2,8 @@
   "$schema": "https://json.schemastore.org/claude-code-plugin-manifest.json",
   "name": "dev-flow",
   "displayName": "Dev Flow",
-  "version": "4.0.3",
-  "description": "Risk-aware multi-route development orchestration for Claude Code and Codex CLI.",
+  "version": "5.0.0",
+  "description": "Dynamic, evidence-based development governance for Claude Code and Codex CLI.",
   "author": {
     "name": "wxy-hh",
     "url": "https://github.com/wxy-hh"

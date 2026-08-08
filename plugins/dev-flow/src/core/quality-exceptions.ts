@@ -4,6 +4,7 @@ import { mutate, readFeatureEvents, readState, type FeatureState } from "./state
 import {
   createInteraction,
   getInteraction,
+  resolveNativeInteraction,
   resolveTextInteraction,
   toPublicInteraction,
   type PublicInteraction,
@@ -79,8 +80,49 @@ export async function resolveQualityExceptionAnswer(
     presentedAt: interaction.presentedAt,
     presentedRevision: initial.pendingDecision?.presentedRevision ?? initial.revision - 1,
   });
+  return resolveQualityExceptionResponse(root, featureId, expectedRevision, interactionId, host, {
+    source: "text",
+    userReply,
+    promptEventId: match.eventId,
+  });
+}
+
+/** 原生表单来源：用户选择即可信落账，不需要宿主 user-prompt 事件。 */
+export async function resolveQualityExceptionElicitation(
+  root: string,
+  featureId: string,
+  expectedRevision: number,
+  interactionId: string,
+  action: string,
+  comment: string | undefined,
+  host: "claude" | "codex",
+): Promise<FeatureState> {
+  return resolveQualityExceptionResponse(root, featureId, expectedRevision, interactionId, host, {
+    source: "elicitation",
+    action,
+    comment,
+  });
+}
+
+type QualityExceptionResolution =
+  | { source: "text"; userReply: string; promptEventId: string }
+  | { source: "elicitation"; action: string; comment?: string };
+
+async function resolveQualityExceptionResponse(
+  root: string,
+  featureId: string,
+  expectedRevision: number,
+  interactionId: string,
+  host: "claude" | "codex",
+  input: QualityExceptionResolution,
+): Promise<FeatureState> {
+  const initial = await readState(root, featureId);
+  const interaction = getInteraction(initial, interactionId);
+  if (interaction.kind !== "quality-exception" || interaction.status !== "pending") throw new DevFlowError("INTERACTION_NOT_PENDING", "当前风险问题已经处理。", { interactionId });
   return mutate(root, featureId, expectedRevision, "quality-exception-answered", (state) => {
-    const response = resolveTextInteraction(state, interactionId, userReply, host, { promptEventId: match.eventId });
+    const response = input.source === "text"
+      ? resolveTextInteraction(state, interactionId, input.userReply, host, { promptEventId: input.promptEventId })
+      : resolveNativeInteraction(state, interactionId, input.action, input.comment, host);
     const kind = interaction.target.slice("quality-exception:".length) as QualityException["kind"];
     if (response.action === "accept") {
       state.qualityExceptions.push({
@@ -88,7 +130,7 @@ export async function resolveQualityExceptionAnswer(
         basisHash: interaction.basisHash,
         fingerprint: state.workspace.lastWorkspaceFingerprint,
         riskSummary: interaction.question ?? "已接受当前流程质量风险。",
-        userEvidence: response.comment ?? userReply,
+        userEvidence: response.comment ?? (input.source === "text" ? input.userReply : input.action),
         at: response.respondedAt,
         status: "current",
       });

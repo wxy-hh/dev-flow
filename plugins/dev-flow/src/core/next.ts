@@ -13,6 +13,7 @@ import { assertCurrentReviewProjection } from "./review-projection.js";
 import { routeDefinitionForState } from "./step-order.js";
 
 function toDerivedState(state: FeatureState, verificationStale: boolean) {
+  const definition = routeDefinitionForState(state);
   const steps: Record<string, { status: "pending" | "satisfied"; artifactReady?: boolean }> = { ...state.steps };
   if (verificationStale) steps.verification = { status: "pending" };
   for (const [approvalId, snapshot] of Object.entries(state.humanGates)) {
@@ -25,16 +26,13 @@ function toDerivedState(state: FeatureState, verificationStale: boolean) {
     schemaVersion: state.schemaVersion,
     lifecycle: state.lifecycle,
     route: state.route,
+    orderedSteps: definition.orderedSteps,
     steps,
     obligations: state.obligations,
     blockingFindings: state.blockingFindings,
     verificationFresh: !verificationStale && Boolean(
       state.verification.verifiedFingerprint
       && state.verification.verifiedFingerprint === state.businessFingerprint,
-    ),
-    featureCheckFresh: !verificationStale && Boolean(
-      state.featureCheck.passed
-      && state.featureCheck.fingerprint === state.businessFingerprint,
     ),
     logicComplete: state.logicComplete,
     repair: state.repair,
@@ -46,23 +44,11 @@ function enrichRunStep(state: FeatureState, step: string): NextAction {
     state.route,
     state.classification.riskLabels,
     step,
-    state.workflowCapabilities,
+    state.classification.controls,
   );
   return requiredEvidenceIsEmpty(requiredEvidence)
     ? { kind: "run-step", step }
     : { kind: "run-step", step, requiredEvidence };
-}
-
-function enrichFeatureCheck(state: FeatureState): NextAction {
-  const requiredEvidence = requiredEvidenceForStep(
-    state.route,
-    state.classification.riskLabels,
-    "feature_check",
-    state.workflowCapabilities,
-  );
-  return requiredEvidenceIsEmpty(requiredEvidence)
-    ? { kind: "feature-check" }
-    : { kind: "feature-check", requiredEvidence };
 }
 
 function traceStepForAction(action: NextAction): string | undefined {
@@ -72,7 +58,6 @@ function traceStepForAction(action: NextAction): string | undefined {
     return action.step;
   }
   if (action.kind === "present-human-gate") return action.step.startsWith("approval:") ? "implementation_plan" : action.step;
-  if (action.kind === "feature-check") return "feature_check";
   if (action.kind === "finalize") return "finalize";
   return undefined;
 }
@@ -82,7 +67,7 @@ function traceStepForAction(action: NextAction): string | undefined {
  * No job output is exposed here: callers only receive the work queue metadata.
  */
 async function reviewPlanAction(root: string, state: FeatureState): Promise<NextAction | undefined> {
-  if (!reviewEnforcementRequired(state.route, state.workflowCapabilities)) return undefined;
+  if (!reviewEnforcementRequired(state.route, state.classification.controls)) return undefined;
   const ledger = await readReviewLedger(root, state);
   const batch = ledger.batches.find((candidate) => candidate.validity === "current");
   if (!batch) return { kind: "create-review-batch", step: "planning" };
@@ -121,7 +106,7 @@ async function reviewPlanAction(root: string, state: FeatureState): Promise<Next
  * rollback unit is checkpointed may the route record implementation.
  */
 async function unitLifecycleAction(root: string, state: FeatureState): Promise<NextAction | undefined> {
-  if (!checkpointsEnforcementRequired(state.route, state.workflowCapabilities)) return undefined;
+  if (!checkpointsEnforcementRequired(state.route, state.classification.controls)) return undefined;
   const units = state.implementationUnits ?? [];
   const active = units.find((unit) => unit.status === "active");
   if (active) return { kind: "checkpoint-implementation-unit", unitId: active.unitId };
@@ -184,9 +169,7 @@ export async function nextAction(root: string, id: string): Promise<NextAction> 
     if (unitAction) return unitAction;
   }
 
-  if (action.kind === "run-step" && action.step === "feature_check") return enrichFeatureCheck(state);
   if (action.kind === "run-step" && action.step === "finalize") return { kind: "finalize" };
   if (action.kind === "run-step") return enrichRunStep(state, action.step);
-  if (action.kind === "feature-check") return enrichFeatureCheck(state);
   return action;
 }

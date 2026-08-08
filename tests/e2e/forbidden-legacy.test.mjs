@@ -45,16 +45,15 @@ test("prebuilt plugin entry points are present", () => {
   }
 });
 
-test("v2 runtime surfaces contain no removed route or gate vocabulary", () => {
+test("v5 runtime surfaces contain no removed six-route or split-decision vocabulary", () => {
   const scanRoots = [
     path.join(root, "plugins", "dev-flow", "src"),
     path.join(root, "plugins", "dev-flow", "policy"),
     path.join(root, "plugins", "dev-flow", "skills"),
     path.join(root, "docs", "routes.md"),
     path.join(root, "docs", "architecture.md"),
-    path.join(root, "README.md"),
   ];
-  const forbidden = /risk-minimal|risk_review|risk_controls|risk-card|requirement_confirmation|implementation_approval|execution_approval|dev_flow_present_gate|dev_flow_confirm_gate|gate-approval|gate-basis/g;
+  const forbidden = /risk-minimal|risk_review|risk_controls|risk-card|requirement_confirmation|implementation_approval|light-m|standard-m|light-l|standard-l|dev_flow_resolve_decision|dev_flow_present_gate|dev_flow_confirm_gate|gate-approval|gate-basis/g;
   const hits = [];
   for (const target of scanRoots) {
     const files = target.endsWith(".md") ? [target] : (existsSync(target) ? listPaths(target).filter((file) => !requireDirectory(file)) : []);

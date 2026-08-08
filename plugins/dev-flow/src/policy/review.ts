@@ -39,12 +39,12 @@ export interface ReviewBasis {
   featureId: string;
   route: RouteId;
   workflowCapabilities: Record<"trace" | "review" | "checkpoints" | "rollbackExecution", 0 | 1>;
-  classification: { level: string; topology: string; execution?: string; requirements?: string; riskLabels: RiskLabel[] };
+  classification: { level: string; topology: string; requirements?: string; riskLabels: RiskLabel[] };
   artifacts: ReviewBasisArtifact[];
   traceability: { path: string; sha256: string; revision: number };
   projectConfigSha256: string;
   scopeManifestSha256: string;
-  protectedRootsFingerprint: string;
+  governedRootsFingerprint: string;
 }
 
 export interface ReviewJob {
@@ -52,7 +52,9 @@ export interface ReviewJob {
   role: ReviewRole;
   reviewDepth: ReviewDepth;
   packageSha256: string;
-  status: "pending" | "claimed" | "sampling" | "submitted";
+  status: "pending" | "claimed" | "sampling" | "submitted" | "reused";
+  roleBasisHash: string;
+  reusedFrom?: { batchId: string; jobId: string; submissionSha256: string };
   claim?: { requestSha256: string; claimedAt: string; leaseExpiresAt: string };
   samplingAttempts?: ReviewSamplingAttempt[];
   carriedFindings?: Array<{
@@ -217,7 +219,7 @@ export interface ReviewBatch {
 }
 
 export interface ReviewLedger {
-  schemaVersion: 1;
+  schemaVersion: 2;
   featureId: string;
   revision: number;
   stateRevision: number;
@@ -289,6 +291,10 @@ const reviewRoles = [
   "rollback-operability",
   "security",
   "data-irreversibility",
+  "money-safety",
+  "contract-failure",
+  "recovery-observability",
+  "critical-correctness",
 ] as const satisfies readonly ReviewRole[];
 
 const reviewDepths = ["standard", "full"] as const satisfies readonly ReviewDepth[];
@@ -385,11 +391,12 @@ function parseResolution(value: unknown, index: number): ReviewFindingResolution
 export function deriveReviewJobRequirements(
   route: RouteId,
   riskLabels: RiskLabel[],
+  derivedRoles?: ReviewRole[],
 ): ReviewJobRequirement[] {
-  if (route !== "standard-m" && route !== "standard-l") return [];
-  const roles: ReviewRole[] = ["requirements-coverage", "architecture-testability", "rollback-operability"];
-  if (riskLabels.includes("security")) roles.push("security");
-  if (riskLabels.some((label) => label === "data" || label === "money" || label === "irreversible_consequence")) {
+  if (route !== "m" && route !== "l") return [];
+  const roles: ReviewRole[] = derivedRoles?.length ? [...derivedRoles] : ["requirements-coverage", "architecture-testability", "rollback-operability"];
+  if (!derivedRoles && riskLabels.includes("security")) roles.push("security");
+  if (!derivedRoles && riskLabels.some((label) => label === "data" || label === "money" || label === "irreversible_consequence")) {
     roles.push("data-irreversibility");
   }
   const reviewDepth: ReviewDepth = riskLabels.includes("critical_correctness") ? "full" : "standard";

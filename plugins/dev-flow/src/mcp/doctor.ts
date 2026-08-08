@@ -216,7 +216,7 @@ export async function collectDoctorReport(root: string, pluginRoot: string, vers
     orphanSnapshots: string[];
   } | undefined;
   if (traceState && traceState.mode !== "intake") {
-    const enforced = traceEnforcementRequired(traceState.route, traceState.workflowCapabilities);
+    const enforced = traceEnforcementRequired(traceState.route, traceState.classification.controls);
     const orphanSnapshots = await listOrphanTraceSnapshots(root, traceState);
     trace = { enforced, pointerPresent: Boolean(traceState.traceability), orphanSnapshots };
     if (!enforced) {
@@ -254,7 +254,7 @@ export async function collectDoctorReport(root: string, pluginRoot: string, vers
     orphanSnapshots: string[];
   } | undefined;
   if (traceState && traceState.mode !== "intake") {
-    const enforced = reviewEnforcementRequired(traceState.route, traceState.workflowCapabilities);
+    const enforced = reviewEnforcementRequired(traceState.route, traceState.classification.controls);
     const orphanSnapshots = await listOrphanReviewSnapshots(root, traceState);
     review = { enforced, pointerPresent: Boolean(traceState.review), orphanSnapshots };
     if (!enforced) {
@@ -333,12 +333,12 @@ export async function collectDoctorReport(root: string, pluginRoot: string, vers
     for (const entry of entries.filter((candidate) => candidate.isDirectory())) {
       try {
         const raw = JSON.parse(await readFile(path.join(directory, entry.name, "state.json"), "utf8")) as { schemaVersion?: unknown; lifecycle?: unknown };
-        if ((raw.schemaVersion === 1 || raw.schemaVersion === 2) && raw.lifecycle !== "finalized" && raw.lifecycle !== "abandoned") legacyFeatures.push(entry.name);
+        if ([1, 2, 3].includes(Number(raw.schemaVersion)) && raw.lifecycle !== "finalized" && raw.lifecycle !== "abandoned") legacyFeatures.push(entry.name);
       } catch { /* corrupt features are already surfaced above */ }
     }
   } catch { /* no feature directory means there is nothing to upgrade */ }
-  const v3Ready = legacyFeatures.length === 0;
-  add(v3Ready ? "V3_READY" : "V3_NOT_READY", v3Ready ? "ok" : "warning", v3Ready ? "没有未完成的旧版 feature，可以使用 schema v3" : `仍有未完成的旧版 feature: ${legacyFeatures.join(", ")}`, v3Ready ? undefined : "先结束或清理旧版测试 fixture，再重新开始 schema v3；doctor 不自动迁移或终止");
+  const v4Ready = legacyFeatures.length === 0;
+  add(v4Ready ? "V4_READY" : "V4_NOT_READY", v4Ready ? "ok" : "warning", v4Ready ? "没有未完成的旧版 feature，可以使用 schema v4" : `仍有未完成的旧版 feature: ${legacyFeatures.join(", ")}`, v4Ready ? undefined : "先使用 4.x 完成或放弃旧 feature，备份 .dev-flow，再使用 5.0 重新初始化；doctor 不自动迁移或终止");
 
   return {
     version, root, pluginRoot, tools, project, activeFeature, corruptFeature, corruptActivePointer,
@@ -347,7 +347,7 @@ export async function collectDoctorReport(root: string, pluginRoot: string, vers
     trace: trace ?? null,
     review: review ?? null,
     mcp: { server: "running", configuration: !invalidJson },
-    v3Ready,
+    v4Ready,
     legacyFeatures,
     diagnostics,
   };

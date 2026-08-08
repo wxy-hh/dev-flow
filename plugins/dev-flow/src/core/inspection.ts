@@ -35,7 +35,7 @@ async function artifacts(state: FeatureState) {
 }
 
 async function trace(root: string, state: FeatureState) {
-  if (state.mode === "intake" || !traceEnforcementRequired(state.route, state.workflowCapabilities)) return { enforced: false, blocker: undefined };
+  if (state.mode === "intake" || !traceEnforcementRequired(state.route, state.classification.controls)) return { enforced: false, blocker: undefined };
   const inspection = await inspectCurrentTrace(root, state);
   return {
     enforced: true,
@@ -45,7 +45,7 @@ async function trace(root: string, state: FeatureState) {
 }
 
 async function review(root: string, state: FeatureState) {
-  if (state.mode === "intake" || !reviewEnforcementRequired(state.route, state.workflowCapabilities)) return { enforced: false };
+  if (state.mode === "intake" || !reviewEnforcementRequired(state.route, state.classification.controls)) return { enforced: false };
   const ledger = await readReviewLedger(root, state);
   const current = ledger.batches.find((batch) => batch.validity === "current");
   return {

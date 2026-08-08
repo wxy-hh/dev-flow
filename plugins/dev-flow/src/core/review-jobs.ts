@@ -2,7 +2,8 @@ import { createHash, randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { toPublicReviewJob, type ReviewAgentAttestation, type ReviewBasis, type ReviewBatch, type ReviewFindingEvent, type ReviewJob, type ReviewLedger, type ReviewSamplingAttempt, type PublicReviewJob } from "../policy/review.js";
-import type { ReviewAssurance, ReviewFinding, ReviewFindingInput, ReviewFindingResolutionInput } from "../policy/types.js";
+import type { TraceNode, TraceabilityLedger } from "../policy/traceability.js";
+import type { ReviewAssurance, ReviewFinding, ReviewFindingInput, ReviewFindingResolutionInput, ReviewRole } from "../policy/types.js";
 import { pathWithinFileScope } from "../policy/rollback.js";
 import {
   assuranceForReview2a,
@@ -15,7 +16,7 @@ import {
 } from "../policy/review.js";
 import { DevFlowError } from "./errors.js";
 import { normalizeUnicode } from "./path-normalization.js";
-import { fingerprintProtectedRoots } from "./fingerprint.js";
+import { fingerprintGovernedRoots } from "./fingerprint.js";
 import { mutatePrepared, readFeatureEvents, readState, type FeatureState } from "./state-store.js";
 import {
   canonicalReviewValueJson,
@@ -32,6 +33,7 @@ import {
   createInteraction,
   findInteractionForTarget,
   getInteraction,
+  resolveNativeInteraction,
   resolveTextInteraction,
   toPublicInteraction,
   type PublicInteraction,
@@ -56,9 +58,10 @@ interface FrozenReviewArtifact {
 
 interface DerivedReviewInput {
   basis: ReviewBasis;
+  roleBasisHashes: Record<ReviewRole, string>;
   frozenArtifacts: FrozenReviewArtifact[];
   projectConfig: { sha256: string; contents: string };
-  scopeManifest: { protectedRoots: string[]; rollbackFileScopes: string[] };
+  scopeManifest: { governedRoots: string[]; rollbackFileScopes: string[]; traceIds: string[]; frozenArtifactPaths: string[] };
 }
 
 export interface CreateReviewBatchResult {
@@ -167,7 +170,7 @@ async function deriveReviewInput(root: string, state: FeatureState): Promise<Der
   const scopeManifest = {
     inScope: [...state.scope.inScope].sort(),
     outOfScope: [...state.scope.outOfScope].sort(),
-    protectedRoots: [...config.protectedRoots].sort(),
+    governedRoots: [...config.governedRoots].sort(),
     rollbackFileScopes: Object.values(trace.nodes)
       .reduce<Array<{ id: string; fileScope: string[] }>>((scopes, node) => {
         if (node.kind === "rollback" && node.status === "current") {
@@ -180,7 +183,7 @@ async function deriveReviewInput(root: string, state: FeatureState): Promise<Der
   // Content fingerprint of protected roots at basis capture time. Batch create and
   // pre-record planning gates must see live drift; post-record revalidation is
   // handled separately so implementation may mutate those same paths.
-  const protectedRootsFingerprint = await fingerprintProtectedRoots(root, config);
+  const governedRootsFingerprint = await fingerprintGovernedRoots(root, config);
   const basis: ReviewBasis = {
     featureId: state.featureId,
     route: state.route,
@@ -188,7 +191,6 @@ async function deriveReviewInput(root: string, state: FeatureState): Promise<Der
     classification: {
       level: state.classification.level,
       topology: state.classification.topology,
-      ...(state.classification.execution ? { execution: state.classification.execution } : {}),
       ...(state.classification.requirements ? { requirements: state.classification.requirements } : {}),
       riskLabels: [...state.classification.riskLabels].sort(),
     },
@@ -196,21 +198,78 @@ async function deriveReviewInput(root: string, state: FeatureState): Promise<Der
     traceability: { path: state.traceability.path, sha256: state.traceability.sha256, revision: trace.revision },
     projectConfigSha256,
     scopeManifestSha256: digest(canonicalReviewValueJson(scopeManifest)),
-    protectedRootsFingerprint,
+    governedRootsFingerprint,
   };
+  const roleBasisHashes = Object.fromEntries(
+    state.classification.controls.reviewRoles.map((role) => [role, roleBasisHash(basis, frozenArtifacts, trace, role)]),
+  ) as Record<ReviewRole, string>;
   return {
     basis,
+    roleBasisHashes,
     frozenArtifacts,
     projectConfig: { sha256: projectConfigSha256, contents: projectContents },
     scopeManifest: {
-      protectedRoots: scopeManifest.protectedRoots,
+      governedRoots: scopeManifest.governedRoots,
       rollbackFileScopes: scopeManifest.rollbackFileScopes.flatMap((item) => item.fileScope),
+      traceIds: Object.values(trace.nodes).filter((node) => node.status === "current").map((node) => node.id).sort(),
+      frozenArtifactPaths: frozenArtifacts.map((artifact) => artifact.path).sort(),
     },
   };
 }
 
 function basisHash(basis: ReviewBasis): string {
   return digest(canonicalReviewValueJson(basis));
+}
+
+function roleBasisHash(
+  basis: ReviewBasis,
+  frozenArtifacts: FrozenReviewArtifact[],
+  trace: TraceabilityLedger,
+  role: ReviewRole,
+): string {
+  const artifacts = frozenArtifacts.filter((artifact) => {
+    if (role === "requirements-coverage") return artifact.kind === "requirements" || artifact.kind === "implementation-plan";
+    if (role === "architecture-testability") return artifact.kind === "implementation-plan";
+    if (role === "rollback-operability") return artifact.kind === "implementation-plan" || artifact.kind === "rollback-units";
+    return artifact.kind === "requirements" || artifact.kind === "implementation-plan";
+  }).map(({ kind, path: artifactPath, sha256 }) => ({ kind, path: artifactPath, sha256 }));
+  const traceKinds: TraceNode["kind"][] = role === "requirements-coverage"
+    ? ["requirement", "acceptance-criterion", "task", "test"]
+    : role === "architecture-testability"
+      ? ["task", "test"]
+      : role === "rollback-operability"
+        ? ["task", "rollback"]
+        : ["requirement", "acceptance-criterion", "task", "test", "rollback"];
+  const traceSlice = Object.values(trace.nodes)
+    .filter((node) => node.status !== "tombstoned" && traceKinds.includes(node.kind))
+    .sort((left, right) => left.id.localeCompare(right.id))
+    .map(({ sourceArtifact: _sourceArtifact, sourceSha256: _sourceSha256, sourceAnchor: _sourceAnchor, sourceBlockSha256: _sourceBlockSha256, status: _status, ...semantic }) => semantic);
+  const specialtyRisk: Partial<Record<ReviewRole, string[]>> = {
+    security: ["security"],
+    "data-irreversibility": ["data", "irreversible_consequence"],
+    "money-safety": ["money"],
+    "contract-failure": ["external"],
+    "recovery-observability": ["availability"],
+    "critical-correctness": ["critical_correctness"],
+  };
+  if (specialtyRisk[role]) {
+    // 专项角色只随对应风险标签变化而重审；计划与 trace 的其他变化不属于其审查依据。
+    // 阻断性发现仍通过 carried findings 跨批次结转，不会因复用被丢弃。
+    return digest(canonicalReviewValueJson({
+      role,
+      route: basis.route,
+      level: basis.classification.level,
+      riskLabels: basis.classification.riskLabels.filter((label) => specialtyRisk[role]!.includes(label)),
+    }));
+  }
+  return digest(canonicalReviewValueJson({
+    role,
+    route: basis.route,
+    level: basis.classification.level,
+    artifacts,
+    traceSlice,
+    ...(role === "architecture-testability" || role === "rollback-operability" ? { projectConfigSha256: basis.projectConfigSha256 } : {}),
+  }));
 }
 
 function requireClaimRequestId(value: string): void {
@@ -295,12 +354,14 @@ function safePackagePath(value: string): boolean {
     && path.posix.normalize(normalized) === normalized && !normalized.split("/").includes("..");
 }
 
-function validScopeManifest(value: unknown): value is { protectedRoots: string[]; rollbackFileScopes: string[] } {
+function validScopeManifest(value: unknown): value is { governedRoots: string[]; rollbackFileScopes: string[]; traceIds: string[]; frozenArtifactPaths: string[] } {
   if (!value || typeof value !== "object" || Array.isArray(value)) return false;
-  const manifest = value as { protectedRoots?: unknown; rollbackFileScopes?: unknown };
-  return Array.isArray(manifest.protectedRoots) && Array.isArray(manifest.rollbackFileScopes)
-    && manifest.protectedRoots.every((entry) => typeof entry === "string" && safePackagePath(entry))
-    && manifest.rollbackFileScopes.every((entry) => typeof entry === "string" && safePackagePath(entry));
+  const manifest = value as { governedRoots?: unknown; rollbackFileScopes?: unknown; traceIds?: unknown; frozenArtifactPaths?: unknown };
+  return Array.isArray(manifest.governedRoots) && Array.isArray(manifest.rollbackFileScopes)
+    && manifest.governedRoots.every((entry) => typeof entry === "string" && safePackagePath(entry))
+    && manifest.rollbackFileScopes.every((entry) => typeof entry === "string" && safePackagePath(entry))
+    && Array.isArray(manifest.traceIds) && manifest.traceIds.every((entry) => typeof entry === "string" && /^(?:REQ|AC|TASK|TEST|RU)-[0-9]{3,}$/.test(entry))
+    && Array.isArray(manifest.frozenArtifactPaths) && manifest.frozenArtifactPaths.every((entry) => typeof entry === "string" && safePackagePath(entry));
 }
 
 async function readBoundReviewPackage(
@@ -324,22 +385,24 @@ async function readBoundReviewPackage(
 }
 
 function assertFindingScope(
-  manifest: { protectedRoots: string[]; rollbackFileScopes: string[] },
+  manifest: { governedRoots: string[]; rollbackFileScopes: string[]; traceIds: string[]; frozenArtifactPaths: string[] },
   findings: ReviewFindingInput[],
   resolutions: ReviewFindingResolutionInput[],
 ): void {
-  const allowed = [...new Set([...manifest.protectedRoots, ...manifest.rollbackFileScopes])];
+  const allowed = [...new Set([...manifest.governedRoots, ...manifest.rollbackFileScopes])];
   const inManifest = (value: string) => {
     const normalized = normalizeUnicode(value);
     return safePackagePath(normalized) && allowed.some((scope) => pathWithinFileScope(normalized, [scope]));
   };
+  const validTarget = (value: string) => inManifest(value) || manifest.traceIds.includes(value);
+  const validEvidence = (value: string) => inManifest(value) || manifest.frozenArtifactPaths.includes(value);
   const invalidPaths: string[] = [];
   for (const finding of findings) {
     if (finding.severity === "blocking" && !finding.evidence.length) invalid("REVIEW_FINDING_EVIDENCE_REQUIRED", "blocking finding requires evidence");
-    invalidPaths.push(...finding.targets.filter((target) => !inManifest(target)));
-    invalidPaths.push(...finding.evidence.map((evidence) => evidence.path).filter((path) => !inManifest(path)));
+    invalidPaths.push(...finding.targets.filter((target) => !validTarget(target)));
+    invalidPaths.push(...finding.evidence.map((evidence) => evidence.path).filter((path) => !validEvidence(path)));
   }
-  invalidPaths.push(...resolutions.flatMap((resolution) => resolution.evidence.map((evidence) => evidence.path).filter((path) => !inManifest(path))));
+  invalidPaths.push(...resolutions.flatMap((resolution) => resolution.evidence.map((evidence) => evidence.path).filter((path) => !validEvidence(path))));
   if (invalidPaths.length) {
     invalid("REVIEW_FINDING_SCOPE_INVALID", "finding targets and evidence must be package-relative paths inside the scope manifest", {
       invalidPaths: [...new Set(invalidPaths)].sort(),
@@ -391,15 +454,42 @@ export async function createReviewBatch(
       result = { state: undefined as unknown as FeatureState, batch: existing, created: false };
       return { mutate: () => undefined, unchanged: true, eventData: { batchId: existing.batchId, basisHash: currentBasisHash, idempotent: true } };
     }
-    const requirements = deriveReviewJobRequirements(current.route, current.classification.riskLabels);
-    if (!requirements.length) invalid("REVIEW_ROUTE_UNSUPPORTED", "review jobs require a standard M or L route");
+    const requirements = deriveReviewJobRequirements(current.route, current.classification.riskLabels, current.classification.controls.reviewRoles);
+    if (!requirements.length) invalid("REVIEW_ROUTE_UNSUPPORTED", "当前动态路线没有启用独立 plan-review 角色。");
+    // 未知 diff：basis 变化落在所有角色切片之外（governed 文件、scope、capability、
+    // topology 等变化）时，每个角色都会命中复用；无法归因到任何角色语义，保守全量重审。
+    const prevCurrent = ledger.batches.find((batch) => batch.validity === "current");
+    const reusableByRole = new Map<string, { batch: ReviewBatch; job: ReviewJob }>();
+    for (const requirement of requirements) {
+      const currentRoleBasisHash = reviewInput.roleBasisHashes[requirement.role];
+      const reusable = [...ledger.batches].reverse().flatMap((candidate) => candidate.jobs.map((job) => ({ batch: candidate, job })))
+        .find(({ job }) => job.role === requirement.role && job.roleBasisHash === currentRoleBasisHash && job.status === "submitted" && job.submission);
+      if (reusable?.job.submission) reusableByRole.set(requirement.role, reusable);
+    }
+    const unknownDiff = prevCurrent !== undefined
+      && reusableByRole.size === requirements.length
+      && prevCurrent.basisHash !== currentBasisHash;
     const batchId = randomUUID();
     const jobs: ReviewJob[] = [];
     for (const requirement of requirements) {
       const jobId = randomUUID();
+      const currentRoleBasisHash = reviewInput.roleBasisHashes[requirement.role];
+      const reusable = unknownDiff ? undefined : reusableByRole.get(requirement.role);
+      if (reusable?.job.submission) {
+        jobs.push({
+          jobId,
+          role: requirement.role,
+          reviewDepth: requirement.reviewDepth,
+          packageSha256: reusable.job.packageSha256,
+          roleBasisHash: currentRoleBasisHash,
+          status: "reused",
+          reusedFrom: { batchId: reusable.batch.batchId, jobId: reusable.job.jobId, submissionSha256: reusable.job.submission.payloadSha256 },
+        });
+        continue;
+      }
       const carried = carriedFindings(ledger, requirement.role);
       const packageSha256 = await writeReviewPackage(root, current.featureId, {
-        schemaVersion: 1,
+        schemaVersion: 2,
         featureId: current.featureId,
         batchId,
         jobId,
@@ -424,6 +514,7 @@ export async function createReviewBatch(
         role: requirement.role,
         reviewDepth: requirement.reviewDepth,
         packageSha256,
+        roleBasisHash: currentRoleBasisHash,
         status: "pending",
         ...(carried.length ? { carriedFindings: carried.map((item) => ({
           findingId: item.finding.findingId,
@@ -440,8 +531,8 @@ export async function createReviewBatch(
       basis,
       basisHash: currentBasisHash,
       validity: "current",
-      progress: "open",
-      executionMode: "isolated-sequential",
+      progress: jobs.every((job) => job.status === "reused") ? "complete" : "open",
+      executionMode: "parallel-safe",
       assuranceLevel: assuranceForReview2a(),
       jobs,
     };
@@ -492,7 +583,7 @@ export async function claimReviewJob(
     const requestSha256 = digest(claimRequestId);
     const original = findJob(batch, jobId);
     const job = recoverExpiredSampling(recoverExpiredLease(original, now), now);
-    if (job.status === "submitted") invalid("REVIEW_JOB_ALREADY_SUBMITTED", "review job has already been submitted", { jobId });
+    if (job.status === "submitted" || job.status === "reused") invalid("REVIEW_JOB_ALREADY_SUBMITTED", "review job is already satisfied", { jobId });
     if (job.status === "sampling") invalid("REVIEW_JOB_SAMPLING_IN_PROGRESS", "review job is held by server sampling", { jobId });
     if (job.status === "claimed" && job.claim!.requestSha256 !== requestSha256) {
       invalid("REVIEW_JOB_ALREADY_CLAIMED", "review job is claimed by another capability", { jobId });
@@ -702,7 +793,7 @@ async function submitParsedReviewJob(
   }
   updatedBatch = {
     ...updatedBatch,
-    progress: updatedBatch.jobs.every((candidate) => candidate.status === "submitted") ? "complete" : "open",
+    progress: updatedBatch.jobs.every((candidate) => candidate.status === "submitted" || candidate.status === "reused") ? "complete" : "open",
   };
   return { batch: withDerivedAssurance(updatedBatch), payloadSha256, findingEvents };
 }
@@ -990,7 +1081,7 @@ async function currentBatchWithBasis(
   const ledger = await readReviewLedger(root, state);
   const batch = ledger.batches.find((candidate) => candidate.validity === "current");
   if (!batch) invalid("REVIEW_BATCH_REQUIRED", "a current review batch is required");
-  // Once planning has bound this exact batch, later protected-root implementation
+  // Once planning has bound this exact batch, later governed-root implementation
   // edits must not invent a new live basis; verification freshness owns that drift.
   const requireLiveBasis = options.requireLiveBasis ?? !planReviewBoundToBatch(state, batch!);
   if (requireLiveBasis) {
@@ -1162,29 +1253,75 @@ export async function resolveReviewRiskAcceptanceAnswer(
   userReply: string,
   host: "claude" | "codex",
 ): Promise<ResolvedReviewRiskAcceptance> {
+  const initial = await readState(root, id);
+  const interaction = getInteraction(initial, interactionId);
+  const events = await readFeatureEvents(root, id);
+  const resolvedPromptEventId = resolvePromptEvent(events, {
+    host,
+    userReply,
+    presentedAt: interaction.presentedAt,
+    presentedRevision: initial.pendingDecision?.presentedRevision ?? initial.revision - 1,
+  }).eventId;
+  const hostEvent = events.find((event) => event.type === "host-event"
+    && (event.data as { eventId?: unknown }).eventId === resolvedPromptEventId);
+  assertReviewRiskAcceptanceEvidence(hostEvent, interaction, resolvedPromptEventId, userReply, host);
+  return resolveReviewRiskAcceptanceResponse(root, id, expectedRevision, interactionId, host, {
+    source: "text",
+    userReply,
+    promptEventId: resolvedPromptEventId,
+  });
+}
+
+/** 原生表单来源：用户点击即可信落账，不需要宿主 user-prompt 事件。 */
+export async function resolveReviewRiskAcceptanceElicitation(
+  root: string,
+  id: string,
+  expectedRevision: number,
+  interactionId: string,
+  action: string,
+  comment: string | undefined,
+  host: "claude" | "codex",
+): Promise<ResolvedReviewRiskAcceptance> {
+  return resolveReviewRiskAcceptanceResponse(root, id, expectedRevision, interactionId, host, {
+    source: "elicitation",
+    action,
+    comment,
+  });
+}
+
+type ReviewRiskAcceptanceInput =
+  | { source: "text"; userReply: string; promptEventId: string }
+  | { source: "elicitation"; action: string; comment?: string };
+
+async function resolveReviewRiskAcceptanceResponse(
+  root: string,
+  id: string,
+  expectedRevision: number,
+  interactionId: string,
+  host: "claude" | "codex",
+  input: ReviewRiskAcceptanceInput,
+): Promise<ResolvedReviewRiskAcceptance> {
   let result: Omit<ResolvedReviewRiskAcceptance, "state"> | undefined;
   const state = await mutatePrepared(root, id, expectedRevision, "review-risk-acceptance-resolved", async (current, nextStateRevision) => {
     const interaction = getInteraction(current as FeatureState, interactionId);
-    const events = await readFeatureEvents(root, id);
-    const resolvedPromptEventId = resolvePromptEvent(events, {
-      host,
-      userReply,
-      presentedAt: interaction.presentedAt,
-      presentedRevision: current.pendingDecision?.presentedRevision ?? current.revision - 1,
-    }).eventId;
-    const hostEvent = events.find((event) => event.type === "host-event"
-      && (event.data as { eventId?: unknown }).eventId === resolvedPromptEventId);
-    assertReviewRiskAcceptanceEvidence(hostEvent, interaction, resolvedPromptEventId, userReply, host);
     const { ledger, batch } = await currentBatchWithBasis(root, current as FeatureState);
     const binding = riskBinding(interaction);
     if (interaction.status === "resolved") {
-      const findings = selectCurrentBlockingFindings(ledger, batch, binding.findingIds, false);
+      // 幂等重放：accept 是原子写入，交互已解决即 disposition 与 finding 事件已落账；
+      // 这里只做 binding 与批次匹配校验，不再要求 finding 保持未解决。
+      const findings = submittedFindings(ledger)
+        .filter(({ batch: source, finding }) => source.batchId === batch.batchId && binding.findingIds.includes(finding.findingId))
+        .map(({ finding }) => finding);
       assertResolvedAcceptance(current as FeatureState, interaction, batch, findings);
-      const accepted = interaction.response?.action === "accept"
-        && interaction.response.source === "text"
-        && interaction.response.userReply === userReply
-        && interaction.response.promptEventId === resolvedPromptEventId
-        && interaction.response.host === host;
+      const accepted = input.source === "text"
+        ? interaction.response?.action === "accept"
+          && interaction.response.source === "text"
+          && interaction.response.userReply === input.userReply
+          && interaction.response.promptEventId === input.promptEventId
+          && interaction.response.host === host
+        : interaction.response?.action === "accept"
+          && interaction.response.source === "elicitation"
+          && interaction.response.host === host;
       const dispositions = batch.dispositions ?? {};
       if (accepted && findings.every((finding) => {
         const disposition = dispositions[finding.findingId];
@@ -1199,11 +1336,14 @@ export async function resolveReviewRiskAcceptanceAnswer(
     const findings = acceptanceFindings(ledger, batch, binding.findingIds);
     assertResolvedAcceptance(current as FeatureState, interaction, batch, findings);
     const preview = structuredClone(current as FeatureState);
-     const response = resolveTextInteraction(preview, interactionId, userReply, host, { promptEventId: resolvedPromptEventId });
+    const resolveOn = (draft: FeatureState) => input.source === "text"
+      ? resolveTextInteraction(draft, interactionId, input.userReply, host, { promptEventId: input.promptEventId })
+      : resolveNativeInteraction(draft, interactionId, input.action, input.comment, host);
+    const response = resolveOn(preview);
     if (response.action !== "accept") {
       result = { acceptedFindingIds: [], idempotent: false };
       return {
-         mutate: (draft) => { resolveTextInteraction(draft, interactionId, userReply, host, { promptEventId: resolvedPromptEventId }); },
+        mutate: (draft) => { resolveOn(draft); },
         eventData: { interactionId, batchId: batch.batchId, action: response.action },
       };
     }
@@ -1227,7 +1367,7 @@ export async function resolveReviewRiskAcceptanceAnswer(
       interactionId,
       basisHash: batch.basisHash,
       findingSetHash: binding.findingSetHash,
-      userEvidence: userReply,
+      userEvidence: response.comment ?? (input.source === "text" ? input.userReply : input.action),
       at: response.respondedAt,
     }));
     const pointer = await writeReviewSnapshot(root, cloneLedger(
@@ -1239,7 +1379,7 @@ export async function resolveReviewRiskAcceptanceAnswer(
     result = { acceptedFindingIds: binding.findingIds, idempotent: false };
     return {
       mutate: (draft) => {
-         resolveTextInteraction(draft, interactionId, userReply, host, { promptEventId: resolvedPromptEventId });
+        resolveOn(draft);
         draft.review = pointer;
       },
       eventData: { interactionId, batchId: batch.batchId, findingIds: binding.findingIds, findingSetHash: binding.findingSetHash },

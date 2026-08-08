@@ -1,46 +1,26 @@
 {
-  "schemaVersion": 3,
+  "schemaVersion": 4,
   "routes": {
     "xs": {
       "orderedSteps": ["locate", "implementation", "verification", "finalize"],
       "stages": ["locate", "implementation", "verification", "finalize"],
-      "requiredArtifacts": [],
-      "featureCheckRequired": false
+      "requiredArtifacts": []
     },
     "s": {
       "orderedSteps": ["boundary", "implementation", "verification", "finalize"],
       "stages": ["boundary", "implementation", "verification", "finalize"],
-      "requiredArtifacts": [],
-      "featureCheckRequired": false
+      "requiredArtifacts": []
     },
-    "light-m": {
+    "m": {
       "orderedSteps": ["planning", "implementation", "code_review", "verification", "finalize"],
       "stages": ["planning", "implementation", "code_review", "verification", "finalize"],
-      "requiredArtifacts": [],
-      "featureCheckRequired": false
+      "requiredArtifacts": []
     },
-    "standard-m": {
-      "orderedSteps": ["requirements_alignment", "planning", "implementation", "code_review", "verification", "finalize"],
-      "stages": ["requirements_alignment", "planning", "implementation", "code_review", "verification", "finalize"],
+    "l": {
+      "orderedSteps": ["requirements_alignment", "planning", "plan_review", "execution_approval", "implementation", "code_review", "verification", "finalize"],
+      "stages": ["requirements_alignment", "planning", "plan_review", "execution_approval", "implementation", "code_review", "verification", "finalize"],
       "requiredArtifacts": ["requirements", "implementation-plan"],
-      "artifactSteps": { "requirements_alignment": ["requirements"], "planning": ["implementation-plan"] },
-      "artifactTransitions": [{ "artifact": "plan-review", "capability": "review", "from": "absent", "to": "generated", "steps": ["planning"] }],
-      "featureCheckRequired": false
-    },
-    "light-l": {
-      "orderedSteps": ["planning", "implementation", "code_review", "verification", "finalize"],
-      "stages": ["planning", "implementation", "code_review", "verification", "finalize"],
-      "requiredArtifacts": ["implementation-plan"],
-      "artifactSteps": { "planning": ["implementation-plan"] },
-      "featureCheckRequired": false
-    },
-    "standard-l": {
-      "orderedSteps": ["requirements_alignment", "planning", "implementation", "code_review", "verification", "finalize"],
-      "stages": ["requirements_alignment", "planning", "implementation", "code_review", "verification", "finalize"],
-      "requiredArtifacts": ["requirements", "implementation-plan"],
-      "artifactSteps": { "requirements_alignment": ["requirements"], "planning": ["implementation-plan"] },
-      "artifactTransitions": [{ "artifact": "plan-review", "capability": "review", "from": "absent", "to": "generated", "steps": ["planning"] }],
-      "featureCheckRequired": false
+      "artifactSteps": { "requirements_alignment": ["requirements"], "planning": ["implementation-plan"] }
     }
   },
   "riskEnhancements": {
@@ -50,7 +30,7 @@
     "external": { "checks": ["contract-failure"], "verification": "integration" },
     "availability": { "checks": ["degradation-recovery"], "verification": "integration" },
     "critical_correctness": { "checks": ["full-code-review"], "verification": "full" },
-    "irreversible_consequence": { "checks": ["full-rollback", "full-code-review"], "verification": "full" }
+    "irreversible_consequence": { "checks": ["backup-preview-abort-compensation", "full-code-review"], "verification": "full" }
   },
   "topologyMinimumLevel": {
     "local": "XS",

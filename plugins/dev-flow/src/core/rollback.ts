@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { access, chmod, lstat, mkdir, open, readFile, rename, rm } from "node:fs/promises";
+import { access, chmod, lstat, mkdir, open, readFile, readlink, rename, rm, symlink } from "node:fs/promises";
 import path from "node:path";
 import { checkpointsEnforcementRequired, reviewEnforcementRequired, rollbackExecutionAllowed } from "../policy/contract.js";
 import type { RollbackNode, TraceabilityLedger } from "../policy/traceability.js";
@@ -7,7 +7,7 @@ import { canonicalReviewValueJson, prepareReviewInvalidation } from "./review-st
 import { blobPath, checkpointChain, readCheckpoint, readCheckpointBaseline } from "./checkpoints.js";
 import type { CheckpointManifest } from "../policy/rollback.js";
 import { DevFlowError } from "./errors.js";
-import { snapshotProtectedRoots, type ProtectedFileSnapshot } from "./fingerprint.js";
+import { snapshotGovernedRoots, type ProtectedFileSnapshot } from "./fingerprint.js";
 import type { ProjectConfig, VerificationCommand } from "./project-config.js";
 import { implementationUnitForRollbackNode, pathWithinFileScope } from "../policy/rollback.js";
 import { implementationUnitBasisHash } from "./implementation-units.js";
@@ -55,6 +55,7 @@ export interface RollbackFileAction {
   path: string;
   blobSha256?: string;
   mode?: string;
+  kind?: "file" | "symlink";
 }
 
 export interface RollbackVerificationCommand {
@@ -229,8 +230,8 @@ function liveChain(state: FeatureState, chain: CheckpointManifest[]): Checkpoint
 
 async function previewContext(root: string, featureId: string): Promise<PreviewContext> {
   const state = await readState(root, featureId);
-  if (!checkpointsEnforcementRequired(state.route, state.workflowCapabilities)) {
-    throw new DevFlowError("IMPLEMENTATION_UNITS_NOT_ENFORCED", "rollback preview requires a checkpoints:1 standard feature");
+  if (!checkpointsEnforcementRequired(state.route, state.classification.controls)) {
+    throw new DevFlowError("IMPLEMENTATION_UNITS_NOT_ENFORCED", "回撤预览要求动态路线启用 unit-chain checkpoint 控制。");
   }
   const ledger = await readTraceability(root, state);
   const nodes = rollbackNodes(ledger.nodes);
@@ -273,7 +274,7 @@ export async function previewRollback(root: string, featureId: string, targetChe
     });
   }
 
-  const snapshot = await snapshotProtectedRoots(root, config);
+  const snapshot = await snapshotGovernedRoots(root, config);
   const fileScopes = [...new Set(nodes.flatMap((node) => node.fileScope))];
   const baselineFiles = (await readCheckpointBaseline(root, featureId, chain[0].unitId)).files;
   const conflicts = detectChainConflicts(chain, snapshot, fileScopes, baselineFiles);
@@ -295,6 +296,7 @@ export async function previewRollback(root: string, featureId: string, targetChe
             command: reference.command,
             args: [...reference.args ?? []],
             cwd: reference.cwd ?? ".",
+            provides: ["targeted"] as VerificationCommand["provides"],
           };
       if (!command) {
         throw new DevFlowError("TRACE_VERIFICATION_COMMAND_UNKNOWN", "rollback verification command is not configured", {
@@ -326,6 +328,7 @@ export async function previewRollback(root: string, featureId: string, targetChe
             path: record.renamedFrom!,
             blobSha256: record.beforeBlobSha256,
             mode: record.beforeMode,
+            kind: record.beforeKind,
           });
           break;
         case "deleted":
@@ -336,6 +339,7 @@ export async function previewRollback(root: string, featureId: string, targetChe
             path: record.path,
             blobSha256: record.beforeBlobSha256,
             mode: record.beforeMode,
+            kind: record.beforeKind,
           });
           break;
       }
@@ -368,7 +372,7 @@ export async function previewRollback(root: string, featureId: string, targetChe
 /** Read-only rollback summary for StatusView; conflicts are reported, never thrown. */
 export async function rollbackChainView(root: string, state: FeatureState): Promise<RollbackChainView> {
   if (state.mode === "intake") return { enforced: false, chain: [], validTargets: [], conflicts: [] };
-  if (!checkpointsEnforcementRequired(state.route, state.workflowCapabilities)) {
+  if (!checkpointsEnforcementRequired(state.route, state.classification.controls)) {
     return { enforced: false, chain: [], validTargets: [], conflicts: [] };
   }
 
@@ -436,7 +440,7 @@ export async function rollbackChainView(root: string, state: FeatureState): Prom
     };
   }
   const { config } = await readProjectConfigSnapshot(root);
-  const snapshot = await snapshotProtectedRoots(root, config);
+  const snapshot = await snapshotGovernedRoots(root, config);
   const fileScopes = [...new Set(nodes.flatMap((node) => node.fileScope))];
   let baselineFiles: ProtectedFileSnapshot[] = [];
   if (live.length) {
@@ -475,8 +479,8 @@ export async function presentRollbackGate(
   if (initial.revision !== expectedRevision) {
     throw new DevFlowError("STATE_REVISION_CONFLICT", "state revision changed", { currentRevision: initial.revision });
   }
-  if (!rollbackExecutionAllowed(initial.route, initial.workflowCapabilities)) {
-    throw new DevFlowError("ROLLBACK_EXECUTION_NOT_ALLOWED", "rollback execution requires checkpoints:1 and rollbackExecution:1 in a standard route");
+  if (!rollbackExecutionAllowed(initial.route, initial.classification.controls)) {
+    throw new DevFlowError("ROLLBACK_EXECUTION_NOT_ALLOWED", "当前动态路线没有启用 executable-rollback 与 unit-chain 控制。");
   }
   if (initial.lifecycle !== "active") {
     throw new DevFlowError("INVALID_LIFECYCLE", "rollback gate requires an active feature");
@@ -492,8 +496,8 @@ export async function presentRollbackGate(
 
   let interaction: ReturnType<typeof createInteraction> | undefined;
   const state = await mutate(root, featureId, expectedRevision, "rollback-gate-presented", async (state) => {
-    if (!rollbackExecutionAllowed(state.route, state.workflowCapabilities)) {
-      throw new DevFlowError("ROLLBACK_EXECUTION_NOT_ALLOWED", "rollback execution requires checkpoints:1 and rollbackExecution:1 in a standard route");
+    if (!rollbackExecutionAllowed(state.route, state.classification.controls)) {
+      throw new DevFlowError("ROLLBACK_EXECUTION_NOT_ALLOWED", "当前动态路线没有启用 executable-rollback 与 unit-chain 控制。");
     }
     if (state.lifecycle !== "active") {
       throw new DevFlowError("INVALID_LIFECYCLE", "rollback gate requires an active feature");
@@ -790,6 +794,14 @@ async function writeFileAtomicMode(file: string, bytes: Buffer, mode: string): P
   await fsyncDirectory(path.dirname(file));
 }
 
+async function writeSymlinkAtomic(file: string, target: string): Promise<void> {
+  await mkdir(path.dirname(file), { recursive: true });
+  const temp = `${file}.${randomUUID()}.tmp`;
+  await symlink(target, temp);
+  await rename(temp, file);
+  await fsyncDirectory(path.dirname(file));
+}
+
 async function writeAtomicBuffer(file: string, contents: string | Buffer): Promise<void> {
   await mkdir(path.dirname(file), { recursive: true });
   const temp = `${file}.${randomUUID()}.tmp`;
@@ -841,7 +853,7 @@ function snapshotMismatches(expected: ProtectedFileSnapshot[], current: Protecte
     const actual = currentByPath.get(filePath);
     if (!actual) {
       mismatches.push({ path: filePath, expected: "present", actual: "absent" });
-    } else if (actual.sha256 !== file.sha256 || actual.mode !== file.mode) {
+    } else if (actual.sha256 !== file.sha256 || actual.mode !== file.mode || (actual.kind ?? "file") !== (file.kind ?? "file")) {
       mismatches.push({ path: filePath, expected: "present", actual: "changed" });
     }
   }
@@ -867,7 +879,7 @@ async function assertWorkspaceMatchesChainTip(root: string, featureId: string, c
   const nodes = rollbackNodes((await readTraceability(root, state)).nodes);
   const fileScopes = [...new Set(nodes.flatMap((node) => node.fileScope))];
   const baselineFiles = chain.length ? (await readCheckpointBaseline(root, featureId, chain[0].unitId)).files : [];
-  const snapshot = await snapshotProtectedRoots(root, config);
+  const snapshot = await snapshotGovernedRoots(root, config);
   const conflicts = detectChainConflicts(chain, snapshot, fileScopes, baselineFiles);
   if (conflicts.length) {
     throw new DevFlowError("ROLLBACK_HASH_MISMATCH", "workspace drifted from the confirmed rollback basis; refusing to capture it as the pre-rollback backup", {
@@ -878,7 +890,7 @@ async function assertWorkspaceMatchesChainTip(root: string, featureId: string, c
 }
 
 /**
- * Captures the FULL protected-roots snapshot (bytes plus mode) into the
+ * Captures the FULL governed-roots snapshot (bytes plus mode) into the
  * transaction recovery directory. The full snapshot — not just filePlan paths
  * — is what lets compensation undo verification-command drift and restore
  * every pre-rollback byte. Idempotent: a resume with a complete manifest only
@@ -895,7 +907,7 @@ async function captureBackup(
   const manifestFile = path.join(dir, "backup-manifest.json");
   if (await pathExists(manifestFile)) {
     const manifest = await readBackupManifest(manifestFile, journal.transactionId);
-    const current = await snapshotProtectedRoots(root, config);
+    const current = await snapshotGovernedRoots(root, config);
     const mismatches = snapshotMismatches(manifest.files, current);
     if (mismatches.length) {
       throw new DevFlowError("ROLLBACK_HASH_MISMATCH", "workspace drifted from the recorded rollback backup", { mismatches });
@@ -908,10 +920,10 @@ async function captureBackup(
   await assertWorkspaceMatchesChainTip(root, featureId, config);
   await mkdir(path.join(dir, "files"), { recursive: true });
   await mkdir(path.join(dir, "trash"), { recursive: true });
-  const snapshot = await snapshotProtectedRoots(root, config);
+  const snapshot = await snapshotGovernedRoots(root, config);
   let first = true;
   for (const file of snapshot) {
-    const bytes = await readFile(path.join(root, file.path));
+    const bytes = file.kind === "symlink" ? Buffer.from(await readlink(path.join(root, file.path))) : await readFile(path.join(root, file.path));
     if (digest(bytes) !== file.sha256) {
       throw new DevFlowError("ROLLBACK_HASH_MISMATCH", "protected files changed while capturing the rollback backup", { path: file.path });
     }
@@ -933,7 +945,7 @@ async function captureBackup(
   // Drift during the capture window is still a basis violation: the manifest
   // must describe the live workspace byte-for-byte before any rename starts.
   // The next resume re-runs this same comparison through the branch above.
-    const captureDrift = snapshotMismatches(manifest.files, await snapshotProtectedRoots(root, config));
+    const captureDrift = snapshotMismatches(manifest.files, await snapshotGovernedRoots(root, config));
   if (captureDrift.length) {
     throw new DevFlowError("ROLLBACK_HASH_MISMATCH", "protected files changed while capturing the rollback backup", { mismatches: captureDrift });
   }
@@ -956,7 +968,7 @@ async function assertPathMatchesBackupExpectation(
     let bytes: Buffer;
     try {
       metadata = await lstat(absolute);
-      bytes = await readFile(absolute);
+      bytes = expected.kind === "symlink" ? Buffer.from(await readlink(absolute)) : await readFile(absolute);
     } catch {
       throw new DevFlowError("ROLLBACK_HASH_MISMATCH", "workspace drifted from the pre-rollback backup before a file action", {
         path: filePath,
@@ -966,7 +978,8 @@ async function assertPathMatchesBackupExpectation(
       });
     }
     const mode = (metadata.mode & 0o777).toString(8).padStart(3, "0");
-    if (digest(bytes) !== expected.sha256 || mode !== expected.mode) {
+    const kind = metadata.isSymbolicLink() ? "symlink" : "file";
+    if (digest(bytes) !== expected.sha256 || mode !== expected.mode || kind !== (expected.kind ?? "file")) {
       throw new DevFlowError("ROLLBACK_HASH_MISMATCH", "workspace drifted from the pre-rollback backup before a file action", {
         path: filePath,
         expected: "present",
@@ -1027,7 +1040,8 @@ async function applyFilePlan(
           path: action.path,
         });
       }
-      await writeFileAtomicMode(target, bytes, action.mode!);
+      if (action.kind === "symlink") await writeSymlinkAtomic(target, bytes.toString("utf8"));
+      else await writeFileAtomicMode(target, bytes, action.mode!);
     } else {
       const trashFile = path.join(trash, `${String(index).padStart(4, "0")}-${path.basename(action.path)}`);
       if (await pathExists(target)) {
@@ -1065,7 +1079,7 @@ async function applyFilePlan(
         let bytes: Buffer;
         try {
           metadata = await lstat(path.join(root, action.path));
-          bytes = await readFile(path.join(root, action.path));
+          bytes = expected.kind === "symlink" ? Buffer.from(await readlink(path.join(root, action.path))) : await readFile(path.join(root, action.path));
         } catch {
           throw new DevFlowError("ROLLBACK_HASH_MISMATCH", "workspace drifted after a rollback file action", {
             path: action.path,
@@ -1116,6 +1130,7 @@ async function transactionVerificationCommands(
             command: reference.command,
             args: [...reference.args ?? []],
             cwd: reference.cwd ?? ".",
+            provides: ["targeted"] as VerificationCommand["provides"],
           };
       if (!command) {
         throw new DevFlowError("TRACE_VERIFICATION_COMMAND_UNKNOWN", "rollback verification command is not configured", {
@@ -1140,10 +1155,10 @@ async function expectedPlanStateAfter(
     path.join(featureDirectory(root, featureId), journal.backupDirectory, "backup-manifest.json"),
     journal.transactionId,
   );
-  const expected = new Map(manifest.files.map((file) => [file.path, { path: file.path, sha256: file.sha256, mode: file.mode }]));
+  const expected = new Map(manifest.files.map((file) => [file.path, { ...file }]));
   for (const action of journal.filePlan.slice(0, appliedCount)) {
     if (action.action === "restore") {
-      expected.set(action.path, { path: action.path, sha256: action.blobSha256!, mode: action.mode! });
+      expected.set(action.path, { path: action.path, sha256: action.blobSha256!, mode: action.mode!, kind: action.kind ?? "file" });
     } else {
       expected.delete(action.path);
     }
@@ -1232,13 +1247,13 @@ async function runRollbackVerification(
   // write during verification) is a verification failure and compensates from
   // the pre-rollback backup, per the transaction contract.
   const expected = await expectedPlanState(root, featureId, journal);
-  const current = await snapshotProtectedRoots(root, config);
+  const current = await snapshotGovernedRoots(root, config);
   const mismatches = snapshotMismatches(expected, current);
   if (mismatches.length) {
     const attemptId = await recordVerificationAttempt(root, featureId, journal, {
       unitId: null,
       commandId: "drift-guard",
-      command: "protected-root drift guard",
+      command: "governed-root drift guard",
       status: "failed",
       reason: "drift",
       mismatches,
@@ -1249,7 +1264,7 @@ async function runRollbackVerification(
         unitId: null,
         phase: "rollback",
         commandId: "drift-guard",
-        command: "protected-root drift guard",
+        command: "governed-root drift guard",
         cwd: ".",
         exitCode: 1,
         outputTail: "protected files differ from the expected rollback state",
@@ -1334,12 +1349,13 @@ async function compensateRollback(
       if (digest(bytes) !== file.sha256) {
         throw new DevFlowError("ROLLBACK_BACKUP_CORRUPT", "rollback backup bytes failed their digest check", { path: file.path, sha256: file.sha256 });
       }
-      await writeFileAtomicMode(path.join(root, file.path), bytes, file.mode);
+      if (file.kind === "symlink") await writeSymlinkAtomic(path.join(root, file.path), bytes.toString("utf8"));
+      else await writeFileAtomicMode(path.join(root, file.path), bytes, file.mode);
       restored += 1;
       if (restored === 1) await options.fault?.("during-compensation");
     }
     // Extras (for example verification drift output) move to trash — never unlink.
-    const current = await snapshotProtectedRoots(root, config);
+    const current = await snapshotGovernedRoots(root, config);
     const expectedPaths = new Set(manifest.files.map((file) => file.path));
     const trash = path.join(dir, "trash");
     for (const file of current) {
@@ -1349,7 +1365,7 @@ async function compensateRollback(
       await rename(path.join(root, file.path), trashFile);
       await fsyncDirectory(path.dirname(path.join(root, file.path)));
     }
-    const after = await snapshotProtectedRoots(root, config);
+    const after = await snapshotGovernedRoots(root, config);
     const mismatches = snapshotMismatches(manifest.files, after);
     if (mismatches.length) {
       await recordCompensationAttempt(root, featureId, journal, { status: "failed", reason: "mismatch", mismatches, startedAt });
@@ -1376,7 +1392,7 @@ async function commitRollbackState(root: string, featureId: string, journal: Rol
     // The approval survives only while the plan basis at the target checkpoint
     // still equals the current basis; an amended plan must re-earn it.
     const basisKept = implementationUnitBasisHash(current) === target.basisHash;
-    const review = reviewEnforcementRequired(current.route, current.workflowCapabilities)
+    const review = reviewEnforcementRequired(current.route, current.classification.controls)
       ? await prepareReviewInvalidation(root, current, nextStateRevision)
       : undefined;
     return {
@@ -1414,11 +1430,10 @@ async function commitRollbackState(root: string, featureId: string, journal: Rol
           }
         }
         draft.implementationUnits = units;
-        for (const step of ["implementation", "code_review", "verification", "feature_check", "finalize"]) {
+        for (const step of ["implementation", "code_review", "verification", "finalize"]) {
           delete draft.steps[step];
         }
         draft.logicComplete = false;
-        draft.featureCheck = {};
         delete draft.verification.satisfiedByAttemptId;
         delete draft.verification.verifiedFingerprint;
         if (review) draft.review = review;
@@ -1630,8 +1645,8 @@ export async function executeRollback(
     return driveRollbackTransaction(root, featureId, open, options);
   }
   // Fresh execution; a finished journal from an earlier transaction is replaced.
-  if (!rollbackExecutionAllowed(initial.route, initial.workflowCapabilities)) {
-    throw new DevFlowError("ROLLBACK_EXECUTION_NOT_ALLOWED", "rollback execution requires checkpoints:1 and rollbackExecution:1 in a standard route");
+  if (!rollbackExecutionAllowed(initial.route, initial.classification.controls)) {
+    throw new DevFlowError("ROLLBACK_EXECUTION_NOT_ALLOWED", "当前动态路线没有启用 executable-rollback 与 unit-chain 控制。");
   }
   if (initial.lifecycle !== "active") {
     throw new DevFlowError("INVALID_LIFECYCLE", "rollback execution requires an active feature");

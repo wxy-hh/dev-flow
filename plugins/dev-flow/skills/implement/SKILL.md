@@ -1,10 +1,10 @@
 ---
 name: implement
-description: 在 implementation 阶段按 Core 能力自由实现并自动恢复技术错误。
+description: 在 Dev Flow 5.0 可信写入归属和自动 checkpoint 保护下实现变更。
 ---
 
-只在 `dev_flow_status` 显示开发实现且控制允许写入时写入业务代码。Core/Hook 按真实目标和阶段判断语义，不因 Write、Edit、apply_patch、heredoc 等价命令不同而拦截；控制文件仍只能由 MCP 变更。
+只在 status 显示 implementation 且审批义务已满足时写 governed 文件。Hook 会为每次允许的智能体写入记录规范化路径、宿主、事件及前后摘要，并自动标为 feature-owned；调用 implementation record-step 时不要提供 `evidence.files`，先用 inspect implementation 查看 Core 派生文件预览。
 
-常规写入失败时优先读取 status、修正目标或使用等价操作继续。验证失败保持当前实现单元 active，记录 failure signature 和 progress evidence；有进展就自动修复，连续同签名无进展或达到上限才 `waiting-user`。不要自动丢弃用户改动，也不要手改 checkpoint/repair 状态。
+所有任务都有自动 baseline。`controls.checkpoints=unit-chain` 且存在 Trace RU 时按 Core 的 begin/checkpoint 动作推进；每个 RU 只跑计划声明的 targeted forward verification。code-review 修复产生的新可信写入也自动进入交付。
 
-XS/S/light M 使用内部自动 checkpoint；standard M/L 还可按计划行为切片产生多个 checkpoint。pause 不要求提交、验证或 finalize；WIP/manual commit 后先自动 reconcile，再按内容变化精确标记 stale。
+IDE、人工或无法归因的变更必须 reconcile 并逐个回答唯一 ownership decision；绝不因文件位于 scope/governedRoots 内而静默接纳。不要自动 stash/reset、删除缓存或手改 checkpoint。缓存清理只运行项目显式配置的 preflight。

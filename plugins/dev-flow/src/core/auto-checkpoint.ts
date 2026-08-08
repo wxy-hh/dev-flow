@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { fingerprintProtectedRoots, snapshotProtectedRoots } from "./fingerprint.js";
+import { fingerprintGovernedRoots, snapshotGovernedRoots } from "./fingerprint.js";
 import { mutate, readProjectConfig, type FeatureState } from "./state-store.js";
 import { decisionBasisHash, satisfyObligations } from "../policy/obligations.js";
 
@@ -26,8 +26,8 @@ export async function captureAutomaticCheckpoint(
   reason = "stage-boundary",
 ): Promise<FeatureState> {
   const config = await readProjectConfig(root);
-  const files = await snapshotProtectedRoots(root, config);
-  const fingerprint = await fingerprintProtectedRoots(root, config);
+  const files = await snapshotGovernedRoots(root, config);
+  const fingerprint = await fingerprintGovernedRoots(root, config);
   const capturedAt = new Date().toISOString();
   const checkpoint: AutomaticCheckpoint = {
     checkpointId: `AUTO-${randomUUID()}`,
@@ -39,6 +39,7 @@ export async function captureAutomaticCheckpoint(
   };
   return mutate(root, featureId, expectedRevision, "automatic-checkpoint-captured", (state) => {
     state.checkpoints = [...(state.checkpoints ?? []), checkpoint];
+    state.evidenceFreshness.checkpoint = "current";
     state.obligations = satisfyObligations(state.obligations, ["checkpoint"]);
   }, { checkpointId: checkpoint.checkpointId, stage, reason });
 }

@@ -3,10 +3,8 @@ import type { ClassificationObligation, RouteId, StageCapabilityView } from "./t
 export const routeStages: Readonly<Record<RouteId, readonly string[]>> = Object.freeze({
   xs: ["locate", "implementation", "verification", "finalize"],
   s: ["boundary", "implementation", "verification", "finalize"],
-  "light-m": ["planning", "implementation", "code_review", "verification", "finalize"],
-  "standard-m": ["requirements_alignment", "planning", "implementation", "code_review", "verification", "finalize"],
-  "light-l": ["planning", "implementation", "code_review", "verification", "finalize"],
-  "standard-l": ["requirements_alignment", "planning", "implementation", "code_review", "verification", "finalize"],
+  m: ["planning", "implementation", "code_review", "verification", "finalize"],
+  l: ["requirements_alignment", "planning", "plan_review", "execution_approval", "implementation", "code_review", "verification", "finalize"],
 });
 
 export function stagesForRoute(route: RouteId): readonly string[] {
@@ -20,10 +18,17 @@ export function effectiveStage(state: {
   currentStage?: string;
   lifecycle?: string;
   steps?: Record<string, { status?: string } | undefined>;
+  classification?: { orderedRoute?: string[] };
 }): string {
   if (state.mode === "intake" || !state.route) return "intake";
   if (state.lifecycle === "finalized") return "complete";
-  const stages = stagesForRoute(state.route);
+  // orderedRoute is the full user preview and may contain Core-owned gates
+  // (plan review / execution approval) that are not recordable state steps.
+  // The persisted steps object is compiled in execution order and is therefore
+  // the authoritative stage sequence.
+  const stages = state.steps && Object.keys(state.steps).length > 0
+    ? Object.keys(state.steps)
+    : stagesForRoute(state.route);
   if (state.steps) {
     const pending = stages.find((stage) => state.steps?.[stage]?.status !== "satisfied");
     if (pending) return pending;
@@ -80,7 +85,7 @@ export function deriveStageCapabilities(state: {
     completionCriteria: [`${stage}-evidence-current`, "no-blocking-obligation"],
     obligations,
     ...(stage === "implementation" && state.workflowCapabilities?.checkpoints === 1
-      ? { requiredEvidence: { fields: { files: "protected-root-paths" as const }, checks: [], verificationKinds: [] } }
+      ? { requiredEvidence: { fields: { files: "governed-root-paths" as const }, checks: [], verificationKinds: [] } }
       : {}),
     ...(state.lifecycle === "active" ? {} : { attention: { reason: `feature-${state.lifecycle}`, required: true as const } }),
   };

@@ -18,7 +18,7 @@ test("failure envelope is Chinese by default and keeps technical data separate",
 });
 
 test("route and stage presentation never leaks internal route codes as the only label", () => {
-  assert.equal(presentation.routeLabel("standard-l"), "standard-l：大型变更（标准治理）");
+  assert.equal(presentation.routeLabel("l"), "L：大型变更（动态治理）");
   assert.equal(presentation.stageLabel("implementation"), "开发实现");
   assert.equal(presentation.lifecycleLabel("paused"), "已暂停");
 });

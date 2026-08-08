@@ -56,7 +56,9 @@
         "beforeBlobSha256": { "$ref": "#/$defs/sha256" },
         "afterBlobSha256": { "$ref": "#/$defs/sha256" },
         "beforeMode": { "$ref": "#/$defs/fileMode" },
-        "afterMode": { "$ref": "#/$defs/fileMode" }
+        "afterMode": { "$ref": "#/$defs/fileMode" },
+        "beforeKind": { "enum": ["file", "symlink"] },
+        "afterKind": { "enum": ["file", "symlink"] }
       }
     },
     "checkpointVerificationAttempt": {
@@ -109,7 +111,7 @@
         "verificationCommands"
       ],
       "properties": {
-        "schemaVersion": { "const": 1 },
+        "schemaVersion": { "const": 2 },
         "checkpointId": { "type": "string", "minLength": 1 },
         "unitId": { "$ref": "#/$defs/rollbackId" },
         "sequence": { "type": "integer", "minimum": 1 },

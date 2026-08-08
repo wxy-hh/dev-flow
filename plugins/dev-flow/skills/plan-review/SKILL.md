@@ -1,14 +1,10 @@
 ---
 name: plan-review
-description: 执行或独立调用实施计划审查；它是 planning 的内部保障，不是额外路线步骤。
+description: 执行 Dev Flow 5.0 动态角色、parallel-first 且可按 role basis 复用的计划审查。
 ---
 
-审查前先读取仓库事实和不可变计划 basis。Core 创建 review batch 并按角色隔离 job；审查者只能提交 coverageSummary、findings 和 resolutions，不能自报 assurance、basisHash 或“已验证模型身份”。
+角色由 Core 从事实派生；不要在 Skill 复制风险映射。coverage 只看需求/AC/TASK/TEST，architecture 只看组件、任务、测试与契约，rollback 只看 RU/scope/dependency/recovery commands，专项角色只看对应风险切片。
 
-blocking finding 必须自动修复并对受影响角色增量复审；仍未解决时才返回用户决策。warning/note 不阻塞。完整结果通过 `dev_flow_inspect({topic:"review"})` 和只读 plan-review 投影查看，禁止编辑或登记投影。历史 blocker 必须在 successor 中显式提交 resolved、still-blocking 或 risk-acceptance-required 结果。
+job 标记 parallel-safe 时，宿主支持子代理或 sampling 就并行优先，否则顺序回退。语义 diff 未影响的角色应显示 `reused` 并引用旧提交；受影响角色创建新 job；未知 diff 保守全量重审。Assurance 只按真实 attestation/sampling 证据计算，不把同一模型多次输出称为多代理。
 
-rollback-operability 角色必须检查每个 RU 的 fileScope、depends_on、前向/回撤验证命令和依赖闭环，特别识别“测试 RU 先失败、实现 RU 后依赖”的非原子拆分。
-
-review job claim 需要保存 capability 供当前租约内重试；放弃当前 claim 时调用 `dev_flow_release_review_job`，只能使用同一 capability，禁止读取或传播任何 `requestSha256`。mutation 返回摘要，完整 feature state 统一读取 `dev_flow_status`。
-
-宿主没有异构模型能力时如实显示隔离视角或独立采样，不把同一模型自审伪称多模型。审查完成后读取 `dev_flow_status`；只有新的 approval obligation basis 才需要用户确认。没有独立代理时只显示多视角审查，不夸大保证等级。
+blocking finding 先修计划并增量复审；warning/note 不阻塞。finding 的 target/evidence 必须遵守 frozen Trace/path 合同。禁止编辑只读 review projection、伪造 basis/assurance 或泄露 claim capability。

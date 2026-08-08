@@ -17,9 +17,6 @@ const topologies: Topology[] = ["local", "shared-contract", "multi-chain", "coor
 export function normalizeClassification(input: ClassificationInput): Classification {
   if (!input.level || !levels.includes(input.level)) throw new PolicyError("INVALID_LEVEL", "level is invalid");
   if (!input.topology || !topologies.includes(input.topology)) throw new PolicyError("INVALID_TOPOLOGY", "topology is invalid");
-  if (input.execution && input.execution !== "light" && input.execution !== "standard") {
-    throw new PolicyError("INVALID_EXECUTION", "execution is invalid");
-  }
   if (input.requirements && !["missing-or-unclear", "documented-unconfirmed", "provided-confirmed"].includes(input.requirements)) {
     throw new PolicyError("INVALID_REQUIREMENTS_STATE", "requirements state is invalid");
   }
@@ -39,12 +36,26 @@ export function normalizeClassification(input: ClassificationInput): Classificat
   return {
     level: input.level,
     topology: input.topology,
-    ...(input.execution ? { execution: input.execution } : {}),
     ...(input.requirements ? { requirements: input.requirements } : {}),
     riskLabels,
     // The former hard requirement remains a compatibility input only. Browser/user
     // acceptance is advisory and never changes a route's ability to finalize.
     acceptanceAssistSuggested: input.acceptanceAssistSuggested === true || input.manualAcceptanceRequired === true,
     ...(input.classificationBasis ? { classificationBasis: input.classificationBasis } : {}),
+    controls: {
+      requirements: false,
+      plan: "locate",
+      trace: false,
+      planReview: false,
+      reviewRoles: [],
+      executionApproval: false,
+      checkpoints: "baseline",
+      recovery: ["delivery-reverse"],
+      codeReview: "none",
+      verification: ["targeted"],
+      reasons: {},
+    },
+    orderedRoute: [],
+    routeConfirmationRequired: false,
   };
 }

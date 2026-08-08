@@ -1,12 +1,8 @@
 ---
 name: requirements
-description: 在 intake 或需求对齐阶段调查事实、调用 grillme 澄清用户决策并维护需求证据。
+description: 复用或生成 Dev Flow 5.0 的持久需求证据并完成边界审计。
 ---
 
-使用 Dev Flow MCP；禁止手改 `.dev-flow` 控制文件。`grillme` 是跨路线独立能力：需求不清时先查仓库，再只问用户必须决定的边界、优先级和取舍，每回合只呈现一个问题。
+先调查已有 issue、设计、测试和已确认材料。若它们已覆盖目标、范围、非目标与验收，优先冻结为需求证据；只有 Core 的 `controls.requirements=true` 且无可复用材料时才 scaffold/编辑/登记 `需求文档.md`。
 
-XS、S、light M 不强制生成需求文档。若路线为 standard M/L，按 Core 返回的 artifact 动作创建并登记 `需求文档.md`；需求文档不再保存 grill 控制字段。调用 `dev_flow_request_grill_decision` 后只通过 `dev_flow_answer` 逐题回答，所有问题、答案和证据引用写入 decision ledger。
-
-每次完成调查或澄清后调用 `dev_flow_classify` 预览，确认 classificationBasis 完整且风险标签有对应事实，再调用 `dev_flow_lock_classification`。锁定前存在影响范围、拓扑、风险或验收的 open decision 时，Core 会拒绝并返回待解决 ID。
-
-完成后读取 `dev_flow_status`。没有真实决策缺口时自动推进；不要重复创建确认、需求资产或交互。
+持续维护 `boundaryAudit`：扫描默认假设、自由空间、TBD、fallback、范围与验收留白。仓库可判定的内容记录 evidence；必须由用户选择的内容走 grill 决策，绑定 decision reference。不得在留白未处置时锁定分类，也不得为不需要需求工件的路线强制生成文档。

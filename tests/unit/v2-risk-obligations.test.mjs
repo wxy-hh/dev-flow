@@ -10,7 +10,7 @@ const basis = {
 };
 
 test("obligations are additive, deduplicated, and basis-addressed", () => {
-  const obligations = policy.deriveObligations("light-m", basis);
+  const obligations = policy.deriveObligations("m", basis);
   assert.ok(obligations.some((item) => item.kind === "review"));
   assert.ok(obligations.some((item) => item.kind === "approval"));
   assert.equal(new Set(obligations.map((item) => item.id)).size, obligations.length);
@@ -24,8 +24,8 @@ test("decision basis hashes are stable regardless of object key order", () => {
 test("risk overlays expose stable evidence checks at the existing route stage", () => {
   const xs = evidence.requiredEvidenceForStep("xs", ["security"], "verification");
   assert.deepEqual(xs.checks, ["risk-review", "security-boundary"]);
-  const lightL = evidence.requiredEvidenceForStep("light-l", ["irreversible_consequence"], "planning");
-  assert.deepEqual(lightL.checks, ["full-rollback", "rollback-strategy"]);
-  const lightLReview = evidence.requiredEvidenceForStep("light-l", ["irreversible_consequence"], "code_review");
+  const lightL = evidence.requiredEvidenceForStep("l", ["irreversible_consequence"], "planning");
+  assert.deepEqual(lightL.checks, ["backup-preview-abort-compensation", "rollback-strategy"]);
+  const lightLReview = evidence.requiredEvidenceForStep("l", ["irreversible_consequence"], "code_review");
   assert.deepEqual(lightLReview.checks, ["risk-review"]);
 });

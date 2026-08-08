@@ -1,6 +1,8 @@
 ---
 name: coverage-review
-description: 查看或补充需求/测试/回撤覆盖证据。触发：需求覆盖、coverage、coverage-review、df-coverage-review、dev-flow-coverage-review。2.0 中覆盖是 planning/review 的内部义务，不是固定路线步骤。
+description: 核对 Dev Flow 5.0 冻结 Trace 的需求、验收、任务、测试与 RU 覆盖。
 ---
 
-仅使用 Dev Flow MCP。先调用 `dev_flow_status`，需要时 inspect `artifacts`、`trace`、`review` 查看当前 planning obligation；不要自行创建 coverage 路线步骤或重复确认。结构化 coverage 从实施计划 trace delta、review findings 和 verification summary 生成；若 Core 返回明确的补证据动作，再按该动作登记，并保持同一 CAS、NFC 路径和 pointer 完整性。不得手改 snapshot/state pointer，也不得用代码审查替代计划审查。
+读取 `dev_flow_inspect` 的 artifacts、trace 与 review。确认每个 REQ/AC 均落到 TASK 与 TEST，每个 TASK 属于合法 RU，每个 RU 的 scope、depends_on、targeted forward verification 和恢复命令完整。覆盖缺口在计划登记阶段修复。
+
+finding target 只能是 governed project path，或当前 frozen Trace 中存在的 REQ/AC/TASK/TEST/RU ID；evidence 只能再引用当前 job 包里的冻结需求/计划工件。禁止自由字符串、手改 snapshot 或创建独立 coverage 路线步骤。

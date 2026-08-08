@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import type {
   ClassificationBasis,
   ClassificationObligation,
+  GovernanceControls,
   RiskLabel,
   RouteId,
   VerificationKind,
@@ -54,24 +55,24 @@ function add(
 export function deriveObligations(
   route: RouteId,
   classificationBasis: ClassificationBasis,
-  projectPolicy: { requireCheckpoints?: boolean } = {},
+  controls?: GovernanceControls,
 ): ClassificationObligation[] {
   const output = new Map<string, ClassificationObligation>();
   const labels = Object.keys(classificationBasis.riskFacts) as RiskLabel[];
 
-  if (route === "standard-m" || route === "light-l" || route === "standard-l") {
+  if (controls?.executionApproval) {
     add(output, "approval", "route", "该路线需要一次合并的执行确认", { route }, ["execution"]);
   }
-  if (route === "standard-m" || route === "standard-l") {
-    add(output, "review", "route", "该路线需要独立计划审查", { route }, ["requirements-coverage", "architecture-testability", "rollback-operability"]);
+  if (controls?.planReview) {
+    add(output, "review", "route", "动态控制要求独立计划审查", { route, roles: controls.reviewRoles }, controls.reviewRoles);
   }
-  if (route === "light-l" || route === "standard-l") {
-    add(output, "rollback", "route", "L 路线需要可操作的回滚策略", { route }, ["rollback-operability"]);
+  if (controls?.recovery.some((kind) => kind !== "delivery-reverse")) {
+    add(output, "rollback", "route", "动态控制要求可操作的恢复策略", { route, recovery: controls.recovery }, ["rollback-operability"]);
   }
   // Every routed feature receives a Core-owned recovery baseline. Route size
   // controls how many boundaries are captured, not whether the safety net is
   // visible as another user step.
-  if (projectPolicy.requireCheckpoints !== false) {
+  if (controls?.checkpoints) {
     add(output, "checkpoint", "route", "实现边界自动保存可恢复检查点", { route }, ["checkpoint"]);
   }
 

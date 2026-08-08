@@ -12,11 +12,12 @@ const store = await loadSource("plugins/dev-flow/src/core/state-store.ts");
 const checks = await loadSource("plugins/dev-flow/src/core/feature-check.ts");
 const verification = await loadSource("plugins/dev-flow/src/core/verification.ts");
 const delivery = await loadSource("plugins/dev-flow/src/core/delivery-snapshot.ts");
+const lineage = await loadSource("plugins/dev-flow/src/core/git-reconciliation.ts");
 const config = {
-  schemaVersion: 1,
-  verification: { commands: [{ id: "pass", command: "node", args: ["-e", "process.exit(0)"], cwd: "." }], behaviorCommands: [] },
+  schemaVersion: 2,
+  verification: { commands: [{ id: "pass", command: "node", args: ["-e", "process.exit(0)"], cwd: ".", provides: ["targeted"] }] },
   enforcement: { mode: "strict", gitWriteRequiresLogicComplete: true, oneActiveFeature: true, requireExplicitHumanReply: true },
-  protectedRoots: ["src"],
+  governedRoots: ["src"],
 };
 
 async function createGitRoot(prefix) {
@@ -29,11 +30,17 @@ async function createGitRoot(prefix) {
   return root;
 }
 
-async function startXs(root) {
-  await store.initProject(root, config);
+async function startXs(root, projectConfig = config) {
+  await store.initProject(root, projectConfig);
   let state = await store.startFeature(root, { featureId: "f", host: "codex", level: "XS", topology: "local" });
-  state = await checks.recordStep(root, "f", state.revision, "locate", {});
-  return state;
+  return checks.recordStep(root, "f", state.revision, "locate", {});
+}
+
+async function trustedWrite(root, state, files, change, eventId) {
+  await store.recordTrustedWriteIntent(root, files, "codex", eventId);
+  await change();
+  await store.recordTrustedWriteOwnership(root, files, "codex", eventId);
+  return store.readState(root, state.featureId);
 }
 
 async function verifyAndFinalize(root, state) {
@@ -41,206 +48,61 @@ async function verifyAndFinalize(root, state) {
   return checks.finalize(root, "f", state.revision);
 }
 
-test("finalize requires a Git baseline even when implementation has no files", async () => {
-  const root = await mkdtemp(path.join(os.tmpdir(), "dev-flow-snapshot-no-git-"));
+test("5.0 requires Git lineage when a feature starts", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "dev-flow-no-git-"));
   try {
     await mkdir(path.join(root, "src"));
-    await writeFile(path.join(root, "src", "app.js"), "export const value = 1;\n");
-    let state = await startXs(root);
-    state = await checks.recordStep(root, "f", state.revision, "implementation", { files: [] });
-    state = await verification.runVerification(root, "f", state.revision, "codex", ["pass"]);
     await assert.rejects(
-      () => checks.finalize(root, "f", state.revision),
-      (error) => error.code === "DELIVERY_SNAPSHOT_GIT_REQUIRED",
+      () => lineage.captureWorkspaceLineage(root, config),
+      (error) => error.code === "GIT_LINEAGE_UNAVAILABLE",
     );
-    const active = await store.readState(root, "f");
-    assert.equal(active.lifecycle, "active");
-    assert.equal(active.deliverySnapshot, undefined);
-  } finally {
-    await rm(root, { recursive: true, force: true });
-  }
+  } finally { await rm(root, { recursive: true, force: true }); }
 });
 
-test("a Git-backed zero-file feature still records an empty delivery snapshot", async () => {
-  const root = await createGitRoot("dev-flow-snapshot-empty-");
+test("governed roots are canonical and implementation files are Core-derived", async () => {
+  const root = await createGitRoot("dev-flow-derived-files-");
+  try {
+    let state = await startXs(root, { ...config, governedRoots: ["src/"] });
+    assert.deepEqual((await store.readProjectConfig(root)).governedRoots, ["src"]);
+    state = await checks.recordStep(root, "f", state.revision, "implementation", { files: ["README.md", "src/never-created.js"] });
+    assert.deepEqual(state.steps.implementation.evidence, { derivedBy: "core", files: [] });
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test("trusted writes are automatically owned and included in the reversible snapshot", async () => {
+  const root = await createGitRoot("dev-flow-trusted-snapshot-");
   try {
     let state = await startXs(root);
-    state = await checks.recordStep(root, "f", state.revision, "implementation", { files: [] });
+    state = await trustedWrite(root, state, ["src/app.js", "src/new.js"], async () => {
+      await writeFile(path.join(root, "src", "app.js"), "export const value = 2;\n");
+      await writeFile(path.join(root, "src", "new.js"), "export const added = true;\n");
+    }, "write-1");
+    state = await checks.recordStep(root, "f", state.revision, "implementation", {});
+    assert.deepEqual(state.steps.implementation.evidence.files, ["src/app.js", "src/new.js"]);
     state = await verifyAndFinalize(root, state);
-    assert.ok(state.deliverySnapshot);
-    assert.equal(await readFile(path.join(root, state.deliverySnapshot.patchPath), "utf8"), "");
-    assert.match(await readFile(path.join(root, state.deliverySnapshot.manifestPath), "utf8"), /交付快照/);
-  } finally {
-    await rm(root, { recursive: true, force: true });
-  }
-});
-
-test("protected roots are canonicalized before implementation files are validated", async () => {
-  const root = await createGitRoot("dev-flow-snapshot-root-normalization-");
-  const trailingSlashConfig = { ...config, protectedRoots: ["src/"] };
-  try {
-    await store.initProject(root, trailingSlashConfig);
-    assert.deepEqual((await store.readProjectConfig(root)).protectedRoots, ["src"]);
-    let state = await store.startFeature(root, { featureId: "f", host: "codex", level: "XS", topology: "local" });
-    state = await checks.recordStep(root, "f", state.revision, "locate", {});
-    state = await checks.recordStep(root, "f", state.revision, "implementation", { files: ["src/app.js"] });
-    assert.deepEqual(state.steps.implementation.evidence.files, ["src/app.js"]);
-  } finally {
-    await rm(root, { recursive: true, force: true });
-  }
-});
-
-test("implementation paths use NFC across Chinese, decomposed Unicode, and Windows separators", () => {
-  const decomposed = "src/需求a\u0301.js";
-  const composed = "src/需求á.js";
-  assert.deepEqual(delivery.implementationFiles({ files: [decomposed, "src\\配置\\入口.js"] }), ["src/配置/入口.js", composed]);
-});
-
-test("implementation registration accepts existing files and Git-tracked deletions", async () => {
-  const existingRoot = await createGitRoot("dev-flow-snapshot-existence-ok-");
-  try {
-    let state = await startXs(existingRoot);
-    state = await checks.recordStep(existingRoot, "f", state.revision, "implementation", { files: ["src/app.js"] });
-    assert.equal(state.steps.implementation.status, "satisfied");
-  } finally {
-    await rm(existingRoot, { recursive: true, force: true });
-  }
-
-  // 删除场景必须在首次（唯一一次）登记前删文件：已关闭的步骤无法再次登记。
-  const deletedRoot = await createGitRoot("dev-flow-snapshot-existence-rm-");
-  try {
-    let state = await startXs(deletedRoot);
-    await rm(path.join(deletedRoot, "src", "app.js"));
-    state = await checks.recordStep(deletedRoot, "f", state.revision, "implementation", { files: ["src/app.js"] });
-    assert.equal(state.steps.implementation.status, "satisfied");
-  } finally {
-    await rm(deletedRoot, { recursive: true, force: true });
-  }
-
-  const missingRoot = await createGitRoot("dev-flow-snapshot-existence-missing-");
-  try {
-    const state = await startXs(missingRoot);
-    await assert.rejects(
-      () => checks.recordStep(missingRoot, "f", state.revision, "implementation", { files: ["src/never-created.js"] }),
-      (error) => error.code === "INVALID_IMPLEMENTATION_FILE"
-        && /纯路径/.test(error.details.recoveryHint),
-    );
-  } finally {
-    await rm(missingRoot, { recursive: true, force: true });
-  }
-});
-
-test("implementation evidence accepts only normalized paths inside protected roots", async () => {
-  const root = await createGitRoot("dev-flow-snapshot-paths-");
-  try {
-    const state = await startXs(root);
-    await assert.rejects(
-      () => checks.recordStep(root, "f", state.revision, "implementation", { files: ["README.md"] }),
-      (error) => error.code === "INVALID_IMPLEMENTATION_FILE",
-    );
-    await assert.rejects(
-      () => checks.recordStep(root, "f", state.revision, "implementation", { files: ["src/../outside.js"] }),
-      (error) => error.code === "INVALID_IMPLEMENTATION_FILE",
-    );
-  } finally {
-    await rm(root, { recursive: true, force: true });
-  }
-});
-
-test("finalize writes a reversible snapshot for registered tracked and untracked files", async () => {
-  const root = await createGitRoot("dev-flow-snapshot-");
-  try {
-    let state = await startXs(root);
-    await writeFile(path.join(root, "src", "app.js"), "export const value = 2;\n");
-    await writeFile(path.join(root, "src", "new.js"), "export const added = true;\n");
-    state = await checks.recordStep(root, "f", state.revision, "implementation", { files: ["src/app.js", "src/new.js"] });
-    state = await verifyAndFinalize(root, state);
-
-    assert.equal(state.lifecycle, "finalized");
     assert.deepEqual(state.deliverySnapshot.files, ["src/app.js", "src/new.js"]);
     const patch = await readFile(path.join(root, state.deliverySnapshot.patchPath), "utf8");
-    const manifest = await readFile(path.join(root, state.deliverySnapshot.manifestPath), "utf8");
     assert.match(patch, /src\/new\.js/);
-    assert.match(manifest, /Base Git HEAD:/);
-    assert.match(manifest, /git apply -R --binary/);
-
     await run("git", ["apply", "-R", "--binary", state.deliverySnapshot.patchPath], { cwd: root });
     assert.equal(await readFile(path.join(root, "src", "app.js"), "utf8"), "export const value = 1;\n");
-    await assert.rejects(() => readFile(path.join(root, "src", "new.js"), "utf8"), { code: "ENOENT" });
-  } finally {
-    await rm(root, { recursive: true, force: true });
-  }
+  } finally { await rm(root, { recursive: true, force: true }); }
 });
 
-test("finalize rejects feature ownership of an initially dirty protected file", async () => {
-  const root = await createGitRoot("dev-flow-snapshot-dirty-");
+test("unattributed IDE changes are rejected with exact ownership recovery", async () => {
+  const root = await createGitRoot("dev-flow-unknown-ownership-");
   try {
+    const state = await startXs(root);
     await writeFile(path.join(root, "src", "app.js"), "export const value = 2;\n");
-    let state = await startXs(root);
-    state = await checks.recordStep(root, "f", state.revision, "implementation", { files: ["src/app.js"] });
-    state = await verification.runVerification(root, "f", state.revision, "codex", ["pass"]);
     await assert.rejects(
-      () => checks.finalize(root, "f", state.revision),
-      (error) => error.code === "DELIVERY_FILE_PREEXISTING_DIRTY",
+      () => checks.recordStep(root, "f", state.revision, "implementation", {}),
+      (error) => error.code === "DELIVERY_OWNERSHIP_UNRESOLVED"
+        && error.details.files.includes("src/app.js")
+        && /reconcile_workspace/.test(error.details.recoveryHint),
     );
-  } finally {
-    await rm(root, { recursive: true, force: true });
-  }
+  } finally { await rm(root, { recursive: true, force: true }); }
 });
 
-test("finalize rejects protected changes absent from implementation evidence", async () => {
-  const root = await createGitRoot("dev-flow-snapshot-unregistered-");
-  try {
-    let state = await startXs(root);
-    await writeFile(path.join(root, "src", "app.js"), "export const value = 2;\n");
-    state = await checks.recordStep(root, "f", state.revision, "implementation", { files: [] });
-    state = await verification.runVerification(root, "f", state.revision, "codex", ["pass"]);
-    await assert.rejects(
-      () => checks.finalize(root, "f", state.revision),
-      (error) => error.code === "DELIVERY_FILE_UNREGISTERED",
-    );
-  } finally {
-    await rm(root, { recursive: true, force: true });
-  }
-});
-
-test("finalize accepts a committed protected change after the feature baseline", async () => {
-  const root = await createGitRoot("dev-flow-snapshot-head-drift-");
-  try {
-    let state = await startXs(root);
-    await writeFile(path.join(root, "src", "app.js"), "export const value = 2;\n");
-    state = await checks.recordStep(root, "f", state.revision, "implementation", { files: ["src/app.js"] });
-    await run("git", ["add", "src/app.js"], { cwd: root });
-    await run("git", ["-c", "user.name=Dev Flow Tests", "-c", "user.email=tests@example.invalid", "commit", "--quiet", "-m", "intervening change"], { cwd: root });
-    state = await verification.runVerification(root, "f", state.revision, "codex", ["pass"]);
-
-    const finalized = await checks.finalize(root, "f", state.revision);
-    assert.equal(finalized.lifecycle, "finalized");
-    assert.equal(finalized.deliverySnapshot.finalHead.length, 40);
-  } finally {
-    await rm(root, { recursive: true, force: true });
-  }
-});
-
-test("multiple WIP commits plus remaining worktree edits produce one reversible final patch", async () => {
-  const root = await createGitRoot("dev-flow-snapshot-wip-chain-");
-  try {
-    let state = await startXs(root);
-    await writeFile(path.join(root, "src", "app.js"), "export const value = 2;\n");
-    state = await checks.recordStep(root, "f", state.revision, "implementation", { files: ["src/app.js"] });
-    await run("git", ["add", "src/app.js"], { cwd: root });
-    await run("git", ["-c", "user.name=Dev Flow Tests", "-c", "user.email=tests@example.invalid", "commit", "--quiet", "-m", "wip one"], { cwd: root });
-    await writeFile(path.join(root, "src", "app.js"), "export const value = 3;\n");
-    await run("git", ["add", "src/app.js"], { cwd: root });
-    await run("git", ["-c", "user.name=Dev Flow Tests", "-c", "user.email=tests@example.invalid", "commit", "--quiet", "-m", "wip two"], { cwd: root });
-    await writeFile(path.join(root, "src", "app.js"), "export const value = 4;\n");
-    state = await verifyAndFinalize(root, state);
-    assert.equal(state.lifecycle, "finalized");
-    const patch = await readFile(path.join(root, state.deliverySnapshot.patchPath), "utf8");
-    assert.match(patch, /value = 4/);
-    await run("git", ["apply", "-R", "--binary", state.deliverySnapshot.patchPath], { cwd: root });
-    assert.equal(await readFile(path.join(root, "src", "app.js"), "utf8"), "export const value = 1;\n");
-  } finally {
-    await rm(root, { recursive: true, force: true });
-  }
+test("implementation path normalization remains NFC and platform independent", () => {
+  const decomposed = "src/需求a\u0301.js";
+  assert.deepEqual(delivery.implementationFiles({ files: [decomposed, "src\\配置\\入口.js"] }), ["src/配置/入口.js", "src/需求á.js"]);
 });

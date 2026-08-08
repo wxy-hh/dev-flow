@@ -9,7 +9,7 @@ import { approvalIds } from "./approval-basis.js";
 import { mutate, mutatePrepared, readState, type FeatureState, type PreparedMutationOptions } from "./state-store.js";
 import { currentOpenStep, routeDefinitionForState } from "./step-order.js";
 import { parseTraceSourceBlocks } from "./traceability-anchors.js";
-import { applyTraceDelta } from "./traceability.js";
+import { applyTraceDelta, assertTraceabilityComplete } from "./traceability.js";
 import { readProjectConfigSnapshot, readTraceabilityForArtifactReplacement, type TraceStoreOptions, writeTraceSnapshot } from "./traceability-store.js";
 import { clearInteractionsByKind, clearInteractionsForTarget } from "./user-interactions.js";
 import { prepareReviewInvalidation } from "./review-store.js";
@@ -51,7 +51,7 @@ export interface RecordArtifactWithTraceResult {
 }
 function template(state: FeatureState, id: string, kind: string): string {
   if (traceArtifactKinds.has(kind)) {
-    return renderArtifactTemplate({ featureId: id, route: state.route, requirementsState: state.classification.requirements }, kind);
+    return renderArtifactTemplate({ featureId: id, route: state.route, requirementsState: state.classification.requirements, controls: state.classification.controls }, kind);
   }
   return `---\ndev_flow:\n  schema_version: 3\n  feature_id: ${id}\n  route: ${state.route}\n  kind: ${kind}\n---\n\n# ${kind}\n\n`;
 }
@@ -73,7 +73,7 @@ function assertManualRegistrationAllowed(state: FeatureState, kind: string, trac
     throw new DevFlowError("ARTIFACT_NOT_REQUIRED", `${kind} is not required for ${state.route}`);
   }
   if (!traceAware && traceArtifactKinds.has(kind)
-    && traceEnforcementRequired(state.route, state.workflowCapabilities)) {
+    && traceEnforcementRequired(state.route, state.classification.controls)) {
     throw new DevFlowError("TRACE_AWARE_REGISTRATION_REQUIRED", `${kind} must be registered with its Trace delta`);
   }
 }
@@ -102,7 +102,7 @@ export function invalidateFromStep(state: FeatureState, kind: string): { plannin
   const rule = artifactInvalidations[kind] ?? {};
   let planningReopened = false;
   const reopenFromStep = rule.reopenFromStep
-    && reviewEnforcementRequired(state.route, state.workflowCapabilities)
+    && reviewEnforcementRequired(state.route, state.classification.controls)
     ? rule.reopenFromStep
     : undefined;
   if (reopenFromStep) {
@@ -117,7 +117,6 @@ export function invalidateFromStep(state: FeatureState, kind: string): { plannin
   }
   const ordered = effectiveRoute(state).orderedSteps;
   state.currentStage = ordered.find((step) => state.steps[step]?.status !== "satisfied") ?? ordered.at(-1);
-  state.featureCheck = {};
   state.logicComplete = false;
   delete state.steps.finalize;
   return { planningReopened };
@@ -130,8 +129,6 @@ function invalidateArtifactDependents(state: FeatureState, kind: string, reason:
     clearInteractionsForTarget(state, `approval:${approval}`);
   }
   if (kind === "requirements") clearInteractionsByKind(state, "grill");
-  state.featureCheck = {};
-  delete state.steps.feature_check;
   state.logicComplete = false;
   delete state.steps.finalize;
   state.qualityExceptions = state.qualityExceptions.map((exception) => ({ ...exception, status: "stale" as const }));
@@ -153,7 +150,7 @@ export async function scaffoldArtifact(root: string, id: string, expectedRevisio
   const state = await readState(root, id); if (state.lifecycle !== "active") throw new DevFlowError("INVALID_LIFECYCLE", "only active features can scaffold artifacts");
   const route = effectiveRoute(state);
   if (!artifactKinds(route).includes(kind)) throw new DevFlowError("ARTIFACT_NOT_REQUIRED", `${kind} is not required for ${state.route}`);
-  if (kind === "plan-review" && reviewEnforcementRequired(state.route, state.workflowCapabilities)) {
+  if (kind === "plan-review" && reviewEnforcementRequired(state.route, state.classification.controls)) {
     throw new DevFlowError("GENERATED_ARTIFACT_READ_ONLY", "plan-review is generated from the immutable review ledger");
   }
   const currentStep = currentOpenStep(state); const requiredNow = currentStep
@@ -171,7 +168,7 @@ export async function recordArtifact(root: string, id: string, expectedRevision:
   assertPlanRevisionQuiescent(state, kind);
   const artifact = state.artifacts[kind]; if (!artifact) throw new DevFlowError("MISSING_REQUIRED_ARTIFACT", kind);
   const contents = await readFile(path.join(featureDirectory(root, id), normalizeUnicode(artifact.path)), "utf8"); const checksum = hash(contents);
-  if (kind === "implementation-plan" && state.route === "light-l") {
+  if (kind === "implementation-plan" && state.classification.controls.plan === "formal") {
     const errors = validatePlanTaskGraph(contents);
     if (errors.length) {
       throw new DevFlowError("PLAN_TASK_GRAPH_INVALID", "实施计划的任务间关系校验未通过", {
@@ -184,7 +181,7 @@ export async function recordArtifact(root: string, id: string, expectedRevision:
     assertPlanRevisionQuiescent(current, kind);
     current.artifacts[kind] = { ...artifact, path: normalizeUnicode(artifact.path), sha256: checksum };
     invalidateArtifactDependents(current, kind, "artifact-changed");
-  }, { kind, invalidationReason: "artifact-changed", planningReopened: kind === "implementation-plan" && reviewEnforcementRequired(state.route, state.workflowCapabilities) });
+  }, { kind, invalidationReason: "artifact-changed", planningReopened: kind === "implementation-plan" && reviewEnforcementRequired(state.route, state.classification.controls) });
 }
 
 /**
@@ -205,7 +202,7 @@ export async function recordArtifactWithTrace(
   let warnings: string[] = [];
   const state = await mutatePrepared(root, id, expectedRevision, "artifact-recorded-with-trace", async (current, nextStateRevision) => {
     if (current.lifecycle !== "active") throw new DevFlowError("INVALID_LIFECYCLE", "only active features can register artifacts");
-    if (!traceEnforcementRequired(current.route, current.workflowCapabilities)) {
+    if (!traceEnforcementRequired(current.route, current.classification.controls)) {
       throw new DevFlowError("TRACE_NOT_ENFORCED", `${artifactKind} does not use Trace registration on ${current.route}`, {
         route: current.route,
         recoveryHint: "当前路线不强制 Trace；请改用 dev_flow_record_artifact 登记该文档",
@@ -231,6 +228,17 @@ export async function recordArtifactWithTrace(
       verificationCommandIds: config.verification.commands.map((command) => command.id),
       nextStateRevision,
     });
+    if (artifactKind === "implementation-plan") {
+      assertTraceabilityComplete(ledger, current.route, projectConfigSha256);
+    }
+    const executionSemanticBasisHash = hash(JSON.stringify(Object.values(ledger.nodes)
+      .filter((node) => node.status === "current" && node.kind !== "test")
+      .map((node) => node.kind === "rollback" ? {
+        kind: node.kind, id: node.id, tasks: node.tasks, dependsOn: node.dependsOn, fileScope: node.fileScope,
+        covers: node.covers, forwardVerification: node.forwardVerification, rollbackVerification: node.rollbackVerification,
+      } : node.kind === "task" ? { kind: node.kind, id: node.id, covers: node.covers, rollbackUnit: node.rollbackUnit }
+        : { kind: node.kind, id: node.id })
+      .sort((left, right) => left.id.localeCompare(right.id))));
     warnings = detectRollbackSplitWarning(Object.values(ledger.nodes).filter((node) => node.kind === "rollback"));
     const pointer = await writeTraceSnapshot(root, ledger, options.snapshot);
     const artifactChanged = artifact.sha256 !== artifactSha256;
@@ -250,6 +258,7 @@ export async function recordArtifactWithTrace(
       mutate: (draft) => {
         draft.artifacts[artifactKind] = { ...artifact, sha256: artifactSha256 };
         draft.traceability = pointer;
+        draft.executionSemanticBasisHash = executionSemanticBasisHash;
         if (reviewPointer) draft.review = reviewPointer;
         if (artifactChanged || traceChanged) {
           const invalidation = invalidateArtifactDependents(draft, artifactKind, artifactChanged ? "artifact-changed" : "trace-changed");

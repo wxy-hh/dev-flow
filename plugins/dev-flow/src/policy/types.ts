@@ -1,6 +1,5 @@
 export type Level = "XS" | "S" | "M" | "L";
 export type Topology = "local" | "shared-contract" | "multi-chain" | "coordinated-rollback";
-export type Execution = "light" | "standard";
 export type RequirementsState = "missing-or-unclear" | "documented-unconfirmed" | "provided-confirmed";
 export type RiskLabel =
   | "security"
@@ -10,8 +9,56 @@ export type RiskLabel =
   | "availability"
   | "critical_correctness"
   | "irreversible_consequence";
-/** The only base routes in v3. Risk never creates another route. */
-export type RouteId = "xs" | "s" | "light-m" | "standard-m" | "light-l" | "standard-l";
+/** v4 base level. Governance is compiled independently into orderedRoute. */
+export type RouteId = "xs" | "s" | "m" | "l";
+export type ChangeSurface = "single-site" | "single-component" | "multi-component" | "system-wide";
+export type BehaviorChange = "mechanical" | "bounded-rule" | "new-capability" | "systemic-change";
+export type PlanControl = "locate" | "brief" | "formal";
+export type CheckpointControl = "baseline" | "unit-chain";
+export type RecoveryControl = "delivery-reverse" | "operational-strategy" | "executable-rollback" | "irreversible-compensation";
+export type CodeReviewControl = "none" | "focused" | "independent" | "full";
+
+export interface GovernanceControls {
+  requirements: boolean;
+  plan: PlanControl;
+  trace: boolean;
+  planReview: boolean;
+  reviewRoles: ReviewRole[];
+  executionApproval: boolean;
+  checkpoints: CheckpointControl;
+  recovery: RecoveryControl[];
+  codeReview: CodeReviewControl;
+  verification: VerificationKind[];
+  reasons: Record<string, string>;
+}
+
+/** User-requested controls are additive; Core merges them with factual minima. */
+export interface GovernanceControlEnhancements {
+  requirements?: true;
+  plan?: "brief" | "formal";
+  trace?: true;
+  planReview?: true;
+  reviewRoles?: ReviewRole[];
+  executionApproval?: true;
+  checkpoints?: "unit-chain";
+  recovery?: Array<Exclude<RecoveryControl, "delivery-reverse">>;
+  codeReview?: Exclude<CodeReviewControl, "none">;
+  verification?: VerificationKind[];
+}
+
+export interface BoundaryAuditItem {
+  id: string;
+  kind: "assumption" | "free-space" | "tbd" | "fallback" | "scope" | "acceptance";
+  disposition: "repository-fact" | "resolved-decision";
+  evidenceRef?: string;
+  decisionRef?: string;
+  summary: string;
+}
+
+export interface BoundaryAudit {
+  scanned: Array<BoundaryAuditItem["kind"]>;
+  items: BoundaryAuditItem[];
+}
 
 export type FeatureLifecycle = "active" | "paused" | "finalized" | "abandoned";
 export type Lifecycle = FeatureLifecycle;
@@ -37,8 +84,10 @@ export interface WorkspaceLineage {
   observedHead: string;
   startedDirty: Record<string, StartedDirtyPath>;
   ownership: Record<string, "feature" | "excluded">;
-  ownershipSource: Record<string, "scope" | "user-adopted" | "manual-commit">;
+  ownershipSource: Record<string, "user-adopted" | "trusted-hook">;
   observedCommits: ObservedCommit[];
+  /** Last reconciled per-path content/type/mode basis for precise freshness. */
+  observedPathFingerprints: Record<string, string>;
   lastWorkspaceFingerprint: string;
   reconciliationStatus: "current" | "required" | "blocked";
 }
@@ -59,6 +108,7 @@ export type PendingDecisionKind =
   | "rollback-confirmation"
   | "quality-exception"
   | "workspace-ownership"
+  | "route-confirmation"
   | "task-switch";
 
 export interface PendingDecisionOption {
@@ -101,15 +151,18 @@ export interface ClassificationBasis {
   riskFacts: Partial<Record<RiskLabel, string[]>>;
   decisionRefs: string[];
   signals?: ClassificationSignals;
+  controlEnhancements?: GovernanceControlEnhancements;
 }
 
 export interface ClassificationSignals {
-  impactScope: "single-location" | "single-module" | "cross-module";
-  sharedContract: boolean;
-  independentChains: number;
-  coordinatedRollback: boolean;
+  changeSurface: ChangeSurface;
+  behaviorChange: BehaviorChange;
+  topology: Topology;
+  unitCount: number;
   requirements: RequirementsState;
-  formalControls: Array<"trace" | "independent-review" | "multiple-rollback-units">;
+  operationalRecovery: boolean;
+  executableRollback: boolean;
+  upwardLevel?: Level;
 }
 
 export interface ClassificationReason {
@@ -147,7 +200,6 @@ export type ClassificationPreview =
 export interface ClassificationFacts extends ClassificationBasis {
   level: Level;
   topology: Topology;
-  execution?: Execution;
   requirements?: RequirementsState;
   riskLabels?: RiskLabel[];
   acceptanceAssistSuggested?: boolean;
@@ -220,10 +272,10 @@ export const SUPPORTED_WORKFLOW_CAPABILITIES: WorkflowCapabilities = Object.free
 export interface ClassificationInput {
   level?: Level;
   topology?: Topology;
-  execution?: Execution;
   requirements?: RequirementsState;
   riskLabels?: RiskLabel[];
   classificationBasis?: ClassificationBasis;
+  controlEnhancements?: GovernanceControlEnhancements;
   objective?: string;
   scope?: { inScope: string[]; outOfScope: string[] };
   /** Suggest browser/user acceptance assistance without making it a route condition. */
@@ -235,11 +287,13 @@ export interface ClassificationInput {
 export interface Classification {
   level: Level;
   topology: Topology;
-  execution?: Execution;
   requirements?: RequirementsState;
   riskLabels: RiskLabel[];
   acceptanceAssistSuggested: boolean;
   classificationBasis?: ClassificationBasis;
+  controls: GovernanceControls;
+  orderedRoute: string[];
+  routeConfirmationRequired: boolean;
 }
 
 export interface RouteDefinition {
@@ -255,7 +309,6 @@ export interface RouteDefinition {
     to: "generated";
     steps: string[];
   }>;
-  featureCheckRequired: boolean;
 }
 
 export type ReviewAssurance =
@@ -266,6 +319,7 @@ export type ReviewAssurance =
 
 export type ReviewExecutionMode =
   | "isolated-sequential"
+  | "parallel-safe"
   | "mcp-sampling"
   | "native-subagent";
 
@@ -274,7 +328,11 @@ export type ReviewRole =
   | "architecture-testability"
   | "rollback-operability"
   | "security"
-  | "data-irreversibility";
+  | "data-irreversibility"
+  | "money-safety"
+  | "contract-failure"
+  | "recovery-observability"
+  | "critical-correctness";
 
 /** Review 2a keeps finding categories aligned with the role that produced them. */
 export type ReviewFindingCategory = ReviewRole;
@@ -321,7 +379,7 @@ export interface RequiredEvidence {
     reviewDepth?: "full";
     /** Satisfied only by Core after it validates the current review batch. */
     reviewBatch?: true;
-    files?: "protected-root-paths";
+    files?: "governed-root-paths";
   };
   checks: string[];
   verificationKinds: VerificationKind[];
@@ -343,15 +401,16 @@ export interface StepSnapshot {
 }
 
 export interface DeriveState {
-  schemaVersion: 3;
+  schemaVersion: 4;
   lifecycle: "active" | "paused" | "finalized" | "abandoned";
   route: RouteId;
+  /** Core-compiled operational steps for this feature's dynamic controls. */
+  orderedSteps?: string[];
   steps: Record<string, StepSnapshot | undefined>;
   obligations?: ClassificationObligation[];
   blockingFindings?: Array<{ blocking: boolean }>;
   classificationViolatesTopology?: boolean;
   verificationFresh?: boolean;
-  featureCheckFresh?: boolean;
   logicComplete?: boolean;
   repair?: { status: "active" | "stalled" | "waiting-user" | "completed"; recoveryAction?: RecoveryAction };
 }
@@ -370,7 +429,7 @@ export type NextAction =
       kind: "review-jobs-pending";
       step: "planning";
       batchId: string;
-      jobs: Array<{ jobId: string; role: ReviewRole; reviewDepth: ReviewDepth; status: "pending" | "claimed" | "sampling" | "submitted" }>;
+      jobs: Array<{ jobId: string; role: ReviewRole; reviewDepth: ReviewDepth; status: "pending" | "claimed" | "sampling" | "submitted" | "reused" }>;
     }
   | {
       kind: "repair-trace";
@@ -382,5 +441,4 @@ export type NextAction =
   | { kind: "begin-implementation-unit"; unitId: string }
   | { kind: "checkpoint-implementation-unit"; unitId: string }
   | { kind: "run-step"; step: string; requiredEvidence?: RequiredEvidence }
-  | { kind: "feature-check"; requiredEvidence?: RequiredEvidence }
   | { kind: "finalize" };

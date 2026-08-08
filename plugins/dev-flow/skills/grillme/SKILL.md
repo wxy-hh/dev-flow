@@ -1,21 +1,10 @@
 ---
 name: grillme
-description: 先查事实、再高质量澄清用户决策。可独立调用，也可在 Dev Flow 任意阶段按需调用。
+description: 在 Dev Flow 5.0 中区分现场取舍与既有用户结论，并用可信交互落账。
 ---
 
-`grillme` 不属于任何 level、route 或固定步骤。用户可以直接调用；使用 Dev Flow 时，intake、planning、implementation、verification 或 finalize 只要出现真实用户决策缺口，都可以调用。
+先查仓库，只有会改变范围、验收、拓扑、风险或不可逆取舍的问题才询问用户，每次只问一个互斥决策。
 
-## 提问准入
+现场取舍只走 `dev_flow_request_grill_decision` → 原生 elicitation / `dev_flow_answer`；不要创建第二份 pending ledger，也不存在 resolve-decision 工具。已有明确用户结论使用 `dev_flow_record_decision` 一次性写入 evidence 与 conclusion，并且必须绑定 feature 启动后、来自当前宿主的可信用户事件。
 
-1. 先读取代码、文档、测试、已有决策和当前状态；能自行查明的事实不问用户。
-2. 只询问会改变范围、拓扑、风险、验收、优先级或不可逆取舍的问题。
-3. 每题说明已知事实、冲突/未知、互斥选项、影响和推荐答案；不要把剩余问题合并成一次回答。
-4. 没有固定题数上限，直到决策树收敛；用户可以选择停止澄清，但停止不代表剩余问题自动采用推荐答案。
-5. 工作流模式下直接调用 `dev_flow_request_grill_decision`；用户回答统一调用 `dev_flow_answer`。不要自行锁定分类、伪造确认或修改控制文件。
-
-## 两种模式
-
-- 独立模式：只输出澄清问题与收敛摘要，不创建 Dev Flow 状态。
-- 工作流模式：读取 `dev_flow_status`，只对当前真实缺口提问；决策影响分类时，未解决前不得 `dev_flow_lock_classification`。
-
-合法等待不是失败。技术问题、命令差异或可自行查明的边界不应打断用户；只有用户必须决定的取舍才等待。
+优先使用 MCP form elicitation 的 `oneOf + const + title` 选项。decline、cancel、协议错误、超时或缺少能力时保留 pending，改为提示用户直接回复完整中文选项；普通 AskUserQuestion/request_user_input 没有可信宿主事件时不能作为接受证据。

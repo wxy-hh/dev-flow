@@ -4,6 +4,7 @@
   "type": "object",
   "additionalProperties": false,
   "properties": {
+    "reviewLedger": { "$ref": "#/$defs/reviewLedger" },
     "jobRequirements": {
       "type": "array",
       "items": { "$ref": "#/$defs/reviewJobRequirement" },
@@ -23,17 +24,30 @@
     }
   },
   "$defs": {
+    "reviewLedger": {
+      "type": "object",
+      "required": ["schemaVersion", "featureId", "revision", "stateRevision", "batches", "summary", "findingEvents"],
+      "properties": {
+        "schemaVersion": { "const": 2 },
+        "featureId": { "type": "string", "minLength": 1 },
+        "revision": { "type": "integer", "minimum": 0 },
+        "stateRevision": { "type": "integer", "minimum": 0 },
+        "batches": { "type": "array" },
+        "summary": { "type": "object" },
+        "findingEvents": { "type": "array" }
+      }
+    },
     "reviewAssurance": {
       "enum": ["multi-perspective", "independent-sampling", "multi-agent-attested", "multi-agent-verified"]
     },
     "reviewExecutionMode": {
-      "enum": ["isolated-sequential", "mcp-sampling", "native-subagent"]
+      "enum": ["isolated-sequential", "parallel-safe", "mcp-sampling", "native-subagent"]
     },
     "reviewRole": {
-      "enum": ["requirements-coverage", "architecture-testability", "rollback-operability", "security", "data-irreversibility"]
+      "enum": ["requirements-coverage", "architecture-testability", "rollback-operability", "security", "data-irreversibility", "money-safety", "contract-failure", "recovery-observability", "critical-correctness"]
     },
     "reviewFindingCategory": {
-      "enum": ["requirements-coverage", "architecture-testability", "rollback-operability", "security", "data-irreversibility"]
+      "enum": ["requirements-coverage", "architecture-testability", "rollback-operability", "security", "data-irreversibility", "money-safety", "contract-failure", "recovery-observability", "critical-correctness"]
     },
     "reviewDepth": {
       "enum": ["standard", "full"]

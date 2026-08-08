@@ -4,7 +4,7 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { loadSource } from "./load-source.mjs";
-import { registerTraceFixture } from "./trace-fixtures.mjs";
+import { appendSecondTraceClosure, registerTraceFixture, twoClosureTraceDeltaFor } from "./trace-fixtures.mjs";
 import { promisify } from "node:util";
 
 const store = await loadSource("plugins/dev-flow/src/core/state-store.ts");
@@ -23,10 +23,10 @@ const evidencePolicy = await loadSource("plugins/dev-flow/src/policy/evidence.ts
 const run = promisify(execFile);
 
 export const routeFlowConfig = {
-  schemaVersion: 1,
-  verification: { commands: [{ id: "unit", command: "node", args: ["--test"], cwd: "." }], behaviorCommands: [] },
+  schemaVersion: 2,
+  verification: { commands: [{ id: "unit", command: "node", args: ["--test"], cwd: ".", provides: ["targeted", "behavior", "integration", "full"] }] },
   enforcement: { mode: "strict", gitWriteRequiresLogicComplete: true, oneActiveFeature: true, requireExplicitHumanReply: true },
-  protectedRoots: ["src"],
+  governedRoots: ["src"],
 };
 
 const TRACE_KINDS = new Set(["requirements", "implementation-plan", "coverage-matrix", "rollback-units"]);
@@ -113,20 +113,25 @@ async function satisfyHumanGate(root, featureId, state, step, options = {}) {
   );
 }
 
-async function materializeScaffold(root, featureId, state, kind, requirementsState) {
+async function materializeScaffold(root, featureId, state, kind, requirementsState, options = {}) {
   let current = state;
   if (!current.artifacts[kind]) {
     current = await artifacts.scaffoldArtifact(root, featureId, current.revision, kind);
   }
-  if (TRACE_KINDS.has(kind) && ["standard-m", "standard-l"].includes(current.route)) {
+  if (TRACE_KINDS.has(kind) && current.classification.controls.trace) {
     return registerTraceFixture({
       root,
       featureId,
       state: current,
       kind,
-      edit: kind === "requirements" && ["missing-or-unclear", "documented-unconfirmed"].includes(requirementsState)
-        ? (markdown) => markdown.replace(/^  grill_status: pending$/m, "  grill_status: complete")
-        : undefined,
+      ...(options.twoClosures ? { delta: twoClosureTraceDeltaFor(kind, current.route) } : {}),
+      edit: (markdown) => {
+        let edited = kind === "requirements" && ["missing-or-unclear", "documented-unconfirmed"].includes(requirementsState)
+          ? markdown.replace(/^  grill_status: pending$/m, "  grill_status: complete")
+          : markdown;
+        if (options.twoClosures) edited = appendSecondTraceClosure(edited, kind, current.route);
+        return edited;
+      },
     });
   }
   if (kind === "status" || kind === "plan-review") return current;
@@ -137,7 +142,7 @@ async function materializeScaffold(root, featureId, state, kind, requirementsSta
  * Core nextAction is the only scheduler. Each loop reads next, then executes the
  * matching Core/MCP operation. Never injects satisfied steps via store.mutate.
  */
-async function driveUntil(root, featureId, state, options = {}) {
+export async function driveUntil(root, featureId, state, options = {}) {
   const stopAt = options.stopAt;
   const input = options.input ?? {};
   let current = state;
@@ -163,7 +168,7 @@ async function driveUntil(root, featureId, state, options = {}) {
         true,
         "review:1 plan-review must be Core-generated",
       );
-      current = await materializeScaffold(root, featureId, current, action.step, input.requirements);
+      current = await materializeScaffold(root, featureId, current, action.step, input.requirements, options);
       continue;
     }
 
@@ -206,7 +211,9 @@ async function driveUntil(root, featureId, state, options = {}) {
 
     if (action.kind === "begin-implementation-unit") {
       current = await units.beginImplementationUnit(root, featureId, current.revision, action.unitId);
-      if (!options.unitFilesWritten) {
+      if (options.unitWriter) {
+        current = await options.unitWriter(root, current, action.unitId) ?? current;
+      } else if (!options.unitFilesWritten) {
         const files = options.implementationFiles ?? { "src/main.js": "export const m = 1;\n" };
         for (const [file, contents] of Object.entries(files)) {
           await mkdir(path.dirname(path.join(root, file)), { recursive: true });
@@ -222,7 +229,7 @@ async function driveUntil(root, featureId, state, options = {}) {
     }
 
     if (action.kind === "run-step") {
-      if (action.step === "plan_review" && current.workflowCapabilities?.review === 1) {
+      if (action.step === "plan_review" && current.classification.controls.planReview) {
         assert.equal(action.requiredEvidence?.fields?.reviewBatch, true);
         const currentProjection = await projection.readReviewProjection(root, current);
         assert.equal(currentProjection.model.assurance.level, "multi-perspective");
@@ -247,23 +254,23 @@ async function driveUntil(root, featureId, state, options = {}) {
         current.route,
         current.classification.riskLabels,
         action.step,
-        current.workflowCapabilities,
+        current.classification.controls,
       );
       if (action.step === "implementation") {
         const files = options.implementationFiles ?? { "src/main.js": "export const m = 1;\n" };
         if (options.beforeImplementation) {
           await options.beforeImplementation(root, current);
-        } else if (!contract.checkpointsEnforcementRequired(current.route, current.workflowCapabilities)) {
+        } else if (!contract.checkpointsEnforcementRequired(current.route, current.classification.controls)) {
+          const paths = Object.keys(files);
+          await store.recordTrustedWriteIntent(root, paths, options.host ?? "claude", `route-write-${current.revision}`);
           for (const [file, contents] of Object.entries(files)) {
             await mkdir(path.dirname(path.join(root, file)), { recursive: true });
             await writeFile(path.join(root, file), contents);
           }
+          await store.recordTrustedWriteOwnership(root, paths, options.host ?? "claude", `route-write-${current.revision}`);
+          current = await store.readState(root, featureId);
         }
-        current = await checks.recordStep(root, featureId, current.revision, "implementation", {
-          ...required.fields,
-          ...(required.checks.length ? { checks: required.checks } : {}),
-          files: Object.keys(files),
-        });
+        current = await checks.recordStep(root, featureId, current.revision, "implementation", {});
         continue;
       }
       current = await checks.recordStep(root, featureId, current.revision, action.step, {
@@ -273,10 +280,6 @@ async function driveUntil(root, featureId, state, options = {}) {
       continue;
     }
 
-    if (action.kind === "feature-check") {
-      current = await checks.featureCheck(root, featureId, current.revision);
-      continue;
-    }
     if (action.kind === "finalize") {
       current = await checks.finalize(root, featureId, current.revision);
       continue;
@@ -323,7 +326,7 @@ export async function runRoute(input, expectedRoute, options = {}) {
     assert.equal(state.logicComplete, true);
     assert.equal(state.lifecycle, "finalized");
     if (options.expectSnapshot) assert.ok(state.deliverySnapshot);
-    if (state.workflowCapabilities?.review === 1 && (expectedRoute === "standard-m" || expectedRoute === "standard-l")) {
+    if (state.classification.controls.planReview) {
       assert.equal(driven.review.createSeen, true);
       assert.equal(driven.review.pendingSeen, true);
       assert.equal(driven.review.assuranceLevel, "multi-perspective");
@@ -341,7 +344,7 @@ export async function runRoute(input, expectedRoute, options = {}) {
  * Does not inject satisfied steps with store.mutate.
  */
 export async function prepareReviewReadyFeature(root, input, options = {}) {
-  if (options.seedProtectedRoots !== false) {
+  if (options.seedGovernedRoots !== false) {
     await mkdir(path.join(root, "src"), { recursive: true });
     await writeFile(path.join(root, "src", "main.js"), options.seedContents ?? "export {}\n");
     try {

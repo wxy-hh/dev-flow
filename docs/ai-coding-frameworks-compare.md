@@ -237,7 +237,7 @@ dev-flow/
   │   ├── policy/        # 路线合同解析（读 policy/contract.json）
   │   ├── mcp/           # 40 个 MCP 工具（状态变更的唯一入口）
   │   └── hosts/         # Claude / Codex 适配器（事件归一化 + 门禁拦截）
-  ├── policy/contract.json  # 机器权威：六条基础路线 + 风险义务
+  ├── policy/contract.json  # 机器权威：XS/S/M/L 基线 + 动态治理控制
   ├── skills/            # 各步骤 Skill（只通过 MCP 推进状态）
   └── dist/              # 受版本控制的预构建 bundle
 ```
@@ -250,7 +250,7 @@ Dev Flow 不假设需求一开始就是清晰的。`dev_flow_start` 只创建一
 
 #### 特色 2：计划对抗审查
 
-standard M/L 路线的实施计划不是 AI 写完就行的。Core 基于**不可变的 planning snapshot** 创建独立的审查批次（requirements-coverage、architecture-testability、rollback-operability 三个角色），让计划的覆盖度、可测性和回滚可操作性被对抗性检查；blocking finding 必须在 planning 阶段闭合才能进入实现。审查是机器编排的义务，不是「建议做」，且同一义务只向用户呈现一个门禁。
+启用 plan-review 控制的 M/L 任务，其实施计划不是 AI 写完就行的。Core 基于**不可变的 planning snapshot** 创建独立的审查批次；基础角色及 security、money-safety 等专项角色按事实派生，让计划的覆盖度、可测性、恢复可操作性与风险切片被对抗性检查。blocking finding 必须在 planning 阶段闭合才能进入实现。审查是机器编排的义务，不是「建议做」，且同一义务只向用户呈现一个门禁。
 
 #### 特色 3：最小回撤单元
 
@@ -262,7 +262,7 @@ hooks 层在宿主事件流上直接拦截：logic-complete 之前 Git 写（add
 
 #### 特色 5：规模自适应，风险只叠义务
 
-`dev_flow_classify` 按 规模（XS/S/M/L）× 拓扑 × 执行（light/standard）× 需求状态 × 风险标签 选路线，基础路线只有六条；7 个风险标签（security / data / money / external / availability / critical_correctness / irreversible_consequence）**不创建新路线**，只追加 review、verification、rollback、checkpoint 或 approval 义务。30 分钟的小改动走 XS 路线不背任何强制文档；金融支付类改动在 standard L 上被追加确认与审查义务——**流程重量永远和改动的重要性成正比**。
+`dev_flow_classify` 从 changeSurface、behaviorChange 与 topology 计算 XS/S/M/L 最低级别，再独立派生需求、计划、Trace、审查、确认、checkpoint、恢复与 verification 控制，最后编译确定路线。7 个风险标签（security / data / money / external / availability / critical_correctness / irreversible_consequence）**不抬高 level**，只追加相应控制与义务。30 分钟的小改动可走无文档的 XS；金融支付类改动则由 money 等事实追加确认、审查、集成验证和恢复控制——**流程重量永远和改动的重要性成正比**。
 
 ### 3.5 Matt Pocock Skills：不拥有你的过程，给你可组合的纪律
 
@@ -421,23 +421,23 @@ mattpocock/skills/
 3. **分类固化**：按规模 XS（单文件、单位置改动）选 `xs` 路线，需求状态 provided-confirmed，无风险标签；决策收敛后 `lock_classification` 原子锁定。
 4. **实现**：xs 路线为 定位 → 实现 → 验证 → 完成，不强制任何 Markdown；Core 自动捕获 checkpoint；实现期普通写入放行，Git 写在 logic-complete 前被拦截。
 5. **验证**：把 7 条测试作为验证命令运行，全部通过。
-6. **finalize**：义务全部满足（xs 只需 checkpoint）才放行，交付快照登记。
+6. **finalize**：义务全部满足（xs 除验证外无需额外文档义务）才放行，交付快照登记。
 
 与三者的设计差异：
 
 - **vs Superpowers 的 brainstorming**：同样先问「内嵌还是关联表」，但 dev-flow **能查明的绝不问**——只问用户真正拥有的取舍，少打扰。
 - **vs OpenSpec 的轻量**：同样不背文档，但 dev-flow 有机器门禁——测试没跑、Git 提前写都会被拦，不是靠自觉。
-- **vs Spec Kit 的重**：小改动不会被迫生成 34 个文件，流程重量由路线自适应；而 standard M/L 又能拿到不输 Spec Kit 的计划对抗审查与追溯。
+- **vs Spec Kit 的重**：小改动不会被迫生成 34 个文件，流程重量由控制动态编译；复杂 M/L 又能按共享契约、多 RU、恢复与风险事实拿到计划对抗审查与追溯。
 
 ### 5.6 四框架对比
 
 | 指标 | Superpowers | OpenSpec | Spec Kit | Dev Flow（设计推演） |
 | --- | --- | --- | --- | --- |
-| **必须的流程步骤** | brainstorming → TDD | propose → apply → archive | constitution → specify → plan → tasks → implement | 定位 → 实现 → 验证 → 完成（xs）；standard L 为 需求对齐 → 实施计划 → 实现 → 代码审查 → 验证 → 完成 |
-| **流程步骤数** | 2 | 3 | 5 | 4（xs）~ 6（standard L，不含前置 intake/分类） |
-| **规范产物** | 无独立文件（留对话中） | proposal + design + tasks | constitution + spec + plan + tasks | 无（xs）；standard M/L 强制需求文档 + 实施计划 |
+| **必须的流程步骤** | brainstorming → TDD | propose → apply → archive | constitution → specify → plan → tasks → implement | XS 为 定位 → 实现 → 验证 → 完成；M/L 按事实追加需求、计划审查、确认、代码审查等控制 |
+| **流程步骤数** | 2 | 3 | 5 | 动态编译；以每次分类返回的完整 `orderedRoute` 为准 |
+| **规范产物** | 无独立文件（留对话中） | proposal + design + tasks | constitution + spec + plan + tasks | XS 可无文档；需要持久需求、正式计划或 Trace 时生成对应工件 |
 | **生成文件总数** | 2 | 19 | 34 | 仅 `.dev-flow/` 状态，不新增业务文档 |
-| **强制测试** | 是（RED-GREEN-REFACTOR） | 否 | 否（可选） | 否（验证义务按路线与风险决定） |
+| **强制测试** | 是（RED-GREEN-REFACTOR） | 否 | 否（可选） | 按路线（targeted 验证始终存在，范围随路线与风险动态） |
 | **测试结果** | 7 passed | 7 passed | 7 passed | —（未实测） |
 | **安装复杂度** | 插件市场一键安装 | `npm install -g` 一行 | 需 Python 3.11+ + uv + `specify init` | 插件市场一键安装（Claude / Codex 双宿主） |
 | **适合项目规模** | 中小（注重质量） | 中小（注重速度） | 中大型（注重规范） | XS → L 全覆盖，流程重量自适应 |
@@ -461,7 +461,7 @@ mattpocock/skills/
 | 需要 Claude Code 与 Codex 双宿主接力 | **Dev Flow** | 同一份 `.dev-flow/` 状态跨宿主共用，可接力开发 |
 | 流程要求机器强制，不接受靠提示词自觉 | **Dev Flow** | hooks + MCP 状态机拦截越界，逻辑未完成禁 Git 写 |
 | 项目里从 XS 到 L 的改动都有，不想为小改动背重流程 | **Dev Flow** | 路线按规模×拓扑×风险自适应，小改动零文档 |
-| 需要可审计追溯与最小回撤单元 | **Dev Flow（standard M/L）** | REQ/AC → TASK → TEST/RU 可审计图 + 单元级双向验证回滚 |
+| 需要可审计追溯与最小回撤单元 | **Dev Flow（Trace + unit-chain）** | REQ/AC → TASK → TEST/RU 可审计图 + 单元级双向验证回滚 |
 | 想要工程方法论最扎实的审查/调试/建模技能 | **Matt Pocock Skills** | 双轴 code-review、diagnosing-bugs、domain-modeling 是五者中方法论最完整的 |
 | 不想被任何框架锁死，想完全掌控过程 | **Matt Pocock Skills** | 技能即文件可 hack，不拥有你的过程 |
 | 要流程保证又要有方法论深度 | **Dev Flow + Matt Pocock Skills** | Dev Flow 管「何时做什么」，技能管「怎么做好」，互补不互斥 |
@@ -491,7 +491,7 @@ mattpocock/skills/
 - **Spec Kit**：Token 消耗最高，因为每个阶段都把前面的所有产物当上下文重新灌入。7 个阶段跑完，上下文已经非常长。
 - **OpenSpec**：Token 消耗最低，因为只加载当前变更相关的 spec 增量，Artifact Graph 帮 AI 精确定位需要的上下文。
 - **Superpowers**：Token 消耗中等偏高，子代理模式让每个子代理的上下文干净，但 brainstorming + TDD + code review 多轮消耗加起来不少。v6.0.0 优化后子代理评审成本下降约 50%。
-- **Dev Flow**：分路线。XS/S 几乎零额外 Token——不强制文档，状态只读当下阶段；standard M/L 的计划审查批次与追溯图会抬升成本，接近 Spec Kit 的中高区间。总体介于 OpenSpec 与 Spec Kit 之间。
+- **Dev Flow**：动态编译。XS/S 通常额外 Token 很低；启用正式需求、Trace 与多角色计划审查的 M/L 会抬升成本，接近 Spec Kit 的中高区间。总体介于 OpenSpec 与 Spec Kit 之间。
 
 ### 7.3 它们不是互斥的
 
@@ -521,7 +521,7 @@ mattpocock/skills/
 | **一句话** | 规范可执行，生成代码 | 规范轻量化，追踪变更 | 流程纪律化，强制质量 | 流程合同化，机器强制履行 | 基本功技能化，不拥有过程 |
 | **最佳场景** | 新项目、大团队 | 存量迭代、快速开发 | 质量优先、Claude Code | 双宿主接力、规模多样、要求可追溯 | 想保留控制权、技能可定制 |
 | **学习成本** | 中-高 | 低 | 中 | 中（概念多，但按路线自动收敛） | 低-中（技能即斜杠命令） |
-| **Token 成本** | 高 | 低 | 中-高 | 低-中（XS/S 极低，standard L 中高） | 中（拷问与子代理审查有成本） |
+| **Token 成本** | 高 | 低 | 中-高 | 低-中（XS/S 通常极低，复杂 M/L 中高） | 中（拷问与子代理审查有成本） |
 | **产出质量上限** | 高 | 中-高 | 最高 | 高 | 高 |
 | **灵活性** | 低（门控严格） | 高（自由迭代） | 中（流程绑定） | 中（路线自选，门禁强制） | 最高（可 hack、可组合） |
 

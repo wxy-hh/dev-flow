@@ -27,7 +27,7 @@ export function traceSliceForWorkflowStep(step: string): string {
 }
 
 export function traceIsEnforced(state: FeatureState): boolean {
-  return traceEnforcementRequired(state.route, state.workflowCapabilities);
+  return traceEnforcementRequired(state.route, state.classification.controls);
 }
 
 function blockerFor(step: string, error: unknown): TraceBlocker {

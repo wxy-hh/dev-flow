@@ -89,7 +89,7 @@ export function formatPreToolBlock(block: PreToolBlock): string {
 const directWriteTools = new Set(["write", "edit", "multiedit", "applypatch", "apply_patch", "patch"]);
 const controlFileNames = new Set(["state.json", "active.json", "project.json", "events.jsonl", "status.md", "状态文档.md", "recovery-transaction.json", "recovery-events.jsonl"]);
 
-/** 拦截消息中的 scratch 引导：临时验证文件放到 protectedRoots 之外的 scratch/，不触发 checkpoint。 */
+/** 拦截消息中的 scratch 引导：临时验证文件放到 governedRoots 之外的 scratch/，不触发 checkpoint。 */
 const scratchHint = "；临时验证文件请放入 scratch/ 目录";
 const runGit = promisify(execFile);
 
@@ -110,10 +110,10 @@ function projectRelative(root: string, target: string): string | undefined {
   return relative.split(path.sep).join("/").normalize("NFC");
 }
 
-function isProtected(root: string, target: string, protectedRoots: string[]): boolean {
+function isGoverned(root: string, target: string, governedRoots: string[]): boolean {
   const relative = projectRelative(root, target);
   if (!relative) return false;
-  return protectedRoots.some((item) => relative === item || relative.startsWith(`${item}/`));
+  return governedRoots.some((item) => relative === item || relative.startsWith(`${item}/`));
 }
 
 function isDevFlowPath(relative: string): boolean {
@@ -153,6 +153,17 @@ function directTargets(event: HookEvent): string[] {
   const targets = [input.file_path, input.path, input.target_file].filter((value): value is string => typeof value === "string");
   for (const key of ["patch", "diff", "input"]) targets.push(...patchTargets(input[key]));
   return targets;
+}
+
+/** Normalize statically attributable write targets for trusted hook auditing. */
+export function trustedWriteTargets(root: string, event: HookEvent): string[] {
+  const targets = toolName(event) === "bash"
+    ? (() => {
+      const analysis = analyzeBashWriteTargets(String(event.tool_input?.command ?? ""));
+      return analysis.kind === "resolved" ? analysis.targets : [];
+    })()
+    : directTargets(event);
+  return [...new Set(targets.map((target) => projectRelative(root, target)).filter((value): value is string => Boolean(value)))].sort();
 }
 
 function knownWriteTargets(event: HookEvent): string[] | undefined {
@@ -471,13 +482,13 @@ interface ActiveWorkflow {
   logicComplete?: boolean;
   approvalConfirmed: boolean;
   allowedArtifacts: Set<string>;
-  protectedRoots: string[];
+  governedRoots: string[];
   /** Read-only Core inputs for the shared implementation-unit judgment. */
   state?: FeatureState;
   ledger?: Awaited<ReturnType<typeof readTraceability>>;
 }
 
-type UnreadableWorkflow = { kind: "unreadable"; reason: string; protectedRoots?: string[]; blockAllWrites: boolean };
+type UnreadableWorkflow = { kind: "unreadable"; reason: string; governedRoots?: string[]; blockAllWrites: boolean };
 
 async function loadActiveWorkflow(root: string): Promise<
   | { kind: "none" }
@@ -489,7 +500,7 @@ async function loadActiveWorkflow(root: string): Promise<
     if (recovery) {
       try {
         const project = await readProjectConfig(root);
-        return { kind: "unreadable", reason: `recovery journal open for ${recovery.featureId}`, protectedRoots: project.protectedRoots, blockAllWrites: false };
+        return { kind: "unreadable", reason: `recovery journal open for ${recovery.featureId}`, governedRoots: project.governedRoots, blockAllWrites: false };
       } catch { return { kind: "unreadable", reason: "project.json invalid while recovery journal is open", blockAllWrites: true }; }
     }
   } catch { return { kind: "unreadable", reason: "recovery journal unreadable", blockAllWrites: true }; }
@@ -498,7 +509,7 @@ async function loadActiveWorkflow(root: string): Promise<
   catch {
     try {
       const project = await readProjectConfig(root);
-      return { kind: "unreadable", reason: "active.json unreadable", protectedRoots: project.protectedRoots, blockAllWrites: false };
+      return { kind: "unreadable", reason: "active.json unreadable", governedRoots: project.governedRoots, blockAllWrites: false };
     } catch { return { kind: "unreadable", reason: "project.json invalid while active.json is unreadable", blockAllWrites: true }; }
   }
   if (!active) return { kind: "none" };
@@ -511,15 +522,15 @@ async function loadActiveWorkflow(root: string): Promise<
   let ledger: Awaited<ReturnType<typeof readTraceability>> | undefined;
   try {
     state = await readState(root, active.featureId);
-  } catch { return { kind: "unreadable", reason: "state invalid", protectedRoots: project.protectedRoots, blockAllWrites: false }; }
-  if (state.lifecycle !== "active" || active.revision !== state.revision) return { kind: "unreadable", reason: "active pointer revision mismatch", protectedRoots: project.protectedRoots, blockAllWrites: false };
+  } catch { return { kind: "unreadable", reason: "state invalid", governedRoots: project.governedRoots, blockAllWrites: false }; }
+  if (state.lifecycle !== "active" || active.revision !== state.revision) return { kind: "unreadable", reason: "active pointer revision mismatch", governedRoots: project.governedRoots, blockAllWrites: false };
   if (state.traceability) {
     try { ledger = await readTraceability(root, state); }
-    catch { return { kind: "unreadable", reason: "traceability snapshot invalid", protectedRoots: project.protectedRoots, blockAllWrites: false }; }
+    catch { return { kind: "unreadable", reason: "traceability snapshot invalid", governedRoots: project.governedRoots, blockAllWrites: false }; }
   }
   if (state.review) {
     try { await readReviewLedger(root, state); }
-    catch { return { kind: "unreadable", reason: "review snapshot invalid", protectedRoots: project.protectedRoots, blockAllWrites: false }; }
+    catch { return { kind: "unreadable", reason: "review snapshot invalid", governedRoots: project.governedRoots, blockAllWrites: false }; }
   }
 
   const allowedArtifacts = new Set<string>();
@@ -529,7 +540,7 @@ async function loadActiveWorkflow(root: string): Promise<
     // are valid state artifacts but deliberately never become host-editable.
     if (isGeneratedReviewProjectionPath(kind, artifact.path)) continue;
     if (typeof artifact.path !== "string" || path.posix.dirname(artifact.path) !== "." || !artifact.path.endsWith(".md")) {
-      return { kind: "unreadable", reason: "artifact path invalid", protectedRoots: project.protectedRoots, blockAllWrites: false };
+      return { kind: "unreadable", reason: "artifact path invalid", governedRoots: project.governedRoots, blockAllWrites: false };
     }
     const relative = `.dev-flow/features/${active.featureId}/${artifact.path}`.split(path.sep).join("/");
     allowedArtifacts.add(relative);
@@ -545,7 +556,7 @@ async function loadActiveWorkflow(root: string): Promise<
       logicComplete: state.logicComplete,
       approvalConfirmed,
       allowedArtifacts,
-      protectedRoots: project.protectedRoots,
+      governedRoots: project.governedRoots,
       state,
       ledger,
     },
@@ -591,12 +602,12 @@ function classifyTarget(
     );
   }
   if (workflow.state?.mode === "intake") {
-    const decision = judgeWrite({ mode: "intake", controlPath: false, protectedPath: isProtected(root, target, workflow.protectedRoots), impactResolved: false });
+    const decision = judgeWrite({ mode: "intake", controlPath: false, governedPath: isGoverned(root, target, workflow.governedRoots), impactResolved: false });
     if (decision.decision === "block") {
       return createPreToolBlock(
         "DEV_FLOW_IMPLEMENTATION_APPROVAL_REQUIRED",
-        `feature 仍处于 intake，目标 ${relative} 位于 protected root，尚未进入可执行实现阶段`,
-        "原写入未执行；protected 目标保持不变",
+        `feature 仍处于 intake，目标 ${relative} 位于 governed root，尚未进入可执行实现阶段`,
+        "原写入未执行；governed 目标保持不变",
         {
           mode: "user-decision",
           action: "先完成 intake 调查、解决分类决策并锁定基础路线；满足实现批准条件后自动重试原写入",
@@ -605,12 +616,12 @@ function classifyTarget(
       );
     }
   }
-  if (workflow.state?.mode === "routed" && currentOpenStep(workflow.state) === "implementation" && isProtected(root, target, workflow.protectedRoots)) {
+  if (workflow.state?.mode === "routed" && currentOpenStep(workflow.state) === "implementation" && isGoverned(root, target, workflow.governedRoots)) {
     const approvalPending = workflow.state.obligations?.some((obligation) => obligation.kind === "approval" && obligation.status !== "satisfied") ?? false;
     if (approvalPending && !workflow.approvalConfirmed) {
       return createPreToolBlock(
         "DEV_FLOW_IMPLEMENTATION_APPROVAL_REQUIRED",
-        `当前 open step 是 implementation，但目标 ${projectRelative(root, target)} 位于 protected root，执行批准义务尚未满足`,
+        `当前 open step 是 implementation，但目标 ${projectRelative(root, target)} 位于 governed root，执行批准义务尚未满足`,
         "原写入未执行；目标文件和当前 feature 状态未改变",
         {
           mode: "user-decision",
@@ -627,7 +638,7 @@ function classifyTarget(
       return createPreToolBlock(
         "DEV_FLOW_IMPLEMENTATION_UNIT_REQUIRED",
         `目标 ${projectRelative(root, target)} 已通过实现批准，但当前没有活动的 rollback unit`,
-        "原写入未执行；protected 目标保持不变",
+        "原写入未执行；governed 目标保持不变",
         {
           mode: "automatic",
           action: "调用 dev_flow_begin_implementation_unit 准备当前 rollback unit；成功后自动重试原写入",
@@ -647,17 +658,17 @@ function classifyTarget(
         },
       );
     }
-    const decision = judgeWrite({ mode: "routed", stage: "implementation", controlPath: false, protectedPath: true, impactResolved: true });
+    const decision = judgeWrite({ mode: "routed", stage: "implementation", controlPath: false, governedPath: true, impactResolved: true });
     if (decision.decision !== "block") return undefined;
   }
-  if (workflow.state && isProtected(root, target, workflow.protectedRoots)) {
+  if (workflow.state && isGoverned(root, target, workflow.governedRoots)) {
     // Hooks delegate to the one Core judgment; they only map its codes.
     const relative = projectRelative(root, target)!;
     const block = implementationUnitWriteBlock(workflow.state, workflow.ledger, relative);
     if (block?.code === "IMPLEMENTATION_UNIT_REQUIRED") {
       return createPreToolBlock(
         "DEV_FLOW_IMPLEMENTATION_UNIT_REQUIRED",
-        `目标 ${relative} 位于 protected root，但没有活动的 rollback unit`,
+        `目标 ${relative} 位于 governed root，但没有活动的 rollback unit`,
         "原写入未执行；目标文件保持不变",
         {
           mode: "automatic",
@@ -766,7 +777,7 @@ async function augmentApprovalBlock(
     return unreadableBlock("events.jsonl invalid or unreadable");
   }
   if (!revokedKind) return block;
-  const action = `计划依据（${revokedKind}）已在实现批准后变更，批准已作废；请先完成相关步骤并重新确认实现批准后再写 protected 文件${scratchHint}`;
+  const action = `计划依据（${revokedKind}）已在实现批准后变更，批准已作废；请先完成相关步骤并重新确认实现批准后再写 governed 文件${scratchHint}`;
   return {
     ...block,
     reason: action,
@@ -800,7 +811,7 @@ function unreadableTargetBlock(root: string, target: string, workflow: Unreadabl
   if (!relative) return undefined;
   if (isControlPath(relative)) return controlMutationBlock(relative);
   if (workflow.blockAllWrites) return unreadableBlock(workflow.reason);
-  if (isDevFlowPath(relative) || isProtected(root, target, workflow.protectedRoots ?? [])) return unreadableBlock(workflow.reason);
+  if (isDevFlowPath(relative) || isGoverned(root, target, workflow.governedRoots ?? [])) return unreadableBlock(workflow.reason);
   return undefined;
 }
 
@@ -884,7 +895,7 @@ async function evaluatePreToolUseInternal(root: string, event: HookEvent): Promi
   // approval to its first ordinary file write.
   const prepareImplementationWrite = async (targets: string[]): Promise<string | undefined> => {
     if (workflow.state?.mode !== "routed" || currentOpenStep(workflow.state) !== "implementation"
-      || !targets.some((target) => isProtected(root, target, workflow.protectedRoots))) return undefined;
+      || !targets.some((target) => isGoverned(root, target, workflow.governedRoots))) return undefined;
     try {
       const prepared = await ensureActiveImplementationUnit(root, workflow.featureId, workflow.state);
       if (prepared.revision !== workflow.state.revision) {

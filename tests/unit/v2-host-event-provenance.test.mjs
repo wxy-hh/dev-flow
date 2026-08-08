@@ -9,10 +9,10 @@ const stateStore = await loadSource("plugins/dev-flow/src/core/state-store.ts");
 const approvals = await loadSource("plugins/dev-flow/src/core/approval-interactions.ts");
 
 const config = {
-  schemaVersion: 1,
-  verification: { commands: [{ id: "unit", command: process.execPath, args: ["-e", "process.exit(0)"], cwd: "." }], behaviorCommands: [] },
+  schemaVersion: 2,
+  verification: { commands: [{ id: "unit", command: process.execPath, args: ["-e", "process.exit(0)"], cwd: ".", provides: ["targeted", "behavior", "integration", "full"] }] },
   enforcement: { mode: "strict", gitWriteRequiresLogicComplete: true, oneActiveFeature: true, requireExplicitHumanReply: true },
-  protectedRoots: ["src"],
+  governedRoots: ["src"],
 };
 
 test("a prompt event captured by another host cannot be consumed by approval", async () => {

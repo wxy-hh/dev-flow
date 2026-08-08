@@ -6,7 +6,7 @@ import { implementationUnitForRollbackNode, type ImplementationUnitState } from 
 import { DevFlowError } from "./errors.js";
 import { assertArtifactCurrent } from "./artifacts.js";
 import { captureUnitBaseline } from "./checkpoints.js";
-import { fingerprintProtectedRoots, snapshotProtectedRoots } from "./fingerprint.js";
+import { fingerprintGovernedRoots, snapshotGovernedRoots } from "./fingerprint.js";
 import { assertReviewComplete } from "./review-jobs.js";
 import { mutate, readProjectConfig, type FeatureState } from "./state-store.js";
 import { currentOpenStep } from "./step-order.js";
@@ -37,7 +37,7 @@ export async function ensureActiveImplementationUnit(
   id: string,
   state: FeatureState,
 ): Promise<FeatureState> {
-  if (!checkpointsEnforcementRequired(state.route, state.workflowCapabilities)
+  if (!checkpointsEnforcementRequired(state.route, state.classification.controls)
     || currentOpenStep(state) !== "implementation"
     || !confirmedApproval(state)
     || (state.implementationUnits ?? []).some((unit) => unit.status === "active")) return state;
@@ -71,14 +71,14 @@ export function implementationUnitWriteBlock(
   ledger: TraceabilityLedger | undefined,
   _relativePath: string,
 ): ImplementationUnitWriteBlock | undefined {
-  if (!checkpointsEnforcementRequired(state.route, state.workflowCapabilities)) return undefined;
+  if (!checkpointsEnforcementRequired(state.route, state.classification.controls)) return undefined;
   if (currentOpenStep(state) !== "implementation") return undefined;
   if (!confirmedApproval(state)) return undefined;
   const active = (state.implementationUnits ?? []).find((unit) => unit.status === "active");
   if (!active) {
     return {
       code: "IMPLEMENTATION_UNIT_REQUIRED",
-      details: { recoveryHint: "Begin the next rollback unit via dev_flow_begin_implementation_unit before writing protected files" },
+      details: { recoveryHint: "写入 governed 文件前，先通过 dev_flow_begin_implementation_unit 开始下一个 rollback unit" },
     };
   }
   const node = currentRollbackNodes(ledger).find((candidate) => candidate.id === active.unitId);
@@ -108,8 +108,8 @@ export async function beginImplementationUnit(
   unitId: string,
 ): Promise<FeatureState> {
   return mutate(root, id, expectedRevision, "implementation-unit-begun", async (state) => {
-    if (!checkpointsEnforcementRequired(state.route, state.workflowCapabilities)) {
-      throw new DevFlowError("IMPLEMENTATION_UNITS_NOT_ENFORCED", "implementation units require a checkpoints:1 standard feature");
+    if (!checkpointsEnforcementRequired(state.route, state.classification.controls)) {
+      throw new DevFlowError("IMPLEMENTATION_UNITS_NOT_ENFORCED", "当前动态路线未启用 unit-chain checkpoint 控制。");
     }
     if (currentOpenStep(state) !== "implementation") {
       throw new DevFlowError("STEP_OUT_OF_ORDER", "begin requires the implementation step", { expected: currentOpenStep(state) });
@@ -125,7 +125,7 @@ export async function beginImplementationUnit(
     for (const kind of ["requirements", "implementation-plan"]) {
       await assertArtifactCurrent(root, id, state, kind);
     }
-    if (reviewEnforcementRequired(state.route, state.workflowCapabilities)) {
+    if (reviewEnforcementRequired(state.route, state.classification.controls)) {
       await assertReviewComplete(root, state);
     }
     const nodes = currentRollbackNodes(ledger);
@@ -164,7 +164,7 @@ export async function beginImplementationUnit(
     }
     const project = await readProjectConfig(root);
     // Preserve begin-time bytes: rollback needs them long after the unit's edits.
-    const snapshot = await snapshotProtectedRoots(root, project);
+    const snapshot = await snapshotGovernedRoots(root, project);
     await captureUnitBaseline(root, id, unitId, snapshot);
     // A rolled_back unit re-begins as a new incarnation: the historical
     // checkpoint reference and nonce are dropped so its old manifest can never
@@ -173,7 +173,7 @@ export async function beginImplementationUnit(
     target.basisHash = basisHash;
     target.beginNonce = randomUUID();
     target.status = "active";
-    target.startedFingerprint = await fingerprintProtectedRoots(root, project);
+    target.startedFingerprint = await fingerprintGovernedRoots(root, project);
     state.implementationUnits = merged;
   }, { unitId });
 }

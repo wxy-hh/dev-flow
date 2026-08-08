@@ -2,7 +2,7 @@ import { routeDefinition } from "./contract.js";
 import type { DeriveState, NextAction } from "./types.js";
 
 export function deriveNext(state: DeriveState): NextAction {
-  if (state.schemaVersion !== 3) throw new Error("UNSUPPORTED_STATE_SCHEMA");
+  if (state.schemaVersion !== 4) throw new Error("UNSUPPORTED_STATE_SCHEMA");
   if (state.lifecycle === "finalized") return { kind: "done" };
   if (state.repair?.status === "waiting-user" || state.repair?.status === "stalled") {
     return {
@@ -15,25 +15,25 @@ export function deriveNext(state: DeriveState): NextAction {
   if (state.blockingFindings?.some((finding) => finding.blocking)) return { kind: "stop", reason: "resolve-blocking-findings" };
 
   const definition = routeDefinition(state.route);
+  const orderedSteps = state.orderedSteps ?? definition.orderedSteps;
   // Approval is a dynamic obligation, never a fixed route stage. Present it
   // only when all route work before implementation is complete; this keeps
   // artifact scaffolding and plan review ahead of the user decision.
   const approval = state.obligations?.find((obligation) => obligation.kind === "approval" && obligation.status !== "satisfied");
-  const implementationIndex = definition.orderedSteps.indexOf("implementation");
+  const implementationIndex = orderedSteps.indexOf("implementation");
   const implementationReady = implementationIndex >= 0
-    && definition.orderedSteps.slice(0, implementationIndex).every((step) => state.steps[step]?.status === "satisfied");
+    && orderedSteps.slice(0, implementationIndex).every((step) => state.steps[step]?.status === "satisfied");
   if (approval && implementationReady) {
     return { kind: "present-human-gate", step: approval.id };
   }
 
-  for (const step of definition.orderedSteps) {
+  for (const step of orderedSteps) {
     const snapshot = state.steps[step];
     if (snapshot?.status === "satisfied") continue;
     if (snapshot && snapshot.artifactReady === false) return { kind: "scaffold-artifact", step };
     return { kind: "run-step", step };
   }
 
-  if (definition.featureCheckRequired && !state.featureCheckFresh) return { kind: "feature-check" };
   if (!state.logicComplete) return { kind: "finalize" };
   return { kind: "done" };
 }

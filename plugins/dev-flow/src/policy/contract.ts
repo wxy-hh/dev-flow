@@ -1,6 +1,7 @@
 import contractJson from "../../policy/contract.json" with { type: "json" };
 import {
   ZERO_WORKFLOW_CAPABILITIES,
+  type GovernanceControls,
   type RiskEnhancement,
   type RiskLabel,
   type RouteDefinition,
@@ -18,7 +19,7 @@ interface ContractShape {
 
 export const contract = contractJson as ContractShape;
 
-if (contract.schemaVersion !== 3) {
+if (contract.schemaVersion !== 4) {
   throw new Error(`unsupported contract schema ${String(contract.schemaVersion)}`);
 }
 
@@ -104,14 +105,38 @@ export function normalizeWorkflowCapabilities(
 
 export function routeDefinitionForFeature(
   route: RouteId,
-  capabilities: WorkflowCapabilities | undefined,
+  controlsOrCapabilities: GovernanceControls | WorkflowCapabilities | undefined,
 ): RouteDefinition {
   const definition = cloneRouteDefinition(routeDefinition(route));
-  const normalized = normalizeWorkflowCapabilities(capabilities);
-
-  for (const transition of definition.artifactTransitions ?? []) {
-    if (normalized[transition.capability] === 1) {
-      moveArtifactToGenerated(definition, transition.artifact, transition.steps);
+  if (controlsOrCapabilities && "plan" in controlsOrCapabilities) {
+    const controls = controlsOrCapabilities;
+    definition.orderedSteps = [];
+    if (controls.requirements) definition.orderedSteps.push("requirements_alignment");
+    definition.orderedSteps.push(controls.plan === "locate" ? "locate" : controls.plan === "brief" ? "boundary" : "planning");
+    // Plan review and execution approval are Core-owned gates attached to the
+    // planning→implementation transition; classification.orderedRoute exposes
+    // them, while recordable steps remain artifact/action stages.
+    definition.orderedSteps.push("implementation");
+    if (controls.codeReview !== "none") definition.orderedSteps.push("code_review");
+    definition.orderedSteps.push("verification", "finalize");
+    definition.requiredArtifacts = [];
+    definition.artifactSteps = {};
+    if (controls.requirements) {
+      definition.requiredArtifacts.push("requirements");
+      definition.artifactSteps.requirements_alignment = ["requirements"];
+    }
+    if (controls.plan === "formal") {
+      definition.requiredArtifacts.push("implementation-plan");
+      definition.artifactSteps.planning = ["implementation-plan"];
+    }
+    if (controls.planReview) {
+      definition.generatedArtifacts = ["plan-review"];
+      definition.generatedArtifactSteps = { planning: ["plan-review"] };
+    }
+  } else {
+    const normalized = normalizeWorkflowCapabilities(controlsOrCapabilities);
+    for (const transition of definition.artifactTransitions ?? []) {
+      if (normalized[transition.capability] === 1) moveArtifactToGenerated(definition, transition.artifact, transition.steps);
     }
   }
 
@@ -121,34 +146,38 @@ export function routeDefinitionForFeature(
 
 export function traceEnforcementRequired(
   route: RouteId,
-  capabilities: WorkflowCapabilities | undefined,
+  controlsOrCapabilities: GovernanceControls | WorkflowCapabilities | undefined,
 ): boolean {
-  return normalizeWorkflowCapabilities(capabilities).trace === 1
-    && (route === "standard-m" || route === "standard-l");
+  return controlsOrCapabilities && "plan" in controlsOrCapabilities
+    ? controlsOrCapabilities.trace
+    : normalizeWorkflowCapabilities(controlsOrCapabilities).trace === 1 && (route === "m" || route === "l");
 }
 
 export function reviewEnforcementRequired(
   route: RouteId,
-  capabilities: WorkflowCapabilities | undefined,
+  controlsOrCapabilities: GovernanceControls | WorkflowCapabilities | undefined,
 ): boolean {
-  return normalizeWorkflowCapabilities(capabilities).review === 1
-    && (route === "standard-m" || route === "standard-l");
+  return controlsOrCapabilities && "plan" in controlsOrCapabilities
+    ? controlsOrCapabilities.planReview
+    : normalizeWorkflowCapabilities(controlsOrCapabilities).review === 1 && (route === "m" || route === "l");
 }
 
 export function checkpointsEnforcementRequired(
   route: RouteId,
-  capabilities: WorkflowCapabilities | undefined,
+  controlsOrCapabilities: GovernanceControls | WorkflowCapabilities | undefined,
 ): boolean {
-  // Checkpoints build on the trace rollback graph: enforcement requires the
-  // trace capability and a standard route, just like traceEnforcementRequired.
-  return normalizeWorkflowCapabilities(capabilities).checkpoints === 1
-    && traceEnforcementRequired(route, capabilities);
+  // Unit checkpoints build on the Trace rollback graph, so enforcement also
+  // requires the route's Trace control.
+  return controlsOrCapabilities && "plan" in controlsOrCapabilities
+    ? controlsOrCapabilities.checkpoints === "unit-chain" && controlsOrCapabilities.trace
+    : normalizeWorkflowCapabilities(controlsOrCapabilities).checkpoints === 1 && traceEnforcementRequired(route, controlsOrCapabilities);
 }
 
 export function rollbackExecutionAllowed(
   route: RouteId,
-  capabilities: WorkflowCapabilities | undefined,
+  controlsOrCapabilities: GovernanceControls | WorkflowCapabilities | undefined,
 ): boolean {
-  return normalizeWorkflowCapabilities(capabilities).rollbackExecution === 1
-    && checkpointsEnforcementRequired(route, capabilities);
+  return controlsOrCapabilities && "plan" in controlsOrCapabilities
+    ? controlsOrCapabilities.recovery.includes("executable-rollback") && checkpointsEnforcementRequired(route, controlsOrCapabilities)
+    : normalizeWorkflowCapabilities(controlsOrCapabilities).rollbackExecution === 1 && checkpointsEnforcementRequired(route, controlsOrCapabilities);
 }

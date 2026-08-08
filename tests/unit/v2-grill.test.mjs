@@ -41,10 +41,10 @@ test("routed pending requirements can request grill directly and resolve interac
   try {
     await mkdir(path.join(root, "src"));
     await stateStore.initProject(root, {
-      schemaVersion: 1,
-      verification: { commands: [{ id: "unit", command: process.execPath, args: ["-e", "process.exit(0)"], cwd: "." }], behaviorCommands: [] },
+      schemaVersion: 2,
+      verification: { commands: [{ id: "unit", command: process.execPath, args: ["-e", "process.exit(0)"], cwd: ".", provides: ["targeted", "behavior", "integration", "full"] }] },
       enforcement: { mode: "strict", gitWriteRequiresLogicComplete: true, oneActiveFeature: true, requireExplicitHumanReply: true },
-      protectedRoots: ["src"],
+      governedRoots: ["src"],
     });
     let state = await stateStore.startFeature(root, {
       featureId: "grill-routed",
@@ -86,10 +86,10 @@ test("intake grill request reopens a previously resolved decision", async () => 
   const root = await mkdtemp(path.join(os.tmpdir(), "dev-flow-grill-intake-reopen-"));
   try {
     await stateStore.initProject(root, {
-      schemaVersion: 1,
-      verification: { commands: [{ id: "unit", command: process.execPath, args: ["-e", "process.exit(0)"], cwd: "." }], behaviorCommands: [] },
+      schemaVersion: 2,
+      verification: { commands: [{ id: "unit", command: process.execPath, args: ["-e", "process.exit(0)"], cwd: ".", provides: ["targeted", "behavior", "integration", "full"] }] },
       enforcement: { mode: "strict", gitWriteRequiresLogicComplete: true, oneActiveFeature: true, requireExplicitHumanReply: true },
-      protectedRoots: ["src"],
+      governedRoots: ["src"],
     });
     let state = await stateStore.startFeature(root, { featureId: "grill-intake", host: "codex", objective: "intake" });
     const input = { questionId: "G-REOPEN", question: "再次确认", options: [{ id: "yes", label: "确认" }, { id: "no", label: "拒绝" }], host: "codex" };
@@ -107,10 +107,10 @@ test("intake grill token requires a matching host user-prompt event", async () =
   const root = await mkdtemp(path.join(os.tmpdir(), "dev-flow-grill-intake-provenance-"));
   try {
     await stateStore.initProject(root, {
-      schemaVersion: 1,
-      verification: { commands: [{ id: "unit", command: process.execPath, args: ["-e", "process.exit(0)"], cwd: "." }], behaviorCommands: [] },
+      schemaVersion: 2,
+      verification: { commands: [{ id: "unit", command: process.execPath, args: ["-e", "process.exit(0)"], cwd: ".", provides: ["targeted", "behavior", "integration", "full"] }] },
       enforcement: { mode: "strict", gitWriteRequiresLogicComplete: true, oneActiveFeature: true, requireExplicitHumanReply: true },
-      protectedRoots: ["src"],
+      governedRoots: ["src"],
     });
     const state = await stateStore.startFeature(root, { featureId: "grill-intake-provenance", host: "codex", objective: "intake" });
     const input = { questionId: "G-PROVENANCE", question: "确认", options: [{ id: "yes", label: "确认" }, { id: "no", label: "拒绝" }], host: "codex" };

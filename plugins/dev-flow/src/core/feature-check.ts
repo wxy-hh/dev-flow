@@ -9,9 +9,9 @@ import { assertArtifactIntegrity } from "./artifacts.js";
 import { DevFlowError } from "./errors.js";
 import {
   assertImplementationFilesExist,
-  assertImplementationFilesInProtectedRoots,
+  assertImplementationFilesInGovernedRoots,
   createDeliverySnapshot,
-  implementationFiles,
+  deriveImplementationFiles,
   type DeliverySnapshot,
 } from "./delivery-snapshot.js";
 import { assertRequirementsGrillSatisfied } from "./requirements-grill.js";
@@ -41,30 +41,25 @@ function assertRecordableStep(state: FeatureState, step: string): void {
     throw new DevFlowError("INVALID_LIFECYCLE", "only active features can record steps");
   }
   const route = routeDefinitionForState(state);
-  if (["verification", "feature_check", "finalize"].includes(step)
+  if (["verification", "finalize"].includes(step)
     || !route.orderedSteps.includes(step)) {
     const recoveryHint = step === "verification"
       ? "请调用 dev_flow_verify"
-      : step === "feature_check"
-        ? "请调用 dev_flow_feature_check"
-        : step === "finalize"
-          ? "请调用 dev_flow_finalize"
-          : "请使用当前路线允许的 record_step 阶段";
+      : step === "finalize"
+        ? "请调用 dev_flow_finalize"
+        : "请使用当前路线允许的 record_step 阶段";
     throw new DevFlowError("INVALID_STEP", step, { recoveryHint });
   }
   assertCurrentStep(state, step);
 }
 
 function satisfyStepObligations(state: FeatureState, route: ReturnType<typeof routeDefinitionForFeature>, step: string): void {
-  // L's plan is the rollback strategy obligation. The standard L trace gate
-  // has already validated its rollback graph before this point; light L uses
-  // the registered plan as its intentionally lighter evidence boundary.
-  if (step === "planning" && (state.route === "light-l" || state.route === "standard-l")) {
+  // A formal recovery plan satisfies the route's rollback-strategy obligation.
+  if (step === "planning" && state.classification.controls.recovery.some((kind) => kind !== "delivery-reverse")) {
     state.obligations = satisfyObligations(state.obligations, ["rollback"]);
   }
-  // Risk review is a single explicit evidence check on light/XS/S routes. A
-  // standard route keeps the independent multi-role review batch as its sole
-  // review completion source.
+  // Routes without independent review use their explicit review evidence as
+  // the single review-obligation completion source.
   const riskReviewTarget = route.orderedSteps.includes("code_review")
     ? "code_review"
     : route.orderedSteps.includes("planning")
@@ -72,7 +67,7 @@ function satisfyStepObligations(state: FeatureState, route: ReturnType<typeof ro
       : route.orderedSteps.includes("verification") ? "verification" : undefined;
   if (step === riskReviewTarget
     && state.classification.riskLabels.length > 0) {
-    if (!reviewEnforcementRequired(state.route, state.workflowCapabilities)) {
+    if (!reviewEnforcementRequired(state.route, state.classification.controls)) {
       state.obligations = satisfyObligations(state.obligations, ["review"]);
     }
     if (state.classification.riskLabels.includes("irreversible_consequence")) {
@@ -97,14 +92,14 @@ export async function recordStep(
   }
   assertRecordableStep(initial, step);
   if (step === "implementation") {
-    const files = implementationFiles(evidence);
     const config = await readProjectConfig(root);
-    assertImplementationFilesInProtectedRoots(files, config.protectedRoots);
+    const files = await deriveImplementationFiles(root, initial, config);
+    assertImplementationFilesInGovernedRoots(files, config.governedRoots);
     // Validated before the mutation so a rejected registration leaves the step
     // open and can be re-recorded without a dead end.
     await assertImplementationFilesExist(root, files);
     normalizedEvidence = {
-      ...(typeof evidence === "object" && evidence !== null && !Array.isArray(evidence) ? evidence : {}),
+      derivedBy: "core",
       files,
     };
   }
@@ -113,14 +108,14 @@ export async function recordStep(
     const route = routeDefinitionForState(state);
     await assertRequirementsGrillSatisfied(root, id, state);
     await assertTraceGateCurrent(root, state, step);
-    if (step === "implementation" && state.schemaVersion === 3 && checkpointsEnforcementRequired(state.route, state.workflowCapabilities)) {
+    if (step === "implementation" && state.schemaVersion === 4 && checkpointsEnforcementRequired(state.route, state.classification.controls)) {
       await assertImplementationUnitsComplete(root, state);
     }
     const required = requiredEvidenceForStep(
       state.route,
       state.classification.riskLabels,
       step,
-      state.workflowCapabilities,
+      state.classification.controls,
     );
     if (required.fields.reviewBatch) {
       // batch/basis/assurance are Core-owned; callers cannot provide substitutes.
@@ -133,10 +128,10 @@ export async function recordStep(
     const next = route.orderedSteps.find((candidate) => state.steps[candidate]?.status !== "satisfied");
     state.currentStage = next;
   });
-  if (next.schemaVersion === 3 && next.currentStage === "implementation" && !next.checkpoints?.length) {
+  if (next.schemaVersion === 4 && next.currentStage === "implementation" && !next.checkpoints?.length) {
     return captureAutomaticCheckpoint(root, id, next.revision, "implementation", "implementation-entry");
   }
-  if (step === "implementation" && next.schemaVersion === 3 && next.checkpoints?.length) {
+  if (step === "implementation" && next.schemaVersion === 4 && next.checkpoints?.length) {
     return captureAutomaticCheckpoint(root, id, next.revision, "implementation", "implementation-complete");
   }
   return next;
@@ -161,7 +156,7 @@ async function invalidateBeforeFinalClaim(root: string, id: string, expectedRevi
   if (hasCurrentQualityException(state, "verification")) return;
   const invalidated = await invalidateStaleVerification(root, id, expectedRevision);
   if (invalidated) {
-    throw new DevFlowError("VERIFICATION_STALE", "protected files changed; rerun verification", {
+    throw new DevFlowError("VERIFICATION_STALE", "governed 文件已变化，请重新运行验证。", {
       currentRevision: invalidated.revision,
     });
   }
@@ -169,52 +164,9 @@ async function invalidateBeforeFinalClaim(root: string, id: string, expectedRevi
 
 function assertVerificationWasNotInvalidated(state: FeatureState): void {
   const evidence = state.steps.verification?.evidence as { reason?: unknown } | undefined;
-  if (evidence?.reason === "protected-files-changed" && !hasCurrentQualityException(state, "verification")) {
-    throw new DevFlowError("VERIFICATION_STALE", "protected files changed; rerun verification");
+  if (evidence?.reason === "governed-files-changed" && !hasCurrentQualityException(state, "verification")) {
+    throw new DevFlowError("VERIFICATION_STALE", "governed 文件已变化，请重新运行验证。");
   }
-}
-
-export async function featureCheck(
-  root: string,
-  id: string,
-  expectedRevision: number,
-): Promise<FeatureState> {
-  const initial = await readState(root, id);
-  if (initial.revision !== expectedRevision) {
-    throw new DevFlowError("STATE_REVISION_CONFLICT", "state revision changed", {
-      currentRevision: initial.revision,
-    });
-  }
-  await assertRequirementsGrillSatisfied(root, id, initial);
-  await invalidateBeforeFinalClaim(root, id, expectedRevision);
-  await assertArtifactIntegrity(root, id);
-  return mutate(root, id, expectedRevision, "feature-checked", async (state) => {
-    await assertRequirementsGrillSatisfied(root, id, state);
-    assertVerificationWasNotInvalidated(state);
-    assertCurrentStep(state, "feature_check");
-    await assertTraceGateCurrent(root, state, "feature_check");
-    if (state.verification.verifiedFingerprint !== state.businessFingerprint && !hasCurrentQualityException(state, "verification")) {
-      throw new DevFlowError("VERIFICATION_STALE", "protected files changed or verification did not pass");
-    }
-    const orderedSteps = routeDefinitionForState(state).orderedSteps;
-    const featureCheckIndex = orderedSteps.indexOf("feature_check");
-    for (const step of orderedSteps.slice(0, featureCheckIndex)) {
-      const required = requiredEvidenceForStep(
-        state.route,
-        state.classification.riskLabels,
-        step,
-        state.workflowCapabilities,
-      );
-      if (required.fields.reviewBatch) {
-        await assertReviewComplete(root, state);
-        continue;
-      }
-      if (requiredEvidenceIsEmpty(required)) continue;
-      assertRequiredEvidence(step, required, state.steps[step]?.evidence);
-    }
-    state.featureCheck = { passed: true, fingerprint: state.businessFingerprint };
-    state.steps.feature_check = { status: "satisfied" };
-  });
 }
 
 export async function finalize(
@@ -239,14 +191,9 @@ export async function finalize(
   return mutate(root, id, expectedRevision, "finalized", async (state) => {
     await assertRequirementsGrillSatisfied(root, id, state);
     assertVerificationWasNotInvalidated(state);
-    const route = routeDefinitionForState(state);
     state.workspace = reconciledWorkspace;
     assertCurrentStep(state, "finalize");
     await assertTraceGateCurrent(root, state, "finalize");
-    if (route.featureCheckRequired
-      && (!state.featureCheck.passed || state.featureCheck.fingerprint !== state.businessFingerprint)) {
-      throw new DevFlowError("FEATURE_CHECK_REQUIRED", "feature check is required");
-    }
     const requiredKinds = new Set(["approval", "checkpoint", "verification"]);
     for (const obligation of state.obligations ?? []) {
       if (["review", "rollback"].includes(obligation.kind)) requiredKinds.add(obligation.kind);

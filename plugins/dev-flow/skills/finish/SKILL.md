@@ -1,6 +1,10 @@
 ---
 name: finish
-description: 完成验证与 finalize，生成交付快照。
+description: 在 Dev Flow 5.0 finalize 中完成完整性检查、精确恢复与交付快照。
 ---
 
-只在 `dev_flow_status` 显示交付收尾且能力合同允许时调用 finalize。Finalize 会重新校验实际 diff、验证新鲜度、风险义务、审查结论和交付快照；失败时按中文恢复动作修复并继续，不假装完成。implementation 获得授权后可存在 WIP/manual commit，但本仓库禁止智能体实际 commit，最终由用户审核提交。
+只在 status 显示 finalize 时调用 `dev_flow_finalize`。不存在公开 feature-check；finalize 内部统一校验需求/计划/Trace、review、approval、checkpoint、verification freshness、ownership 与 delivery snapshot。
+
+未知归属必须列出具体文件并 reconcile/回答 ownership decision。真实 stale 时接受 Core 给出的最早恢复阶段，重做受影响步骤，不进行全量无差别重跑。最终交付只包含 Core 从可信写事件、checkpoint、Git 基线与已确认 ownership 派生的 governed 文件。
+
+完成后报告快照和验证摘要。不要 commit、push 或发布；由用户审核并执行 Git 操作。

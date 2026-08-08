@@ -19,7 +19,6 @@ test("MCP rejects silently ignored fields before invoking state handlers", async
       }),
       (error) => {
         assert.equal(error.code, "INVALID_TOOL_INPUT");
-        assert.equal(error.details.mutationApplied, false);
         assert.ok(error.details.issues.some((item) => item.path === "$.expectedRevision" && item.keyword === "required"));
         assert.ok(error.details.issues.some((item) => item.path === "$.revision" && item.keyword === "additionalProperties"));
         return true;

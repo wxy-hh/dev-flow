@@ -16,7 +16,7 @@ export interface ReviewProjectionJob {
   jobId: string;
   role: string;
   reviewDepth: "standard" | "full";
-  status: "pending" | "claimed" | "sampling" | "submitted";
+  status: "pending" | "claimed" | "sampling" | "submitted" | "reused";
 }
 
 export interface ReviewProjectionFinding {
@@ -264,7 +264,8 @@ async function writeProjection(root: string, featureId: string, markdown: string
 }
 
 export async function prepareReviewProjection(root: string, state: FeatureState): Promise<void> {
-  if (!reviewEnforcementRequired(state.route, state.workflowCapabilities)) return;
+  if (state.mode !== "routed" || !state.route || !state.classification) return;
+  if (!reviewEnforcementRequired(state.route, state.classification.controls)) return;
   if (!state.review) projectionError("review-enabled feature has no review pointer", { featureId: state.featureId });
   const ledger = await readReviewLedger(root, state);
   const model = reviewProjectionModel(state, ledger);
@@ -281,7 +282,8 @@ function validProjectionArtifact(artifact: { path: string; sha256: string } | un
 
 /** Validate that the immutable ledger and its read-only artifact projection agree. */
 export async function readReviewProjection(root: string, state: FeatureState): Promise<CurrentReviewProjection | undefined> {
-  if (!reviewEnforcementRequired(state.route, state.workflowCapabilities)) return undefined;
+  if (state.mode !== "routed" || !state.route || !state.classification) return undefined;
+  if (!reviewEnforcementRequired(state.route, state.classification.controls)) return undefined;
   const artifact = state.artifacts["plan-review"];
   if (!validProjectionArtifact(artifact)) projectionError("review projection artifact pointer is missing or invalid", { featureId: state.featureId });
   let markdown: string;

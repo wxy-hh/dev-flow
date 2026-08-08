@@ -3,14 +3,13 @@ import { createHash } from "node:crypto";
 import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { promisify } from "node:util";
-import { deriveRiskRequirements } from "../policy/route.js";
 import type { VerificationKind } from "../policy/types.js";
 import { DevFlowError } from "./errors.js";
-import { fingerprintProtectedRoots } from "./fingerprint.js";
+import { fingerprintGovernedRoots } from "./fingerprint.js";
 import { assertRequirementsGrillSatisfied } from "./requirements-grill.js";
 import { mutate, readFeatureEvents, readProjectConfig, readState, type FeatureState } from "./state-store.js";
 import { resolvePromptEvent } from "./interaction-provenance.js";
-import type { VerificationCommand } from "./project-config.js";
+import type { ProjectConfig, VerificationCommand } from "./project-config.js";
 import { assertCurrentStep, currentOpenStep } from "./step-order.js";
 import { recordRepairAttempt, startRepairLoop, markRepairCompleted } from "./repair-loop.js";
 import { satisfyObligations } from "../policy/obligations.js";
@@ -87,7 +86,10 @@ export interface VerificationFreshness {
 
 type Attempt = {
   id: number;
+  /** Only forward commands count as verification evidence. */
   commandIds: string[];
+  /** Environment preparation is audited separately and never provides a guarantee. */
+  preflightCommandIds?: string[];
   kinds: VerificationKind[];
   startedAt: string;
   finishedAt: string;
@@ -181,17 +183,36 @@ async function assertOptionalManualAcceptance(
   });
 }
 
-function assertMoneyBehaviorCommands(state: FeatureState, commandIds: string[], behaviorCommands: string[]): void {
-  if (!state.classification.riskLabels.includes("money")) return;
-  if (!behaviorCommands.length) {
-    throw new DevFlowError("MONEY_BEHAVIOR_COMMAND_REQUIRED", "money-risk features require configured behaviorCommands");
+export function minimalGuaranteeCommands(state: FeatureState, config: ProjectConfig): ProjectConfig["verification"]["commands"] {
+  const needed = new Set(state.classification.controls.verification);
+  const candidates = [...config.verification.commands].sort((left, right) => left.id.localeCompare(right.id));
+  const coversAll = (commands: ProjectConfig["verification"]["commands"]): boolean => {
+    const provided = new Set(commands.flatMap((command) => command.provides));
+    return [...needed].every((kind) => provided.has(kind));
+  };
+  const choose = (
+    size: number,
+    start: number,
+    selected: ProjectConfig["verification"]["commands"],
+  ): ProjectConfig["verification"]["commands"] | undefined => {
+    if (selected.length === size) return coversAll(selected) ? [...selected] : undefined;
+    for (let index = start; index <= candidates.length - (size - selected.length); index += 1) {
+      selected.push(candidates[index]);
+      const match = choose(size, index + 1, selected);
+      selected.pop();
+      if (match) return match;
+    }
+    return undefined;
+  };
+  for (let size = 1; size <= candidates.length; size += 1) {
+    const selected = choose(size, 0, []);
+    if (selected) return selected;
   }
-  const missing = behaviorCommands.filter((id) => !commandIds.includes(id));
-  if (missing.length) {
-    throw new DevFlowError("MONEY_BEHAVIOR_COMMAND_REQUIRED", "money-risk features must run every configured behavior command", {
-      missing,
-    });
-  }
+  const configured = new Set(candidates.flatMap((command) => command.provides));
+  throw new DevFlowError("VERIFICATION_GUARANTEE_UNCONFIGURED", "项目没有配置满足当前保证集的验证命令。", {
+    missingGuarantees: [...needed].filter((kind) => !configured.has(kind)),
+    recoveryHint: "在 project schema v2 中为验证命令声明 provides，然后重试",
+  });
 }
 
 export async function runVerification(
@@ -213,14 +234,16 @@ export async function runVerification(
   const config = await readProjectConfig(root);
   const selected = commandIds?.length
     ? config.verification.commands.filter((command) => commandIds.includes(command.id))
-    : config.verification.commands;
+    : minimalGuaranteeCommands(initial, config);
   if (!selected.length || commandIds?.some((command) => !selected.some((item) => item.id === command))) {
     throw new DevFlowError("UNKNOWN_VERIFICATION_COMMAND", "verification command is not configured");
   }
   await assertOptionalManualAcceptance(root, id, initial, manualAcceptance, host);
-  assertMoneyBehaviorCommands(initial, selected.map((command) => command.id), config.verification.behaviorCommands);
+  const provided = new Set(selected.flatMap((command) => command.provides));
+  const missingGuarantees = initial.classification.controls.verification.filter((kind) => !provided.has(kind));
+  if (missingGuarantees.length) throw new DevFlowError("VERIFICATION_GUARANTEE_UNCOVERED", "选择的命令不能覆盖当前最终保证集。", { missingGuarantees });
 
-  const fingerprint = await fingerprintProtectedRoots(root, config);
+  const fingerprint = await fingerprintGovernedRoots(root, config);
   const replacingStaleVerification = Boolean(
     initial.verification.verifiedFingerprint
     && initial.verification.verifiedFingerprint !== fingerprint,
@@ -261,12 +284,11 @@ export async function runVerification(
       assertCurrentStep(state, "verification");
     }
     await assertRequirementsGrillSatisfied(root, id, state);
-    const kinds: VerificationKind[] = state.classification.riskLabels.length
-      ? deriveRiskRequirements(state.classification.riskLabels).verification
-      : ["targeted"];
+    const kinds: VerificationKind[] = [...state.classification.controls.verification];
     const attempt: Attempt = {
       id: state.verification.attempts.length + 1,
-      commandIds: [...preflight, ...selected].map((item) => item.id),
+      commandIds: selected.map((item) => item.id),
+      ...(preflight.length ? { preflightCommandIds: preflight.map((item) => item.id) } : {}),
       kinds,
       startedAt,
       finishedAt,
@@ -301,7 +323,7 @@ export async function runVerification(
       };
       if (state.repair) state.repair = markRepairCompleted(state.repair);
       state.obligations = satisfyObligations(state.obligations, ["verification"]);
-      if (state.classification.riskLabels.length && !reviewEnforcementRequired(state.route, state.workflowCapabilities)) {
+      if (state.classification.riskLabels.length && !reviewEnforcementRequired(state.route, state.classification.controls)) {
         state.obligations = satisfyObligations(state.obligations, ["review"]);
       }
       if (state.classification.riskLabels.includes("irreversible_consequence")) {
@@ -324,12 +346,12 @@ export async function readVerificationFreshness(
 ): Promise<VerificationFreshness> {
   if (!state.verification.verifiedFingerprint) return { status: "missing" };
   const config = await readProjectConfig(root);
-  const current = await fingerprintProtectedRoots(root, config);
+  const current = await fingerprintGovernedRoots(root, config);
   if (state.verification.verifiedFingerprint === current) return { status: "fresh" };
   return {
     status: "stale",
     reasonCode: "VERIFICATION_STALE",
-    recoveryHint: "Protected files changed; rerun verification before feature-check or finalize",
+    recoveryHint: "governed 文件已变化；完成 finalize 前请重新运行验证",
   };
 }
 
@@ -338,14 +360,14 @@ export async function verificationIsStale(root: string, state: FeatureState): Pr
   return (await readVerificationFreshness(root, state)).status === "stale";
 }
 
-/** Invalidates downstream claims when protected business files changed after a successful verification. */
+/** Invalidates downstream claims when governed files changed after successful verification. */
 export async function invalidateStaleVerification(
   root: string,
   id: string,
   expectedRevision: number,
 ): Promise<FeatureState | undefined> {
   const config = await readProjectConfig(root);
-  const current = await fingerprintProtectedRoots(root, config);
+  const current = await fingerprintGovernedRoots(root, config);
   const state = await readState(root, id);
   if (!state.verification.verifiedFingerprint || state.verification.verifiedFingerprint === current) return undefined;
   if (state.revision !== expectedRevision) {
@@ -356,9 +378,7 @@ export async function invalidateStaleVerification(
   return mutate(root, id, expectedRevision, "verification-invalidated", (draft) => {
     delete draft.verification.satisfiedByAttemptId;
     delete draft.verification.verifiedFingerprint;
-    draft.steps.verification = { status: "pending", evidence: { reason: "protected-files-changed", current } };
-    draft.featureCheck = {};
-    delete draft.steps.feature_check;
+    draft.steps.verification = { status: "pending", evidence: { reason: "governed-files-changed", current } };
     draft.logicComplete = false;
     delete draft.steps.finalize;
   });

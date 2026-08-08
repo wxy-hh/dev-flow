@@ -16,14 +16,14 @@ export function routeDefinitionForState(state: FeatureState): RouteDefinition {
       requiresUserDecision: false,
     });
   }
-  return routeDefinitionForFeature(state.route, state.workflowCapabilities);
+  return routeDefinitionForFeature(state.route, state.classification.controls);
 }
 
 export function currentOpenStep(state: FeatureState): string | undefined {
   // Intake deliberately has no route. FeatureState keeps route required for
   // the routed branch for now, so this runtime guard documents that type debt.
   if (state.mode !== "routed") return undefined;
-  return routeDefinitionForFeature(state.route, state.workflowCapabilities).orderedSteps.find((step) => state.steps[step]?.status !== "satisfied");
+  return routeDefinitionForFeature(state.route, state.classification.controls).orderedSteps.find((step) => state.steps[step]?.status !== "satisfied");
 }
 
 export function assertCurrentStep(state: FeatureState, step: string): void {

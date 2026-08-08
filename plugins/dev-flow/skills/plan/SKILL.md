@@ -1,12 +1,10 @@
 ---
 name: plan
-description: 在 planning 阶段生成实施计划并触发 Core 内嵌审查。
+description: 按 Dev Flow 5.0 动态计划控制生成定位、简报或正式计划。
 ---
 
-仅使用 Dev Flow MCP 和已登记资产；禁止手改状态、Trace、Review snapshot。读取 `dev_flow_status`，需要细节时 inspect `classification`、`artifacts`、`review`，在当前中文阶段合同内推进。
+读取 `classification.controls.plan`：`locate` 只记录定位，`brief` 给出边界简报，`formal` 才 scaffold/编辑/登记 `实施计划.md`。plan-review、unit-chain 或 operational recovery 会使计划采用正式结构；不要依据 level 名称复制另一套判断。
 
-standard M/L 需要 `实施计划.md`，light L 需要该文件，XS/S/light M 不强制生成 Markdown。编辑资产遵循：scaffold → 读取登记路径 → 编辑 → record；Trace delta 与 artifact hash 必须由一个 CAS 提交。
+正式计划必须把 AC 覆盖到 TASK/TEST，并为每个 RU 声明 scope、dependency、targeted forward verification 与 recovery commands。登记实施计划时 Core 会立即做完整 Trace 校验；缺 AC→TEST、TASK→RU、RU 引用或依赖闭环时先修计划，不能留到 implementation。
 
-planning 内部自动完成：冻结计划 basis、创建 review batch、按角色审查、修复 blocking findings、生成只读 review 投影。`plan-review` 是 review job/独立技能，不是额外路线步骤；不要求模型手写 `plan-review.md` 或重复确认。
-
-计划中的每个任务必须是可独立验证的行为切片，并说明范围、验收、验证和可恢复策略；测试与使其通过的实现默认属于同一 RU，红测试允许作为 RU 内临时状态，不允许成为 checkpoint 边界；forwardVerification 必须在本 RU 与已 checkpoint 依赖状态下通过。不要机械拆成“先写测试再写实现”导致验证死锁。计划事实发生变化时，Core 只使受影响的 review/approval basis 失效。light L 计划必须为每个任务声明 `rollback_unit`，为每个 RU 声明 `tasks` 与 `depends_on`；依赖须闭合且无环（TASK↔RU 双向一致、depends_on 目标都存在），否则登记会被拒绝（`PLAN_TASK_GRAPH_INVALID`）。
+RU 是可独立前进和验证的行为切片。只声明 targeted forward verification；preflight 是环境准备，不算证据。计划变化后接受 Core 的语义 diff：只重审受影响角色、只失效相关 approval/checkpoint/freshness。

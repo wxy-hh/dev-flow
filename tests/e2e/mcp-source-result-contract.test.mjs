@@ -7,9 +7,11 @@ import { after, test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { createTinyApp, strictProjectConfig } from "../helpers/fixture-repo.mjs";
 import { mcpCall, run } from "../helpers/host-runner.mjs";
+import { loadSource } from "../helpers/load-source.mjs";
 
 const repositoryRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 const serverEntry = path.join(repositoryRoot, "plugins", "dev-flow", "src", "mcp", "server.ts");
+const store = await loadSource("plugins/dev-flow/src/core/state-store.ts");
 
 // Bundle the MCP server from source so these contract tests exercise the
 // current src without depending on the committed dist bundle.
@@ -63,24 +65,27 @@ test("dev_flow_record_decision exposes a decisionId usable end-to-end (P5)", asy
       featureId: "decisions", objective: "澄清一个决策", host: "codex",
       scope: { inScope: ["src/counter.js"], outOfScope: [] },
     });
+    await store.recordHostEvent(fixture.root, { eventId: "known-conclusion", type: "user-prompt", host: "codex", text: "保留" });
     const recorded = await mcpCall(server, fixture.root, "dev_flow_record_decision", {
       featureId: "decisions", expectedRevision: state.control.expectedRevision,
-      question: "是否保留兼容行为？", factRefs: ["fact-1"], host: "codex",
+      question: "是否保留兼容行为？", evidence: "用户已有明确结论", conclusion: "保留", factRefs: ["fact-1"], host: "codex",
     });
     assert.match(recorded.decisionId, /^DEC-[0-9a-f]{16}$/);
-    state = await mcpCall(server, fixture.root, "dev_flow_resolve_decision", {
+    const pending = await mcpCall(server, fixture.root, "dev_flow_lock_classification", {
       featureId: "decisions", expectedRevision: recorded.control.expectedRevision,
-      decisionId: recorded.decisionId, evidence: "用户已确认", conclusion: "保留", host: "codex",
-    });
-    const locked = await mcpCall(server, fixture.root, "dev_flow_lock_classification", {
-      featureId: "decisions", expectedRevision: state.control.expectedRevision,
       classification: {
-        level: "M", topology: "local", execution: "light", requirements: "provided-confirmed",
-        scopeFacts: ["只改一个模块"], topologyFacts: ["没有共享契约"], uncertaintyFacts: [],
-        riskFacts: {}, decisionRefs: [recorded.decisionId],
+        level: "M", topology: "local", requirements: "provided-confirmed",
+        classificationBasis: {
+          scopeFacts: ["只改一个模块"], topologyFacts: ["没有共享契约"], uncertaintyFacts: [],
+          riskFacts: {}, decisionRefs: [recorded.decisionId],
+          signals: { changeSurface: "multi-component", behaviorChange: "new-capability", topology: "local", unitCount: 1, requirements: "provided-confirmed", operationalRecovery: false, executableRollback: false },
+        },
       },
+      boundaryAudit: { scanned: ["assumption", "free-space", "tbd", "fallback", "scope", "acceptance"], items: [] },
     });
-    assert.equal(locked.control.stage, "planning");
+    await store.recordHostEvent(fixture.root, { eventId: "route-confirm", type: "user-prompt", host: "codex", text: "确认这条路线" });
+    const locked = await mcpCall(server, fixture.root, "dev_flow_answer", { featureId: "decisions", expectedRevision: pending.control.expectedRevision, userReply: "确认这条路线", host: "codex" });
+    assert.equal(locked.control.stage, "requirements_alignment");
   } finally {
     await fixture.dispose();
   }
@@ -107,8 +112,8 @@ test("dev_flow_classify rejects empty args with CLASSIFICATION_ARGS_INVALID (P3)
       () => mcpCall(server, root, "dev_flow_classify", {}),
       (error) => error.code === "CLASSIFICATION_ARGS_INVALID",
     );
-    const preview = await mcpCall(server, root, "dev_flow_classify", { level: "M", topology: "local", execution: "light", requirements: "provided-confirmed" });
-    assert.equal(preview.route, "light-m");
+    const preview = await mcpCall(server, root, "dev_flow_classify", { level: "M", topology: "local", requirements: "provided-confirmed" });
+    assert.equal(preview.route, "m");
   } finally {
     await rm(root, { recursive: true, force: true });
   }

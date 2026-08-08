@@ -7,37 +7,40 @@ import { loadSource } from "../helpers/load-source.mjs";
 
 const stateStore = await loadSource("plugins/dev-flow/src/core/state-store.ts");
 const artifacts = await loadSource("plugins/dev-flow/src/core/artifacts.ts");
+const steps = await loadSource("plugins/dev-flow/src/core/feature-check.ts");
 
 const projectConfig = {
-  schemaVersion: 1,
-  verification: { commands: [{ id: "unit", command: process.execPath, args: ["-e", "process.exit(0)"], cwd: "." }], behaviorCommands: [] },
+  schemaVersion: 2,
+  verification: { commands: [{ id: "unit", command: process.execPath, args: ["-e", "process.exit(0)"], cwd: ".", provides: ["targeted", "behavior", "integration", "full"] }] },
   enforcement: { mode: "strict", gitWriteRequiresLogicComplete: true, oneActiveFeature: true, requireExplicitHumanReply: true },
-  protectedRoots: ["src"],
+  governedRoots: ["src"],
 };
 
-async function setupLightLFeature() {
+async function setupFormalFeature() {
   const root = await mkdtemp(path.join(os.tmpdir(), "dev-flow-plan-graph-"));
   await mkdir(path.join(root, "src"));
   await stateStore.initProject(root, projectConfig);
   let state = await stateStore.startFeature(root, {
     featureId: "plan-graph",
     host: "codex",
-    level: "L",
-    topology: "multi-chain",
-    execution: "light",
+    level: "M",
+    topology: "local",
     scopeFacts: ["scope"],
     topologyFacts: ["topology"],
     uncertaintyFacts: [],
     riskFacts: {},
     decisionRefs: [],
   });
+  state = await artifacts.scaffoldArtifact(root, state.featureId, state.revision, "requirements");
+  state = await artifacts.recordArtifact(root, state.featureId, state.revision, "requirements");
+  state = await steps.recordStep(root, state.featureId, state.revision, "requirements_alignment", {});
   state = await artifacts.scaffoldArtifact(root, state.featureId, state.revision, "implementation-plan");
   const planPath = path.join(root, ".dev-flow", "features", state.featureId, "实施计划.md");
   return { root, state, planPath };
 }
 
-test("light-l registers a template-scaffolded implementation plan", async () => {
-  const { root, state, planPath } = await setupLightLFeature();
+test("a formal v5 plan registers after its required requirements evidence", async () => {
+  const { root, state, planPath } = await setupFormalFeature();
   try {
     const registered = await artifacts.recordArtifact(root, state.featureId, state.revision, "implementation-plan");
     assert.ok(registered.artifacts["implementation-plan"].sha256);
@@ -46,8 +49,8 @@ test("light-l registers a template-scaffolded implementation plan", async () => 
   }
 });
 
-test("light-l rejects an implementation plan with a dangling task->RU reference", async () => {
-  const { root, state, planPath } = await setupLightLFeature();
+test("a formal v5 plan rejects a dangling task-to-RU reference", async () => {
+  const { root, state, planPath } = await setupFormalFeature();
   try {
     const contents = await readFile(planPath, "utf8");
     await writeFile(planPath, contents.replace(/rollback_unit: RU-001/, "rollback_unit: RU-999"));
@@ -60,8 +63,8 @@ test("light-l rejects an implementation plan with a dangling task->RU reference"
   }
 });
 
-test("light-l rejects an implementation plan with a cyclic RU depends_on graph", async () => {
-  const { root, state, planPath } = await setupLightLFeature();
+test("a formal v5 plan rejects a cyclic RU dependency graph", async () => {
+  const { root, state, planPath } = await setupFormalFeature();
   try {
     const contents = await readFile(planPath, "utf8");
     const withCycle = `${contents}

@@ -1,9 +1,10 @@
-import type { RequirementsState, RouteId } from "../policy/types.js";
+import type { GovernanceControls, RequirementsState, RouteId } from "../policy/types.js";
 
 export interface ArtifactTemplateContext {
   featureId: string;
   route: RouteId;
   requirementsState?: RequirementsState;
+  controls?: GovernanceControls;
 }
 
 function frontMatter(context: ArtifactTemplateContext, kind: string): string {
@@ -25,10 +26,11 @@ function requirementsTemplate(context: ArtifactTemplateContext): string {
 }
 
 function implementationPlanTemplate(context: ArtifactTemplateContext): string {
-  const rollback = ["standard-m", "standard-l", "light-l"].includes(context.route)
+  const formal = context.controls?.plan === "formal" || ["m", "l"].includes(context.route);
+  const rollback = formal
     ? "\n<!-- dev-flow:id=RU-001 kind=rollback -->\n### RU-001：回撤单元\n\n- tasks: [TASK-001]\n- depends_on: []\n- file_scope: []\n- covers: [REQ-001]\n- forward_verification: [unit]\n- rollback_verification: [unit]\n"
     : "";
-  const test = ["standard-m", "standard-l"].includes(context.route)
+  const test = formal
     ? "\n<!-- dev-flow:id=TEST-001 kind=test -->\n### TEST-001：验证场景（verifies: AC-001）\n\n- 验证方法：\n"
     : "";
   return `${frontMatter(context, "implementation-plan")}# 实现计划\n\n<!-- dev-flow:id=TASK-001 kind=task -->\n### TASK-001：实现任务\n\n- covers: [REQ-001]\n- rollback_unit: RU-001\n${test}${rollback}`;

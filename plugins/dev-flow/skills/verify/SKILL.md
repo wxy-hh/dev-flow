@@ -1,23 +1,10 @@
 ---
 name: verify
-description: 运行项目已配置的验证。触发：验证、跑测试、verification、verify、df-verify、dev-flow-verify。当 dev_flow_status 显示验证时使用。
+description: 按 Dev Flow 5.0 guarantee 集选择最小去重验证命令并记录证据。
 ---
 
-仅使用 Dev Flow MCP。调用 `dev_flow_status`；仅当中文阶段为验证且能力合同允许时使用 `dev_flow_verify`。禁止执行未登记命令；所有尝试须经 MCP 记录。
+只运行 project config 登记的命令。读取 `classification.controls.verification` 的 targeted/behavior/integration/full guarantee 集，由 Core 选择覆盖全部保证的最小命令集合并去重；不得把单个命令的名字当作保证，也不得擅自降级。
 
-## 自动验证
+`preflightCommands` 只做环境准备，失败时记录失败并停止，绝不算验证成功。RU checkpoint 仅运行计划声明的 targeted forward verification；final verification 才覆盖完整 guarantee 集。项目没有命令提供所需 guarantee 时，报告稳定错误、缺失 guarantee 与配置恢复动作。
 
-读取 `requiredEvidence.verificationKinds`，由 MCP 记录 targeted / behavior / integration / full。不得在 Skill 内复制 risk → kinds 映射。
-
-## 可选浏览器 / 人工验收协助
-
-1. 只有 `progress.acceptanceAssist.suggested=true` 且当前实际具备浏览器工具时，简短提示“可协助进行浏览器验收”，并立即继续配置好的自动验证；不等待用户回复，也不自动启动浏览器。
-2. 用户之后明确要求协助时，才执行浏览器场景并对照已登记的功能和 UI 标准；可将真实结果记录为 `manualAcceptance.mode: "browser"` 与逐场景 evidence。
-3. 用户拒绝、未回复、没有浏览器工具，或自行验收后没有说明，都不会失败、等待或改变下一步：照常完成 `dev_flow_verify` → finalize；Core 会在 finalize 前自动执行必要的完整性检查。
-4. 若用户主动签收，可传 `mode: "user-signoff"` 和原样 `userReply`；Core 从当前宿主事件自动完成 provenance。签收必须精确为 `验收通过 / 确认验收 / 同意验收 / approved / LGTM`，且只能作为可审计证据，不能冒充 browser pass。
-5. feature 已 finalized 后才收到协助请求时，将它作为交付后检查：执行浏览器观察并报告结果；若发现问题，由用户决定是否新建修复 feature，绝不回写已完成流程。
-6. 用户签收和浏览器验收都不能替代 security、money、irreversible consequence 等机器 evidence。money 风险必须执行项目配置中的全部 `behaviorCommands`。
-7. route 要求 verification artifact 时，严格执行 `dev_flow_scaffold_artifact` → Read 已登记路径 → 编辑验收叙述 → `dev_flow_record_artifact` 后再 verify；其他路线可选地把 manualAcceptance 保存在 verification step evidence。
-8. protected-root stale 后必须重新执行配置的机器验证。已经记录的人工/浏览器结果只保留为历史审计信息，不构成阻塞条件。
-
-finalize 仅依赖通过且 fresh 的机器验证、必需义务和交付快照；可选验收协助从不成为 Core 的硬条件。
+验证 freshness 以 governed-root 字节指纹为准：仅 HEAD 变化或 reconcile 时间变化但字节不变时不重跑；真实 drift 只撤销受影响证据并回到最早阶段。

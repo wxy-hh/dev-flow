@@ -7,7 +7,7 @@ import {
   isExplicitApproval,
   type ApprovalId,
 } from "./approval.js";
-import { approvalBasis } from "./approval-basis.js";
+import { approvalBasis, approvalIds } from "./approval-basis.js";
 import { assertRequirementsGrillSatisfied } from "./requirements-grill.js";
 import { mutate, readFeatureEvents, readState, type FeatureState } from "./state-store.js";
 import { assertTraceGateCurrent } from "./traceability-gates.js";
@@ -43,7 +43,7 @@ function approvalInteractionOptions() {
 }
 
 async function assertReviewProjectionForApproval(root: string, state: FeatureState): Promise<void> {
-  if (reviewEnforcementRequired(state.route, state.workflowCapabilities)) {
+  if (reviewEnforcementRequired(state.route, state.classification.controls)) {
     await assertCurrentReviewProjection(root, state);
   }
 }
@@ -52,9 +52,14 @@ export async function presentApproval(
   root: string,
   id: string,
   expectedRevision: number,
-  requestedApprovalId: string,
 ): Promise<ApprovalPresentation> {
-  const selectedApproval = approvalId(requestedApprovalId);
+  const initial = await readState(root, id);
+  const candidates = approvalIds(initial).filter((candidate) => {
+    const obligation = initial.obligations?.find((item) => item.id === candidate);
+    return obligation?.status !== "satisfied";
+  });
+  if (candidates.length !== 1) throw new DevFlowError("APPROVAL_NOT_UNIQUE", "Core 无法选择唯一的当前审批。", { approvalIds: candidates, recoveryHint: "刷新状态并修复重复或缺失的审批投影" });
+  const selectedApproval = approvalId(candidates[0]);
   let interaction: ReturnType<typeof createInteraction> | undefined;
   const state = await mutate(root, id, expectedRevision, "approval-presented", async (state) => {
     if (state.lifecycle !== "active") {

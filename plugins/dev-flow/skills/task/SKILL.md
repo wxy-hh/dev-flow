@@ -1,27 +1,14 @@
 ---
 name: task
-description: 启动 Dev Flow 4.0 任务并进入需求了解。触发：开任务、开始功能、task、df-task、dev-flow-task。
+description: 启动 Dev Flow 5.0 任务、调查仓库并锁定动态治理路线。
 ---
 
-仅使用 Dev Flow MCP；禁止手改 `.dev-flow` 控制文件。启动不预先猜路线：先创建 intake，再调查事实、登记用户决策，最后原子锁定分类。
+只使用 Dev Flow MCP 改变流程状态，禁止手改 `.dev-flow`。先 `dev_flow_start` 创建 intake，再读取代码、文档、测试、Git 与项目配置完成取证。
 
-## 启动合同
+分类时提交完整 `classificationBasis`：`changeSurface`、`behaviorChange`、`topology`、`unitCount`、需求状态与恢复事实都必须有仓库依据。Core 取三类下限的最高级别；可以有证据地向上加强，风险只增加控制，不能抬高或绕过最低 level。
 
-1. 收集用户目标、初始范围和排除范围，调用 `dev_flow_start`，并显式传当前宿主 `host`（scope 可选）。
-2. 读取代码、文档、测试和 Git 状态，整理 `classificationBasis`：scopeFacts、topologyFacts、uncertaintyFacts、riskFacts、decisionRefs；可进一步提供结构化 `signals` 使用推荐模式。
-3. 只有必须由用户决定的边界才调用 `grillme`；问题和答案通过 decision ledger 记录。能从仓库查明的事实不提问。
-4. 若宿主暴露 `dev_flow_classify`，优先用含 `classificationBasis.signals` 的推荐模式做纯预览，操作者核实 reasons 后再 lock；若该工具不可用（如 Claude 宿主暂未注册），跳过预览、直接 `dev_flow_lock_classification`，以其返回的 route/level 作为向用户声明的依据。兼容模式仍需检查矛盾和风险依据，没有事实依据的 risk label 不得提交。
-5. 所有影响分类的 decision 已收敛后，调用 `dev_flow_lock_classification`。锁定失败时按中文恢复动作处理，不手改状态。
-6. 锁定成功后必须用可见文本向用户声明本次分级：level、route、topology、execution，以及该路线的门禁强度（XS/S/light M 无人工门禁；standard M 及以上有计划审查、执行确认）。级别只存在于 MCP 返回或内部推理不算完成——用户应在流程开始时知道当前任务走的路线与后续义务。
-7. 之后读取 `dev_flow_status` 的 compact 中文状态；需要细节时按主题调用 `dev_flow_inspect`，不要寻找或重建 full-state API。用户决定统一调用 `dev_flow_answer`。
+锁定前必须完成 `boundaryAudit`：逐项扫描默认假设、自由空间、TBD、fallback、范围与验收留白。每个发现只能绑定仓库 evidence，或绑定已解决的用户 decision；不得把“未发现”当作未扫描。先调用 `dev_flow_classify` 查看 level、控制原因和完整 `orderedRoute`，再调用 `dev_flow_lock_classification`。
 
-## 分级原则
+无风险 XS/S 可直接锁定。M/L 或含风险时，Core 生成 route-confirmation；向用户完整展示事实依据、level、路线、启用与未启用控制原因，再通过原生 elicitation 或 `dev_flow_answer` 接受“确认这条路线”。用户要求加严时，把具体要求放入 `classificationBasis.controlEnhancements` 并重新预览；该字段只能增加控制。要求减弱控制时，只能修正触发事实后重新分类；实现开始后控制只能增加。
 
-- 六条基础路线只由 level、topology、execution 和可核查事实决定：XS、S、light M、standard M、light L、standard L。
-- 风险只增加 review、verification、rollback、approval、checkpoint 义务，永不创建额外路线；禁止业务关键词或案例名单分级。
-- 清晰 XS/S/light M 不设形式化人工门禁；standard M、light/standard L 或有事实依据的重大风险才产生执行确认义务。
-- 同一 decision basis 不重复询问；事实、范围、拓扑或残余风险发生实质变化时可以产生新的用户决策。
-
-## 正常恢复
-
-技术错误优先调用 status、按主题 inspect、重试或使用等价操作继续；只有真实用户取舍、完整性阻塞或恢复路径耗尽才向用户反馈。启动遇到旧 active feature 时不得后台切换，先逐题处理 task-switch decision。
+锁定后明确告知用户 XS/S/M/L、动态控制和完整实际路线，不再使用 light/standard 或六路线术语。后续只按 `dev_flow_status` / `dev_flow_inspect` 返回的动作推进。

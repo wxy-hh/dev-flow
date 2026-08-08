@@ -1,52 +1,50 @@
-# Dev Flow 4.0 路线契约
+# Dev Flow 5.0 动态路线合同
 
-`dev_flow_start` 只创建需求了解状态；`dev_flow_classify` 是纯预览，`dev_flow_lock_classification` 在事实和决策收敛后原子锁定基础路线。基础路线只有六条，风险只增加义务，不创建路线。
+`dev_flow_start` 创建 intake；`dev_flow_classify` 纯预览；`dev_flow_lock_classification` 校验 boundaryAudit，并在需要时创建 route-confirmation。Core 确认后返回 level、控制集、逐项理由和完整 `orderedRoute`。
 
-| 路线 | 用户可见阶段 | 强制文档 |
-| --- | --- | --- |
-| XS | 定位 → 实现 → 验证 → 完成 | 无 |
-| S | 边界 → 实现 → 验证 → 完成 | 无 |
-| light M | 轻量计划 → 实现 → 代码审查 → 验证 → 完成 | 无 |
-| standard M | 需求对齐 → 实施计划（内嵌独立审查）→ 实现 → 代码审查 → 验证 → 完成 | `需求文档.md`、`实施计划.md` |
-| light L | 实施计划 → 实现 → 代码审查 → 验证 → 完成 | `实施计划.md` |
-| standard L | 需求对齐 → 实施计划（内嵌独立审查）→ 实现 → 代码审查 → 验证 → 完成 | `需求文档.md`、`实施计划.md` |
+## Level 下限
 
-## 默认义务与审查角色
+| 维度 | XS | S | M | L |
+| --- | --- | --- | --- | --- |
+| changeSurface | single-site | single-component | multi-component | system-wide |
+| behaviorChange | mechanical | bounded-rule | new-capability | systemic-change |
+| topology | local | — | shared-contract | multi-chain / coordinated-rollback |
 
-| 路线 | 默认义务 | 默认审查角色 |
-| --- | --- | --- |
-| XS / S | checkpoint | 无；风险事实可追加 review、verification、rollback 或 approval |
-| light M | checkpoint | 无；风险事实可追加 review |
-| standard M | approval、checkpoint、review | requirements-coverage、architecture-testability、rollback-operability |
-| light L | approval、checkpoint、rollback | 无计划批次；planning 需提交 `rollback-strategy` 证据 |
-| standard L | approval、checkpoint、review、rollback | requirements-coverage、architecture-testability、rollback-operability |
+最终 level 取三者最高值。操作者可有证据向上加强，不得低于 Core 下限。风险只增加控制。
 
-`workflowCapabilities` 表示 Core/宿主支持的能力，不等于当前路线已经满足的义务；实际是否阻塞以 Core 状态和 compact status 的下一步为准。风险标签只基于用户需求和仓库事实追加义务，不使用业务案例名单分级。
+用户可通过 `controlEnhancements` 追加 requirements、正式计划、Trace、审查角色、执行确认、unit-chain、恢复层级、代码审查深度或 verification guarantee。合并是单调的；不接受任何关闭或削弱已派生控制的输入，executable rollback 仍受真实可逆事实约束。
 
-风险覆盖层不会创建第二条路线：Core 会在现有路线最合适的阶段返回 `risk-review`、安全边界、回滚或领域验证等证据要求；完成该阶段证据后，相关义务自动变为 `satisfied`。完成前如果仍有义务未满足，`dev_flow_finalize` 会返回 `OBLIGATIONS_INCOMPLETE`，并列出可恢复的义务清单。
+## 控制编译
 
-## 事实分级与需求澄清
+| 控制 | 派生规则摘要 |
+| --- | --- |
+| requirements | L、新能力/系统性变化、shared-contract 必需；优先冻结已有确认材料 |
+| plan | XS locate；S brief；M/L formal；plan-review、unit-chain、operational recovery 强制 formal |
+| trace | L 必有；M 在 shared-contract、多 RU、正式恢复或 plan-review 时开启 |
+| plan-review | L 默认；M 在共享契约、多 RU、恢复或专项风险时开启；角色按事实派生 |
+| execution-approval | L 必有；M 按共享契约、review、多 RU、恢复或高后果风险开启；XS/S 只由高后果风险追加 |
+| checkpoints | 所有任务 baseline；L、多 RU、可执行回撤或不可逆风险声明 unit-chain |
+| recovery | 所有任务 delivery reverse；必要时 operational strategy；真实可逆且有 unit-chain 才 executable rollback |
+| code-review | XS none、S focused、M/L independent；专项风险可提升 full |
+| verification | 始终 targeted，按新能力、共享契约、多组件、风险和系统性变化增加 behavior/integration/full |
 
-分类依据必须包含 `scopeFacts`、`topologyFacts`、`uncertaintyFacts`、`riskFacts` 和 `decisionRefs`。推荐模式还包含结构化 `signals`；推荐结果仅供操作者参考，signals 必须由操作者根据仓库调查提供，最终 lock 仍由操作者负责。能从仓库、文档、测试或工具查明的事实不得询问用户；只有用户拥有的边界、优先级和取舍才进入决策台账。任何阶段都可以按需调用 `grillme`，但不会因为调用过它而自动升级路线。
+计划审查的基础角色为 requirements-coverage、architecture-testability 与 rollback-operability；security、data-irreversibility、money-safety、contract-failure、recovery-observability、critical-correctness 等专项角色只在对应事实存在时加入。
 
-风险标签必须有对应事实依据。`security`、`money`、`critical_correctness` 和不可逆后果默认增加确认与审查义务；`data`、`external`、`availability` 增加相应验证/恢复义务。相同 basis 只产生一次决策，basis 变化才重新确认；执行确认是按义务动态呈现的单一门禁，不是固定路线阶段。
+同一 level 可以编译出不同路线。例如：
 
-## 默认自治与恢复
+```text
+M 本地单单元：planning → implementation → code_review → verification → finalize
+M 共享契约：requirements_alignment → planning → plan_review → execution_approval → implementation → code_review → verification → finalize
+```
 
-- implementation 阶段的等价 Write、Edit、patch、heredoc 等按真实影响归一化，普通写入不因命令形式拦截。
-- 控制文件仍由 Core 管理；未解析的影响标记为 `impact-unresolved`，不伪称越权。
-- 验证失败保留当前单元和失败尝试；有进展则自动修复，无进展或达到上限才等待用户。
-- 实际 diff 与计划不一致时生成 drift report；只有实质偏航、重大风险取舍或恢复路径耗尽才向用户确认。
-- 连续在同一工作区启动多个 feature 时，启动瞬间已存在的受保护目录脏文件仍归属前一 feature；如需串行开发，请先提交或隔离工作区。`dev_flow_finalize` 会以 `DELIVERY_FILE_PREEXISTING_DIRTY` 阻止把这类文件误纳入当前交付快照。
+完整显示路线包含 Core-owned gate；实际 recordable steps 由 Core 编译，模型不得复制一套阶段表。
 
-standard M 的“独立审查”指 planning 内部的 plan-review jobs；`code_review` 阶段由 `code-review` 技能对实现变更做实质审查（正确性、安全、测试等），blocking 先修再过关，通过后用 `record_step(reviewType: "code")`（及合同要求的 depth/checks）关闭门禁，与 plan-review 不能互相顶替。内部的 review、Trace、checkpoint、rollback、feature-check 都是 Core 义务或只读投影，不再作为重复的用户路线步骤。Standard 路线的单元依赖顺序由 Core 编排；模型不应把它扩展成第二条用户路线。v2 不迁移旧状态；doctor 会报告遗留状态并建议在 1.10 完成/放弃后重新开始。
+## Boundary audit 与确认
 
-机器权威：`plugins/dev-flow/policy/contract.json`。运行 `npm test` 验证合同、单元、路线和跨宿主交接。正常用户交互只使用中文选项和 `dev_flow_answer`，不使用 token 或公共 resolve 工具。
+boundaryAudit 必须显式扫描 assumption、free-space、tbd、fallback、scope、acceptance。每个发现以 repository fact/evidence 或 resolved decision 处置。M/L 或任一风险先展示事实、level、完整路线及启用/未启用控制原因，由 route-confirmation 确认；无风险 XS/S 展示后直接锁定。
 
-## 4.0 生命周期补充
+首次 governed write 前可以基于纠正事实重算；实质路线变化会使旧确认失效。实现开始后控制只能增加。
 
-- compact status 只显示当前真实阻塞；详细事实通过单一 topic inspect 获取。
-- 同一 active feature 最多一个 pending decision；每回合只问一道题，没有“合并剩余”自动选项。
-- review blocker 由 ledger-level finding events 归约；successor 必须为 carried finding 提交显式结果。
-- 启动脏树、WIP/manual commit、pause/resume 和 finalize 均经过 workspace lineage 对账；系统不得自动 stash、reset 或改写用户历史。
-- 流程质量问题可由用户明确接受风险并绑定当前 basis/fingerprint；state corruption、Git lineage 分叉和交付内容不确定不能走质量例外。
+## 机器权威
+
+机器合同位于 `plugins/dev-flow/policy/contract.json`，schema 版本为 4。用户交互只使用当前中文选项和 `dev_flow_answer`；不存在公共 resolve 或 feature-check 工具。

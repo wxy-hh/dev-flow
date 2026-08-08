@@ -1,6 +1,6 @@
-import { routeDefinition, routeDefinitionForFeature } from "./contract.js";
+import { routeDefinitionForFeature } from "./contract.js";
 import { deriveRiskRequirements } from "./route.js";
-import type { RequiredEvidence, RiskLabel, RouteId, VerificationKind, WorkflowCapabilities } from "./types.js";
+import type { GovernanceControls, RequiredEvidence, RiskLabel, RouteId, VerificationKind, WorkflowCapabilities } from "./types.js";
 
 const emptyEvidence = (): RequiredEvidence => ({
   fields: {},
@@ -16,21 +16,24 @@ export function requiredEvidenceForStep(
   route: RouteId,
   riskLabels: RiskLabel[],
   step: string,
-  workflowCapabilities?: WorkflowCapabilities,
+  workflowCapabilities?: WorkflowCapabilities | GovernanceControls,
 ): RequiredEvidence {
   const required = emptyEvidence();
-  const orderedSteps = routeDefinition(route).orderedSteps;
+  // Risk evidence must follow the compiled route. A dynamically strengthened
+  // XS/S route can contain planning or an independent code-review stage even
+  // though the base route does not.
+  const orderedSteps = routeDefinitionForFeature(route, workflowCapabilities).orderedSteps;
   const risk = deriveRiskRequirements(riskLabels);
 
   if (step === "planning") {
     const effectiveRoute = routeDefinitionForFeature(route, workflowCapabilities);
     if (effectiveRoute.generatedArtifacts?.includes("plan-review")) required.fields.reviewBatch = true;
     else required.fields.reviewType = "plan";
-    if (route === "light-l") addChecks(required.checks, ["rollback-strategy"]);
+    if (route === "l") addChecks(required.checks, ["rollback-strategy"]);
   }
   if (step === "code_review") required.fields.reviewType = "code";
   if (step === "implementation" && workflowCapabilities?.checkpoints === 1) {
-    required.fields.files = "protected-root-paths";
+    required.fields.files = "governed-root-paths";
   }
 
   if (step === "code_review" && risk.checks.includes("full-code-review")) {
@@ -55,16 +58,16 @@ export function requiredEvidenceForStep(
     if (step === target) addChecks(required.checks, risk.checks.filter((check) => check.includes("security")));
   }
 
-  const rollbackChecks = risk.checks.filter((check) => check === "rollback" || check === "full-rollback");
+  const rollbackChecks = risk.checks.filter((check) => check === "rollback" || check === "full-rollback" || check === "backup-preview-abort-compensation");
   if (rollbackChecks.length) {
     const target = orderedSteps.includes("planning") ? "planning" : "verification";
     if (step === target) addChecks(required.checks, rollbackChecks);
   }
 
-  if (step === "verification" || step === "feature_check") {
-    required.verificationKinds = riskLabels.length
-      ? [...risk.verification]
-      : ["targeted"];
+  if (step === "verification") {
+    required.verificationKinds = workflowCapabilities && "plan" in workflowCapabilities
+      ? [...workflowCapabilities.verification]
+      : riskLabels.length ? [...risk.verification] : ["targeted"];
   }
 
   required.checks.sort();

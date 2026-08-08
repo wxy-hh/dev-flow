@@ -1,62 +1,210 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "dev-flow/state.schema.json",
   "type": "object",
-  "required": ["schemaVersion", "mode", "featureId", "revision", "lifecycle", "scope", "steps", "humanGates", "artifacts", "verification", "featureCheck", "blockingFindings", "logicComplete", "lastUpdatedBy"],
+  "additionalProperties": false,
+  "required": ["schemaVersion", "mode", "featureId", "revision", "lifecycle", "scope", "workspace", "evidenceFreshness", "steps", "humanGates", "artifacts", "verification", "blockingFindings", "logicComplete", "lastUpdatedBy", "qualityExceptions"],
   "properties": {
-    "schemaVersion": { "const": 2 },
+    "schemaVersion": { "const": 4 },
     "mode": { "enum": ["intake", "routed"] },
     "featureId": { "type": "string", "minLength": 1 },
     "revision": { "type": "integer", "minimum": 0 },
     "lifecycle": { "enum": ["active", "paused", "finalized", "abandoned"] },
-    "objective": { "type": "string", "minLength": 1 },
-    "scope": { "type": "object", "required": ["inScope", "outOfScope"], "additionalProperties": false, "properties": { "inScope": { "type": "array", "items": { "type": "string" } }, "outOfScope": { "type": "array", "items": { "type": "string" } } } },
-    "route": { "enum": ["xs", "s", "light-m", "standard-m", "light-l", "standard-l"] },
+    "objective": { "type": "string" },
+    "investigationSummary": { "type": "string" },
+    "scope": {
+      "type": "object",
+      "required": ["inScope", "outOfScope"],
+      "additionalProperties": false,
+      "properties": {
+        "inScope": { "type": "array", "items": { "type": "string" } },
+        "outOfScope": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "route": { "enum": ["xs", "s", "m", "l"] },
     "classification": { "$ref": "#/$defs/classification" },
     "classificationBasis": { "$ref": "#/$defs/classificationBasis" },
-    "obligations": { "type": "array", "items": { "$ref": "#/$defs/obligation" } },
-    "decisionLedger": { "type": "array", "items": { "$ref": "#/$defs/decision" } },
-    "checkpoints": { "type": "array", "items": { "$ref": "#/$defs/checkpoint" } },
-    "workflowCapabilities": { "$ref": "#/$defs/workflowCapabilities" },
-    "traceability": { "$ref": "#/$defs/traceabilityPointer" },
-    "review": { "$ref": "#/$defs/reviewPointer" },
-    "implementationUnits": { "type": "array", "items": { "$ref": "#/$defs/implementationUnit" } },
-    "rollbackGate": { "$ref": "#/$defs/rollbackGate" },
-    "interactions": { "type": "object" },
-    "currentStage": { "type": "string", "minLength": 1 },
-    "repair": { "type": "object" },
-    "businessFingerprint": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
-    "startBusinessFingerprint": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
-    "deliveryBaseline": { "$ref": "#/$defs/deliveryBaseline" },
-    "deliverySnapshot": { "$ref": "#/$defs/deliverySnapshot" },
-    "steps": { "type": "object", "additionalProperties": { "type": "object", "required": ["status"], "properties": { "status": { "enum": ["pending", "satisfied"] }, "evidence": {} } } },
+    "routeConfirmation": { "type": "object" },
+    "pendingDecision": { "type": "object" },
+    "decisionLedger": { "type": "array" },
+    "obligations": { "type": "array" },
+    "workspace": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["baseHead", "baseBranch", "observedHead", "startedDirty", "ownership", "ownershipSource", "observedCommits", "observedPathFingerprints", "lastWorkspaceFingerprint", "reconciliationStatus"],
+      "properties": {
+        "baseHead": { "type": "string" },
+        "baseBranch": { "type": "string" },
+        "observedHead": { "type": "string" },
+        "startedDirty": { "type": "object" },
+        "ownership": { "type": "object", "additionalProperties": { "enum": ["feature", "excluded"] } },
+        "ownershipSource": { "type": "object", "additionalProperties": { "enum": ["user-adopted", "trusted-hook"] } },
+        "observedCommits": { "type": "array" },
+        "observedPathFingerprints": { "type": "object", "additionalProperties": { "type": "string" } },
+        "lastWorkspaceFingerprint": { "type": "string" },
+        "reconciliationStatus": { "enum": ["current", "required", "blocked"] }
+      }
+    },
+    "evidenceFreshness": {
+      "type": "object",
+      "required": ["review", "verification", "checkpoint", "implementation"],
+      "additionalProperties": false,
+      "properties": {
+        "review": { "enum": ["missing", "current", "stale"] },
+        "verification": { "enum": ["missing", "current", "stale"] },
+        "checkpoint": { "enum": ["missing", "current", "stale"] },
+        "implementation": { "const": "current" }
+      }
+    },
+    "steps": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "required": ["status"],
+        "properties": { "status": { "enum": ["pending", "satisfied"] }, "evidence": {} },
+        "additionalProperties": false
+      }
+    },
+    "currentStage": { "type": "string" },
     "humanGates": { "type": "object" },
-    "artifacts": { "type": "object", "additionalProperties": { "$ref": "#/$defs/artifact" } },
-    "verification": { "type": "object", "required": ["attempts"], "properties": { "attempts": { "type": "array", "items": { "type": "object", "properties": { "id": { "type": "integer", "minimum": 1 }, "output": { "type": "string" }, "outputTail": { "type": "string", "maxLength": 4000 }, "outputPath": { "type": "string", "minLength": 1 }, "phase": { "enum": ["preflight", "forward"] } } } } } },
-    "featureCheck": { "type": "object" },
+    "artifacts": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "required": ["path", "sha256"],
+        "properties": { "path": { "type": "string" }, "sha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" } },
+        "additionalProperties": false
+      }
+    },
+    "traceability": { "type": "object" },
+    "review": { "type": "object" },
+    "checkpoints": { "type": "array" },
+    "implementationUnits": { "type": "array" },
+    "verification": { "type": "object", "required": ["attempts"] },
+    "interactions": { "type": "object" },
+    "workflowCapabilities": {
+      "type": "object",
+      "required": ["trace", "review", "checkpoints", "rollbackExecution"],
+      "properties": {
+        "trace": { "enum": [0, 1] }, "review": { "enum": [0, 1] },
+        "checkpoints": { "enum": [0, 1] }, "rollbackExecution": { "enum": [0, 1] }
+      },
+      "additionalProperties": false
+    },
+    "rollbackGate": { "type": "object" },
+    "businessFingerprint": { "type": "string" },
+    "startBusinessFingerprint": { "type": "string" },
+    "deliveryBaseline": { "type": "object" },
+    "deliverySnapshot": { "type": "object" },
+    "abandonment": { "type": "object" },
+    "repair": { "type": "object" },
     "blockingFindings": { "type": "array" },
     "logicComplete": { "type": "boolean" },
-    "lastUpdatedBy": { "type": "object", "required": ["host", "pluginVersion"], "properties": { "host": { "enum": ["claude", "codex"] }, "pluginVersion": { "type": "string" } } }
+    "lastUpdatedBy": {
+      "type": "object",
+      "required": ["host", "pluginVersion"],
+      "properties": { "host": { "enum": ["claude", "codex"] }, "pluginVersion": { "type": "string" } },
+      "additionalProperties": false
+    },
+    "qualityExceptions": { "type": "array" },
+    "executionSemanticBasisHash": { "type": "string" },
+    "resumeSummary": { "type": "string" }
   },
   "allOf": [
-    { "if": { "properties": { "mode": { "const": "intake" } } }, "then": { "not": { "required": ["route", "classificationBasis", "obligations"] } } },
-    { "if": { "properties": { "mode": { "const": "routed" } } }, "then": { "required": ["route", "classification", "classificationBasis", "obligations"] } }
+    {
+      "if": { "properties": { "mode": { "const": "intake" } } },
+      "then": {
+        "not": {
+          "anyOf": [
+            { "required": ["route"] },
+            { "required": ["classification"] },
+            { "required": ["classificationBasis"] },
+            { "required": ["obligations"] },
+            { "required": ["currentStage"] }
+          ]
+        }
+      }
+    },
+    { "if": { "properties": { "mode": { "const": "routed" } } }, "then": { "required": ["route", "classification", "classificationBasis", "obligations", "currentStage"] } }
   ],
   "$defs": {
-    "classification": { "type": "object", "required": ["level", "topology", "riskLabels", "acceptanceAssistSuggested"], "additionalProperties": false, "properties": { "level": { "enum": ["XS", "S", "M", "L"] }, "topology": { "enum": ["local", "shared-contract", "multi-chain", "coordinated-rollback"] }, "execution": { "enum": ["light", "standard"] }, "requirements": { "enum": ["missing-or-unclear", "documented-unconfirmed", "provided-confirmed"] }, "riskLabels": { "type": "array", "items": { "enum": ["security", "data", "money", "external", "availability", "critical_correctness", "irreversible_consequence"] } }, "acceptanceAssistSuggested": { "type": "boolean" }, "classificationBasis": { "$ref": "#/$defs/classificationBasis" } } },
-    "classificationBasis": { "type": "object", "required": ["scopeFacts", "topologyFacts", "uncertaintyFacts", "riskFacts", "decisionRefs"], "additionalProperties": false, "properties": { "scopeFacts": { "type": "array", "items": { "type": "string" } }, "topologyFacts": { "type": "array", "items": { "type": "string" } }, "uncertaintyFacts": { "type": "array", "items": { "type": "string" } }, "riskFacts": { "type": "object", "propertyNames": { "enum": ["security", "data", "money", "external", "availability", "critical_correctness", "irreversible_consequence"] }, "additionalProperties": { "type": "array", "items": { "type": "string" } } }, "decisionRefs": { "type": "array", "items": { "type": "string" } }, "signals": { "$ref": "#/$defs/classificationSignals" } } },
-    "classificationSignals": { "type": "object", "additionalProperties": false, "required": ["impactScope", "sharedContract", "independentChains", "coordinatedRollback", "requirements", "formalControls"], "properties": { "impactScope": { "enum": ["single-location", "single-module", "cross-module"] }, "sharedContract": { "type": "boolean" }, "independentChains": { "type": "integer", "minimum": 1 }, "coordinatedRollback": { "type": "boolean" }, "requirements": { "enum": ["missing-or-unclear", "documented-unconfirmed", "provided-confirmed"] }, "formalControls": { "type": "array", "items": { "enum": ["trace", "independent-review", "multiple-rollback-units"] } } } },
-    "workflowCapabilities": { "type": "object", "additionalProperties": false, "required": ["trace", "review", "checkpoints", "rollbackExecution"], "properties": { "trace": { "enum": [0, 1] }, "review": { "enum": [0, 1] }, "checkpoints": { "enum": [0, 1] }, "rollbackExecution": { "enum": [0, 1] } } },
-    "traceabilityPointer": { "type": "object", "additionalProperties": false, "required": ["path", "sha256", "revision", "summary"], "properties": { "path": { "type": "string", "pattern": "^traceability/snapshots/[a-f0-9]{64}\\.json$" }, "sha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" }, "revision": { "type": "integer", "minimum": 0 }, "summary": { "$ref": "#/$defs/traceSummary" } } },
-    "traceSummary": { "type": "object", "additionalProperties": false, "required": ["total", "current", "stale", "tombstoned"], "properties": { "total": { "type": "integer", "minimum": 0 }, "current": { "type": "integer", "minimum": 0 }, "stale": { "type": "integer", "minimum": 0 }, "tombstoned": { "type": "integer", "minimum": 0 } } },
-    "reviewPointer": { "type": "object", "additionalProperties": false, "required": ["path", "sha256", "revision", "summary"], "properties": { "path": { "type": "string", "pattern": "^review/snapshots/[a-f0-9]{64}\\.json$" }, "sha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" }, "revision": { "type": "integer", "minimum": 0 }, "summary": { "$ref": "#/$defs/reviewSummary" } } },
-    "reviewSummary": { "type": "object", "additionalProperties": false, "required": ["batches", "current", "stale", "open", "complete"], "properties": { "batches": { "type": "integer", "minimum": 0 }, "current": { "type": "integer", "minimum": 0 }, "stale": { "type": "integer", "minimum": 0 }, "open": { "type": "integer", "minimum": 0 }, "complete": { "type": "integer", "minimum": 0 } } },
-    "artifact": { "type": "object", "additionalProperties": false, "required": ["path", "sha256"], "properties": { "path": { "type": "string", "minLength": 1 }, "sha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" } } },
-    "implementationUnit": { "type": "object", "additionalProperties": false, "required": ["unitId", "status", "basisHash"], "properties": { "unitId": { "type": "string", "pattern": "^RU-[0-9]{3,}$" }, "status": { "enum": ["pending", "active", "verified", "checkpointed", "rolled_back"] }, "basisHash": { "type": "string", "pattern": "^[a-f0-9]{64}$" }, "startedFingerprint": { "type": "string", "pattern": "^[a-f0-9]{64}$" }, "checkpointId": { "type": "string", "minLength": 1 }, "beginNonce": { "type": "string", "minLength": 1 } } },
-    "rollbackGate": { "type": "object", "additionalProperties": false, "required": ["status", "targetCheckpointId", "targetUnitId", "previewBasisHash", "interactionId", "stateRevision", "presentedAt"], "properties": { "status": { "enum": ["pending", "confirmed"] }, "targetCheckpointId": { "type": "string", "minLength": 1 }, "targetUnitId": { "type": "string", "pattern": "^RU-[0-9]{3,}$" }, "previewBasisHash": { "type": "string", "pattern": "^[a-f0-9]{64}$" }, "interactionId": { "type": "string", "minLength": 1 }, "stateRevision": { "type": "integer", "minimum": 0 }, "presentedAt": { "type": "string", "minLength": 1 }, "confirmedAt": { "type": "string", "minLength": 1 } } },
-    "deliveryBaseline": { "type": "object", "additionalProperties": false, "required": ["dirtyPaths"], "properties": { "gitHead": { "type": "string" }, "dirtyPaths": { "type": "array", "items": { "type": "string" } } } },
-    "deliverySnapshot": { "type": "object", "additionalProperties": false, "required": ["manifestPath", "manifestSha256", "patchPath", "patchSha256", "baseHead", "files"], "properties": { "manifestPath": { "type": "string", "minLength": 1 }, "manifestSha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" }, "patchPath": { "type": "string", "minLength": 1 }, "patchSha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" }, "baseHead": { "type": "string", "minLength": 1 }, "files": { "type": "array", "items": { "type": "string" } } } },
-    "obligation": { "type": "object", "required": ["id", "kind", "source", "basisHash", "status", "reason"], "properties": { "id": { "type": "string" }, "kind": { "enum": ["review", "verification", "rollback", "approval", "checkpoint"] }, "source": { "enum": ["route", "risk", "topology", "uncertainty"] }, "basisHash": { "type": "string", "pattern": "^[a-f0-9]{64}$" }, "status": { "enum": ["pending", "satisfied", "stale"] }, "reason": { "type": "string" } } },
-    "decision": { "type": "object", "required": ["id", "question", "status"], "properties": { "id": { "type": "string" }, "question": { "type": "string" }, "status": { "enum": ["open", "resolved", "merged", "dismissed"] }, "source": { "const": "grill" } } },
-    "checkpoint": { "type": "object", "required": ["checkpointId", "stage", "capturedAt", "fingerprint", "files", "basisHash"], "properties": { "checkpointId": { "type": "string", "pattern": "^AUTO-[0-9a-f-]{10,}$" }, "stage": { "type": "string", "minLength": 1 }, "capturedAt": { "type": "string", "minLength": 1 }, "fingerprint": { "type": "string", "pattern": "^[a-f0-9]{64}$" }, "files": { "type": "array", "items": { "type": "string" } }, "basisHash": { "type": "string", "pattern": "^[a-f0-9]{64}$" } } }
+    "classification": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["level", "topology", "riskLabels", "acceptanceAssistSuggested", "controls", "orderedRoute", "routeConfirmationRequired"],
+      "properties": {
+        "level": { "enum": ["XS", "S", "M", "L"] },
+        "topology": { "enum": ["local", "shared-contract", "multi-chain", "coordinated-rollback"] },
+        "requirements": { "enum": ["missing-or-unclear", "documented-unconfirmed", "provided-confirmed"] },
+        "riskLabels": { "type": "array" },
+        "acceptanceAssistSuggested": { "type": "boolean" },
+        "classificationBasis": { "$ref": "#/$defs/classificationBasis" },
+        "controls": { "$ref": "#/$defs/controls" },
+        "orderedRoute": { "type": "array", "items": { "type": "string" } },
+        "routeConfirmationRequired": { "type": "boolean" }
+      }
+    },
+    "controls": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["requirements", "plan", "trace", "planReview", "reviewRoles", "executionApproval", "checkpoints", "recovery", "codeReview", "verification", "reasons"],
+      "properties": {
+        "requirements": { "type": "boolean" },
+        "plan": { "enum": ["locate", "brief", "formal"] },
+        "trace": { "type": "boolean" },
+        "planReview": { "type": "boolean" },
+        "reviewRoles": { "type": "array" },
+        "executionApproval": { "type": "boolean" },
+        "checkpoints": { "enum": ["baseline", "unit-chain"] },
+        "recovery": { "type": "array" },
+        "codeReview": { "enum": ["none", "focused", "independent", "full"] },
+        "verification": { "type": "array", "items": { "enum": ["targeted", "behavior", "integration", "full"] } },
+        "reasons": { "type": "object" }
+      }
+    },
+    "classificationBasis": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["scopeFacts", "topologyFacts", "uncertaintyFacts", "riskFacts", "decisionRefs", "signals"],
+      "properties": {
+        "scopeFacts": { "type": "array", "items": { "type": "string" } },
+        "topologyFacts": { "type": "array", "items": { "type": "string" } },
+        "uncertaintyFacts": { "type": "array", "items": { "type": "string" } },
+        "riskFacts": { "type": "object" },
+        "decisionRefs": { "type": "array", "items": { "type": "string" } },
+        "controlEnhancements": { "$ref": "#/$defs/controlEnhancements" },
+        "signals": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["changeSurface", "behaviorChange", "topology", "unitCount", "requirements", "operationalRecovery", "executableRollback"],
+          "properties": {
+            "changeSurface": { "enum": ["single-site", "single-component", "multi-component", "system-wide"] },
+            "behaviorChange": { "enum": ["mechanical", "bounded-rule", "new-capability", "systemic-change"] },
+            "topology": { "enum": ["local", "shared-contract", "multi-chain", "coordinated-rollback"] },
+            "unitCount": { "type": "integer", "minimum": 1 },
+            "requirements": { "enum": ["missing-or-unclear", "documented-unconfirmed", "provided-confirmed"] },
+            "operationalRecovery": { "type": "boolean" },
+            "executableRollback": { "type": "boolean" },
+            "upwardLevel": { "enum": ["XS", "S", "M", "L"] }
+          }
+        }
+      }
+    },
+    "controlEnhancements": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "requirements": { "const": true },
+        "plan": { "enum": ["brief", "formal"] },
+        "trace": { "const": true },
+        "planReview": { "const": true },
+        "reviewRoles": { "type": "array", "uniqueItems": true, "items": { "enum": ["requirements-coverage", "architecture-testability", "rollback-operability", "security", "data-irreversibility", "money-safety", "contract-failure", "recovery-observability", "critical-correctness"] } },
+        "executionApproval": { "const": true },
+        "checkpoints": { "const": "unit-chain" },
+        "recovery": { "type": "array", "uniqueItems": true, "items": { "enum": ["operational-strategy", "executable-rollback", "irreversible-compensation"] } },
+        "codeReview": { "enum": ["focused", "independent", "full"] },
+        "verification": { "type": "array", "uniqueItems": true, "items": { "enum": ["targeted", "behavior", "integration", "full"] } }
+      }
+    }
   }
 }

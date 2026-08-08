@@ -30,7 +30,7 @@ test("pause removes the active pointer without requiring commit or finalize, res
   }
 });
 
-test("resume after a manual pause commit adopts the commit and marks evidence stale", async () => {
+test("resume after a manual pause commit requires an explicit ownership decision", async () => {
   const fixture = await createTinyApp();
   try {
     await store.initProject(fixture.root, strictProjectConfig);
@@ -42,11 +42,11 @@ test("resume after a manual pause commit adopts the commit and marks evidence st
     await run("git", ["-c", "user.name=Dev Flow Tests", "-c", "user.email=tests@example.invalid", "commit", "--quiet", "-m", "manual wip"], { cwd: fixture.root });
     const resumed = await store.resumeFeature(fixture.root, "resume", "claude");
     assert.equal(resumed.lifecycle, "active");
-    assert.equal(resumed.workspace.ownership["src/counter.js"], "feature");
-    assert.equal(resumed.workspace.ownershipSource["src/counter.js"], "manual-commit");
-    assert.equal(resumed.evidenceFreshness.verification, "stale");
-    assert.equal(resumed.evidenceFreshness.review, "stale");
-    assert.match(resumed.resumeSummary, /证据已标记为待更新/);
+    assert.equal(resumed.workspace.ownership["src/counter.js"], undefined);
+    assert.equal(resumed.workspace.ownershipSource["src/counter.js"], undefined);
+    assert.equal(resumed.pendingDecision.kind, "workspace-ownership");
+    assert.equal(resumed.evidenceFreshness.verification, "missing");
+    assert.equal(resumed.evidenceFreshness.review, "missing");
   } finally {
     await fixture.dispose();
   }
@@ -124,10 +124,7 @@ test("intake tool calls reject with ROUTE_NOT_DETERMINED instead of crashing", a
       () => artifacts.scaffoldArtifact(fixture.root, "intake", revision, "implementation-plan"),
       (error) => { assert.equal(error.code, "ROUTE_NOT_DETERMINED"); return true; },
     );
-    await assert.rejects(
-      () => featureCheck.featureCheck(fixture.root, "intake", revision),
-      (error) => { assert.equal(typeof error.code, "string"); return true; },
-    );
+    assert.equal(featureCheck.featureCheck, undefined);
     await assert.rejects(
       () => approvals.presentApproval(fixture.root, "intake", revision, "approval:aaaaaaaaaaaaaaaaaaaa"),
       (error) => { assert.equal(typeof error.code, "string"); return true; },

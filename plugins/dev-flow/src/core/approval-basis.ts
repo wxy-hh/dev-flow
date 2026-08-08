@@ -25,14 +25,9 @@ export function approvalBasis(state: FeatureState, approvalId: string): Record<s
     scope: state.scope,
     classification: state.classification,
     classificationBasis: state.classificationBasis,
-    artifacts: Object.fromEntries(
-      approvalBasisArtifacts.map((kind) => [kind, state.artifacts[kind]]),
-    ),
+    executionSemanticBasisHash: state.executionSemanticBasisHash,
   };
-  if (traceEnforcementRequired(state.route, state.workflowCapabilities)) {
-    basis.traceability = state.traceability;
-  }
-  if (reviewEnforcementRequired(state.route, state.workflowCapabilities)) {
+  if (reviewEnforcementRequired(state.route, state.classification.controls)) {
     // The ledger pointer, rather than any caller-supplied batch string or
     // generated Markdown, is the authoritative plan-review approval basis.
     basis.review = state.review;

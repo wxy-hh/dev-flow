@@ -1,22 +1,27 @@
 import assert from "node:assert/strict";
+import { execFile } from "node:child_process";
 import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
+import { promisify } from "node:util";
 import { mcpCall } from "../helpers/host-runner.mjs";
 
 const server = path.resolve("plugins/dev-flow/dist/mcp-server.mjs");
+const run = promisify(execFile);
 const config = {
-  schemaVersion: 1,
-  verification: { commands: [{ id: "unit", command: process.execPath, args: ["-e", "process.exit(0)"], cwd: "." }], behaviorCommands: [] },
+  schemaVersion: 2,
+  verification: { commands: [{ id: "unit", command: process.execPath, args: ["-e", "process.exit(0)"], cwd: ".", provides: ["targeted", "behavior", "integration", "full"] }] },
   enforcement: { mode: "strict", gitWriteRequiresLogicComplete: true, oneActiveFeature: true, requireExplicitHumanReply: true },
-  protectedRoots: ["src"],
+  governedRoots: ["src"],
 };
 
 test("MCP status is compact and inspect exposes one explicit topic", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "dev-flow-mcp-status-v3-"));
   try {
     await mkdir(path.join(root, "src"));
+    await run("git", ["init", "--quiet"], { cwd: root });
+    await run("git", ["-c", "user.name=Dev Flow Tests", "-c", "user.email=tests@example.invalid", "commit", "--quiet", "--allow-empty", "-m", "baseline"], { cwd: root });
     await mcpCall(server, root, "dev_flow_init_project", { config });
     const started = await mcpCall(server, root, "dev_flow_start", {
       featureId: "capability", objective: "验证阶段能力合同", scope: { inScope: ["src"], outOfScope: [] }, host: "codex",

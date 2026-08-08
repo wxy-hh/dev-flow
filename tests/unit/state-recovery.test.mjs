@@ -9,10 +9,10 @@ import { loadSource } from "../helpers/load-source.mjs";
 const store = await loadSource("plugins/dev-flow/src/core/state-store.ts");
 const doctor = await loadSource("plugins/dev-flow/src/mcp/doctor.ts");
 const config = {
-  schemaVersion: 1,
-  verification: { commands: [{ id: "unit", command: "node", args: ["-e", "process.exit(0)"], cwd: "." }], behaviorCommands: [] },
+  schemaVersion: 2,
+  verification: { commands: [{ id: "unit", command: "node", args: ["-e", "process.exit(0)"], cwd: ".", provides: ["targeted", "behavior", "integration", "full"] }] },
   enforcement: { mode: "strict", gitWriteRequiresLogicComplete: true, oneActiveFeature: true, requireExplicitHumanReply: true },
-  protectedRoots: ["src"],
+  governedRoots: ["src"],
 };
 
 test("invalid scope does not create active feature or state", async () => {

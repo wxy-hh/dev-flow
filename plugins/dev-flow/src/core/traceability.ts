@@ -272,10 +272,10 @@ function assertArtifactDeltaContract(input: ApplyTraceDeltaInput): void {
   const allowed = ALLOWED_TRACE_KINDS[input.artifactKind];
   if (input.delta.nodes.some((node) => !allowed.includes(node.kind as never))) invalid("delta kind is not allowed for its artifact", { artifactKind: input.artifactKind });
   const has = (kind: TraceNodeInput["kind"]) => input.delta.nodes.some((node) => node.kind === kind);
-  if (input.artifactKind === "implementation-plan" && input.route === "standard-m" && (!has("task") || !has("rollback"))) {
-    invalid("standard M implementation plans require both tasks and rollback units");
+  if (input.artifactKind === "implementation-plan" && input.route === "m" && (!has("task") || !has("rollback"))) {
+    invalid("启用 Trace 的动态实施计划必须同时包含 task 和 rollback unit");
   }
-  if (input.artifactKind === "rollback-units" && input.route !== "standard-l") invalid("rollback-units are only valid for standard L");
+  if (input.artifactKind === "rollback-units" && input.route !== "l") invalid("独立 rollback-units 工件只适用于 L 级路线");
   for (const node of input.delta.nodes) {
     if (node.kind !== "rollback") continue;
     if (!["implementation-plan", "rollback-units"].includes(input.artifactKind)) invalid("rollback node has an invalid source artifact");
@@ -430,7 +430,7 @@ export function validateTraceGraph(
       if (node.covers.length === 0) invalid("task cannot be orphaned", { id: node.id });
       for (const covered of node.covers) assertReference(nodes, covered, ["requirement", "acceptance-criterion"], { from: node.id });
       const rollback = nodeById(nodes, node.rollbackUnit);
-      if (!rollback && !(route === "standard-l" && mode === "partial")) invalid("task references a missing rollback unit", { id: node.id, rollbackUnit: node.rollbackUnit });
+      if (!rollback && !(route === "l" && mode === "partial")) invalid("task references a missing rollback unit", { id: node.id, rollbackUnit: node.rollbackUnit });
       if (rollback && rollback.kind !== "rollback") invalid("task rollback unit has the wrong kind", { id: node.id });
       if (rollback?.kind === "rollback" && !rollback.tasks.includes(node.id)) {
         invalid("task rollback unit must list the task", { id: node.id, rollbackUnit: node.rollbackUnit });
@@ -555,7 +555,7 @@ export function assertTraceabilityComplete(ledger: TraceabilityLedger, route: Ro
 
 export function assertTraceSliceCurrent(ledger: TraceabilityLedger, route: RouteId, step: string, currentProjectConfigSha256: string): void {
   assertConfigCurrent(ledger, currentProjectConfigSha256);
-  const completeSteps = new Set(["planning", "implementation", "feature_check", "finalize"]);
+  const completeSteps = new Set(["planning", "implementation", "finalize"]);
   if (completeSteps.has(step)) return assertTraceabilityComplete(ledger, route, currentProjectConfigSha256);
   const requirements: TraceNode["kind"][] = ["requirement", "acceptance-criterion"];
   if (["requirements"].includes(step)) {
@@ -565,7 +565,7 @@ export function assertTraceSliceCurrent(ledger: TraceabilityLedger, route: Route
     return;
   }
   const kinds: TraceNode["kind"][] = step === "implementation_plan"
-    ? [...requirements, "task", ...(route === "standard-m" ? ["rollback"] as TraceNode["kind"][] : [])]
+    ? [...requirements, "task", ...(route === "m" ? ["rollback"] as TraceNode["kind"][] : [])]
     : step === "coverage_review"
       ? [...requirements, "task", "test"]
       : step === "rollback_unit"

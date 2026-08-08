@@ -1,13 +1,37 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import test from "node:test";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { loadSource } from "../helpers/load-source.mjs";
-import { prepareReviewReadyFeature } from "../helpers/route-flow.mjs";
+import { completeReviewJobs, prepareReviewReadyFeature } from "../helpers/route-flow.mjs";
+import { registerTraceFixture } from "../helpers/trace-fixtures.mjs";
 
 const review = await loadSource("plugins/dev-flow/src/policy/review.ts");
 const jobs = await loadSource("plugins/dev-flow/src/core/review-jobs.ts");
+const reviewStore = await loadSource("plugins/dev-flow/src/core/review-store.ts");
+
+test("review store hard-rejects the 4.x ledger schema", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "dev-flow-review-v1-"));
+  try {
+    const contents = `${JSON.stringify({ schemaVersion: 1, featureId: "legacy" })}\n`;
+    const sha256 = createHash("sha256").update(contents).digest("hex");
+    const relative = `review/snapshots/${sha256}.json`;
+    await mkdir(path.join(root, ".dev-flow", "features", "legacy", "review", "snapshots"), { recursive: true });
+    await writeFile(path.join(root, ".dev-flow", "features", "legacy", relative), contents);
+    await assert.rejects(
+      () => reviewStore.readReviewLedger(root, {
+        featureId: "legacy",
+        revision: 1,
+        review: { path: relative, sha256, revision: 0, summary: { batches: 0, current: 0, stale: 0, open: 0, complete: 0 } },
+      }),
+      (error) => error.code === "UNSUPPORTED_REVIEW_SCHEMA",
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
 
 test("public review jobs expose lease timestamps but never capability hashes", () => {
   const job = review.toPublicReviewJob({
@@ -72,6 +96,41 @@ test("the original capability can release a claimed job and a new claim can reco
     assert.equal(released.job.lease, undefined);
     const reclaimed = await jobs.claimReviewJob(root, state.featureId, released.state.revision, created.batch.batchId, job.jobId, "claim-new-capability-1234567890");
     assert.equal(reclaimed.job.status, "claimed");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("a requirements-only semantic diff reuses unaffected architecture and rollback roles", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "dev-flow-review-role-reuse-"));
+  try {
+    let state = await prepareReviewReadyFeature(root, {
+      level: "M",
+      topology: "shared-contract",
+      requirements: "provided-confirmed",
+      scopeFacts: ["共享契约需求"],
+      topologyFacts: ["共享契约"],
+      uncertaintyFacts: [],
+      riskFacts: {},
+      decisionRefs: [],
+    }, { featureId: "reuse" });
+    const first = await jobs.createReviewBatch(root, state.featureId, state.revision);
+    state = (await completeReviewJobs(root, state.featureId, first.state, first.batch)).state;
+
+    state = await registerTraceFixture({
+      root,
+      featureId: state.featureId,
+      state,
+      kind: "requirements",
+      edit: (markdown) => `${markdown}\n补充说明：不改变任务、测试、契约或恢复语义。\n`,
+    });
+    const second = await jobs.createReviewBatch(root, state.featureId, state.revision);
+    const byRole = Object.fromEntries(second.batch.jobs.map((job) => [job.role, job]));
+    assert.equal(byRole["requirements-coverage"].status, "pending");
+    assert.equal(byRole["architecture-testability"].status, "reused");
+    assert.equal(byRole["rollback-operability"].status, "reused");
+    assert.equal(second.batch.executionMode, "parallel-safe");
+    assert.ok(byRole["architecture-testability"].reusedFrom);
   } finally {
     await rm(root, { recursive: true, force: true });
   }

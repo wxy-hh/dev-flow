@@ -52,7 +52,6 @@ function actionText(state: FeatureState, action: NextAction): string {
     case "repair-trace": return "重新登记当前需求或计划与追溯关系。";
     case "begin-implementation-unit": return "开始下一个实现单元。";
     case "checkpoint-implementation-unit": return "保存当前实现单元并完成单元验证。";
-    case "feature-check": return "执行交付前完整性检查。";
     case "finalize": return "进入交付收尾并生成最终交付快照。";
     case "run-step": return `继续${stageLabel(action.step)}。`;
     default: return "继续当前阶段。";
@@ -78,7 +77,7 @@ export async function readCompactStatus(root: string, featureId: string): Promis
   const state = await readState(root, featureId);
   const action = await nextAction(root, featureId);
   const stage = effectiveStage(state);
-  const definition = state.mode === "routed" ? routeDefinitionForFeature(state.route, state.workflowCapabilities) : undefined;
+  const definition = state.mode === "routed" ? routeDefinitionForFeature(state.route, state.classification.controls) : undefined;
   const total = definition?.orderedSteps.length ?? 1;
   const completed = definition?.orderedSteps.filter((step) => state.steps[step]?.status === "satisfied").length ?? 0;
   const decision = pendingDecisionForState(state);

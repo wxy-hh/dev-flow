@@ -1,6 +1,8 @@
 ---
 name: rollback-safety
-description: 作为 planning、checkpoint 和 repair 的内部回滚保障能力。
+description: 落实 Dev Flow 5.0 的 delivery reverse、operational strategy 与 executable rollback 三层恢复保证。
 ---
 
-回滚策略由 Core 根据 classificationBasis、obligations、实际 diff 和自动 checkpoint 生成。不要创建额外路线步骤、单独 Markdown 或逐单元用户确认。需要显式恢复时才调用低层 rollback MCP；事务、冲突和验证失败都必须保留现场并返回可续办动作。
+所有任务必须生成 delivery reverse。L、数据/金额/可用性或多单元耦合还要 operational strategy。只有变更真实可逆、存在 unit-chain 且计划命令可执行时，才能声明 executable rollback。
+
+不可逆变更不得伪称可回滚；必须使用 backup、preview、abort、compensation 与 full verification。执行 rollback 前展示精确 scope 与后果并取得当前确认；事务失败保留 journal 与现场，按 Core 恢复动作续办。symlink 回撤重建链接本身，不能跟随覆盖目标。

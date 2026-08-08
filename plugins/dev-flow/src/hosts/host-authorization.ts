@@ -63,7 +63,7 @@ export async function evaluatePermissionRequest(root: string, event: HookEvent, 
   return { kind: "defer", assessment };
 }
 
-function postToolSucceeded(event: HookEvent): boolean {
+export function postToolSucceeded(event: HookEvent): boolean {
   const value = event as HookEvent & { error?: unknown; tool_response?: unknown; tool_result?: unknown };
   if (value.error !== undefined && value.error !== null) return false;
   for (const response of [value.tool_response, value.tool_result]) {

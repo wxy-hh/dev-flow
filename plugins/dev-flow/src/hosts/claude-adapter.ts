@@ -1,6 +1,6 @@
-import { recordHostEvent } from "../core/state-store.js";
-import { evaluatePreToolUse, formatPreToolBlock } from "./adapter-policy.js";
-import { evaluatePermissionRequest, recordPermissionPostToolUse } from "./host-authorization.js";
+import { recordHostEvent, recordTrustedWriteIntent, recordTrustedWriteOwnership } from "../core/state-store.js";
+import { evaluatePreToolUse, formatPreToolBlock, trustedWriteTargets } from "./adapter-policy.js";
+import { evaluatePermissionRequest, postToolSucceeded, recordPermissionPostToolUse } from "./host-authorization.js";
 
 const chunks: Buffer[] = [];
 for await (const chunk of process.stdin) chunks.push(Buffer.from(chunk));
@@ -42,6 +42,8 @@ if (event.hook_event_name === "PreToolUse") {
           additionalContext: outcome.advisory.message,
         },
       }) + "\n");
+    } else {
+      await recordTrustedWriteIntent(cwd, trustedWriteTargets(cwd, event), "claude", event.event_id ?? event.tool_use_id ?? `pre-${Date.now()}`);
     }
   } catch (error) {
     // An unexpected adapter failure is diagnostic only; host permissions remain authoritative.
@@ -53,6 +55,10 @@ if (event.hook_event_name === "UserPromptSubmit" || event.hook_event_name === "S
   if (event.hook_event_name === "PostToolUse") {
     try { await recordPermissionPostToolUse(cwd, event, "claude"); }
     catch { /* authorization memory must not suppress the audit event */ }
+    if (postToolSucceeded(event)) {
+      try { await recordTrustedWriteOwnership(cwd, trustedWriteTargets(cwd, event), "claude", event.event_id ?? event.tool_use_id ?? `post-${Date.now()}`); }
+      catch { /* ownership can be recovered by reconcile */ }
+    }
   }
   try {
     const text = event.prompt ?? event.user_prompt ?? event.tool_input?.prompt;

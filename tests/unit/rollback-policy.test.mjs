@@ -232,7 +232,7 @@ test("parseImplementationUnits rejects duplicate unit IDs, duplicate checkpoint 
 
 function manifestFixture() {
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
     checkpointId: "CP-001",
     unitId: "RU-001",
     sequence: 1,
@@ -251,9 +251,11 @@ function manifestFixture() {
         afterBlobSha256: sha("4"),
         beforeMode: "644",
         afterMode: "644",
+        beforeKind: "file",
+        afterKind: "file",
       },
-      { path: "src/api/added.ts", change: "added", afterSha256: sha("5"), afterBlobSha256: sha("6"), afterMode: "644" },
-      { path: "src/api/deleted.ts", change: "deleted", beforeSha256: sha("7"), beforeBlobSha256: sha("8"), beforeMode: "644" },
+      { path: "src/api/added.ts", change: "added", afterSha256: sha("5"), afterBlobSha256: sha("6"), afterMode: "644", afterKind: "file" },
+      { path: "src/api/deleted.ts", change: "deleted", beforeSha256: sha("7"), beforeBlobSha256: sha("8"), beforeMode: "644", beforeKind: "file" },
       {
         path: "src/api/renamed.ts",
         change: "renamed",
@@ -264,6 +266,8 @@ function manifestFixture() {
         afterBlobSha256: sha("a"),
         beforeMode: "644",
         afterMode: "644",
+        beforeKind: "file",
+        afterKind: "file",
       },
       {
         path: "src/api/script.sh",
@@ -274,6 +278,8 @@ function manifestFixture() {
         afterBlobSha256: sha("c"),
         beforeMode: "644",
         afterMode: "755",
+        beforeKind: "file",
+        afterKind: "file",
       },
     ],
     forwardPatchSha256: sha("0"),
@@ -304,6 +310,13 @@ test("parseCheckpointManifest accepts a complete manifest and preserves every fi
   assert.deepEqual(rollback.parseCheckpointManifest(manifestFixture()), manifestFixture());
 });
 
+test("parseCheckpointManifest hard-rejects the 4.x schema", () => {
+  assert.throws(
+    () => rollback.parseCheckpointManifest({ schemaVersion: 1 }),
+    (error) => error.code === "UNSUPPORTED_CHECKPOINT_SCHEMA",
+  );
+});
+
 test("parseCheckpointManifest rejects malformed manifests and per-change file record violations", () => {
   const fixture = manifestFixture();
   const modified = fixture.files[0];
@@ -312,7 +325,6 @@ test("parseCheckpointManifest rejects malformed manifests and per-change file re
   const renamed = fixture.files[3];
 
   const cases = [
-    { ...fixture, schemaVersion: 2 },
     { ...fixture, checkpointId: "" },
     { ...fixture, unitId: "TASK-001" },
     { ...fixture, sequence: 0 },
@@ -348,7 +360,7 @@ test("checkpoint schema closes unit status, file change kinds, and manifest shap
   assert.equal(schema.$defs.checkpointManifest.additionalProperties, false);
   assert.equal(schema.$defs.checkpointFileRecord.additionalProperties, false);
   assert.equal(schema.$defs.checkpointVerificationAttempt.additionalProperties, false);
-  assert.equal(schema.$defs.checkpointManifest.properties.schemaVersion.const, 1);
+  assert.equal(schema.$defs.checkpointManifest.properties.schemaVersion.const, 2);
   assert.equal(schema.$defs.checkpointManifest.properties.sequence.minimum, 1);
 });
 

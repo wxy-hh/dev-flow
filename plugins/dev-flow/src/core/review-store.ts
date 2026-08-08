@@ -19,7 +19,7 @@ const emptySummary = (): ReviewSummary => ({ batches: 0, current: 0, stale: 0, o
 const digest = (contents: string | Buffer): string => createHash("sha256").update(contents).digest("hex");
 
 export function emptyReviewLedger(featureId: string, stateRevision: number): ReviewLedger {
-  return { schemaVersion: 1, featureId, revision: 0, stateRevision, batches: [], summary: emptySummary(), findingEvents: [] };
+  return { schemaVersion: 2, featureId, revision: 0, stateRevision, batches: [], summary: emptySummary(), findingEvents: [] };
 }
 
 export function canonicalReviewJson(ledger: ReviewLedger): string {
@@ -118,7 +118,7 @@ function validateBatch(value: unknown): value is ReviewBatch {
   if (typeof batch.batchId !== "string" || !batch.batchId || !validHash(batch.basisHash)
     || !batch.basis || batch.validity !== "current" && batch.validity !== "stale"
     || batch.progress !== "open" && batch.progress !== "complete"
-    || batch.executionMode !== "isolated-sequential" && batch.executionMode !== "mcp-sampling" && batch.executionMode !== "native-subagent"
+    || batch.executionMode !== "isolated-sequential" && batch.executionMode !== "parallel-safe" && batch.executionMode !== "mcp-sampling" && batch.executionMode !== "native-subagent"
     || batch.assuranceLevel !== "multi-perspective" && batch.assuranceLevel !== "independent-sampling"
       && batch.assuranceLevel !== "multi-agent-attested" && batch.assuranceLevel !== "multi-agent-verified"
     || !Array.isArray(batch.jobs)) return false;
@@ -127,8 +127,9 @@ function validateBatch(value: unknown): value is ReviewBatch {
   return batch.jobs.every((job) => {
     if (!job || typeof job !== "object" || typeof job.jobId !== "string" || !job.jobId || ids.has(job.jobId)
       || typeof job.role !== "string" || (job.reviewDepth !== "standard" && job.reviewDepth !== "full")
-      || !validHash(job.packageSha256) || (job.status !== "pending" && job.status !== "claimed" && job.status !== "sampling" && job.status !== "submitted")) return false;
+      || !validHash(job.packageSha256) || !validHash(job.roleBasisHash) || (job.status !== "pending" && job.status !== "claimed" && job.status !== "sampling" && job.status !== "submitted" && job.status !== "reused")) return false;
     ids.add(job.jobId);
+    if (job.status === "reused") return !!job.reusedFrom && validHash(job.reusedFrom.submissionSha256) && !job.claim && !job.submission;
     if (!validSamplingAttempts(job.samplingAttempts, job.status, job.submission)) return false;
     if (job.status === "pending") return !job.claim && !job.submission;
     if (job.status === "sampling") return !job.claim && !job.submission?.attestation;
@@ -157,7 +158,12 @@ function validateBatch(value: unknown): value is ReviewBatch {
 function validateLedger(value: unknown): asserts value is ReviewLedger {
   if (typeof value !== "object" || value === null || Array.isArray(value)) integrity("review snapshot has an invalid shape");
   const ledger = value as Partial<ReviewLedger>;
-  if (ledger.schemaVersion !== 1 || typeof ledger.featureId !== "string" || !ledger.featureId
+  if ((ledger as { schemaVersion?: unknown }).schemaVersion === 1) {
+    throw new DevFlowError("UNSUPPORTED_REVIEW_SCHEMA", "检测到 Dev Flow 4.x review ledger schema v1。", {
+      recoveryHint: "回到 4.x 完成或放弃该 feature，备份 .dev-flow 后用 5.0 重新初始化",
+    });
+  }
+  if (ledger.schemaVersion !== 2 || typeof ledger.featureId !== "string" || !ledger.featureId
     || !Number.isInteger(ledger.revision) || (ledger.revision ?? -1) < 0
     || !Number.isInteger(ledger.stateRevision) || (ledger.stateRevision ?? -1) < 0
     || !Array.isArray(ledger.batches) || !ledger.batches.every(validateBatch) || !validateSummary(ledger.summary)) {
@@ -168,7 +174,7 @@ function validateLedger(value: unknown): asserts value is ReviewLedger {
     if (batchIds.has(batch.batchId)
       || batch.basis.featureId !== ledger.featureId
       || digest(canonicalReviewValueJson(batch.basis)) !== batch.basisHash
-      || (batch.progress === "complete") !== batch.jobs.every((job) => job.status === "submitted")) {
+      || (batch.progress === "complete") !== batch.jobs.every((job) => job.status === "submitted" || job.status === "reused")) {
       integrity("review snapshot batch is inconsistent");
     }
     if (batch.assuranceLevel !== assuranceForReviewBatch(batch)) {

@@ -14,10 +14,11 @@ const stageLabels: Record<string, string> = {
   requirements: "需求确认",
   requirements_alignment: "需求确认",
   planning: "实施规划",
+  plan_review: "计划审查",
+  execution_approval: "执行确认",
   implementation: "开发实现",
   code_review: "代码审查",
   verification: "验证",
-  feature_check: "交付收尾",
   finalize: "交付收尾",
   complete: "已完成",
   abandoned: "已终止",
@@ -52,10 +53,8 @@ export function routeLabel(route: RouteId): string {
   switch (route) {
     case "xs": return "XS：极小改动";
     case "s": return "S：小型改动";
-    case "light-m": return "light-m：中型变更（轻量治理）";
-    case "standard-m": return "standard-m：中型变更（标准治理）";
-    case "light-l": return "light-l：大型变更（轻量治理）";
-    case "standard-l": return "standard-l：大型变更（标准治理）";
+    case "m": return "M：中型变更（动态治理）";
+    case "l": return "L：大型变更（动态治理）";
     default: return exhaustive(route);
   }
 }

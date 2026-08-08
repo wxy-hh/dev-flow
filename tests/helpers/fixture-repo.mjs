@@ -10,13 +10,12 @@ const fixtureRoot = path.join(repositoryRoot, "tests", "fixtures", "tiny-app");
 const run = promisify(execFile);
 
 export const strictProjectConfig = {
-  schemaVersion: 1,
+  schemaVersion: 2,
   verification: {
-    commands: [{ id: "unit", command: process.execPath, args: ["--test", "test/counter.test.js"], cwd: "." }],
-    behaviorCommands: [],
+    commands: [{ id: "unit", command: process.execPath, args: ["--test", "test/counter.test.js"], cwd: ".", provides: ["targeted", "behavior", "integration", "full"] }]
   },
   enforcement: { mode: "strict", gitWriteRequiresLogicComplete: true, oneActiveFeature: true, requireExplicitHumanReply: true },
-  protectedRoots: ["src", "test"],
+  governedRoots: ["src", "test"],
 };
 
 export async function createTinyApp() {

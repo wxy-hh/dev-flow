@@ -120,7 +120,7 @@ export async function resolveGrillAnswer(root: string, id: string, expectedRevis
 
 /** Requirements completion is derived from the decision ledger, never Markdown control fields. */
 export async function assertRequirementsGrillSatisfied(root: string, id: string, state: FeatureState): Promise<void> {
-  if (state.route !== "standard-m" && state.route !== "standard-l") return;
+  if (state.route !== "m" && state.route !== "l") return;
   await currentRequirements(root, id, state);
   const pending = Object.values(state.interactions ?? {}).some((value) => {
     const interaction = value as { kind?: string; status?: string };

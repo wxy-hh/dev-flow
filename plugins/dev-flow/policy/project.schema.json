@@ -1,16 +1,16 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "type": "object",
-  "required": ["schemaVersion", "verification", "enforcement", "protectedRoots"],
+  "required": ["schemaVersion", "verification", "enforcement", "governedRoots"],
   "additionalProperties": false,
   "properties": {
-    "schemaVersion": { "const": 1 },
-    "protectedRoots": { "type": "array", "minItems": 1, "items": { "type": "string", "minLength": 1 } },
-    "protectedRootsExclude": { "type": "array", "items": { "type": "string", "minLength": 1 } },
+    "schemaVersion": { "const": 2 },
+    "governedRoots": { "type": "array", "minItems": 1, "items": { "type": "string", "minLength": 1 } },
+    "governedRootsExclude": { "type": "array", "items": { "type": "string", "minLength": 1 } },
     "verification": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["commands", "behaviorCommands"],
+      "required": ["commands"],
       "properties": {
         "commands": {
           "type": "array",
@@ -18,16 +18,16 @@
           "items": {
             "type": "object",
             "additionalProperties": false,
-            "required": ["id", "command", "args", "cwd"],
+            "required": ["id", "command", "args", "cwd", "provides"],
             "properties": {
               "id": { "type": "string", "minLength": 1 },
               "command": { "type": "string", "minLength": 1 },
               "args": { "type": "array", "items": { "type": "string" } },
-              "cwd": { "type": "string", "minLength": 1 }
+              "cwd": { "type": "string", "minLength": 1 },
+              "provides": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "enum": ["targeted", "behavior", "integration", "full"] } }
             }
           }
         },
-        "behaviorCommands": { "type": "array", "items": { "type": "string" } },
         "preflightCommands": { "type": "array", "items": { "type": "string" } }
       }
     },

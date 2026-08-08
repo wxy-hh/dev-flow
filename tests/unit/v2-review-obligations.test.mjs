@@ -3,10 +3,9 @@ import test from "node:test";
 import { runRoute } from "../helpers/route-flow.mjs";
 
 const config = {
-  schemaVersion: 1,
+  schemaVersion: 2,
   verification: {
-    commands: [{ id: "unit", command: process.execPath, args: ["-e", "process.exit(0)"], cwd: "." }],
-    behaviorCommands: [],
+    commands: [{ id: "unit", command: process.execPath, args: ["-e", "process.exit(0)"], cwd: ".", provides: ["targeted", "behavior", "integration", "full"] }]
   },
   enforcement: {
     mode: "strict",
@@ -14,7 +13,7 @@ const config = {
     oneActiveFeature: true,
     requireExplicitHumanReply: true,
   },
-  protectedRoots: ["src"],
+  governedRoots: ["src"],
 };
 
 test("claim/submit review completion satisfies the persisted review obligation", async () => {
@@ -28,7 +27,7 @@ test("claim/submit review completion satisfies the persisted review obligation",
     uncertaintyFacts: [],
     riskFacts: {},
     decisionRefs: [],
-  }, "standard-m", {
+  }, "m", {
     config,
     featureId: "review-obligation",
     implementationFiles: { "src/protocol.js": "export const value = 1;\n" },

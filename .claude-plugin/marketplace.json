@@ -8,7 +8,7 @@
     {
       "name": "dev-flow",
       "source": "./plugins/dev-flow",
-      "description": "Risk-aware multi-route development orchestration for Claude Code and Codex CLI."
+      "description": "Dynamic, evidence-based development governance for Claude Code and Codex CLI."
     }
   ]
 }

@@ -36,6 +36,8 @@ export interface CheckpointFileRecord {
   /** Permission bits as an octal string, e.g. "644" or "755". */
   beforeMode?: string;
   afterMode?: string;
+  beforeKind?: "file" | "symlink";
+  afterKind?: "file" | "symlink";
 }
 
 export interface CheckpointVerificationAttempt {
@@ -57,7 +59,7 @@ export interface CheckpointVerificationCommand {
 }
 
 export interface CheckpointManifest {
-  schemaVersion: 1;
+  schemaVersion: 2;
   checkpointId: string;
   unitId: RollbackId;
   sequence: number;
@@ -162,8 +164,14 @@ function globSegmentMatches(pattern: string, segment: string): boolean {
   return segment.startsWith(head) && globSegmentMatches(rest.join(""), segment.slice(head.length));
 }
 
-function invalid(message: string): never {
-  throw new Error(`ROLLBACK_PROTOCOL_INVALID: ${message}`);
+export class RollbackProtocolError extends Error {
+  constructor(readonly code: "ROLLBACK_PROTOCOL_INVALID" | "UNSUPPORTED_CHECKPOINT_SCHEMA", message: string) {
+    super(`${code}: ${message}`);
+  }
+}
+
+function invalid(message: string, code: "ROLLBACK_PROTOCOL_INVALID" | "UNSUPPORTED_CHECKPOINT_SCHEMA" = "ROLLBACK_PROTOCOL_INVALID"): never {
+  throw new RollbackProtocolError(code, message);
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -209,9 +217,9 @@ export function isValidUnitTransition(from: ImplementationUnitStatus, to: Implem
 }
 
 /**
- * Derive the initial pending unit from a current RollbackNode. Standard M
- * (implementation-plan) and standard L (rollback-units) nodes share one shape,
- * so lifecycle code never branches on the source artifact.
+ * Derive the initial pending unit from a current RollbackNode. Every dynamic
+ * route uses the same frozen rollback-unit shape, so lifecycle code never
+ * branches on the source artifact.
  */
 export function implementationUnitForRollbackNode(node: RollbackNode, basisHash: string): ImplementationUnitState {
   if (!isRecord(node)
@@ -282,7 +290,7 @@ export function parseImplementationUnits(value: unknown, knownUnitIds: readonly 
 
 function parseFileRecord(value: unknown, index: number): CheckpointFileRecord {
   if (!isRecord(value)
-    || !hasOnlyKeys(value, ["path", "change", "renamedFrom", "beforeSha256", "afterSha256", "beforeBlobSha256", "afterBlobSha256", "beforeMode", "afterMode"])
+    || !hasOnlyKeys(value, ["path", "change", "renamedFrom", "beforeSha256", "afterSha256", "beforeBlobSha256", "afterBlobSha256", "beforeMode", "afterMode", "beforeKind", "afterKind"])
     || !isNonEmptyString(value.path)
     || typeof value.change !== "string"
     || !fileChanges.includes(value.change as CheckpointFileChange)) {
@@ -291,10 +299,10 @@ function parseFileRecord(value: unknown, index: number): CheckpointFileRecord {
   const label = `checkpoint file record ${index}`;
   const change = value.change as CheckpointFileChange;
   const beforeOk = change !== "added"
-    ? isSha256(value.beforeSha256) && isSha256(value.beforeBlobSha256) && typeof value.beforeMode === "string" && FILE_MODE.test(value.beforeMode)
+    ? isSha256(value.beforeSha256) && isSha256(value.beforeBlobSha256) && typeof value.beforeMode === "string" && FILE_MODE.test(value.beforeMode) && (value.beforeKind === "file" || value.beforeKind === "symlink")
     : value.beforeSha256 === undefined && value.beforeBlobSha256 === undefined && value.beforeMode === undefined;
   const afterOk = change !== "deleted"
-    ? isSha256(value.afterSha256) && isSha256(value.afterBlobSha256) && typeof value.afterMode === "string" && FILE_MODE.test(value.afterMode)
+    ? isSha256(value.afterSha256) && isSha256(value.afterBlobSha256) && typeof value.afterMode === "string" && FILE_MODE.test(value.afterMode) && (value.afterKind === "file" || value.afterKind === "symlink")
     : value.afterSha256 === undefined && value.afterBlobSha256 === undefined && value.afterMode === undefined;
   if (!beforeOk) invalid(`${label} has invalid before fields for change ${change}`);
   if (!afterOk) invalid(`${label} has invalid after fields for change ${change}`);
@@ -305,10 +313,10 @@ function parseFileRecord(value: unknown, index: number): CheckpointFileRecord {
     change,
     ...(value.renamedFrom !== undefined ? { renamedFrom: value.renamedFrom as string } : {}),
     ...(change !== "added"
-      ? { beforeSha256: value.beforeSha256 as string, beforeBlobSha256: value.beforeBlobSha256 as string, beforeMode: value.beforeMode as string }
+      ? { beforeSha256: value.beforeSha256 as string, beforeBlobSha256: value.beforeBlobSha256 as string, beforeMode: value.beforeMode as string, beforeKind: value.beforeKind as "file" | "symlink" }
       : {}),
     ...(change !== "deleted"
-      ? { afterSha256: value.afterSha256 as string, afterBlobSha256: value.afterBlobSha256 as string, afterMode: value.afterMode as string }
+      ? { afterSha256: value.afterSha256 as string, afterBlobSha256: value.afterBlobSha256 as string, afterMode: value.afterMode as string, afterKind: value.afterKind as "file" | "symlink" }
       : {}),
   };
 }
@@ -343,9 +351,12 @@ function parseVerificationAttempt(value: unknown, index: number): CheckpointVeri
 }
 
 export function parseCheckpointManifest(value: unknown): CheckpointManifest {
+  if (isRecord(value) && value.schemaVersion === 1) {
+    invalid("Dev Flow 4.x checkpoint manifest schema v1 is not supported by 5.0", "UNSUPPORTED_CHECKPOINT_SCHEMA");
+  }
   if (!isRecord(value)
     || !hasOnlyKeys(value, ["schemaVersion", "checkpointId", "unitId", "sequence", "basisHash", "startedFingerprint", "completedFingerprint", "startedAt", "completedAt", "files", "forwardPatchSha256", "reversePatchSha256", "verificationAttempts", "requirementsSha256", "planSha256", "traceabilitySha256", "approvalBasisHash", "projectConfigSha256", "verificationCommands", "beginNonce"])
-    || value.schemaVersion !== 1
+    || value.schemaVersion !== 2
     || !isNonEmptyString(value.checkpointId)
     || !isRollbackId(value.unitId)
     || typeof value.sequence !== "number" || !Number.isInteger(value.sequence) || value.sequence < 1
@@ -383,7 +394,7 @@ export function parseCheckpointManifest(value: unknown): CheckpointManifest {
     }
   }
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
     checkpointId: value.checkpointId,
     unitId: value.unitId,
     sequence: value.sequence,

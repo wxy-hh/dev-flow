@@ -1,9 +1,10 @@
 import { randomUUID, createHash } from "node:crypto";
-import { access, mkdir, open, readFile, readdir, rename } from "node:fs/promises";
+import { access, mkdir, open, readFile, readlink, readdir, rename } from "node:fs/promises";
 import path from "node:path";
 import { checkpointsEnforcementRequired } from "../policy/contract.js";
 import {
   parseCheckpointManifest,
+  RollbackProtocolError,
   type CheckpointFileRecord,
   type CheckpointManifest,
   type CheckpointVerificationAttempt,
@@ -11,7 +12,7 @@ import {
 import type { RollbackNode } from "../policy/traceability.js";
 import type { VerificationCommandRef } from "../policy/traceability.js";
 import { DevFlowError } from "./errors.js";
-import { fingerprintProtectedRoots, snapshotProtectedRoots, type ProtectedFileSnapshot } from "./fingerprint.js";
+import { fingerprintGovernedRoots, snapshotGovernedRoots, type ProtectedFileSnapshot } from "./fingerprint.js";
 import type { ProjectConfig, VerificationCommand } from "./project-config.js";
 import { canonicalReviewValueJson } from "./review-store.js";
 import { mutate, readState, type FeatureState } from "./state-store.js";
@@ -63,7 +64,7 @@ async function writeBlobIfAbsent(root: string, featureId: string, bytes: Buffer)
 }
 
 export interface CheckpointBaseline {
-  schemaVersion: 1;
+  schemaVersion: 2;
   featureId: string;
   unitId: string;
   capturedAt: string;
@@ -73,7 +74,7 @@ export interface CheckpointBaseline {
 function validateBaseline(value: unknown, unitId: string): CheckpointBaseline {
   const baseline = value as Partial<CheckpointBaseline> | undefined;
   const files = baseline?.files;
-  if (!baseline || baseline.schemaVersion !== 1 || baseline.unitId !== unitId
+  if (!baseline || baseline.schemaVersion !== 2 || baseline.unitId !== unitId
     || typeof baseline.featureId !== "string" || typeof baseline.capturedAt !== "string"
     || !Array.isArray(files)
     || !files.every((file) => file && typeof file.path === "string"
@@ -96,14 +97,14 @@ export async function captureUnitBaseline(
   snapshot: ProtectedFileSnapshot[],
 ): Promise<void> {
   for (const file of snapshot) {
-    const bytes = await readFile(path.join(root, file.path));
+    const bytes = file.kind === "symlink" ? Buffer.from(await readlink(path.join(root, file.path))) : await readFile(path.join(root, file.path));
     if (digest(bytes) !== file.sha256) {
-      throw new DevFlowError("CHECKPOINT_HASH_MISMATCH", "protected files changed while capturing the unit baseline", { path: file.path });
+      throw new DevFlowError("CHECKPOINT_HASH_MISMATCH", "捕获单元基线时 governed 文件发生变化。", { path: file.path });
     }
     await writeBlobIfAbsent(root, featureId, bytes);
   }
   const baseline: CheckpointBaseline = {
-    schemaVersion: 1,
+    schemaVersion: 2,
     featureId,
     unitId,
     capturedAt: new Date().toISOString(),
@@ -141,6 +142,7 @@ function diffSnapshots(before: ProtectedFileSnapshot[], after: ProtectedFileSnap
         beforeSha256: beforeFile.sha256, afterSha256: afterFile.sha256,
         beforeBlobSha256: beforeFile.sha256, afterBlobSha256: afterFile.sha256,
         beforeMode: beforeFile.mode, afterMode: afterFile.mode,
+        beforeKind: beforeFile.kind ?? "file", afterKind: afterFile.kind ?? "file",
       });
     } else if (afterFile.mode !== beforeFile.mode) {
       records.push({
@@ -148,6 +150,7 @@ function diffSnapshots(before: ProtectedFileSnapshot[], after: ProtectedFileSnap
         beforeSha256: beforeFile.sha256, afterSha256: afterFile.sha256,
         beforeBlobSha256: beforeFile.sha256, afterBlobSha256: afterFile.sha256,
         beforeMode: beforeFile.mode, afterMode: afterFile.mode,
+        beforeKind: beforeFile.kind ?? "file", afterKind: afterFile.kind ?? "file",
       });
     }
   }
@@ -175,6 +178,7 @@ function diffSnapshots(before: ProtectedFileSnapshot[], after: ProtectedFileSnap
         path: to.path, change: "renamed", renamedFrom: from.path,
         beforeSha256: hash, afterSha256: hash, beforeBlobSha256: hash, afterBlobSha256: hash,
         beforeMode: from.mode, afterMode: to.mode,
+        beforeKind: from.kind ?? "file", afterKind: to.kind ?? "file",
       });
       pairedDeleted.add(from.path);
       pairedAdded.add(to.path);
@@ -182,33 +186,34 @@ function diffSnapshots(before: ProtectedFileSnapshot[], after: ProtectedFileSnap
   }
   for (const file of deleted) {
     if (pairedDeleted.has(file.path)) continue;
-    records.push({ path: file.path, change: "deleted", beforeSha256: file.sha256, beforeBlobSha256: file.sha256, beforeMode: file.mode });
+    records.push({ path: file.path, change: "deleted", beforeSha256: file.sha256, beforeBlobSha256: file.sha256, beforeMode: file.mode, beforeKind: file.kind ?? "file" });
   }
   for (const file of added) {
     if (pairedAdded.has(file.path)) continue;
-    records.push({ path: file.path, change: "added", afterSha256: file.sha256, afterBlobSha256: file.sha256, afterMode: file.mode });
+    records.push({ path: file.path, change: "added", afterSha256: file.sha256, afterBlobSha256: file.sha256, afterMode: file.mode, afterKind: file.kind ?? "file" });
   }
   return records.sort((a, b) => a.path.localeCompare(b.path));
 }
 
 function snapshotsEqual(a: ProtectedFileSnapshot[], b: ProtectedFileSnapshot[]): boolean {
   return a.length === b.length && a.every((file, index) => file.path === b[index]?.path
-    && file.sha256 === b[index]?.sha256 && file.mode === b[index]?.mode);
+    && file.sha256 === b[index]?.sha256 && file.mode === b[index]?.mode && (file.kind ?? "file") === (b[index]?.kind ?? "file"));
 }
 
 function reverseRecords(records: CheckpointFileRecord[]): CheckpointFileRecord[] {
   return records.map((record) => {
     switch (record.change) {
       case "added":
-        return { path: record.path, change: "deleted", beforeSha256: record.afterSha256, beforeBlobSha256: record.afterBlobSha256, beforeMode: record.afterMode };
+        return { path: record.path, change: "deleted", beforeSha256: record.afterSha256, beforeBlobSha256: record.afterBlobSha256, beforeMode: record.afterMode, beforeKind: record.afterKind };
       case "deleted":
-        return { path: record.path, change: "added", afterSha256: record.beforeSha256, afterBlobSha256: record.beforeBlobSha256, afterMode: record.beforeMode };
+        return { path: record.path, change: "added", afterSha256: record.beforeSha256, afterBlobSha256: record.beforeBlobSha256, afterMode: record.beforeMode, afterKind: record.beforeKind };
       case "renamed":
         return {
           path: record.renamedFrom!, change: "renamed", renamedFrom: record.path,
           beforeSha256: record.afterSha256, afterSha256: record.beforeSha256,
           beforeBlobSha256: record.afterBlobSha256, afterBlobSha256: record.beforeBlobSha256,
           beforeMode: record.afterMode, afterMode: record.beforeMode,
+          beforeKind: record.afterKind, afterKind: record.beforeKind,
         };
       default:
         return {
@@ -216,6 +221,7 @@ function reverseRecords(records: CheckpointFileRecord[]): CheckpointFileRecord[]
           beforeSha256: record.afterSha256, afterSha256: record.beforeSha256,
           beforeBlobSha256: record.afterBlobSha256, afterBlobSha256: record.beforeBlobSha256,
           beforeMode: record.afterMode, afterMode: record.beforeMode,
+          beforeKind: record.afterKind, afterKind: record.beforeKind,
         };
     }
   });
@@ -233,7 +239,7 @@ function currentRollbackNode(state: FeatureState, nodes: RollbackNode[], unitId:
   return node;
 }
 
-function resolveVerificationCommands(config: ProjectConfig, node: RollbackNode): VerificationCommand[] {
+export function resolveVerificationCommands(config: ProjectConfig, node: RollbackNode): VerificationCommand[] {
   return node.forwardVerification.map((reference, index) => resolveVerificationCommand(config, node.id, reference, index));
 }
 
@@ -249,6 +255,7 @@ function resolveVerificationCommand(
       command: reference.command,
       args: [...reference.args ?? []],
       cwd: reference.cwd ?? ".",
+      provides: ["targeted"],
     };
   }
   const command = config.verification.commands.find((candidate) => candidate.id === reference);
@@ -256,6 +263,12 @@ function resolveVerificationCommand(
     throw new DevFlowError("TRACE_VERIFICATION_COMMAND_UNKNOWN", "rollback unit references an unknown verification command", {
       unitId,
       commandId: reference,
+    });
+  }
+  if (!command.provides.includes("targeted")) {
+    throw new DevFlowError("TRACE_VERIFICATION_COMMAND_NOT_TARGETED", "RU 前向验证只能引用提供 targeted 保证的命令。", {
+      commandId: reference,
+      recoveryHint: "为该命令增加 targeted provides，或在 RU 中改用明确的 targeted 命令",
     });
   }
   return command;
@@ -291,7 +304,7 @@ export interface CheckpointOptions {
 }
 
 /**
- * Confirms an active unit: diffs the protected roots against the begin-time
+ * Confirms an active unit: diffs the governed roots against the begin-time
  * baseline, records the complete actual file set for drift/audit analysis,
  * runs forward verification, persists blobs plus the manifest, and only then
  * commits the unit transition in the same state CAS. fileScope is an
@@ -308,8 +321,8 @@ export async function checkpointImplementationUnit(
   if (initial.revision !== expectedRevision) {
     throw new DevFlowError("STATE_REVISION_CONFLICT", "state revision changed", { currentRevision: initial.revision });
   }
-  if (!checkpointsEnforcementRequired(initial.route, initial.workflowCapabilities)) {
-    throw new DevFlowError("IMPLEMENTATION_UNITS_NOT_ENFORCED", "checkpoints require a checkpoints:1 standard feature");
+  if (!checkpointsEnforcementRequired(initial.route, initial.classification.controls)) {
+    throw new DevFlowError("IMPLEMENTATION_UNITS_NOT_ENFORCED", "当前动态路线未启用 unit-chain checkpoint 控制。");
   }
   if (currentOpenStep(initial) !== "implementation") {
     throw new DevFlowError("STEP_OUT_OF_ORDER", "checkpoint requires the implementation step", { expected: currentOpenStep(initial) });
@@ -334,7 +347,7 @@ export async function checkpointImplementationUnit(
   const preflightCommands = resolvePreflightCommands(config);
 
   const baseline = await readCheckpointBaseline(root, id, unitId);
-  const after = await snapshotProtectedRoots(root, config);
+  const after = await snapshotGovernedRoots(root, config);
   const records = diffSnapshots(baseline.files, after);
   // fileScope is anticipated scope. The complete actual file set is retained
   // in the checkpoint manifest and surfaced through drift analysis; a missing
@@ -448,17 +461,17 @@ export async function checkpointImplementationUnit(
   }
 
   // Drift guard: verification commands must not change protected files.
-  const afterVerification = await snapshotProtectedRoots(root, config);
+  const afterVerification = await snapshotGovernedRoots(root, config);
   if (!snapshotsEqual(after, afterVerification)) {
-    throw new DevFlowError("CHECKPOINT_HASH_MISMATCH", "protected files changed while verification ran", { unitId });
+    throw new DevFlowError("CHECKPOINT_HASH_MISMATCH", "运行验证时 governed 文件发生变化。", { unitId });
   }
-  const completedFingerprint = await fingerprintProtectedRoots(root, config);
+  const completedFingerprint = await fingerprintGovernedRoots(root, config);
 
   for (const record of records) {
     if (record.change === "deleted" || record.change === "renamed") continue;
-    const bytes = await readFile(path.join(root, record.path));
+    const bytes = record.afterKind === "symlink" ? Buffer.from(await readlink(path.join(root, record.path))) : await readFile(path.join(root, record.path));
     if (digest(bytes) !== record.afterSha256) {
-      throw new DevFlowError("CHECKPOINT_HASH_MISMATCH", "protected files changed while capturing checkpoint blobs", { path: record.path });
+      throw new DevFlowError("CHECKPOINT_HASH_MISMATCH", "捕获 checkpoint blob 时 governed 文件发生变化。", { path: record.path });
     }
     await writeBlobIfAbsent(root, id, bytes);
   }
@@ -466,7 +479,7 @@ export async function checkpointImplementationUnit(
   const forwardPatch = canonicalReviewValueJson({ direction: "forward", checkpointId, unitId: rollbackUnitId, files: records });
   const reversePatch = canonicalReviewValueJson({ direction: "reverse", checkpointId, unitId: rollbackUnitId, files: reverseRecords(records) });
   const manifest: CheckpointManifest = {
-    schemaVersion: 1,
+    schemaVersion: 2,
     checkpointId,
     unitId: rollbackUnitId,
     sequence,
@@ -533,6 +546,12 @@ export async function readCheckpoint(root: string, featureId: string, checkpoint
     return manifest;
   } catch (error) {
     if (error instanceof DevFlowError) throw error;
+    if (error instanceof RollbackProtocolError && error.code === "UNSUPPORTED_CHECKPOINT_SCHEMA") {
+      throw new DevFlowError("UNSUPPORTED_CHECKPOINT_SCHEMA", "检测到 Dev Flow 4.x checkpoint manifest schema v1。", {
+        checkpointId,
+        recoveryHint: "回到 4.x 完成或放弃该 feature，备份 .dev-flow 后用 5.0 重新初始化",
+      });
+    }
     throw new DevFlowError("CHECKPOINT_INTEGRITY_FAILED", "checkpoint manifest is unreadable", { checkpointId });
   }
 }

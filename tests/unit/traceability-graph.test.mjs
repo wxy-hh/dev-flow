@@ -7,7 +7,7 @@ const trace = await loadSource("plugins/dev-flow/src/core/traceability.ts");
 const digest = (value) => createHash("sha256").update(value).digest("hex");
 
 function deltaInput(current, artifactKind, nodes, options = {}) {
-  const route = options.route ?? "standard-m";
+  const route = options.route ?? "m";
   const salt = options.salt ?? "";
   return {
     current,
@@ -27,7 +27,7 @@ function deltaInput(current, artifactKind, nodes, options = {}) {
   };
 }
 
-function empty(route = "standard-m") {
+function empty(route = "m") {
   return { route, ledger: trace.emptyTraceabilityLedger("f", 0, "a".repeat(64)) };
 }
 
@@ -90,7 +90,7 @@ test("changed source blocks stale only their reverse dependency closure", () => 
     assert.equal(next.nodes[id].status, "current", id);
   }
   assert.throws(
-    () => trace.assertTraceabilityComplete(next, "standard-m", "a".repeat(64)),
+    () => trace.assertTraceabilityComplete(next, "m", "a".repeat(64)),
     /TRACE_SLICE_STALE/,
   );
 });
@@ -122,7 +122,7 @@ test("re-registering dependents restores current status after an upstream block 
     { kind: "test", id: "TEST-002", verifies: ["AC-002"] },
   ]));
   assert.equal(ledger.nodes["TEST-001"].status, "current");
-  assert.doesNotThrow(() => trace.assertTraceabilityComplete(ledger, "standard-m", "a".repeat(64)));
+  assert.doesNotThrow(() => trace.assertTraceabilityComplete(ledger, "m", "a".repeat(64)));
 });
 
 test("graph validation permits only standard L's partial deferred rollback reference", () => {
@@ -130,12 +130,12 @@ test("graph validation permits only standard L's partial deferred rollback refer
   ledger = trace.applyTraceDelta(deltaInput(ledger, "requirements", [
     { kind: "requirement", id: "REQ-001" },
     { kind: "acceptance-criterion", id: "AC-001", parentRequirement: "REQ-001" },
-  ], { route: "standard-l" }));
+  ], { route: "l" }));
   ledger = trace.applyTraceDelta(deltaInput(ledger, "implementation-plan", [
     { kind: "task", id: "TASK-001", covers: ["AC-001"], rollbackUnit: "RU-001" },
-  ], { route: "standard-l" }));
-  assert.doesNotThrow(() => trace.validateTraceGraph(ledger, "standard-l", "partial"));
-  assert.throws(() => trace.validateTraceGraph(ledger, "standard-l", "complete"), /TRACE_GRAPH_INVALID/);
+  ], { route: "l" }));
+  assert.doesNotThrow(() => trace.validateTraceGraph(ledger, "l", "partial"));
+  assert.throws(() => trace.validateTraceGraph(ledger, "l", "complete"), /TRACE_GRAPH_INVALID/);
 });
 
 test("delta and graph validation reject caller-owned fields and broken rollback units", () => {
@@ -244,14 +244,14 @@ test("historical tombstones do not prevent the remaining current graph from comp
     { kind: "acceptance-criterion", id: "AC-001", parentRequirement: "REQ-001" },
   ]));
   assert.equal(ledger.summary.tombstoned, 5);
-  assert.doesNotThrow(() => trace.assertTraceabilityComplete(ledger, "standard-m", "a".repeat(64)));
+  assert.doesNotThrow(() => trace.assertTraceabilityComplete(ledger, "m", "a".repeat(64)));
 });
 
 test("slice checks reject stale config and require a complete current graph", () => {
   const ledger = populatedLedger();
-  assert.doesNotThrow(() => trace.assertTraceabilityComplete(ledger, "standard-m", "a".repeat(64)));
+  assert.doesNotThrow(() => trace.assertTraceabilityComplete(ledger, "m", "a".repeat(64)));
   assert.throws(
-    () => trace.assertTraceSliceCurrent(ledger, "standard-m", "implementation_plan", "b".repeat(64)),
+    () => trace.assertTraceSliceCurrent(ledger, "m", "implementation_plan", "b".repeat(64)),
     /TRACE_SLICE_STALE/,
   );
 });
@@ -263,7 +263,7 @@ test("validateTraceGraph fail-closes on missing TraceSource fields and invalid s
     id: "REQ-001",
     status: "ghost",
   };
-  assert.throws(() => trace.validateTraceGraph(ledger, "standard-m", "partial"), /TRACE_GRAPH_INVALID/);
+  assert.throws(() => trace.validateTraceGraph(ledger, "m", "partial"), /TRACE_GRAPH_INVALID/);
 
   const missingSource = populatedLedger();
   missingSource.nodes["AC-001"] = {
@@ -276,12 +276,12 @@ test("validateTraceGraph fail-closes on missing TraceSource fields and invalid s
     sourceAnchor: "<!-- dev-flow:id=AC-001 kind=acceptance-criterion -->",
     // missing sourceBlockSha256
   };
-  assert.throws(() => trace.validateTraceGraph(missingSource, "standard-m", "partial"), /TRACE_GRAPH_INVALID/);
+  assert.throws(() => trace.validateTraceGraph(missingSource, "m", "partial"), /TRACE_GRAPH_INVALID/);
 
   const keyMismatch = populatedLedger();
   keyMismatch.nodes["REQ-001"] = {
     ...keyMismatch.nodes["REQ-001"],
     id: "REQ-002",
   };
-  assert.throws(() => trace.validateTraceGraph(keyMismatch, "standard-m", "partial"), /TRACE_GRAPH_INVALID/);
+  assert.throws(() => trace.validateTraceGraph(keyMismatch, "m", "partial"), /TRACE_GRAPH_INVALID/);
 });

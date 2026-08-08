@@ -14,10 +14,10 @@ const artifacts = await loadSource("plugins/dev-flow/src/core/artifacts.ts");
 const next = await loadSource("plugins/dev-flow/src/core/next.ts");
 
 const config = {
-  schemaVersion: 1,
-  verification: { commands: [{ id: "unit", command: process.execPath, args: ["-e", "process.exit(0)"], cwd: "." }], behaviorCommands: [] },
+  schemaVersion: 2,
+  verification: { commands: [{ id: "unit", command: process.execPath, args: ["-e", "process.exit(0)"], cwd: ".", provides: ["targeted", "behavior", "integration", "full"] }] },
   enforcement: { mode: "strict", gitWriteRequiresLogicComplete: true, oneActiveFeature: true, requireExplicitHumanReply: true },
-  protectedRoots: ["src"],
+  governedRoots: ["src"],
 };
 
 async function startIntake(featureId) {
@@ -167,12 +167,11 @@ test("高风险 XS 的确认义务在 implementation 写入前生效", async () 
     featureId: "security-xs",
     objective: "调整本地模块行为",
     scope: { inScope: ["src/feature.txt"], outOfScope: [] },
+    level: "XS",
+    topology: "local",
+    requirements: "provided-confirmed",
+    riskLabels: ["security"],
     host: "codex",
-  });
-  current = await state.lockClassification(root, "security-xs", current.revision, {
-    level: "XS", topology: "local", requirements: "provided-confirmed",
-    scopeFacts: ["只影响本地模块"], topologyFacts: ["无共享契约"], uncertaintyFacts: [],
-    riskFacts: { security: ["权限边界会改变"] }, decisionRefs: [], riskLabels: ["security"],
   });
   current = await steps.recordStep(root, "security-xs", current.revision, "locate", undefined);
   const action = await next.nextAction(root, "security-xs");

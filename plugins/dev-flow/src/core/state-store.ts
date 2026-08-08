@@ -1,32 +1,34 @@
 import { randomUUID, createHash } from "node:crypto";
-import { access, mkdir, open, readdir, readFile, rename, rm, rmdir, writeFile } from "node:fs/promises";
+import { access, lstat, mkdir, open, readdir, readFile, readlink, rename, rm, rmdir, writeFile } from "node:fs/promises";
 import { hostname } from "node:os";
 import path from "node:path";
 import { normalizeWorkflowCapabilities, reviewEnforcementRequired, routeDefinition, routeDefinitionForFeature, traceEnforcementRequired } from "../policy/contract.js";
-import { selectBaseRoute, selectRoute } from "../policy/route.js";
-import { deriveObligations } from "../policy/obligations.js";
+import { assertBoundaryAuditComplete, selectBaseRoute, selectRoute } from "../policy/route.js";
+import { deriveObligations, reopenObligations } from "../policy/obligations.js";
 import { SUPPORTED_WORKFLOW_CAPABILITIES, type Classification, type ClassificationBasis, type ClassificationFacts, type ClassificationInput, type ClassificationObligation, type DecisionRecord, type EvidenceFreshness, type FeatureLifecycle, type PendingDecision, type QualityException, type RouteId, type WorkspaceLineage, type WorkflowCapabilities } from "../policy/types.js";
 import type { TraceabilityPointer } from "../policy/traceability.js";
 import type { ReviewPointer } from "../policy/review.js";
 import type { ImplementationUnitState } from "../policy/rollback.js";
+import { pathWithinFileScope } from "../policy/rollback.js";
 import { DevFlowError } from "./errors.js";
 import type { DeliveryBaseline, DeliverySnapshot } from "./delivery-snapshot.js";
-import { fingerprintProtectedRoots } from "./fingerprint.js";
+import { fingerprintGovernedRoots } from "./fingerprint.js";
 import { validateProjectConfig, type ProjectConfig } from "./project-config.js";
 import { emptyTraceabilityLedger } from "./traceability.js";
 import { inspectCurrentTrace } from "./traceability-gates.js";
-import { readProjectConfigSnapshot, writeTraceSnapshot } from "./traceability-store.js";
-import { emptyReviewLedger, prepareReviewInvalidation, writeReviewSnapshot } from "./review-store.js";
+import { readProjectConfigSnapshot, readTraceability, writeTraceSnapshot } from "./traceability-store.js";
+import { emptyReviewLedger, prepareReviewInvalidation, readReviewLedger, writeReviewSnapshot } from "./review-store.js";
 import { prepareReviewProjection } from "./review-projection.js";
 import { createDecision, resolveDecision } from "./decision-ledger.js";
 import type { RepairState } from "./repair-loop.js";
 import { approvalIds } from "./approval-basis.js";
 import { normalizeUnicode } from "./path-normalization.js";
 import { captureWorkspaceLineage, ownershipForScope, reconcileWorkspaceForFeature, reconcileWorkspaceLineage } from "./git-reconciliation.js";
+import { resolvePromptEvent } from "./interaction-provenance.js";
 
 export type Lifecycle = FeatureLifecycle;
 export interface FeatureState {
-  schemaVersion: 3; mode: "intake" | "routed"; featureId: string; revision: number; lifecycle: Lifecycle; route: RouteId; classification: Classification;
+  schemaVersion: 4; mode: "intake" | "routed"; featureId: string; revision: number; lifecycle: Lifecycle; route: RouteId; classification: Classification;
   objective?: string; investigationSummary?: string; classificationBasis?: ClassificationBasis; obligations?: ClassificationObligation[]; decisionLedger?: DecisionRecord[]; currentStage?: string; repair?: RepairState;
   /** Core-owned automatic checkpoint summaries for v3 implementation boundaries. */
   checkpoints?: Array<{ checkpointId: string; stage: string; capturedAt: string; fingerprint: string; files: string[]; basisHash: string }>;
@@ -53,12 +55,14 @@ export interface FeatureState {
     presentedAt: string;
     confirmedAt?: string;
   };
-  featureCheck: { passed?: boolean; fingerprint?: string }; businessFingerprint?: string; startBusinessFingerprint?: string;
+  businessFingerprint?: string; startBusinessFingerprint?: string;
   deliveryBaseline?: DeliveryBaseline; deliverySnapshot?: DeliverySnapshot;
   abandonment?: { reason: string; userEvidence: string; at: string };
   blockingFindings: Array<{ blocking: boolean; message: string }>;
   logicComplete: boolean; lastUpdatedBy: { host: "claude" | "codex"; pluginVersion: string };
   pendingDecision?: PendingDecision;
+  routeConfirmation?: { facts: ClassificationFacts; basisHash: string };
+  executionSemanticBasisHash?: string;
   workspace: WorkspaceLineage;
   evidenceFreshness: EvidenceFreshness;
   qualityExceptions: QualityException[];
@@ -98,15 +102,15 @@ function validateImplementationUnits(units: unknown): asserts units is Implement
 }
 export function validateFeatureState(value: unknown): asserts value is FeatureState {
   const state = value as Partial<FeatureState>;
-  if ((state as { schemaVersion?: unknown }).schemaVersion === 1 || (state as { schemaVersion?: unknown }).schemaVersion === 2) throw new DevFlowError("LEGACY_STATE_UNSUPPORTED", "旧版 feature 状态不受 4.0 运行时支持。", { userMessage: "当前 feature 使用旧版状态，不能在 Dev Flow 4.0 中继续。", cause: "检测到 schema v1/v2 状态。", impact: "系统不会迁移、覆盖或猜测旧状态。", recoveryKind: "repair", recoveryInstruction: "运行 doctor 查看结束测试状态或清理 fixture 的说明，然后重新开始任务。", retryOriginal: false });
-  if (state?.schemaVersion !== 3) throw new DevFlowError("UNSUPPORTED_STATE_SCHEMA", "当前只支持 schema v3 状态。", { userMessage: "当前 feature 状态版本不受支持。", cause: "状态不是 schema v3。", impact: "流程已停止，避免在未知状态上继续写入。", recoveryKind: "repair", recoveryInstruction: "运行 doctor 检查状态，并重新开始一个 v3 feature。", retryOriginal: false });
+  if ([1, 2, 3].includes(Number((state as { schemaVersion?: unknown }).schemaVersion))) throw new DevFlowError("UNSUPPORTED_FEATURE_SCHEMA", "检测到 Dev Flow 4.x 或更早的 active state。", { userMessage: "旧 feature 不能在 Dev Flow 5.0 中继续。", cause: "5.0 不迁移旧 active state。", impact: "系统不会覆盖或猜测旧审计状态。", recoveryKind: "repair", recoveryInstruction: "回到 4.x 完成或放弃该 feature，备份 .dev-flow 后重新初始化。", retryOriginal: false, schemaVersion: (state as { schemaVersion?: unknown }).schemaVersion });
+  if (state?.schemaVersion !== 4) throw new DevFlowError("UNSUPPORTED_FEATURE_SCHEMA", "当前只支持 schema v4 状态。", { recoveryHint: "使用 Dev Flow 5.0 重新初始化 feature" });
   if (state.mode !== "intake" && state.mode !== "routed") throw new DevFlowError("INVALID_STATE_SCHEMA", "state mode must be intake or routed");
-  if (typeof state.featureId !== "string" || !state.featureId || !Number.isInteger(state.revision) || (state.revision ?? -1) < 0 || !lifecycles.has(state.lifecycle as Lifecycle) || !state.scope || !Array.isArray(state.scope.inScope) || !Array.isArray(state.scope.outOfScope) || !state.steps || !state.humanGates || !state.artifacts || !state.verification || !Array.isArray(state.verification.attempts) || (state.interactions !== undefined && (typeof state.interactions !== "object" || state.interactions === null || Array.isArray(state.interactions))) || !state.featureCheck || !Array.isArray(state.blockingFindings) || typeof state.logicComplete !== "boolean" || !state.lastUpdatedBy || !state.workspace || !state.evidenceFreshness || !Array.isArray(state.qualityExceptions)) {
-    throw new DevFlowError("INVALID_STATE_SCHEMA", "state is not a valid v3 feature state");
+  if (typeof state.featureId !== "string" || !state.featureId || !Number.isInteger(state.revision) || (state.revision ?? -1) < 0 || !lifecycles.has(state.lifecycle as Lifecycle) || !state.scope || !Array.isArray(state.scope.inScope) || !Array.isArray(state.scope.outOfScope) || !state.steps || !state.humanGates || !state.artifacts || !state.verification || !Array.isArray(state.verification.attempts) || (state.interactions !== undefined && (typeof state.interactions !== "object" || state.interactions === null || Array.isArray(state.interactions))) || !Array.isArray(state.blockingFindings) || typeof state.logicComplete !== "boolean" || !state.lastUpdatedBy || !state.workspace || !state.evidenceFreshness || !Array.isArray(state.qualityExceptions)) {
+    throw new DevFlowError("INVALID_STATE_SCHEMA", "状态不是合法的 schema v4 feature state。");
   }
   if (state.lastUpdatedBy.host !== "claude" && state.lastUpdatedBy.host !== "codex") throw new DevFlowError("INVALID_STATE_SCHEMA", "lastUpdatedBy host is invalid");
   const pendingInteractions = Object.values(state.interactions ?? {}).filter((item) => (item as { status?: unknown }).status === "pending");
-  if (pendingInteractions.length > 1) throw new DevFlowError("MULTIPLE_PENDING_DECISIONS", "v3 state contains more than one pending decision", { userMessage: "当前状态同时存在多个待决问题，流程已安全停止。", cause: "决策账本不是单一待决问题。", impact: "系统不会任选一个问题消费。", recoveryKind: "repair", recoveryInstruction: "运行 doctor 检查决策账本，然后通过公开回答接口恢复。", retryOriginal: false });
+  if (pendingInteractions.length > 1) throw new DevFlowError("MULTIPLE_PENDING_DECISIONS", "schema v4 状态包含多个待决问题。", { userMessage: "当前状态同时存在多个待决问题，流程已安全停止。", cause: "决策账本不是单一待决问题。", impact: "系统不会任选一个问题消费。", recoveryKind: "repair", recoveryInstruction: "运行 doctor 检查决策账本，然后通过公开回答接口恢复。", retryOriginal: false });
   if (state.pendingDecision !== undefined) {
     const decision = state.pendingDecision;
     if (!decision || decision.source !== "core" || typeof decision.question !== "string" || !decision.question.trim() || !/^[a-f0-9]{64}$/.test(decision.basisHash) || !Number.isInteger(decision.presentedRevision) || !Array.isArray(decision.options) || decision.options.length < 2 || decision.options.length > 3 || decision.options.some((option) => !option || typeof option.id !== "string" || typeof option.label !== "string" || !option.label.trim())) {
@@ -114,11 +118,11 @@ export function validateFeatureState(value: unknown): asserts value is FeatureSt
     }
   }
   const workspace = state.workspace;
-  if (!workspace || typeof workspace.baseHead !== "string" || typeof workspace.baseBranch !== "string" || typeof workspace.observedHead !== "string" || typeof workspace.lastWorkspaceFingerprint !== "string" || !["current", "required", "blocked"].includes(workspace.reconciliationStatus) || typeof workspace.startedDirty !== "object" || workspace.startedDirty === null || Array.isArray(workspace.startedDirty) || typeof workspace.ownership !== "object" || workspace.ownership === null || Array.isArray(workspace.ownership) || typeof workspace.ownershipSource !== "object" || workspace.ownershipSource === null || Array.isArray(workspace.ownershipSource) || !Array.isArray(workspace.observedCommits)) {
+  if (!workspace || typeof workspace.baseHead !== "string" || typeof workspace.baseBranch !== "string" || typeof workspace.observedHead !== "string" || typeof workspace.lastWorkspaceFingerprint !== "string" || !["current", "required", "blocked"].includes(workspace.reconciliationStatus) || typeof workspace.startedDirty !== "object" || workspace.startedDirty === null || Array.isArray(workspace.startedDirty) || typeof workspace.ownership !== "object" || workspace.ownership === null || Array.isArray(workspace.ownership) || typeof workspace.ownershipSource !== "object" || workspace.ownershipSource === null || Array.isArray(workspace.ownershipSource) || typeof workspace.observedPathFingerprints !== "object" || workspace.observedPathFingerprints === null || Array.isArray(workspace.observedPathFingerprints) || !Array.isArray(workspace.observedCommits)) {
     throw new DevFlowError("INVALID_STATE_SCHEMA", "workspace lineage is invalid");
   }
-  if (state.lifecycle === "finalized" && !state.deliverySnapshot) throw new DevFlowError("INVALID_STATE_SCHEMA", "finalized v3 state requires a delivery result");
-  if (state.lifecycle === "abandoned" && !state.abandonment) throw new DevFlowError("INVALID_STATE_SCHEMA", "abandoned v3 state requires a user reason");
+  if (state.lifecycle === "finalized" && !state.deliverySnapshot) throw new DevFlowError("INVALID_STATE_SCHEMA", "schema v4 的 finalized 状态必须包含交付快照。");
+  if (state.lifecycle === "abandoned" && !state.abandonment) throw new DevFlowError("INVALID_STATE_SCHEMA", "schema v4 的 abandoned 状态必须包含用户原因。");
   if (state.mode === "intake") {
     if (state.route !== undefined || state.classification !== undefined || state.classificationBasis !== undefined || state.obligations !== undefined) {
       throw new DevFlowError("INVALID_STATE_SCHEMA", "intake state cannot contain route or classification fields");
@@ -129,7 +133,7 @@ export function validateFeatureState(value: unknown): asserts value is FeatureSt
     return;
   }
   if (!state.route || !routeDefinition(state.route as RouteId) || !state.classification || !state.classificationBasis || !Array.isArray(state.obligations)) {
-    throw new DevFlowError("INVALID_STATE_SCHEMA", "routed v3 state requires classification facts and obligations");
+    throw new DevFlowError("INVALID_STATE_SCHEMA", "schema v4 的 routed 状态必须包含分类事实和义务。");
   }
   if (state.repair !== undefined && (typeof state.repair !== "object" || !["active", "stalled", "waiting-user", "completed"].includes(state.repair.status) || !Array.isArray(state.repair.attempts) || !Number.isInteger(state.repair.maxAttempts) || state.repair.maxAttempts < 1)) {
     throw new DevFlowError("INVALID_STATE_SCHEMA", "repair state is invalid");
@@ -159,8 +163,8 @@ export function validateFeatureState(value: unknown): asserts value is FeatureSt
       throw new DevFlowError("INVALID_STATE_SCHEMA", "traceability pointer is invalid");
     }
   }
-  if (traceEnforcementRequired(state.route as RouteId, state.workflowCapabilities) && !state.traceability) {
-    throw new DevFlowError("INVALID_STATE_SCHEMA", "trace-enforced standard feature requires a traceability pointer");
+  if (traceEnforcementRequired(state.route as RouteId, state.classification.controls) && !state.traceability) {
+    throw new DevFlowError("INVALID_STATE_SCHEMA", "启用 Trace 控制的 feature 必须包含 traceability pointer。");
   }
   if (state.review !== undefined) {
     const pointer = state.review;
@@ -173,8 +177,8 @@ export function validateFeatureState(value: unknown): asserts value is FeatureSt
       throw new DevFlowError("INVALID_STATE_SCHEMA", "review pointer is invalid");
     }
   }
-  if (reviewEnforcementRequired(state.route as RouteId, state.workflowCapabilities) && !state.review) {
-    throw new DevFlowError("INVALID_STATE_SCHEMA", "review-enabled standard feature requires a review pointer");
+  if (reviewEnforcementRequired(state.route as RouteId, state.classification.controls) && !state.review) {
+    throw new DevFlowError("INVALID_STATE_SCHEMA", "启用计划审查控制的 feature 必须包含 review pointer。");
   }
   if (state.implementationUnits !== undefined) validateImplementationUnits(state.implementationUnits);
   if (state.rollbackGate !== undefined) {
@@ -275,6 +279,23 @@ async function writeAtomic(file: string, value: unknown): Promise<void> {
 }
 async function prepareStatusProjection(root: string, state: FeatureState, revision: number): Promise<(() => Promise<void>) | undefined> {
   const status = state.artifacts.status; if (!status) return;
+  // Route confirmation is persisted while the feature is still in intake.
+  // A generated status artifact may already exist at that point, so projection
+  // must not read routed-only classification fields until the confirmation is
+  // atomically accepted.
+  if (state.mode !== "routed" || !state.route || !state.classification) {
+    const contents = [
+      "---", "dev_flow:", "  schema_version: 1", `  feature_id: ${state.featureId}`,
+      "  kind: status", "  generated: true", "---", "", "# Dev Flow Status", "",
+      `- Revision: ${revision}`, `- Lifecycle: ${state.lifecycle}`, "- Mode: intake", "",
+      ...(state.pendingDecision?.kind === "route-confirmation"
+        ? ["## Pending", "", `- ${state.pendingDecision.question}`, ""]
+        : []),
+    ].join("\n");
+    const file = path.join(features(root), state.featureId, status.path);
+    state.artifacts.status = { ...status, sha256: createHash("sha256").update(contents).digest("hex") };
+    return async () => { await writeFile(file, contents); };
+  }
   const trace = await inspectCurrentTrace(root, state);
   const summary = trace.effectiveSummary;
   const traceLines = [
@@ -288,7 +309,7 @@ async function prepareStatusProjection(root: string, state: FeatureState, revisi
   const projection = [
     "---", "dev_flow:", "  schema_version: 1", `  feature_id: ${state.featureId}`, `  route: ${state.route}`, "  kind: status", "  generated: true", "---", "",
     "# Dev Flow Status", "", `- Revision: ${revision}`, `- Lifecycle: ${state.lifecycle}`, `- Route: ${state.route}`, `- Logic complete: ${state.logicComplete}`, "", "## Steps", "",
-    ...routeDefinitionForFeature(state.route, state.workflowCapabilities).orderedSteps.map((step) => `- ${step}: ${state.steps[step]?.status ?? "pending"}`), "",
+    ...routeDefinitionForFeature(state.route, state.classification.controls).orderedSteps.map((step) => `- ${step}: ${state.steps[step]?.status ?? "pending"}`), "",
     ...traceLines,
   ].join("\n");
   const contents = `${projection}\n`;
@@ -364,7 +385,7 @@ export async function assertActivePointerConsistent(root: string): Promise<void>
     });
   }
   if (state.lifecycle !== "active" || state.revision !== active.revision) {
-    throw new DevFlowError("ACTIVE_POINTER_INCONSISTENT", "active pointer does not match the active v3 feature revision", {
+    throw new DevFlowError("ACTIVE_POINTER_INCONSISTENT", "active pointer 与 schema v4 feature revision 不一致。", {
       userMessage: "当前 active 指针与 feature 状态不一致，流程已安全停止。",
       cause: "active pointer 必须引用同一 feature 和 revision 的 active 状态。",
       impact: "系统不会猜测应该继续哪一个 revision。",
@@ -400,6 +421,47 @@ export async function recordHostEvent(root: string, hostEvent: HostEvent): Promi
     if (!duplicate) await appendEvent(root, active.featureId, state.revision, "host-event", { ...hostEvent, at: hostEvent.at ?? new Date().toISOString() });
   }
   finally { await release(); }
+}
+
+async function trustedWriteSummary(root: string, file: string): Promise<string> {
+  try {
+    const metadata = await lstat(path.join(root, file));
+    const bytes = metadata.isSymbolicLink() ? Buffer.from(await readlink(path.join(root, file))) : await readFile(path.join(root, file));
+    return `${metadata.isSymbolicLink() ? "symlink" : "file"}:${createHash("sha256").update(bytes).digest("hex")}`;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return "missing";
+    throw error;
+  }
+}
+
+export async function recordTrustedWriteIntent(root: string, paths: string[], host: "claude" | "codex", eventId: string): Promise<void> {
+  const active = await readActive(root);
+  if (!active || paths.length === 0) return;
+  const state = await readState(root, active.featureId);
+  if (state.mode !== "routed" || state.lifecycle !== "active" || state.currentStage !== "implementation") return;
+  const config = await readProjectConfig(root);
+  const governed = paths.filter((file) => config.governedRoots.some((entry) => entry === "." || file === entry || file.startsWith(`${entry}/`)));
+  if (!governed.length) return;
+  const before = Object.fromEntries(await Promise.all(governed.map(async (file) => [file, await trustedWriteSummary(root, file)])));
+  await appendFeatureEvent(root, state.featureId, state.revision, "trusted-write-before", { eventId, host, paths: governed, before });
+}
+
+export async function recordTrustedWriteOwnership(root: string, paths: string[], host: "claude" | "codex", eventId: string): Promise<void> {
+  const active = await readActive(root);
+  if (!active || paths.length === 0) return;
+  const state = await readState(root, active.featureId);
+  if (state.mode !== "routed" || state.lifecycle !== "active" || state.currentStage !== "implementation") return;
+  const config = await readProjectConfig(root);
+  const governed = paths.filter((file) => config.governedRoots.some((entry) => entry === "." || file === entry || file.startsWith(`${entry}/`)));
+  if (!governed.length) return;
+  const after = Object.fromEntries(await Promise.all(governed.map(async (file) => [file, await trustedWriteSummary(root, file)])));
+  await mutate(root, state.featureId, state.revision, "trusted-write-owned", (draft) => {
+    for (const file of governed) {
+      draft.workspace.ownership[file] = "feature";
+      draft.workspace.ownershipSource[file] = "trusted-hook";
+    }
+    draft.lastUpdatedBy = { host, pluginVersion: __DEV_FLOW_VERSION__ };
+  }, { eventId, host, paths: governed, after });
 }
 
 export type HostAuthorizationEventType = "host-authorization-pending" | "host-authorization-granted";
@@ -516,7 +578,7 @@ export async function startFeature(
       ? input.objective.trim()
       : "未命名需求";
     const project = await readProjectConfig(root);
-    const startBusinessFingerprint = await fingerprintProtectedRoots(root, project);
+    const startBusinessFingerprint = await fingerprintGovernedRoots(root, project);
     const directory = path.join(features(root), id);
     const existedBefore = await pathExists(directory);
     let stateCommitted = false;
@@ -531,8 +593,8 @@ export async function startFeature(
         startedDirty: capturedWorkspace.startedDirty,
       };
       const state = {
-        schemaVersion: 3, mode: "intake", featureId: id, revision: 0, lifecycle, objective, scope, workspace: capturedWorkspace, evidenceFreshness: { review: "missing", verification: "missing", checkpoint: "missing", implementation: "missing" }, qualityExceptions: [], steps: {}, humanGates: {}, artifacts: {},
-        verification: { attempts: [] }, interactions: {}, workflowCapabilities, checkpoints: [], featureCheck: {}, startBusinessFingerprint, deliveryBaseline, decisionLedger: [], blockingFindings: [], logicComplete: false,
+        schemaVersion: 4, mode: "intake", featureId: id, revision: 0, lifecycle, objective, scope, workspace: capturedWorkspace, evidenceFreshness: { review: "missing", verification: "missing", checkpoint: "missing", implementation: "current" }, qualityExceptions: [], steps: {}, humanGates: {}, artifacts: {},
+        verification: { attempts: [] }, interactions: {}, workflowCapabilities, checkpoints: [], startBusinessFingerprint, deliveryBaseline, decisionLedger: [], blockingFindings: [], logicComplete: false,
         lastUpdatedBy: { host: input.host, pluginVersion: __DEV_FLOW_VERSION__ },
       } as unknown as FeatureState;
       const ownershipPath = Object.keys(capturedWorkspace.startedDirty).find((file) => capturedWorkspace.ownership[file] === undefined);
@@ -596,7 +658,9 @@ export async function lockClassification(
   id: string,
   expectedRevision: number,
   facts: ClassificationFacts,
+  boundaryAudit: unknown,
 ): Promise<FeatureState> {
+  assertBoundaryAuditComplete(boundaryAudit, facts.decisionRefs);
   const selected = selectBaseRoute(facts);
   if (selected.contradictions.length) {
     throw new DevFlowError("CLASSIFICATION_CONTRADICTION", "classification facts contain unresolved contradictions", {
@@ -605,7 +669,7 @@ export async function lockClassification(
       cause: `分类事实存在 ${selected.contradictions.length} 处矛盾：${selected.contradictions.join("；")}`,
       impact: "路线不会锁定，仍停留在 intake 阶段。",
       recoveryKind: "retry",
-      recoveryInstruction: "修正分类参数（补齐 execution/requirements、避免字段重复或与 classificationBasis 冲突）后重新 dev_flow_lock_classification。",
+      recoveryInstruction: "修正分类参数（补齐结构化 signals、避免字段重复或与 classificationBasis 冲突）后重新 dev_flow_lock_classification。",
       retryOriginal: true,
       requiresUserDecision: false,
     });
@@ -620,16 +684,35 @@ export async function lockClassification(
     if (openDecisions.length) throw new DevFlowError("OPEN_CLASSIFICATION_DECISIONS", "classification-affecting decisions remain open", { decisionIds: openDecisions.map((decision) => decision.id), recoveryHint: "Resolve the listed decisions with grillme, then retry lock" });
     const project = await readProjectConfig(root);
     const capabilities = normalizeWorkflowCapabilities(SUPPORTED_WORKFLOW_CAPABILITIES);
+    if (selected.classification.routeConfirmationRequired) {
+      return mutatePreparedLocked(root, id, expectedRevision, "route-confirmation-presented", async () => ({ mutate: (draft) => {
+        const basisHash = createHash("sha256").update(JSON.stringify({ facts, route: selected.classification.orderedRoute, controls: selected.classification.controls })).digest("hex");
+        draft.routeConfirmation = { facts, basisHash };
+        draft.pendingDecision = {
+          kind: "route-confirmation",
+          question: `请确认 Dev Flow 5.0 路线：${selected.classification.orderedRoute.join(" → ")}`,
+          options: [
+            { id: "confirm", label: "确认这条路线", recommended: true },
+            { id: "correct", label: "修正分类事实", requiresComment: true },
+          ],
+          basisHash,
+          presentedAt: new Date().toISOString(),
+          presentedRevision: draft.revision,
+          source: "core",
+          target: "route-confirmation",
+        };
+      }, eventData: { level: selected.classification.level, controls: selected.classification.controls, orderedRoute: selected.classification.orderedRoute } }));
+    }
     return mutatePreparedLocked(root, id, expectedRevision, "classification-locked", async (_current, nextRevision) => {
-      const definition = routeDefinitionForFeature(selected.route, capabilities);
-      const traceability = traceEnforcementRequired(selected.route, capabilities)
+      const definition = routeDefinitionForFeature(selected.route, selected.classification.controls);
+      const traceability = traceEnforcementRequired(selected.route, selected.classification.controls)
         ? await writeTraceSnapshot(root, emptyTraceabilityLedger(id, nextRevision, (await readProjectConfigSnapshot(root)).sha256))
         : undefined;
-      const review = reviewEnforcementRequired(selected.route, capabilities)
+      const review = reviewEnforcementRequired(selected.route, selected.classification.controls)
         ? await writeReviewSnapshot(root, emptyReviewLedger(id, nextRevision))
         : undefined;
       return { mutate: (draft) => {
-        draft.schemaVersion = 3;
+        draft.schemaVersion = 4;
         draft.mode = "routed";
         draft.route = selected.route;
         draft.classification = selected.classification;
@@ -641,7 +724,6 @@ export async function lockClassification(
         draft.humanGates = {};
         draft.artifacts = {};
         draft.verification = { attempts: [] };
-        draft.featureCheck = {};
         draft.logicComplete = false;
         if (traceability) draft.traceability = traceability;
         if (review) draft.review = review;
@@ -653,15 +735,61 @@ export async function lockClassification(
   } finally { await release(); }
 }
 
+export async function confirmRouteClassification(
+  root: string,
+  id: string,
+  expectedRevision: number,
+  userReply: string,
+  host: "claude" | "codex",
+): Promise<FeatureState> {
+  const current = await readState(root, id);
+  const pending = current.pendingDecision;
+  if (pending?.kind !== "route-confirmation" || !current.routeConfirmation) throw new DevFlowError("ROUTE_CONFIRMATION_NOT_PENDING", "当前没有待确认路线。");
+  if (userReply !== "确认这条路线") throw new DevFlowError("DECISION_REPLY_NOT_RECOGNIZED", "请回复完整选项“确认这条路线”。");
+  const prompt = resolvePromptEvent(await readFeatureEvents(root, id), {
+    host, userReply, presentedAt: pending.presentedAt, presentedRevision: pending.presentedRevision,
+  });
+  const selected = selectBaseRoute(current.routeConfirmation.facts);
+  const definition = routeDefinitionForFeature(selected.route, selected.classification.controls);
+  const traceability = traceEnforcementRequired(selected.route, selected.classification.controls)
+    ? await writeTraceSnapshot(root, emptyTraceabilityLedger(id, expectedRevision + 1, (await readProjectConfigSnapshot(root)).sha256)) : undefined;
+  const review = reviewEnforcementRequired(selected.route, selected.classification.controls)
+    ? await writeReviewSnapshot(root, emptyReviewLedger(id, expectedRevision + 1)) : undefined;
+  return mutate(root, id, expectedRevision, "route-confirmation-accepted", (draft) => {
+    if (draft.pendingDecision?.basisHash !== pending.basisHash || draft.routeConfirmation?.basisHash !== pending.basisHash) throw new DevFlowError("ROUTE_CONFIRMATION_STALE", "路线确认依据已变化。");
+    draft.mode = "routed";
+    draft.route = selected.route;
+    draft.classification = selected.classification;
+    draft.classificationBasis = selected.classificationBasis;
+    draft.obligations = selected.obligations;
+    draft.currentStage = definition.orderedSteps[0];
+    draft.workflowCapabilities = normalizeWorkflowCapabilities(SUPPORTED_WORKFLOW_CAPABILITIES);
+    draft.steps = Object.fromEntries(definition.orderedSteps.map((step) => [step, { status: "pending" as const }]));
+    if (traceability) draft.traceability = traceability;
+    if (review) draft.review = review;
+    delete draft.pendingDecision;
+    delete draft.routeConfirmation;
+    draft.lastUpdatedBy = { host, pluginVersion: __DEV_FLOW_VERSION__ };
+  }, { promptEventId: prompt.eventId, level: selected.classification.level, orderedRoute: selected.classification.orderedRoute });
+}
+
 export async function recordDecision(
   root: string,
   id: string,
   expectedRevision: number,
   question: string,
+  evidence: string,
+  conclusion: string,
   factRefs: string[] = [],
   host: "claude" | "codex",
 ): Promise<{ state: FeatureState; decisionId: string }> {
-  const decision = createDecision(question, factRefs);
+  const prompt = resolvePromptEvent(await readFeatureEvents(root, id), {
+    host,
+    userReply: conclusion,
+    presentedAt: new Date(0).toISOString(),
+    presentedRevision: -1,
+  });
+  const decision = resolveDecision(createDecision(question, factRefs), evidence, conclusion);
   const attempt = (revision: number) => mutatePrepared(root, id, revision, "decision-opened", async (current) => ({
     unchanged: (current.decisionLedger ?? []).some((candidate) => candidate.id === decision.id),
     mutate: (draft) => {
@@ -670,7 +798,7 @@ export async function recordDecision(
       draft.decisionLedger = [...ledger, decision];
       draft.lastUpdatedBy = { host, pluginVersion: __DEV_FLOW_VERSION__ };
     },
-    eventData: { decisionId: decision.id },
+    eventData: { decisionId: decision.id, promptEventId: prompt.eventId, status: "resolved" },
   }));
   try {
     const state = await attempt(expectedRevision);
@@ -788,7 +916,10 @@ async function mutatePreparedLocked(
   try {
     const active = await readActive(root);
     if (active?.featureId === id && (state.lifecycle === "finalized" || state.lifecycle === "abandoned" || state.lifecycle === "paused")) await rm(activePath(root), { force: true });
-    else if (state.lifecycle === "active" && (active?.featureId === id || operation === "feature-resumed")) await writeAtomic(activePath(root), { featureId: id, revision: state.revision, updatedAt: new Date().toISOString() });
+    else if (state.lifecycle === "active" && (
+      active?.featureId === id
+      || (!active && ["feature-resumed", "workspace-reconciled", "feature-derived-state-repaired"].includes(operation))
+    )) await writeAtomic(activePath(root), { featureId: id, revision: state.revision, updatedAt: new Date().toISOString() });
   } catch { failures.push("active"); }
   if (failures.length) {
     throw new DevFlowError("STATE_COMMITTED_PROJECTION_FAILED", "state commit succeeded but one or more projections failed", {
@@ -839,25 +970,145 @@ export async function reconcileWorkspace(
 ): Promise<FeatureState> {
   const state = await readState(root, id);
   const config = await readProjectConfig(root);
-  const { workspace, contentChanged } = await reconcileWorkspaceForFeature(root, state, config);
+  const { workspace, contentChanged, changedPaths } = await reconcileWorkspaceForFeature(root, state, config);
+  const legalCheckpointPaths = contentChanged
+    ? await legalActiveUnitChanges(root, state, changedPaths)
+    : new Set<string>();
+  const active = state.lifecycle === "finalized" && contentChanged ? await readActive(root) : undefined;
+  const reopenedLifecycle = state.lifecycle === "finalized" && contentChanged
+    ? (!active || active.featureId === id ? "active" : "paused")
+    : undefined;
+  const checkpointAffected = contentChanged
+    ? checkpointAffectedByPaths(state, changedPaths, legalCheckpointPaths)
+    : false;
   return mutate(root, id, expectedRevision, "workspace-reconciled", (draft) => {
     draft.workspace = workspace;
     if (contentChanged) {
-      markEvidenceStale(draft);
+      markAffectedEvidenceStale(draft, changedPaths, reopenedLifecycle, legalCheckpointPaths);
     }
+    queueNextOwnershipDecision(draft, changedPaths);
     draft.lastUpdatedBy = { host, pluginVersion: __DEV_FLOW_VERSION__ };
-  }, { observedHead: workspace.observedHead, commitCount: workspace.observedCommits.length, manualAdoptionCount: Object.values(workspace.ownershipSource).filter((source) => source === "manual-commit").length });
+  }, {
+    observedHead: workspace.observedHead,
+    commitCount: workspace.observedCommits.length,
+    contentChanged,
+    checkpointAffected,
+    reopenedLifecycle,
+    unresolvedOwnership: changedPaths.filter((file) => workspace.ownership[file] === undefined),
+  });
 }
 
-function markEvidenceStale(draft: FeatureState): void {
+function queueNextOwnershipDecision(draft: FeatureState, changedPaths: string[]): void {
+  if (draft.pendingDecision) return;
+  const file = changedPaths.find((candidate) => draft.workspace.ownership[candidate] === undefined);
+  if (!file) return;
+  draft.pendingDecision = {
+    kind: "workspace-ownership",
+    question: `发现无法归因的变更“${file}”。它是否属于当前任务？`,
+    options: [
+      { id: "adopt", label: "纳入当前任务", recommended: true },
+      { id: "exclude", label: "排除并先处理" },
+    ],
+    basisHash: createHash("sha256").update(`ownership\n${file}\n${draft.workspace.lastWorkspaceFingerprint}`).digest("hex"),
+    presentedAt: new Date().toISOString(),
+    presentedRevision: draft.revision,
+    source: "core",
+    target: `workspace:${file}`,
+  };
+}
+
+function markAffectedEvidenceStale(
+  draft: FeatureState,
+  changedPaths: string[],
+  reopenedLifecycle?: "active" | "paused",
+  legalCheckpointPaths: ReadonlySet<string> = new Set(),
+): void {
+  const checkpointAffected = checkpointAffectedByPaths(draft, changedPaths, legalCheckpointPaths);
   draft.evidenceFreshness = {
     ...draft.evidenceFreshness,
-    review: "stale",
-    verification: "stale",
-    checkpoint: "stale",
-    implementation: "stale",
+    verification: draft.verification.satisfiedByAttemptId !== undefined ? "stale" : draft.evidenceFreshness.verification,
+    checkpoint: checkpointAffected ? "stale" : draft.evidenceFreshness.checkpoint,
+    implementation: "current",
   };
+  if (checkpointAffected) {
+    delete draft.steps.implementation;
+    delete draft.steps.code_review;
+    delete draft.steps.verification;
+    delete draft.steps.finalize;
+    draft.currentStage = "implementation";
+  } else if (draft.steps.verification?.status === "satisfied" || draft.steps.finalize?.status === "satisfied") {
+    delete draft.steps.verification;
+    delete draft.steps.finalize;
+    draft.currentStage = "verification";
+  }
+  draft.logicComplete = false;
+  if (reopenedLifecycle) {
+    draft.lifecycle = reopenedLifecycle;
+    delete draft.deliverySnapshot;
+    draft.resumeSummary = reopenedLifecycle === "active"
+      ? `已撤销过期的完成声明，从“${draft.currentStage ?? "当前阶段"}”继续。`
+      : `完成后检测到真实内容漂移；另一个 feature 正在进行，本任务已恢复为暂停状态并回退到“${draft.currentStage ?? "当前阶段"}”。`;
+  }
+  draft.obligations = reopenObligations(draft.obligations, [
+    ...(checkpointAffected ? ["checkpoint" as const] : []),
+    "verification",
+  ]);
   draft.qualityExceptions = draft.qualityExceptions.map((exception) => ({ ...exception, status: "stale" as const }));
+}
+
+function checkpointAffectedByPaths(
+  state: FeatureState,
+  changedPaths: string[],
+  legalCheckpointPaths: ReadonlySet<string>,
+): boolean {
+  const externallyChangedPaths = changedPaths.filter((file) => !legalCheckpointPaths.has(file));
+  return state.checkpoints?.some((checkpoint) =>
+    checkpoint.files.some((file) => externallyChangedPaths.includes(file))) ?? false;
+}
+
+/**
+ * A confirmed checkpoint remains current when the bytes came from the trusted
+ * hook for the currently active RU and the path is inside that RU's frozen
+ * scope. A later IDE/manual overwrite no longer matches the trusted after
+ * summary and therefore fails closed as external drift.
+ */
+async function legalActiveUnitChanges(
+  root: string,
+  state: FeatureState,
+  changedPaths: string[],
+): Promise<Set<string>> {
+  const activeUnit = state.implementationUnits?.find((unit) => unit.status === "active" || unit.status === "verified");
+  if (!activeUnit || !state.traceability || !state.checkpoints?.length) return new Set();
+  const trace = await readTraceability(root, state);
+  const node = trace.nodes[activeUnit.unitId];
+  if (!node || node.kind !== "rollback" || node.status !== "current") return new Set();
+  const events = await readFeatureEvents(root, state.featureId);
+  let lastCheckpointEventIndex = -1;
+  for (let index = events.length - 1; index >= 0; index -= 1) {
+    if (events[index].type === "automatic-checkpoint-captured") {
+      lastCheckpointEventIndex = index;
+      break;
+    }
+  }
+  const legal = new Set<string>();
+  for (const file of changedPaths) {
+    if (!pathWithinFileScope(file, node.fileScope)) continue;
+    let event: (typeof events)[number] | undefined;
+    for (let index = events.length - 1; index > lastCheckpointEventIndex; index -= 1) {
+      const candidate = events[index];
+      const after = candidate.type === "trusted-write-owned"
+        ? (candidate.data as { after?: Record<string, unknown> }).after
+        : undefined;
+      if (typeof after?.[file] === "string") {
+        event = candidate;
+        break;
+      }
+    }
+    if (!event) continue;
+    const expected = (event.data as { after: Record<string, string> }).after[file];
+    if (expected === await trustedWriteSummary(root, file)) legal.add(file);
+  }
+  return legal;
 }
 
 export async function resumeFeature(root: string, id: string, host: "claude" | "codex"): Promise<FeatureState> {
@@ -877,16 +1128,23 @@ export async function resumeFeature(root: string, id: string, host: "claude" | "
     });
   }
   const config = await readProjectConfig(root);
-  const { workspace, contentChanged } = await reconcileWorkspaceForFeature(root, current, config);
+  const { workspace, contentChanged, changedPaths } = await reconcileWorkspaceForFeature(root, current, config);
+  const legalCheckpointPaths = contentChanged
+    ? await legalActiveUnitChanges(root, current, changedPaths)
+    : new Set<string>();
+  const checkpointAffected = contentChanged
+    ? checkpointAffectedByPaths(current, changedPaths, legalCheckpointPaths)
+    : false;
   return mutate(root, id, current.revision, "feature-resumed", (state) => {
     state.lifecycle = "active";
     state.workspace = workspace;
     if (contentChanged) {
-      markEvidenceStale(state);
+      markAffectedEvidenceStale(state, changedPaths, undefined, legalCheckpointPaths);
     }
+    queueNextOwnershipDecision(state, changedPaths);
     state.resumeSummary = `已恢复${state.currentStage ? `，从“${state.currentStage}”继续` : "当前任务"}。${contentChanged ? "工作区内容有变化，相关证据已标记为待更新。" : ""}`;
     state.lastUpdatedBy = { host, pluginVersion: __DEV_FLOW_VERSION__ };
-  }, { observedHead: workspace.observedHead, contentChanged });
+  }, { observedHead: workspace.observedHead, contentChanged, checkpointAffected });
 }
 export async function abandonFeature(root: string, id: string, expectedRevision: number, reason: string, userEvidence: string): Promise<FeatureState> {
   if (!reason || !userEvidence) throw new DevFlowError("ABANDON_EVIDENCE_REQUIRED", "abandon requires reason and user evidence");
@@ -895,6 +1153,69 @@ export async function abandonFeature(root: string, id: string, expectedRevision:
     state.lifecycle = "abandoned";
     state.abandonment = { reason: reason.trim(), userEvidence: userEvidence.trim(), at: new Date().toISOString() };
   }, { reason, userEvidence });
+}
+
+/** Rebuild only projections/derived pointers; immutable user and evidence records are untouched. */
+export async function repairFeature(root: string, id: string, expectedRevision: number, host: "claude" | "codex"): Promise<FeatureState> {
+  const current = await readState(root, id);
+  const active = await readActive(root);
+  if (current.lifecycle === "active" && active && active.featureId !== id) {
+    throw new DevFlowError("ACTIVE_POINTER_CONFLICT", "活动指针指向另一个 feature，不能自动覆盖。", {
+      userMessage: "检测到两个任务都声称处于活动状态。",
+      cause: `active pointer 当前指向 ${active.featureId}。`,
+      impact: "repair 不会覆盖另一个任务的活动指针。",
+      recoveryKind: "ask-user",
+      recoveryInstruction: "先决定保留哪个 active feature，再重试 repair。",
+      requiresUserDecision: true,
+      retryOriginal: false,
+    });
+  }
+  return mutate(root, id, expectedRevision, "feature-derived-state-repaired", async (state) => {
+    if (state.mode === "routed") {
+      const definition = routeDefinitionForFeature(state.route, state.classification.controls);
+      const fingerprint = await fingerprintGovernedRoots(root, await readProjectConfig(root));
+      const events = await readFeatureEvents(root, id);
+      state.evidenceFreshness.verification = state.verification.satisfiedByAttemptId === undefined
+        ? "missing"
+        : state.verification.verifiedFingerprint === fingerprint ? "current" : "stale";
+      if (!state.review) {
+        state.evidenceFreshness.review = "missing";
+      } else {
+        const ledger = await readReviewLedger(root, state);
+        const currentBatch = ledger.batches.find((batch) => batch.validity === "current");
+        state.evidenceFreshness.review = currentBatch
+          ? currentBatch.progress === "complete" ? "current" : "missing"
+          : ledger.batches.length ? "stale" : "missing";
+      }
+      let checkpointCaptureIndex = -1;
+      for (let index = events.length - 1; index >= 0; index -= 1) {
+        if (events[index].type === "automatic-checkpoint-captured") {
+          checkpointCaptureIndex = index;
+          break;
+        }
+      }
+      const checkpointInvalidated = checkpointCaptureIndex >= 0 && events
+        .slice(checkpointCaptureIndex + 1)
+        .some((event) => ["workspace-reconciled", "feature-resumed"].includes(event.type)
+          && (event.data as { checkpointAffected?: unknown })?.checkpointAffected === true);
+      state.evidenceFreshness.checkpoint = checkpointCaptureIndex < 0
+        ? "missing"
+        : checkpointInvalidated ? "stale" : "current";
+      state.evidenceFreshness.implementation = "current";
+      const finalEvidenceCurrent = state.evidenceFreshness.verification === "current"
+        && state.steps.finalize?.status === "satisfied"
+        && Boolean(state.deliverySnapshot);
+      if (state.lifecycle === "finalized" && !finalEvidenceCurrent) {
+        state.lifecycle = active && active.featureId !== id ? "paused" : "active";
+        delete state.deliverySnapshot;
+      }
+      state.logicComplete = state.lifecycle === "finalized" && finalEvidenceCurrent;
+      state.currentStage = state.logicComplete
+        ? "complete"
+        : definition.orderedSteps.find((step) => state.steps[step]?.status !== "satisfied") ?? "finalize";
+    }
+    state.lastUpdatedBy = { host, pluginVersion: __DEV_FLOW_VERSION__ };
+  }, { repaired: ["active-pointer", "current-stage", "freshness", "review/status-projection"] });
 }
 
 type RecoveryPhase = "prepared" | "directory-moved" | "active-cleared" | "completed";
@@ -1032,6 +1353,7 @@ export interface RollbackTransactionFileAction {
   path: string;
   blobSha256?: string;
   mode?: string;
+  kind?: "file" | "symlink";
 }
 
 /** Resumable journal for checkpoint rollback execution; mirrors policy/rollback-transaction.schema.json. */
@@ -1069,6 +1391,7 @@ function validateRollbackTransaction(value: unknown): asserts value is RollbackT
     if (candidate.action === "restore" && (!isSha256(candidate.blobSha256) || typeof candidate.mode !== "string" || !/^[0-7]{3,4}$/.test(candidate.mode))) return false;
     if (candidate.blobSha256 !== undefined && !isSha256(candidate.blobSha256)) return false;
     if (candidate.mode !== undefined && (typeof candidate.mode !== "string" || !/^[0-7]{3,4}$/.test(candidate.mode))) return false;
+    if (candidate.kind !== undefined && candidate.kind !== "file" && candidate.kind !== "symlink") return false;
     return true;
   });
   if (transaction?.schemaVersion !== 1 || typeof transaction.transactionId !== "string" || !transaction.transactionId
@@ -1534,64 +1857,58 @@ export async function recoverCorruptFeature(root: string, input: {
 
 const levelRank: Record<string, number> = { XS: 0, S: 1, M: 2, L: 3 };
 const topologyRank: Record<string, number> = { local: 0, "shared-contract": 1, "multi-chain": 2, "coordinated-rollback": 3 };
-const sameRisk = (a: string[], b: string[]) => a.length === b.length && [...a].sort().every((value, index) => value === [...b].sort()[index]);
-
 function isDowngrade(before: Classification, after: Classification): boolean {
   const riskRemoved = before.riskLabels.some((risk) => !after.riskLabels.includes(risk));
   return levelRank[after.level] < levelRank[before.level]
     || topologyRank[after.topology] < topologyRank[before.topology]
-    || (before.execution === "standard" && after.execution === "light")
     || riskRemoved;
 }
 
-function applyRouteTransition(state: FeatureState, selected: { classification: Classification; route: RouteId }) {
+function controlsAreWeaker(before: Classification["controls"], after: Classification["controls"]): boolean {
+  const planRank = { locate: 0, brief: 1, formal: 2 } as const;
+  const reviewRank = { none: 0, focused: 1, independent: 2, full: 3 } as const;
+  return before.requirements && !after.requirements
+    || planRank[after.plan] < planRank[before.plan]
+    || before.trace && !after.trace
+    || before.planReview && !after.planReview
+    || before.executionApproval && !after.executionApproval
+    || before.checkpoints === "unit-chain" && after.checkpoints !== "unit-chain"
+    || reviewRank[after.codeReview] < reviewRank[before.codeReview]
+    || before.reviewRoles.some((role) => !after.reviewRoles.includes(role))
+    || before.recovery.some((kind) => !after.recovery.includes(kind))
+    || before.verification.some((kind) => !after.verification.includes(kind));
+}
+
+function applyRouteTransition(state: FeatureState, selected: ReturnType<typeof selectRoute>) {
   const previousRoute = state.route;
-  const previousDefinition = routeDefinitionForFeature(previousRoute, state.workflowCapabilities);
-  const nextDefinition = routeDefinitionForFeature(selected.route, state.workflowCapabilities);
+  const previousDefinition = routeDefinitionForFeature(previousRoute, state.classification.controls);
+  const nextDefinition = routeDefinitionForFeature(selected.route, selected.classification.controls);
   const previousArtifacts = new Set([...previousDefinition.requiredArtifacts, ...(previousDefinition.generatedArtifacts ?? [])]);
   const nextArtifacts = new Set([...nextDefinition.requiredArtifacts, ...(nextDefinition.generatedArtifacts ?? [])]);
   const retainedArtifacts = Object.fromEntries(Object.entries(state.artifacts).filter(([kind]) =>
     previousArtifacts.has(kind) && nextArtifacts.has(kind)));
   const retainedSteps: FeatureState["steps"] = {};
   for (const step of nextDefinition.orderedSteps) {
-    if (["feature_check", "finalize", "verification"].includes(step)) break;
+    if (["finalize", "verification"].includes(step)) break;
     if (state.steps[step]?.status !== "satisfied") break;
     retainedSteps[step] = state.steps[step];
   }
   const invalidatedSteps = Object.keys(state.steps).filter((step) => !retainedSteps[step]);
   const invalidatedArtifacts = Object.keys(state.artifacts).filter((kind) => !retainedArtifacts[kind]);
   state.classification = selected.classification;
+  state.classificationBasis = selected.classificationBasis;
+  state.obligations = selected.obligations;
   state.route = selected.route;
   state.artifacts = retainedArtifacts;
   state.steps = retainedSteps;
   state.humanGates = {};
   state.interactions = {};
   state.verification = { attempts: [] };
-  state.featureCheck = {};
   state.logicComplete = false;
+  state.currentStage = nextDefinition.orderedSteps.find((step) => retainedSteps[step]?.status !== "satisfied") ?? nextDefinition.orderedSteps[0];
+  if (!selected.classification.controls.trace) delete state.traceability;
+  if (!selected.classification.controls.planReview) delete state.review;
   return { previousRoute, invalidatedSteps, invalidatedArtifacts };
-}
-
-async function implementationApprovalWasPresented(root: string, id: string): Promise<boolean> {
-  let events: Array<{ revision: number; type: string; at: string; data: unknown }>;
-  try { events = await readFeatureEvents(root, id); }
-  catch {
-    throw new DevFlowError("RECLASSIFICATION_HISTORY_UNREADABLE", "cannot safely read gate history for downgrade", {
-      recoveryHint: "Finish the current standard route or abandon and restart; do not downgrade with unreadable history",
-    });
-  }
-  for (const event of events) {
-    if (event.type !== "approval-presented" && event.type !== "approval-confirmed") continue;
-    const approval = (event.data as { approvalId?: unknown; approval?: unknown } | undefined)?.approvalId
-      ?? (event.data as { approval?: unknown } | undefined)?.approval;
-    if (typeof approval !== "string") {
-      throw new DevFlowError("RECLASSIFICATION_HISTORY_UNREADABLE", "a historical approval event has no obligation identity", {
-        recoveryHint: "Finish the current standard route or abandon and restart; old ambiguous gate history cannot downgrade",
-      });
-    }
-    if (approval.startsWith("approval:")) return true;
-  }
-  return false;
 }
 
 export async function reclassifyFeature(
@@ -1608,21 +1925,58 @@ export async function reclassifyFeature(
     const initial = await readState(root, id);
     if (initial.revision !== expectedRevision) throw new DevFlowError("STATE_REVISION_CONFLICT", "state revision changed", { currentRevision: initial.revision });
     const selectedAtLock = selectRoute(next);
-    const historicalApproval = isDowngrade(initial.classification, selectedAtLock.classification)
-      ? await implementationApprovalWasPresented(root, id)
-      : false;
-    const project = await readProjectConfig(root);
-    const currentFingerprint = await fingerprintProtectedRoots(root, project);
+    const events = await readFeatureEvents(root, id);
+    const governedWriteStarted = Object.values(initial.workspace.ownershipSource).includes("trusted-hook")
+      || events.some((event) => event.type === "trusted-write-owned");
+    const changedAtLock = selectedAtLock.route !== initial.route
+      || JSON.stringify(selectedAtLock.classification) !== JSON.stringify(initial.classification);
+    const weakerAtLock = isDowngrade(initial.classification, selectedAtLock.classification)
+      || controlsAreWeaker(initial.classification.controls, selectedAtLock.classification.controls);
+    if (governedWriteStarted && weakerAtLock) {
+      throw new DevFlowError("RECLASSIFICATION_DOWNGRADE_FORBIDDEN", "首次 governed write 后控制只能单调增加。", {
+        recoveryHint: "保留当前控制，或提交不会移除任何 level、风险、审查、恢复或验证保证的更强分类事实",
+      });
+    }
+    if (!changedAtLock) throw new DevFlowError("RECLASSIFICATION_NOT_CHANGED", "分类事实和控制没有发生变化。", { recoveryHint: "无需重分类；继续当前路线" });
+    if (!governedWriteStarted && selectedAtLock.classification.routeConfirmationRequired) {
+      if (initial.pendingDecision) throw new DevFlowError("DECISION_ALREADY_PENDING", "先处理当前唯一用户决策，再重算路线。", { recoveryHint: "使用 dev_flow_answer 回答当前问题" });
+      const facts = {
+        level: selectedAtLock.classification.level,
+        topology: selectedAtLock.classification.topology,
+        requirements: selectedAtLock.classification.requirements,
+        riskLabels: selectedAtLock.classification.riskLabels,
+        scopeFacts: selectedAtLock.classificationBasis.scopeFacts,
+        topologyFacts: selectedAtLock.classificationBasis.topologyFacts,
+        uncertaintyFacts: selectedAtLock.classificationBasis.uncertaintyFacts,
+        riskFacts: selectedAtLock.classificationBasis.riskFacts,
+        decisionRefs: selectedAtLock.classificationBasis.decisionRefs,
+        signals: selectedAtLock.classificationBasis.signals,
+      } as ClassificationFacts;
+      return mutatePreparedLocked(root, id, expectedRevision, "route-confirmation-represented", async () => ({ mutate: (draft) => {
+        const basisHash = createHash("sha256").update(JSON.stringify({ facts, controls: selectedAtLock.classification.controls, reason })).digest("hex");
+        draft.routeConfirmation = { facts, basisHash };
+        draft.pendingDecision = {
+          kind: "route-confirmation",
+          question: `分类事实变化，请重新确认路线：${selectedAtLock.classification.orderedRoute.join(" → ")}`,
+          options: [{ id: "confirm", label: "确认这条路线", recommended: true }, { id: "correct", label: "修正分类事实", requiresComment: true }],
+          basisHash,
+          presentedAt: new Date().toISOString(),
+          presentedRevision: draft.revision,
+          source: "core",
+          target: "route-confirmation",
+        };
+      }, eventData: { reason, previousRoute: initial.classification.orderedRoute, nextRoute: selectedAtLock.classification.orderedRoute } }));
+    }
     let notice: string | undefined;
     let eventData: unknown = { reason };
     const state = await mutatePreparedLocked(root, id, expectedRevision, "reclassified", async (current, nextStateRevision) => {
-    const preparedTraceability = traceEnforcementRequired(selectedAtLock.route, current.workflowCapabilities) && !current.traceability
+    const preparedTraceability = traceEnforcementRequired(selectedAtLock.route, selectedAtLock.classification.controls) && !current.traceability
       ? await (async () => {
         const configSnapshot = await readProjectConfigSnapshot(root);
         return writeTraceSnapshot(root, emptyTraceabilityLedger(id, nextStateRevision, configSnapshot.sha256));
       })()
       : undefined;
-    const preparedReview = reviewEnforcementRequired(selectedAtLock.route, current.workflowCapabilities) && !current.review
+    const preparedReview = reviewEnforcementRequired(selectedAtLock.route, selectedAtLock.classification.controls) && !current.review
       ? await writeReviewSnapshot(root, emptyReviewLedger(id, nextStateRevision))
       : undefined;
     const reviewInvalidation = current.review
@@ -1637,68 +1991,12 @@ export async function reclassifyFeature(
     if (reviewInvalidation) draft.review = reviewInvalidation;
     const before = draft.classification;
     const after = selected.classification;
-    const downgrade = isDowngrade(before, after);
-    if (!downgrade) {
-      const riskRemoved = before.riskLabels.some((risk) => !after.riskLabels.includes(risk));
-      if (riskRemoved) throw new DevFlowError("RECLASSIFICATION_NOT_STRICTER", "reclassification cannot lower level, topology, execution, or risk");
-      const lessStrict = levelRank[after.level] < levelRank[before.level] || topologyRank[after.topology] < topologyRank[before.topology] || (before.execution === "standard" && after.execution === "light");
-      if (lessStrict) throw new DevFlowError("RECLASSIFICATION_NOT_STRICTER", "reclassification cannot lower level, topology, execution, or risk");
-      const changed = selected.route !== draft.route || JSON.stringify(before) !== JSON.stringify(after);
-      if (!changed) throw new DevFlowError("RECLASSIFICATION_NOT_STRICTER", "reclassification did not become stricter");
-      const transition = applyRouteTransition(draft, selected);
-      eventData = {
-        before, after, previousRoute: transition.previousRoute, nextRoute: selected.route, reason,
-        invalidatedSteps: transition.invalidatedSteps, invalidatedArtifacts: transition.invalidatedArtifacts,
-      };
-      return;
-    }
-
-    // Restricted standard → light only.
-    if (before.level !== after.level || before.topology !== after.topology || !sameRisk(before.riskLabels, after.riskLabels)) {
-      throw new DevFlowError("RECLASSIFICATION_DOWNGRADE_FORBIDDEN", "1.3 only allows same level/topology/risk standard→light", {
-        recoveryHint: "Abandon and restart with a lighter classification if level must change",
-      });
-    }
-    if (!(before.execution === "standard" && after.execution === "light")) {
-      throw new DevFlowError("RECLASSIFICATION_DOWNGRADE_FORBIDDEN", "only standard→light downgrade is allowed", {
-        recoveryHint: "Abandon and restart with a lighter classification, or finish the current route",
-      });
-    }
-    if (!userEvidence) {
-      throw new DevFlowError("RECLASSIFICATION_EVIDENCE_REQUIRED", "downgrade requires userEvidence with the user's exact words", {
-        recoveryHint: "Pass userEvidence containing the user's request to lighten the route",
-      });
-    }
-    if (draft.steps.implementation?.status === "satisfied") {
-      throw new DevFlowError("RECLASSIFICATION_DOWNGRADE_FORBIDDEN", "implementation already satisfied", {
-        recoveryHint: "Finish the current standard route or abandon and restart",
-      });
-    }
-    const approvalPresented = approvalIds(draft).some((approvalId) => {
-      const record = draft.humanGates[approvalId] as { status?: string } | undefined;
-      return record?.status === "pending" || record?.status === "returned" || record?.status === "confirmed";
-    });
-    if (historicalApproval || approvalPresented) {
-      throw new DevFlowError("RECLASSIFICATION_DOWNGRADE_FORBIDDEN", "approval obligation already presented or confirmed", {
-        recoveryHint: "Finish the current standard route or abandon and restart",
-      });
-    }
-    if (!draft.startBusinessFingerprint) {
-      throw new DevFlowError("RECLASSIFICATION_DOWNGRADE_FORBIDDEN", "missing startBusinessFingerprint baseline", {
-        recoveryHint: "Old features without baseline cannot downgrade; abandon and restart",
-      });
-    }
-    if (draft.startBusinessFingerprint !== currentFingerprint) {
-      throw new DevFlowError("RECLASSIFICATION_PROTECTED_ROOTS_CHANGED", "protected roots changed since start", {
-        recoveryHint: "Cannot downgrade after business files changed; finish the current standard route, or abandon and restart with a lighter classification",
-      });
-    }
     const transition = applyRouteTransition(draft, selected);
     eventData = {
       before, after, previousRoute: transition.previousRoute, nextRoute: selected.route, reason, userEvidence,
       invalidatedSteps: transition.invalidatedSteps, invalidatedArtifacts: transition.invalidatedArtifacts,
     };
-    notice = `Route switched to ${selected.route}. Previous docs remain on disk but are no longer registered evidence. Next: run the light route steps.`;
+    notice = `分类已更新为 ${selected.route}，未继续登记的旧工件保留在磁盘作为审计历史。`;
     }, eventData: () => eventData };
     });
     return notice ? { ...state, reclassifyNotice: notice } : state;

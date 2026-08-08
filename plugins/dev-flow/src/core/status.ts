@@ -15,7 +15,7 @@ import { readReviewProjection, type ReviewProjection } from "./review-projection
 import { rollbackChainView, type RollbackChainView } from "./rollback.js";
 import { buildExecutionBrief, type ExecutionBrief } from "./execution-brief.js";
 import { analyzeDrift, type DriftReport } from "./drift-analysis.js";
-import { snapshotProtectedRoots } from "./fingerprint.js";
+import { snapshotGovernedRoots } from "./fingerprint.js";
 import { deriveStageCapabilities } from "../policy/stages.js";
 
 export type ProgressWait =
@@ -184,7 +184,7 @@ export async function buildProgress(
 
   const remainingSteps = ordered.filter((step) => state.steps[step]?.status !== "satisfied"
     || (step === "verification" && action.kind === "run-step" && action.step === "verification"));
-  const requiredEvidence = action.kind === "run-step" || action.kind === "feature-check"
+  const requiredEvidence = action.kind === "run-step"
     ? action.requiredEvidence
     : undefined;
   return {
@@ -211,7 +211,7 @@ export async function buildProgress(
  */
 async function implementationStatus(root: string, state: FeatureState, rollback: RollbackChainView): Promise<ImplementationStatus> {
   if (state.mode === "intake") return { enforced: false, remainingUnitIds: [] };
-  if (!checkpointsEnforcementRequired(state.route, state.workflowCapabilities)) {
+  if (!checkpointsEnforcementRequired(state.route, state.classification.controls)) {
     return { enforced: false, remainingUnitIds: [] };
   }
   let remainingUnitIds: string[] = [];
@@ -239,7 +239,7 @@ async function driftStatus(root: string, state: FeatureState): Promise<DriftRepo
   const checkpoint = state.checkpoints?.at(-1);
   if (state.mode === "intake" || !checkpoint) return undefined;
   const config = await readProjectConfig(root);
-  const actual = (await snapshotProtectedRoots(root, config)).map((file) => file.path);
+  const actual = (await snapshotGovernedRoots(root, config)).map((file) => file.path);
   const anticipated = checkpoint.files;
   const changed = actual.length !== anticipated.length || actual.some((file, index) => file !== anticipated[index]);
   if (!changed) return undefined;

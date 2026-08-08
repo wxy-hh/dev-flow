@@ -1,7 +1,7 @@
 {
   "name": "dev-flow",
-  "version": "4.0.3",
-  "description": "Risk-aware multi-route development orchestration for Claude Code and Codex CLI.",
+  "version": "5.0.0",
+  "description": "Dynamic, evidence-based development governance for Claude Code and Codex CLI.",
   "author": {
     "name": "wxy-hh",
     "url": "https://github.com/wxy-hh"
@@ -20,8 +20,8 @@
   "mcpServers": "./.mcp.json",
   "interface": {
     "displayName": "Dev Flow",
-    "shortDescription": "Route development work by size and risk.",
-    "longDescription": "A dual-host development workflow with strict human gates, route-specific assets, review separation, verification, and safe Git finalization.",
+    "shortDescription": "Compile governance from repository facts.",
+    "longDescription": "A dual-host workflow that derives deterministic routes, reviews, recovery and verification from repository evidence.",
     "developerName": "wxy-hh",
     "category": "Productivity",
     "capabilities": [

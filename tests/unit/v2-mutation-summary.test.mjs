@@ -6,14 +6,14 @@ const brief = await loadSource("plugins/dev-flow/src/core/execution-brief.ts");
 
 test("mutation summary derives stage from steps and keeps obligation counts separate", () => {
   const summary = brief.buildFeatureMutationSummary({
-    schemaVersion: 2,
+    schemaVersion: 4,
     mode: "routed",
     featureId: "f",
     revision: 7,
     lifecycle: "active",
-    route: "standard-m",
+    route: "m",
     currentStage: "finalize",
-    classification: { level: "M", topology: "local", riskLabels: [], acceptanceAssistSuggested: false },
+    classification: { level: "M", topology: "local", riskLabels: [], orderedRoute: ["requirements_alignment", "planning", "implementation", "code_review", "verification", "finalize"], acceptanceAssistSuggested: false },
     obligations: [
       { id: "a", kind: "approval", source: "route", basisHash: "a".repeat(64), status: "pending", reason: "a" },
       { id: "b", kind: "review", source: "route", basisHash: "b".repeat(64), status: "satisfied", reason: "b" },
@@ -29,7 +29,6 @@ test("mutation summary derives stage from steps and keeps obligation counts sepa
       { unitId: "RU-001", status: "checkpointed", basisHash: "f".repeat(64), startedFingerprint: "1".repeat(64), checkpointId: "CP-001" },
       { unitId: "RU-002", status: "active", basisHash: "f".repeat(64), startedFingerprint: "1".repeat(64) },
     ],
-    featureCheck: {},
     blockingFindings: [{ blocking: true, message: "x" }, { blocking: false, message: "y" }],
     logicComplete: false,
     lastUpdatedBy: { host: "codex", pluginVersion: "test" },

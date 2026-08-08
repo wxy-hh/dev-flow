@@ -8,7 +8,7 @@ import type { FeatureState } from "./state-store.js";
 import { DevFlowError } from "./errors.js";
 import { normalizeProjectPath, normalizeUnicode } from "./path-normalization.js";
 import type { ObservedCommit, StartedDirtyPath, WorkspaceLineage } from "../policy/types.js";
-import { fingerprintProtectedRoots } from "./fingerprint.js";
+import { fingerprintGovernedRoots, snapshotGovernedRoots } from "./fingerprint.js";
 
 const run = promisify(execFile);
 
@@ -52,8 +52,8 @@ async function contentHash(root: string, relative: string): Promise<string | und
   }
 }
 
-async function dirtyPaths(root: string, config: Pick<ProjectConfig, "protectedRoots" | "protectedRootsExclude">): Promise<Record<string, StartedDirtyPath>> {
-  const output = await git(root, ["status", "--porcelain=v1", "-z", "--untracked-files=all", "--", ...config.protectedRoots]);
+async function dirtyPaths(root: string, config: Pick<ProjectConfig, "governedRoots" | "governedRootsExclude">): Promise<Record<string, StartedDirtyPath>> {
+  const output = await git(root, ["status", "--porcelain=v1", "-z", "--untracked-files=all", "--", ...config.governedRoots]);
   const items = output.split("\0").filter(Boolean);
   const result: Record<string, StartedDirtyPath> = {};
   for (let index = 0; index < items.length; index += 1) {
@@ -61,7 +61,7 @@ async function dirtyPaths(root: string, config: Pick<ProjectConfig, "protectedRo
     if (item.length < 4) continue;
     const code = item.slice(0, 2);
     const current = normalizePath(item.slice(3));
-    if (config.protectedRootsExclude?.some((pattern) => current === pattern || current.startsWith(`${pattern}/`))) {
+    if (config.governedRootsExclude?.some((pattern) => current === pattern || current.startsWith(`${pattern}/`))) {
       if (code.includes("R")) index += 1;
       continue;
     }
@@ -86,25 +86,31 @@ async function head(root: string): Promise<string> {
   return (await git(root, ["rev-parse", "HEAD"])).trim();
 }
 
-async function fingerprint(root: string, config: Pick<ProjectConfig, "protectedRoots" | "protectedRootsExclude">): Promise<string> {
-  return fingerprintProtectedRoots(root, config);
+async function fingerprint(root: string, config: Pick<ProjectConfig, "governedRoots" | "governedRootsExclude">): Promise<string> {
+  return fingerprintGovernedRoots(root, config);
+}
+
+async function pathFingerprints(
+  root: string,
+  config: Pick<ProjectConfig, "governedRoots" | "governedRootsExclude">,
+): Promise<Record<string, string>> {
+  return Object.fromEntries((await snapshotGovernedRoots(root, config)).map((file) => [
+    file.path,
+    `${file.kind ?? "file"}:${file.sha256}:${file.mode}`,
+  ]));
 }
 
 export async function captureWorkspaceLineage(
   root: string,
-  config: Pick<ProjectConfig, "protectedRoots" | "protectedRootsExclude">,
+  config: Pick<ProjectConfig, "governedRoots" | "governedRootsExclude">,
 ): Promise<WorkspaceLineage> {
-  let baseHead = "";
-  let baseBranch = "";
-  let startedDirty: Record<string, StartedDirtyPath> = {};
-  try {
-    baseHead = await head(root);
-    baseBranch = await branchName(root);
-    startedDirty = await dirtyPaths(root, config);
-  } catch (error) {
-    if (!(error instanceof DevFlowError)) throw error;
-  }
-  const lastWorkspaceFingerprint = await fingerprint(root, config).catch(() => createHash("sha256").update("").digest("hex"));
+  // Dev Flow's ownership and recovery claims are anchored to a real Git HEAD.
+  // A non-repository or unborn repository cannot provide that lineage and must
+  // fail closed instead of manufacturing an empty baseline.
+  const baseHead = await head(root);
+  const baseBranch = await branchName(root);
+  const startedDirty = await dirtyPaths(root, config);
+  const lastWorkspaceFingerprint = await fingerprint(root, config);
   return {
     baseHead,
     baseBranch,
@@ -113,6 +119,7 @@ export async function captureWorkspaceLineage(
     ownership: {},
     ownershipSource: {},
     observedCommits: [],
+    observedPathFingerprints: await pathFingerprints(root, config),
     lastWorkspaceFingerprint,
     reconciliationStatus: "current",
   };
@@ -150,7 +157,7 @@ export async function gitBranchAndHead(root: string): Promise<{ branch: string; 
 export async function reconcileWorkspaceLineage(
   root: string,
   lineage: WorkspaceLineage,
-  config: Pick<ProjectConfig, "protectedRoots" | "protectedRootsExclude">,
+  config: Pick<ProjectConfig, "governedRoots" | "governedRootsExclude">,
 ): Promise<WorkspaceLineage> {
   const current = await gitBranchAndHead(root);
   if (lineage.baseBranch && current.branch !== lineage.baseBranch) {
@@ -184,6 +191,7 @@ export async function reconcileWorkspaceLineage(
     ...lineage,
     observedHead: current.head,
     observedCommits: [...lineage.observedCommits, ...observedCommits.filter((commit) => !knownCommits.has(commit.hash))],
+    observedPathFingerprints: await pathFingerprints(root, config),
     lastWorkspaceFingerprint: await fingerprint(root, config),
     reconciliationStatus: "current",
   };
@@ -220,35 +228,41 @@ export function ownershipForScope(
 export interface WorkspaceReconciliationResult {
   workspace: WorkspaceLineage;
   contentChanged: boolean;
+  changedPaths: string[];
 }
 
 /**
- * Reconcile a feature's workspace lineage and fold in manual-commit ownership,
- * so pause/resume and explicit reconciliation share one rule: committed paths
- * inside scope (or previously excluded) are adopted as feature-owned with
- * source "manual-commit", and any content change since the last evidence is
- * reported so callers can mark evidence stale (notify, not auto-redo).
+ * Reconcile a feature's workspace lineage. Only paths changed since the last
+ * observed HEAD (plus current dirty paths) are returned to freshness and
+ * ownership handling; the full base-to-HEAD history remains audit lineage but
+ * must not repeatedly invalidate old checkpoints.
  */
 export async function reconcileWorkspaceForFeature(
   root: string,
   state: Pick<FeatureState, "workspace" | "scope">,
-  config: Pick<ProjectConfig, "protectedRoots" | "protectedRootsExclude">,
+  config: Pick<ProjectConfig, "governedRoots" | "governedRootsExclude">,
 ): Promise<WorkspaceReconciliationResult> {
+  const previouslyObservedHead = state.workspace.observedHead;
   let workspace = await reconcileWorkspaceLineage(root, state.workspace, config);
-  const committedPaths = await changedPathsBetween(root, workspace.baseHead, workspace.observedHead);
+  const committedPaths = await changedPathsBetween(root, previouslyObservedHead, workspace.observedHead);
   const ownership = { ...workspace.ownership };
   const ownershipSource = { ...workspace.ownershipSource };
   for (const file of committedPaths) {
-    if (state.scope.inScope.some((entry) => entry === "." || file === entry || file.startsWith(`${entry}/`))
-      || ownership[file] === "excluded") {
-      ownership[file] = "feature";
-      ownershipSource[file] = "manual-commit";
-    } else if (state.scope.outOfScope.some((entry) => entry === "." || file === entry || file.startsWith(`${entry}/`))) {
+    if (state.scope.outOfScope.some((entry) => entry === "." || file === entry || file.startsWith(`${entry}/`))) {
       ownership[file] = "excluded";
     }
   }
   workspace = { ...workspace, ownership, ownershipSource };
-  return { workspace, contentChanged: state.workspace.lastWorkspaceFingerprint !== workspace.lastWorkspaceFingerprint };
+  const dirty = Object.keys(await dirtyPaths(root, config));
+  const previousPaths = state.workspace.observedPathFingerprints ?? {};
+  const currentPaths = workspace.observedPathFingerprints;
+  const candidates = new Set([...Object.keys(previousPaths), ...Object.keys(currentPaths), ...committedPaths, ...dirty]);
+  const changedPaths = [...candidates].filter((file) => previousPaths[file] !== currentPaths[file]).sort();
+  return {
+    workspace,
+    contentChanged: changedPaths.length > 0,
+    changedPaths,
+  };
 }
 
 export function currentWorkspaceFingerprint(paths: Record<string, string | undefined>): string {

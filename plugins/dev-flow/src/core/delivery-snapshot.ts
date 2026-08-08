@@ -61,22 +61,22 @@ function normalizePath(value: string): string {
   const normalized = normalizeProjectPath(slashPath);
   if (!normalized || path.posix.isAbsolute(normalized) || normalized.startsWith("../")
     || normalized === ".." || normalized.startsWith(".dev-flow/") || normalized !== slashPath) {
-    throw new DevFlowError("INVALID_IMPLEMENTATION_FILE", "implementation files must be normalized project-relative protected paths", {
+    throw new DevFlowError("INVALID_IMPLEMENTATION_FILE", "实现文件必须是规范化的项目相对 governed 路径。", {
       path: value,
     });
   }
   return normalized;
 }
 
-function isWithinProtectedRoot(file: string, protectedRoots: string[]): boolean {
-  return protectedRoots.some((root) => root === "." || file === root || file.startsWith(`${root}/`));
+function isWithinProtectedRoot(file: string, governedRoots: string[]): boolean {
+  return governedRoots.some((root) => root === "." || file === root || file.startsWith(`${root}/`));
 }
 
-export function assertImplementationFilesInProtectedRoots(files: string[], protectedRoots: string[]): void {
-  if (files.some((file) => !isWithinProtectedRoot(file, protectedRoots))) {
-    throw new DevFlowError("INVALID_IMPLEMENTATION_FILE", "implementation files must be inside configured protectedRoots", {
-      protectedRoots,
-      recoveryHint: "实现证据只登记 feature-owned 且位于 protectedRoots 的文件；测试、日志和验证产物请放入 verification evidence，或先把确属交付范围的目录加入 protectedRoots",
+export function assertImplementationFilesInGovernedRoots(files: string[], governedRoots: string[]): void {
+  if (files.some((file) => !isWithinProtectedRoot(file, governedRoots))) {
+    throw new DevFlowError("INVALID_IMPLEMENTATION_FILE", "implementation files must be inside configured governedRoots", {
+      governedRoots,
+      recoveryHint: "实现证据只登记 feature-owned 且位于 governedRoots 的文件；测试、日志和验证产物请放入 verification evidence，或先把确属交付范围的目录加入 governedRoots",
     });
   }
 }
@@ -95,6 +95,23 @@ export function implementationFiles(evidence: unknown): string[] {
     throw new DevFlowError("INVALID_IMPLEMENTATION_FILE", "implementation files must not contain duplicates");
   }
   return normalized.sort();
+}
+
+/** Core derives delivery files from Git drift plus explicit/trusted ownership. */
+export async function deriveImplementationFiles(root: string, state: FeatureState, config: ProjectConfig): Promise<string[]> {
+  const current = await gitBranchAndHead(root);
+  const committed = await changedPathsBetween(root, state.workspace.baseHead, current.head);
+  const dirty = await dirtyPaths(root, config);
+  const changed = [...new Set([...committed, ...dirty])]
+    .filter((file) => isWithinProtectedRoot(file, config.governedRoots))
+    .filter((file) => !config.governedRootsExclude?.some((pattern) => pathWithinFileScope(file, [pattern])))
+    .sort();
+  const unknown = changed.filter((file) => state.workspace.ownership[file] !== "feature" && state.workspace.ownership[file] !== "excluded");
+  if (unknown.length) throw new DevFlowError("DELIVERY_OWNERSHIP_UNRESOLVED", "存在尚未确认归属的 governed 文件。", {
+    files: unknown,
+    recoveryHint: "运行 dev_flow_reconcile_workspace，并逐个回答 ownership decision 后重试 implementation",
+  });
+  return changed.filter((file) => state.workspace.ownership[file] === "feature");
 }
 
 const missingFileHint = "files 只接受纯路径，如 \"src/foo.js\"（而非 \"src/foo.js (新增)\"）；先创建或登记实际存在的文件后再重录";
@@ -169,12 +186,12 @@ function statusPaths(value: string): string[] {
   return [...paths].sort();
 }
 
-async function dirtyPaths(root: string, config: Pick<ProjectConfig, "protectedRoots" | "protectedRootsExclude">): Promise<string[]> {
-  const output = await git(root, ["status", "--porcelain=v1", "-z", "--untracked-files=all", "--", ...config.protectedRoots]);
-  return statusPaths(output).filter((file) => !config.protectedRootsExclude?.some((pattern) => pathWithinFileScope(file, [pattern])));
+async function dirtyPaths(root: string, config: Pick<ProjectConfig, "governedRoots" | "governedRootsExclude">): Promise<string[]> {
+  const output = await git(root, ["status", "--porcelain=v1", "-z", "--untracked-files=all", "--", ...config.governedRoots]);
+  return statusPaths(output).filter((file) => !config.governedRootsExclude?.some((pattern) => pathWithinFileScope(file, [pattern])));
 }
 
-export async function captureDeliveryBaseline(root: string, config: Pick<ProjectConfig, "protectedRoots" | "protectedRootsExclude">): Promise<DeliveryBaseline> {
+export async function captureDeliveryBaseline(root: string, config: Pick<ProjectConfig, "governedRoots" | "governedRootsExclude">): Promise<DeliveryBaseline> {
   try {
     const gitHead = (await git(root, ["rev-parse", "HEAD"])).trim();
     return { gitHead, dirtyPaths: await dirtyPaths(root, config) };
@@ -212,7 +229,7 @@ export async function createDeliverySnapshot(
   config: ProjectConfig,
 ): Promise<DeliverySnapshot | undefined> {
   const implementation = implementationFiles(state.steps.implementation?.evidence);
-  assertImplementationFilesInProtectedRoots(implementation, config.protectedRoots);
+  assertImplementationFilesInGovernedRoots(implementation, config.governedRoots);
 
   const baseline = state.deliveryBaseline;
   const lineage = state.workspace;
@@ -241,7 +258,7 @@ export async function createDeliverySnapshot(
     ...implementation,
     ...Object.entries(lineage.ownership).filter(([, owner]) => owner === "feature").map(([file]) => file),
   ]);
-  const protectedChanged = [...new Set([...committed, ...currentDirty])].filter((file) => isWithinProtectedRoot(file, config.protectedRoots));
+  const protectedChanged = [...new Set([...committed, ...currentDirty])].filter((file) => isWithinProtectedRoot(file, config.governedRoots));
   const unexpected = protectedChanged.filter((file) => !featureOwned.has(file)
     && !(initialDirty.has(file) && lineage.ownership[file] === "excluded"));
   if (unexpected.length) {
@@ -308,7 +325,7 @@ export async function createDeliverySnapshot(
     "## 归属记录",
     "",
     `- Feature-owned 路径：${files.length ? files.join(", ") : "无"}`,
-    `- 用户手动接纳路径：${Object.entries(lineage.ownershipSource).filter(([, source]) => source === "manual-commit").map(([file]) => file).join(", ") || "无"}`,
+    `- 用户手动接纳路径：${Object.entries(lineage.ownershipSource).filter(([, source]) => source === "user-adopted").map(([file]) => file).join(", ") || "无"}`,
     `- 未提交路径：${currentDirty.filter((file) => featureOwned.has(file)).join(", ") || "无"}`,
     `- 用户接受风险：${state.qualityExceptions.filter((exception) => exception.status === "current").map((exception) => exception.kind).join(", ") || "无"}`,
     "",
@@ -330,7 +347,7 @@ export async function createDeliverySnapshot(
     files,
     commitRange: current.head === lineage.baseHead ? [] : [lineage.baseHead, current.head],
     ownedPaths: files,
-    manualAdoptedPaths: Object.entries(lineage.ownershipSource).filter(([, source]) => source === "manual-commit").map(([file]) => file),
+    manualAdoptedPaths: Object.entries(lineage.ownershipSource).filter(([, source]) => source === "user-adopted").map(([file]) => file),
     uncommittedPaths: currentDirty.filter((file) => featureOwned.has(file)),
     qualityExceptions: state.qualityExceptions.filter((exception) => exception.status === "current").map((exception) => exception.kind),
   };

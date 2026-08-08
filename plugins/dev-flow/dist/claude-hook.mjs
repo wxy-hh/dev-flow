@@ -1,55 +1,35 @@
-/* dev-flow 4.0.3; built from source, deterministic build */
+/* dev-flow 5.0.0; built from source, deterministic build */
 
 // plugins/dev-flow/src/core/state-store.ts
 import { randomUUID as randomUUID4, createHash as createHash5 } from "node:crypto";
-import { access, mkdir as mkdir4, open as open4, readdir as readdir4, readFile as readFile5, rename as rename4, rm, rmdir, writeFile } from "node:fs/promises";
+import { access, lstat as lstat2, mkdir as mkdir4, open as open4, readdir as readdir4, readFile as readFile5, readlink as readlink2, rename as rename4, rm, rmdir, writeFile } from "node:fs/promises";
 import { hostname } from "node:os";
 import path7 from "node:path";
 
 // plugins/dev-flow/policy/contract.json
 var contract_default = {
-  schemaVersion: 3,
+  schemaVersion: 4,
   routes: {
     xs: {
       orderedSteps: ["locate", "implementation", "verification", "finalize"],
       stages: ["locate", "implementation", "verification", "finalize"],
-      requiredArtifacts: [],
-      featureCheckRequired: false
+      requiredArtifacts: []
     },
     s: {
       orderedSteps: ["boundary", "implementation", "verification", "finalize"],
       stages: ["boundary", "implementation", "verification", "finalize"],
-      requiredArtifacts: [],
-      featureCheckRequired: false
+      requiredArtifacts: []
     },
-    "light-m": {
+    m: {
       orderedSteps: ["planning", "implementation", "code_review", "verification", "finalize"],
       stages: ["planning", "implementation", "code_review", "verification", "finalize"],
-      requiredArtifacts: [],
-      featureCheckRequired: false
+      requiredArtifacts: []
     },
-    "standard-m": {
-      orderedSteps: ["requirements_alignment", "planning", "implementation", "code_review", "verification", "finalize"],
-      stages: ["requirements_alignment", "planning", "implementation", "code_review", "verification", "finalize"],
+    l: {
+      orderedSteps: ["requirements_alignment", "planning", "plan_review", "execution_approval", "implementation", "code_review", "verification", "finalize"],
+      stages: ["requirements_alignment", "planning", "plan_review", "execution_approval", "implementation", "code_review", "verification", "finalize"],
       requiredArtifacts: ["requirements", "implementation-plan"],
-      artifactSteps: { requirements_alignment: ["requirements"], planning: ["implementation-plan"] },
-      artifactTransitions: [{ artifact: "plan-review", capability: "review", from: "absent", to: "generated", steps: ["planning"] }],
-      featureCheckRequired: false
-    },
-    "light-l": {
-      orderedSteps: ["planning", "implementation", "code_review", "verification", "finalize"],
-      stages: ["planning", "implementation", "code_review", "verification", "finalize"],
-      requiredArtifacts: ["implementation-plan"],
-      artifactSteps: { planning: ["implementation-plan"] },
-      featureCheckRequired: false
-    },
-    "standard-l": {
-      orderedSteps: ["requirements_alignment", "planning", "implementation", "code_review", "verification", "finalize"],
-      stages: ["requirements_alignment", "planning", "implementation", "code_review", "verification", "finalize"],
-      requiredArtifacts: ["requirements", "implementation-plan"],
-      artifactSteps: { requirements_alignment: ["requirements"], planning: ["implementation-plan"] },
-      artifactTransitions: [{ artifact: "plan-review", capability: "review", from: "absent", to: "generated", steps: ["planning"] }],
-      featureCheckRequired: false
+      artifactSteps: { requirements_alignment: ["requirements"], planning: ["implementation-plan"] }
     }
   },
   riskEnhancements: {
@@ -59,7 +39,7 @@ var contract_default = {
     external: { checks: ["contract-failure"], verification: "integration" },
     availability: { checks: ["degradation-recovery"], verification: "integration" },
     critical_correctness: { checks: ["full-code-review"], verification: "full" },
-    irreversible_consequence: { checks: ["full-rollback", "full-code-review"], verification: "full" }
+    irreversible_consequence: { checks: ["backup-preview-abort-compensation", "full-code-review"], verification: "full" }
   },
   topologyMinimumLevel: {
     local: "XS",
@@ -86,7 +66,7 @@ var SUPPORTED_WORKFLOW_CAPABILITIES = Object.freeze({
 
 // plugins/dev-flow/src/policy/contract.ts
 var contract = contract_default;
-if (contract.schemaVersion !== 3) {
+if (contract.schemaVersion !== 4) {
   throw new Error(`unsupported contract schema ${String(contract.schemaVersion)}`);
 }
 var allowedRiskLabels = Object.freeze(Object.keys(contract.riskEnhancements));
@@ -145,84 +125,48 @@ function normalizeWorkflowCapabilities(value) {
   }
   return Object.freeze({ ...candidate });
 }
-function routeDefinitionForFeature(route, capabilities) {
+function routeDefinitionForFeature(route, controlsOrCapabilities) {
   const definition = cloneRouteDefinition(routeDefinition(route));
-  const normalized = normalizeWorkflowCapabilities(capabilities);
-  for (const transition of definition.artifactTransitions ?? []) {
-    if (normalized[transition.capability] === 1) {
-      moveArtifactToGenerated(definition, transition.artifact, transition.steps);
+  if (controlsOrCapabilities && "plan" in controlsOrCapabilities) {
+    const controls = controlsOrCapabilities;
+    definition.orderedSteps = [];
+    if (controls.requirements) definition.orderedSteps.push("requirements_alignment");
+    definition.orderedSteps.push(controls.plan === "locate" ? "locate" : controls.plan === "brief" ? "boundary" : "planning");
+    definition.orderedSteps.push("implementation");
+    if (controls.codeReview !== "none") definition.orderedSteps.push("code_review");
+    definition.orderedSteps.push("verification", "finalize");
+    definition.requiredArtifacts = [];
+    definition.artifactSteps = {};
+    if (controls.requirements) {
+      definition.requiredArtifacts.push("requirements");
+      definition.artifactSteps.requirements_alignment = ["requirements"];
+    }
+    if (controls.plan === "formal") {
+      definition.requiredArtifacts.push("implementation-plan");
+      definition.artifactSteps.planning = ["implementation-plan"];
+    }
+    if (controls.planReview) {
+      definition.generatedArtifacts = ["plan-review"];
+      definition.generatedArtifactSteps = { planning: ["plan-review"] };
+    }
+  } else {
+    const normalized = normalizeWorkflowCapabilities(controlsOrCapabilities);
+    for (const transition of definition.artifactTransitions ?? []) {
+      if (normalized[transition.capability] === 1) moveArtifactToGenerated(definition, transition.artifact, transition.steps);
     }
   }
   validateArtifactModes(definition);
   return definition;
 }
-function traceEnforcementRequired(route, capabilities) {
-  return normalizeWorkflowCapabilities(capabilities).trace === 1 && (route === "standard-m" || route === "standard-l");
+function traceEnforcementRequired(route, controlsOrCapabilities) {
+  return controlsOrCapabilities && "plan" in controlsOrCapabilities ? controlsOrCapabilities.trace : normalizeWorkflowCapabilities(controlsOrCapabilities).trace === 1 && (route === "m" || route === "l");
 }
-function reviewEnforcementRequired(route, capabilities) {
-  return normalizeWorkflowCapabilities(capabilities).review === 1 && (route === "standard-m" || route === "standard-l");
+function reviewEnforcementRequired(route, controlsOrCapabilities) {
+  return controlsOrCapabilities && "plan" in controlsOrCapabilities ? controlsOrCapabilities.planReview : normalizeWorkflowCapabilities(controlsOrCapabilities).review === 1 && (route === "m" || route === "l");
 }
-function checkpointsEnforcementRequired(route, capabilities) {
-  return normalizeWorkflowCapabilities(capabilities).checkpoints === 1 && traceEnforcementRequired(route, capabilities);
+function checkpointsEnforcementRequired(route, controlsOrCapabilities) {
+  return controlsOrCapabilities && "plan" in controlsOrCapabilities ? controlsOrCapabilities.checkpoints === "unit-chain" && controlsOrCapabilities.trace : normalizeWorkflowCapabilities(controlsOrCapabilities).checkpoints === 1 && traceEnforcementRequired(route, controlsOrCapabilities);
 }
-
-// plugins/dev-flow/src/core/errors.ts
-var chineseRecovery = (code) => {
-  if (code.includes("REVISION") || code.includes("CONFLICT")) {
-    return { kind: "refresh", instruction: "\u5237\u65B0\u5F53\u524D\u72B6\u6001\u540E\u91CD\u8BD5\u539F\u64CD\u4F5C\u3002", requiresUserDecision: false, retryOriginal: true };
-  }
-  if (code.includes("INTEGRITY") || code.includes("CORRUPT") || code.includes("UNREADABLE")) {
-    return { kind: "repair", instruction: "\u8FD0\u884C doctor \u68C0\u67E5\u5F53\u524D\u72B6\u6001\uFF1B\u4E0D\u8981\u624B\u52A8\u4FEE\u6539\u63A7\u5236\u6587\u4EF6\u3002", requiresUserDecision: false, retryOriginal: false };
-  }
-  if (code.includes("REQUIRED") || code.includes("INCOMPLETE") || code.includes("STALE")) {
-    return { kind: "retry", instruction: "\u6309\u5F53\u524D\u72B6\u6001\u63D0\u793A\u8865\u9F50\u7F3A\u5931\u8BC1\u636E\u540E\u91CD\u8BD5\u3002", requiresUserDecision: false, retryOriginal: true };
-  }
-  return { kind: "ask-user", instruction: "\u8BF7\u786E\u8BA4\u662F\u5426\u6309\u63A8\u8350\u6062\u590D\u52A8\u4F5C\u7EE7\u7EED\u3002", requiresUserDecision: true, retryOriginal: false };
-};
-var DevFlowError = class extends Error {
-  constructor(code, message, details = {}) {
-    super(`${code}: ${message}`);
-    this.code = code;
-    this.details = details;
-    this.name = "DevFlowError";
-    this.userMessage = typeof details.userMessage === "string" ? details.userMessage : "\u5F53\u524D\u52A8\u4F5C\u672A\u5B8C\u6210\u3002";
-    this.cause = typeof details.cause === "string" ? details.cause : "\u5F53\u524D\u6D41\u7A0B\u6761\u4EF6\u5C1A\u672A\u6EE1\u8DB3\u3002";
-    this.impact = typeof details.impact === "string" ? details.impact : "\u6D41\u7A0B\u4FDD\u6301\u5728\u5F53\u524D\u9636\u6BB5\uFF0C\u5DF2\u6709\u7528\u6237\u6587\u4EF6\u4E0D\u4F1A\u88AB\u81EA\u52A8\u6539\u5199\u3002";
-    this.recovery = {
-      ...chineseRecovery(code),
-      ...typeof details.recoveryKind === "string" ? { kind: details.recoveryKind } : {},
-      ...typeof details.recoveryInstruction === "string" ? { instruction: details.recoveryInstruction } : {},
-      ...typeof details.requiresUserDecision === "boolean" ? { requiresUserDecision: details.requiresUserDecision } : {},
-      ...typeof details.retryOriginal === "boolean" ? { retryOriginal: details.retryOriginal } : {}
-    };
-  }
-  userMessage;
-  cause;
-  impact;
-  recovery;
-  toFailure() {
-    const technical = { ...this.details };
-    if (this.code.includes("REVISION_CONFLICT")) {
-      technical.basisChanged = false;
-      technical.safeToRefresh = true;
-    }
-    return {
-      code: this.code,
-      userMessage: this.userMessage,
-      cause: this.cause,
-      impact: this.impact,
-      recovery: { ...this.recovery },
-      ...Object.keys(technical).length ? { technical } : {}
-    };
-  }
-};
-
-// plugins/dev-flow/src/core/fingerprint.ts
-import { execFile } from "node:child_process";
-import { createHash } from "node:crypto";
-import { readdir, readFile, lstat } from "node:fs/promises";
-import path2 from "node:path";
-import { promisify } from "node:util";
 
 // plugins/dev-flow/src/policy/rollback.ts
 var IMPLEMENTATION_UNIT_TRANSITIONS = Object.freeze({
@@ -278,8 +222,14 @@ function globSegmentMatches(pattern, segment) {
   if (head === "?") return segment.length > 0 && globSegmentMatches(rest.join(""), segment.slice(1));
   return segment.startsWith(head) && globSegmentMatches(rest.join(""), segment.slice(head.length));
 }
-function invalid(message) {
-  throw new Error(`ROLLBACK_PROTOCOL_INVALID: ${message}`);
+var RollbackProtocolError = class extends Error {
+  constructor(code, message) {
+    super(`${code}: ${message}`);
+    this.code = code;
+  }
+};
+function invalid(message, code = "ROLLBACK_PROTOCOL_INVALID") {
+  throw new RollbackProtocolError(code, message);
 }
 function isRecord(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -311,6 +261,89 @@ function implementationUnitForRollbackNode(node, basisHash2) {
   return { unitId: node.id, status: "pending", basisHash: basisHash2 };
 }
 
+// plugins/dev-flow/src/core/errors.ts
+var chineseRecovery = (code) => {
+  if (code.includes("REVISION") || code.includes("CONFLICT")) {
+    return { kind: "refresh", instruction: "\u5237\u65B0\u5F53\u524D\u72B6\u6001\u540E\u91CD\u8BD5\u539F\u64CD\u4F5C\u3002", requiresUserDecision: false, retryOriginal: true };
+  }
+  if (code.includes("INTEGRITY") || code.includes("CORRUPT") || code.includes("UNREADABLE")) {
+    return { kind: "repair", instruction: "\u8FD0\u884C doctor \u68C0\u67E5\u5F53\u524D\u72B6\u6001\uFF1B\u4E0D\u8981\u624B\u52A8\u4FEE\u6539\u63A7\u5236\u6587\u4EF6\u3002", requiresUserDecision: false, retryOriginal: false };
+  }
+  if (code.includes("REQUIRED") || code.includes("INCOMPLETE") || code.includes("STALE")) {
+    return { kind: "retry", instruction: "\u6309\u5F53\u524D\u72B6\u6001\u63D0\u793A\u8865\u9F50\u7F3A\u5931\u8BC1\u636E\u540E\u91CD\u8BD5\u3002", requiresUserDecision: false, retryOriginal: true };
+  }
+  return { kind: "ask-user", instruction: "\u8BF7\u786E\u8BA4\u662F\u5426\u6309\u63A8\u8350\u6062\u590D\u52A8\u4F5C\u7EE7\u7EED\u3002", requiresUserDecision: true, retryOriginal: false };
+};
+var safeDetailKeys = /* @__PURE__ */ new Set([
+  "path",
+  "paths",
+  "file",
+  "files",
+  "field",
+  "allowed",
+  "missing",
+  "missingGuarantees",
+  "command",
+  "commandId",
+  "currentRevision",
+  "expectedRevision",
+  "expectedStage",
+  "schemaVersion",
+  "decisionIds",
+  "approvalIds",
+  "incomplete",
+  "conflicts",
+  "issues",
+  "recoveryHint"
+]);
+function safeFailureDetails(details) {
+  return Object.fromEntries(Object.entries(details).filter(([key, value]) => safeDetailKeys.has(key) && !/(?:capability|token|secret|hash|sha|fingerprint)/iu.test(key) && (typeof value !== "string" || value.length <= 2e3)));
+}
+var DevFlowError = class extends Error {
+  constructor(code, message, details = {}) {
+    super(`${code}: ${message}`);
+    this.code = code;
+    this.details = details;
+    this.name = "DevFlowError";
+    this.userMessage = typeof details.userMessage === "string" ? details.userMessage : "\u5F53\u524D\u52A8\u4F5C\u672A\u5B8C\u6210\u3002";
+    this.cause = typeof details.cause === "string" ? details.cause : /[\u3400-\u9fff]/u.test(message) ? message : `\u672A\u6EE1\u8DB3\u9519\u8BEF\u7801 ${code} \u5BF9\u5E94\u7684\u6D41\u7A0B\u6761\u4EF6\u3002`;
+    this.impact = typeof details.impact === "string" ? details.impact : "\u6D41\u7A0B\u4FDD\u6301\u5728\u5F53\u524D\u9636\u6BB5\uFF0C\u5DF2\u6709\u7528\u6237\u6587\u4EF6\u4E0D\u4F1A\u88AB\u81EA\u52A8\u6539\u5199\u3002";
+    this.recovery = {
+      ...chineseRecovery(code),
+      ...typeof details.recoveryKind === "string" ? { kind: details.recoveryKind } : {},
+      ...typeof details.recoveryInstruction === "string" ? { instruction: details.recoveryInstruction } : {},
+      ...typeof details.requiresUserDecision === "boolean" ? { requiresUserDecision: details.requiresUserDecision } : {},
+      ...typeof details.retryOriginal === "boolean" ? { retryOriginal: details.retryOriginal } : {}
+    };
+  }
+  userMessage;
+  cause;
+  impact;
+  recovery;
+  toFailure() {
+    const technical = safeFailureDetails(this.details);
+    if (this.code.includes("REVISION_CONFLICT")) {
+      technical.basisChanged = false;
+      technical.safeToRefresh = true;
+    }
+    return {
+      code: this.code,
+      userMessage: this.userMessage,
+      cause: this.cause,
+      impact: this.impact,
+      recovery: { ...this.recovery },
+      ...Object.keys(technical).length ? { technical } : {}
+    };
+  }
+};
+
+// plugins/dev-flow/src/core/fingerprint.ts
+import { execFile } from "node:child_process";
+import { createHash } from "node:crypto";
+import { readdir, readFile, readlink, realpath, lstat } from "node:fs/promises";
+import path2 from "node:path";
+import { promisify } from "node:util";
+
 // plugins/dev-flow/src/core/path-normalization.ts
 import path from "node:path";
 function normalizeUnicode(value) {
@@ -324,9 +357,9 @@ function normalizeProjectPath(value) {
 var runFile = promisify(execFile);
 var ignored = /* @__PURE__ */ new Set([".git", ".dev-flow", "node_modules"]);
 function configFor(input) {
-  return Array.isArray(input) ? { protectedRoots: input } : input;
+  return Array.isArray(input) ? { governedRoots: input } : input;
 }
-async function collect(root, relative, files) {
+async function collect(root, relative, files, excludes) {
   const absolute = path2.join(root, relative);
   let entries;
   try {
@@ -338,10 +371,11 @@ async function collect(root, relative, files) {
   for (const entry of entries.sort((a, b) => a.name.localeCompare(b.name))) {
     if (ignored.has(entry.name)) continue;
     const child = normalizeProjectPath(path2.join(relative, entry.name));
+    if (excludes?.some((pattern) => pathWithinFileScope(child, [pattern]))) continue;
     const target = path2.join(root, child);
     const metadata = await lstat(target);
     if (metadata.isSymbolicLink()) throw new DevFlowError("UNSAFE_PROTECTED_ROOT", `symbolic link is not allowed: ${child}`);
-    if (metadata.isDirectory()) await collect(root, child, files);
+    if (metadata.isDirectory()) await collect(root, child, files, excludes);
     else if (metadata.isFile()) files.push(child);
   }
 }
@@ -364,13 +398,13 @@ async function gitOutput(root, args) {
     const result = await runFile("git", args, { cwd: root, encoding: "utf8", maxBuffer: 8 * 1024 * 1024 });
     return String(result.stdout);
   } catch (error) {
-    throw new DevFlowError("PROTECTED_ROOT_ENUMERATION_FAILED", "Git could not enumerate protected roots", {
+    throw new DevFlowError("PROTECTED_ROOT_ENUMERATION_FAILED", "Git \u65E0\u6CD5\u679A\u4E3E governed roots\u3002", {
       command: ["git", ...args].join(" "),
       cause: error instanceof Error ? error.message : String(error)
     });
   }
 }
-async function gitFiles(root, protectedRoots) {
+async function gitFiles(root, governedRoots) {
   const hasMetadata = await hasGitMetadata(root);
   let insideWorktree = false;
   try {
@@ -380,17 +414,21 @@ async function gitFiles(root, protectedRoots) {
     throw error;
   }
   if (!insideWorktree) return void 0;
-  const output = await gitOutput(root, ["ls-files", "--cached", "--others", "--exclude-standard", "-z", "--", ...protectedRoots]);
+  const output = await gitOutput(root, ["ls-files", "--cached", "--others", "--exclude-standard", "-z", "--", ...governedRoots]);
   return output.split("\0").filter(Boolean).map(normalizeProjectPath);
 }
-function withinConfiguredRoot(file, protectedRoots) {
-  return protectedRoots.some((root) => root === "." || file === root || file.startsWith(`${root}/`));
+async function gitTrackedFiles(root, governedRoots) {
+  const output = await gitOutput(root, ["ls-files", "--cached", "-z", "--", ...governedRoots]);
+  return new Set(output.split("\0").filter(Boolean).map(normalizeProjectPath));
+}
+function withinConfiguredRoot(file, governedRoots) {
+  return governedRoots.some((root) => root === "." || file === root || file.startsWith(`${root}/`));
 }
 function applyExcludes(files, excludes) {
   return files.filter((file) => !excludes?.some((pattern) => pathWithinFileScope(file, [pattern])));
 }
-async function assertProtectedRootsSafe(root, protectedRoots) {
-  for (const relative of protectedRoots) {
+async function assertGovernedRootsSafe(root, governedRoots) {
+  for (const relative of governedRoots) {
     try {
       const metadata = await lstat(path2.join(root, relative));
       if (metadata.isSymbolicLink()) throw new DevFlowError("UNSAFE_PROTECTED_ROOT", `symbolic link is not allowed: ${relative}`);
@@ -402,15 +440,19 @@ async function assertProtectedRootsSafe(root, protectedRoots) {
 }
 async function enumerateProtectedFiles(root, input) {
   const config = configFor(input);
-  const protectedRoots = [...new Set(config.protectedRoots.map(normalizeProjectPath))].sort();
-  await assertProtectedRootsSafe(root, protectedRoots);
-  const fromGit = await gitFiles(root, protectedRoots);
+  const governedRoots = [...new Set(config.governedRoots.map(normalizeProjectPath))].sort();
+  const fromGit = await gitFiles(root, governedRoots);
+  if (!fromGit) {
+    const rootsToValidate = governedRoots.filter((entry) => !config.governedRootsExclude?.some((pattern) => pathWithinFileScope(entry, [pattern])));
+    await assertGovernedRootsSafe(root, rootsToValidate);
+  }
   const files = fromGit ?? (() => {
     const collected = [];
-    return Promise.all(protectedRoots.map((item) => collect(root, item, collected))).then(() => collected);
+    return Promise.all(governedRoots.map((item) => collect(root, item, collected, config.governedRootsExclude))).then(() => collected);
   })();
   const resolved = await files;
-  const unique = [...new Set(resolved.map(normalizeProjectPath).filter((file) => withinConfiguredRoot(file, protectedRoots)))].sort();
+  const unique = applyExcludes([...new Set(resolved.map(normalizeProjectPath).filter((file) => withinConfiguredRoot(file, governedRoots)))].sort(), config.governedRootsExclude);
+  const tracked = fromGit ? await gitTrackedFiles(root, governedRoots) : /* @__PURE__ */ new Set();
   for (const relative of unique) {
     let metadata;
     try {
@@ -419,7 +461,15 @@ async function enumerateProtectedFiles(root, input) {
       if (error.code === "ENOENT") continue;
       throw error;
     }
-    if (metadata.isSymbolicLink()) throw new DevFlowError("UNSAFE_PROTECTED_ROOT", `symbolic link is not allowed: ${relative}`);
+    if (metadata.isSymbolicLink()) {
+      if (!tracked.has(relative)) throw new DevFlowError("UNSAFE_GOVERNED_SYMLINK", `symlink must be Git-tracked: ${relative}`, { path: relative, recoveryHint: "\u8DDF\u8E2A\u8BE5\u4ED3\u5185\u94FE\u63A5\uFF0C\u6216\u5C06\u5176\u6392\u9664\u5728 governedRoots \u4E4B\u5916" });
+      const resolvedTarget = await realpath(path2.join(root, relative));
+      const rootPath = await realpath(root);
+      const targetRelative = normalizeProjectPath(path2.relative(rootPath, resolvedTarget));
+      if (!targetRelative || targetRelative === ".." || targetRelative.startsWith("../") || path2.isAbsolute(targetRelative) || targetRelative === ".git" || targetRelative.startsWith(".git/") || targetRelative === ".dev-flow" || targetRelative.startsWith(".dev-flow/")) {
+        throw new DevFlowError("UNSAFE_GOVERNED_SYMLINK", `symlink target escapes governed safety boundary: ${relative}`, { path: relative, linkTarget: await readlink(path2.join(root, relative)) });
+      }
+    }
   }
   const present = [];
   for (const relative of unique) {
@@ -430,29 +480,41 @@ async function enumerateProtectedFiles(root, input) {
       if (error.code !== "ENOENT") throw error;
     }
   }
-  return applyExcludes(present, config.protectedRootsExclude);
+  return present;
 }
-async function fingerprintProtectedRoots(root, input) {
+async function fingerprintGovernedRoots(root, input) {
   const files = await enumerateProtectedFiles(root, input);
   const digest7 = createHash("sha256");
   for (const relative of files) {
+    const absolute = path2.join(root, relative);
+    const metadata = await lstat(absolute);
     digest7.update(relative);
     digest7.update("\0");
-    digest7.update(await readFile(path2.join(root, relative)));
+    if (metadata.isSymbolicLink()) {
+      digest7.update("symlink\0");
+      digest7.update(await readlink(absolute));
+    } else {
+      digest7.update("file\0");
+      digest7.update(await readFile(absolute));
+    }
     digest7.update("\0");
   }
   return digest7.digest("hex");
 }
-async function snapshotProtectedRoots(root, input) {
+async function snapshotGovernedRoots(root, input) {
   const files = await enumerateProtectedFiles(root, input);
   const snapshots = [];
   for (const relative of files) {
     const absolute = path2.join(root, relative);
     const metadata = await lstat(absolute);
+    const symbolic = metadata.isSymbolicLink();
+    const bytes = symbolic ? Buffer.from(await readlink(absolute)) : await readFile(absolute);
     snapshots.push({
       path: relative,
-      sha256: createHash("sha256").update(await readFile(absolute)).digest("hex"),
-      mode: (metadata.mode & 511).toString(8).padStart(3, "0")
+      sha256: createHash("sha256").update(bytes).digest("hex"),
+      mode: (metadata.mode & 511).toString(8).padStart(3, "0"),
+      kind: symbolic ? "symlink" : "file",
+      ...symbolic ? { linkTarget: bytes.toString("utf8") } : {}
     });
   }
   return snapshots;
@@ -470,35 +532,37 @@ function normalizedRelativeDirectory(value) {
 }
 function validateProjectConfig(value) {
   const config = value;
-  if (config?.schemaVersion !== 1 || config.enforcement?.mode !== "strict") throw new DevFlowError("INVALID_PROJECT_CONFIG", "only schema v1 strict configuration is supported");
+  if (value?.schemaVersion === 1) throw new DevFlowError("UNSUPPORTED_PROJECT_SCHEMA", "\u9879\u76EE\u4ECD\u4F7F\u7528 Dev Flow 4.x schema v1\u3002", {
+    schemaVersion: 1,
+    recoveryHint: "\u5148\u7528 4.x \u5B8C\u6210\u6216\u653E\u5F03 active feature\uFF0C\u5907\u4EFD .dev-flow\uFF0C\u518D\u4EE5 schema v2 \u91CD\u65B0\u521D\u59CB\u5316"
+  });
+  if (config?.schemaVersion !== 2 || config.enforcement?.mode !== "strict") throw new DevFlowError("INVALID_PROJECT_CONFIG", "only schema v2 strict configuration is supported");
   if (config.enforcement.gitWriteRequiresLogicComplete !== true || config.enforcement.oneActiveFeature !== true || config.enforcement.requireExplicitHumanReply !== true) {
     throw new DevFlowError("INVALID_PROJECT_CONFIG", "all strict enforcement controls must be enabled");
   }
-  if (!Array.isArray(config.protectedRoots) || !config.protectedRoots.length) {
-    throw new DevFlowError("INVALID_PROJECT_CONFIG", "protectedRoots must be project-relative non-.dev-flow directories");
+  if (!Array.isArray(config.governedRoots) || !config.governedRoots.length) {
+    throw new DevFlowError("INVALID_PROJECT_CONFIG", "governedRoots must contain project-relative files or directories outside .dev-flow");
   }
-  const protectedRoots = config.protectedRoots.map(normalizedRelativeDirectory);
-  if (protectedRoots.some((root) => !root || root.startsWith(".dev-flow"))) {
-    throw new DevFlowError("INVALID_PROJECT_CONFIG", "protectedRoots must be project-relative non-.dev-flow directories");
+  const governedRoots = config.governedRoots.map(normalizedRelativeDirectory);
+  if (governedRoots.some((root) => !root || root === ".git" || root.startsWith(".git/") || root === ".dev-flow" || root.startsWith(".dev-flow/"))) {
+    throw new DevFlowError("INVALID_PROJECT_CONFIG", "governedRoots must contain project-relative files or directories outside control paths");
   }
-  config.protectedRoots = protectedRoots;
-  if (config.protectedRootsExclude !== void 0) {
-    if (!Array.isArray(config.protectedRootsExclude) || config.protectedRootsExclude.some((pattern) => typeof pattern !== "string" || !relativeDirectory(pattern))) {
-      throw new DevFlowError("INVALID_PROJECT_CONFIG", "protectedRootsExclude must contain non-empty relative glob patterns without ..");
+  config.governedRoots = governedRoots;
+  if (config.governedRootsExclude !== void 0) {
+    if (!Array.isArray(config.governedRootsExclude) || config.governedRootsExclude.some((pattern) => typeof pattern !== "string" || !relativeDirectory(pattern))) {
+      throw new DevFlowError("INVALID_PROJECT_CONFIG", "governedRootsExclude must contain non-empty relative patterns without ..");
     }
-    config.protectedRootsExclude = config.protectedRootsExclude.map((pattern) => normalizeProjectPath(pattern));
+    config.governedRootsExclude = config.governedRootsExclude.map((pattern) => normalizeProjectPath(pattern));
   }
   const commands = config.verification?.commands;
   if (!Array.isArray(commands) || !commands.length) throw new DevFlowError("INVALID_PROJECT_CONFIG", "at least one verification command is required");
   const ids = /* @__PURE__ */ new Set();
   for (const command of commands) {
-    if (!command?.id || !command.command || !Array.isArray(command.args) || !relativeDirectory(command.cwd)) throw new DevFlowError("INVALID_PROJECT_CONFIG", "invalid verification command");
+    if (!command?.id || !command.command || !Array.isArray(command.args) || !relativeDirectory(command.cwd) || !Array.isArray(command.provides) || command.provides.length === 0 || command.provides.some((kind) => !["targeted", "behavior", "integration", "full"].includes(kind))) {
+      throw new DevFlowError("INVALID_PROJECT_CONFIG", "verification commands require valid provides guarantees");
+    }
     if (ids.has(command.id)) throw new DevFlowError("INVALID_PROJECT_CONFIG", "verification command ids must be unique");
     ids.add(command.id);
-  }
-  const behaviorCommands = config.verification?.behaviorCommands;
-  if (!Array.isArray(behaviorCommands) || behaviorCommands.some((id) => !ids.has(id))) {
-    throw new DevFlowError("INVALID_PROJECT_CONFIG", "behaviorCommands must reference configured command ids");
   }
   const preflightCommands = config.verification?.preflightCommands;
   if (preflightCommands !== void 0 && (!Array.isArray(preflightCommands) || preflightCommands.some((id) => typeof id !== "string" || !ids.has(id)))) {
@@ -683,7 +747,7 @@ function validateTraceGraph(ledger, route, mode, options = {}) {
       if (node.covers.length === 0) invalid2("task cannot be orphaned", { id: node.id });
       for (const covered of node.covers) assertReference(nodes, covered, ["requirement", "acceptance-criterion"], { from: node.id });
       const rollback = nodeById(nodes, node.rollbackUnit);
-      if (!rollback && !(route === "standard-l" && mode === "partial")) invalid2("task references a missing rollback unit", { id: node.id, rollbackUnit: node.rollbackUnit });
+      if (!rollback && !(route === "l" && mode === "partial")) invalid2("task references a missing rollback unit", { id: node.id, rollbackUnit: node.rollbackUnit });
       if (rollback && rollback.kind !== "rollback") invalid2("task rollback unit has the wrong kind", { id: node.id });
       if (rollback?.kind === "rollback" && !rollback.tasks.includes(node.id)) {
         invalid2("task rollback unit must list the task", { id: node.id, rollbackUnit: node.rollbackUnit });
@@ -743,7 +807,7 @@ function assertTraceabilityComplete(ledger, route, currentProjectConfigSha256) {
 }
 function assertTraceSliceCurrent(ledger, route, step, currentProjectConfigSha256) {
   assertConfigCurrent(ledger, currentProjectConfigSha256);
-  const completeSteps = /* @__PURE__ */ new Set(["planning", "implementation", "feature_check", "finalize"]);
+  const completeSteps = /* @__PURE__ */ new Set(["planning", "implementation", "finalize"]);
   if (completeSteps.has(step)) return assertTraceabilityComplete(ledger, route, currentProjectConfigSha256);
   const requirements = ["requirement", "acceptance-criterion"];
   if (["requirements"].includes(step)) {
@@ -756,7 +820,7 @@ function assertTraceSliceCurrent(ledger, route, step, currentProjectConfigSha256
     }
     return;
   }
-  const kinds = step === "implementation_plan" ? [...requirements, "task", ...route === "standard-m" ? ["rollback"] : []] : step === "coverage_review" ? [...requirements, "task", "test"] : step === "rollback_unit" ? [...requirements, "task", "test", "rollback"] : [...requirements, "task", "test", "rollback"];
+  const kinds = step === "implementation_plan" ? [...requirements, "task", ...route === "m" ? ["rollback"] : []] : step === "coverage_review" ? [...requirements, "task", "test"] : step === "rollback_unit" ? [...requirements, "task", "test", "rollback"] : [...requirements, "task", "test", "rollback"];
   requireCurrentKinds(ledger, kinds);
   try {
     validateTraceGraph(ledger, route, step === "rollback_unit" ? "complete" : "partial");
@@ -774,7 +838,7 @@ function assertTraceSliceCurrent(ledger, route, step, currentProjectConfigSha256
 // plugins/dev-flow/src/core/step-order.ts
 function currentOpenStep(state) {
   if (state.mode !== "routed") return void 0;
-  return routeDefinitionForFeature(state.route, state.workflowCapabilities).orderedSteps.find((step) => state.steps[step]?.status !== "satisfied");
+  return routeDefinitionForFeature(state.route, state.classification.controls).orderedSteps.find((step) => state.steps[step]?.status !== "satisfied");
 }
 
 // plugins/dev-flow/src/core/traceability-store.ts
@@ -867,7 +931,7 @@ function traceSliceForWorkflowStep(step) {
   return step;
 }
 function traceIsEnforced(state) {
-  return traceEnforcementRequired(state.route, state.workflowCapabilities);
+  return traceEnforcementRequired(state.route, state.classification.controls);
 }
 function blockerFor(step, error) {
   const value = error;
@@ -955,13 +1019,17 @@ var reviewRoles = [
   "architecture-testability",
   "rollback-operability",
   "security",
-  "data-irreversibility"
+  "data-irreversibility",
+  "money-safety",
+  "contract-failure",
+  "recovery-observability",
+  "critical-correctness"
 ];
-function deriveReviewJobRequirements(route, riskLabels) {
-  if (route !== "standard-m" && route !== "standard-l") return [];
-  const roles = ["requirements-coverage", "architecture-testability", "rollback-operability"];
-  if (riskLabels.includes("security")) roles.push("security");
-  if (riskLabels.some((label) => label === "data" || label === "money" || label === "irreversible_consequence")) {
+function deriveReviewJobRequirements(route, riskLabels, derivedRoles) {
+  if (route !== "m" && route !== "l") return [];
+  const roles = derivedRoles?.length ? [...derivedRoles] : ["requirements-coverage", "architecture-testability", "rollback-operability"];
+  if (!derivedRoles && riskLabels.includes("security")) roles.push("security");
+  if (!derivedRoles && riskLabels.some((label) => label === "data" || label === "money" || label === "irreversible_consequence")) {
     roles.push("data-irreversibility");
   }
   const reviewDepth = riskLabels.includes("critical_correctness") ? "full" : "standard";
@@ -1028,12 +1096,13 @@ function validAttestation(value) {
 function validateBatch(value) {
   if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
   const batch = value;
-  if (typeof batch.batchId !== "string" || !batch.batchId || !validHash(batch.basisHash) || !batch.basis || batch.validity !== "current" && batch.validity !== "stale" || batch.progress !== "open" && batch.progress !== "complete" || batch.executionMode !== "isolated-sequential" && batch.executionMode !== "mcp-sampling" && batch.executionMode !== "native-subagent" || batch.assuranceLevel !== "multi-perspective" && batch.assuranceLevel !== "independent-sampling" && batch.assuranceLevel !== "multi-agent-attested" && batch.assuranceLevel !== "multi-agent-verified" || !Array.isArray(batch.jobs)) return false;
+  if (typeof batch.batchId !== "string" || !batch.batchId || !validHash(batch.basisHash) || !batch.basis || batch.validity !== "current" && batch.validity !== "stale" || batch.progress !== "open" && batch.progress !== "complete" || batch.executionMode !== "isolated-sequential" && batch.executionMode !== "parallel-safe" && batch.executionMode !== "mcp-sampling" && batch.executionMode !== "native-subagent" || batch.assuranceLevel !== "multi-perspective" && batch.assuranceLevel !== "independent-sampling" && batch.assuranceLevel !== "multi-agent-attested" && batch.assuranceLevel !== "multi-agent-verified" || !Array.isArray(batch.jobs)) return false;
   const ids = /* @__PURE__ */ new Set();
   const attestationRaws = /* @__PURE__ */ new Set();
   return batch.jobs.every((job) => {
-    if (!job || typeof job !== "object" || typeof job.jobId !== "string" || !job.jobId || ids.has(job.jobId) || typeof job.role !== "string" || job.reviewDepth !== "standard" && job.reviewDepth !== "full" || !validHash(job.packageSha256) || job.status !== "pending" && job.status !== "claimed" && job.status !== "sampling" && job.status !== "submitted") return false;
+    if (!job || typeof job !== "object" || typeof job.jobId !== "string" || !job.jobId || ids.has(job.jobId) || typeof job.role !== "string" || job.reviewDepth !== "standard" && job.reviewDepth !== "full" || !validHash(job.packageSha256) || !validHash(job.roleBasisHash) || job.status !== "pending" && job.status !== "claimed" && job.status !== "sampling" && job.status !== "submitted" && job.status !== "reused") return false;
     ids.add(job.jobId);
+    if (job.status === "reused") return !!job.reusedFrom && validHash(job.reusedFrom.submissionSha256) && !job.claim && !job.submission;
     if (!validSamplingAttempts(job.samplingAttempts, job.status, job.submission)) return false;
     if (job.status === "pending") return !job.claim && !job.submission;
     if (job.status === "sampling") return !job.claim && !job.submission?.attestation;
@@ -1057,12 +1126,17 @@ function validateBatch(value) {
 function validateLedger(value) {
   if (typeof value !== "object" || value === null || Array.isArray(value)) integrity2("review snapshot has an invalid shape");
   const ledger = value;
-  if (ledger.schemaVersion !== 1 || typeof ledger.featureId !== "string" || !ledger.featureId || !Number.isInteger(ledger.revision) || (ledger.revision ?? -1) < 0 || !Number.isInteger(ledger.stateRevision) || (ledger.stateRevision ?? -1) < 0 || !Array.isArray(ledger.batches) || !ledger.batches.every(validateBatch) || !validateSummary(ledger.summary)) {
+  if (ledger.schemaVersion === 1) {
+    throw new DevFlowError("UNSUPPORTED_REVIEW_SCHEMA", "\u68C0\u6D4B\u5230 Dev Flow 4.x review ledger schema v1\u3002", {
+      recoveryHint: "\u56DE\u5230 4.x \u5B8C\u6210\u6216\u653E\u5F03\u8BE5 feature\uFF0C\u5907\u4EFD .dev-flow \u540E\u7528 5.0 \u91CD\u65B0\u521D\u59CB\u5316"
+    });
+  }
+  if (ledger.schemaVersion !== 2 || typeof ledger.featureId !== "string" || !ledger.featureId || !Number.isInteger(ledger.revision) || (ledger.revision ?? -1) < 0 || !Number.isInteger(ledger.stateRevision) || (ledger.stateRevision ?? -1) < 0 || !Array.isArray(ledger.batches) || !ledger.batches.every(validateBatch) || !validateSummary(ledger.summary)) {
     integrity2("review snapshot has an invalid shape");
   }
   const batchIds = /* @__PURE__ */ new Set();
   for (const batch of ledger.batches) {
-    if (batchIds.has(batch.batchId) || batch.basis.featureId !== ledger.featureId || digest2(canonicalReviewValueJson(batch.basis)) !== batch.basisHash || batch.progress === "complete" !== batch.jobs.every((job) => job.status === "submitted")) {
+    if (batchIds.has(batch.batchId) || batch.basis.featureId !== ledger.featureId || digest2(canonicalReviewValueJson(batch.basis)) !== batch.basisHash || batch.progress === "complete" !== batch.jobs.every((job) => job.status === "submitted" || job.status === "reused")) {
       integrity2("review snapshot batch is inconsistent");
     }
     if (batch.assuranceLevel !== assuranceForReviewBatch(batch)) {
@@ -1353,7 +1427,8 @@ async function writeProjection(root, featureId, markdown) {
   return { path: `review/projections/${sha256}.md`, sha256 };
 }
 async function prepareReviewProjection(root, state) {
-  if (!reviewEnforcementRequired(state.route, state.workflowCapabilities)) return;
+  if (state.mode !== "routed" || !state.route || !state.classification) return;
+  if (!reviewEnforcementRequired(state.route, state.classification.controls)) return;
   if (!state.review) projectionError("review-enabled feature has no review pointer", { featureId: state.featureId });
   const ledger = await readReviewLedger(root, state);
   const model = reviewProjectionModel(state, ledger);
@@ -1364,7 +1439,8 @@ function validProjectionArtifact(artifact) {
   return Boolean(artifact) && /^review\/projections\/[a-f0-9]{64}\.md$/.test(artifact.path) && /^[a-f0-9]{64}$/.test(artifact.sha256) && artifact.path === `review/projections/${artifact.sha256}.md`;
 }
 async function readReviewProjection(root, state) {
-  if (!reviewEnforcementRequired(state.route, state.workflowCapabilities)) return void 0;
+  if (state.mode !== "routed" || !state.route || !state.classification) return void 0;
+  if (!reviewEnforcementRequired(state.route, state.classification.controls)) return void 0;
   const artifact = state.artifacts["plan-review"];
   if (!validProjectionArtifact(artifact)) projectionError("review projection artifact pointer is missing or invalid", { featureId: state.featureId });
   let markdown;
@@ -1382,22 +1458,6 @@ async function readReviewProjection(root, state) {
 }
 async function assertCurrentReviewProjection(root, state) {
   await readReviewProjection(root, state);
-}
-
-// plugins/dev-flow/src/core/approval-basis.ts
-var approvalBasisArtifacts = [
-  "requirements",
-  "implementation-plan"
-];
-function approvalIds(state) {
-  return (state.obligations ?? []).filter((obligation) => obligation.kind === "approval").map((obligation) => obligation.id);
-}
-function confirmedApproval(state) {
-  for (const approvalId of approvalIds(state)) {
-    const record = state.humanGates[approvalId];
-    if (record?.status === "confirmed") return { approvalId, record };
-  }
-  return void 0;
 }
 
 // plugins/dev-flow/src/core/git-reconciliation.ts
@@ -1430,15 +1490,15 @@ function validateImplementationUnits(units) {
 }
 function validateFeatureState(value) {
   const state = value;
-  if (state.schemaVersion === 1 || state.schemaVersion === 2) throw new DevFlowError("LEGACY_STATE_UNSUPPORTED", "\u65E7\u7248 feature \u72B6\u6001\u4E0D\u53D7 4.0 \u8FD0\u884C\u65F6\u652F\u6301\u3002", { userMessage: "\u5F53\u524D feature \u4F7F\u7528\u65E7\u7248\u72B6\u6001\uFF0C\u4E0D\u80FD\u5728 Dev Flow 4.0 \u4E2D\u7EE7\u7EED\u3002", cause: "\u68C0\u6D4B\u5230 schema v1/v2 \u72B6\u6001\u3002", impact: "\u7CFB\u7EDF\u4E0D\u4F1A\u8FC1\u79FB\u3001\u8986\u76D6\u6216\u731C\u6D4B\u65E7\u72B6\u6001\u3002", recoveryKind: "repair", recoveryInstruction: "\u8FD0\u884C doctor \u67E5\u770B\u7ED3\u675F\u6D4B\u8BD5\u72B6\u6001\u6216\u6E05\u7406 fixture \u7684\u8BF4\u660E\uFF0C\u7136\u540E\u91CD\u65B0\u5F00\u59CB\u4EFB\u52A1\u3002", retryOriginal: false });
-  if (state?.schemaVersion !== 3) throw new DevFlowError("UNSUPPORTED_STATE_SCHEMA", "\u5F53\u524D\u53EA\u652F\u6301 schema v3 \u72B6\u6001\u3002", { userMessage: "\u5F53\u524D feature \u72B6\u6001\u7248\u672C\u4E0D\u53D7\u652F\u6301\u3002", cause: "\u72B6\u6001\u4E0D\u662F schema v3\u3002", impact: "\u6D41\u7A0B\u5DF2\u505C\u6B62\uFF0C\u907F\u514D\u5728\u672A\u77E5\u72B6\u6001\u4E0A\u7EE7\u7EED\u5199\u5165\u3002", recoveryKind: "repair", recoveryInstruction: "\u8FD0\u884C doctor \u68C0\u67E5\u72B6\u6001\uFF0C\u5E76\u91CD\u65B0\u5F00\u59CB\u4E00\u4E2A v3 feature\u3002", retryOriginal: false });
+  if ([1, 2, 3].includes(Number(state.schemaVersion))) throw new DevFlowError("UNSUPPORTED_FEATURE_SCHEMA", "\u68C0\u6D4B\u5230 Dev Flow 4.x \u6216\u66F4\u65E9\u7684 active state\u3002", { userMessage: "\u65E7 feature \u4E0D\u80FD\u5728 Dev Flow 5.0 \u4E2D\u7EE7\u7EED\u3002", cause: "5.0 \u4E0D\u8FC1\u79FB\u65E7 active state\u3002", impact: "\u7CFB\u7EDF\u4E0D\u4F1A\u8986\u76D6\u6216\u731C\u6D4B\u65E7\u5BA1\u8BA1\u72B6\u6001\u3002", recoveryKind: "repair", recoveryInstruction: "\u56DE\u5230 4.x \u5B8C\u6210\u6216\u653E\u5F03\u8BE5 feature\uFF0C\u5907\u4EFD .dev-flow \u540E\u91CD\u65B0\u521D\u59CB\u5316\u3002", retryOriginal: false, schemaVersion: state.schemaVersion });
+  if (state?.schemaVersion !== 4) throw new DevFlowError("UNSUPPORTED_FEATURE_SCHEMA", "\u5F53\u524D\u53EA\u652F\u6301 schema v4 \u72B6\u6001\u3002", { recoveryHint: "\u4F7F\u7528 Dev Flow 5.0 \u91CD\u65B0\u521D\u59CB\u5316 feature" });
   if (state.mode !== "intake" && state.mode !== "routed") throw new DevFlowError("INVALID_STATE_SCHEMA", "state mode must be intake or routed");
-  if (typeof state.featureId !== "string" || !state.featureId || !Number.isInteger(state.revision) || (state.revision ?? -1) < 0 || !lifecycles.has(state.lifecycle) || !state.scope || !Array.isArray(state.scope.inScope) || !Array.isArray(state.scope.outOfScope) || !state.steps || !state.humanGates || !state.artifacts || !state.verification || !Array.isArray(state.verification.attempts) || state.interactions !== void 0 && (typeof state.interactions !== "object" || state.interactions === null || Array.isArray(state.interactions)) || !state.featureCheck || !Array.isArray(state.blockingFindings) || typeof state.logicComplete !== "boolean" || !state.lastUpdatedBy || !state.workspace || !state.evidenceFreshness || !Array.isArray(state.qualityExceptions)) {
-    throw new DevFlowError("INVALID_STATE_SCHEMA", "state is not a valid v3 feature state");
+  if (typeof state.featureId !== "string" || !state.featureId || !Number.isInteger(state.revision) || (state.revision ?? -1) < 0 || !lifecycles.has(state.lifecycle) || !state.scope || !Array.isArray(state.scope.inScope) || !Array.isArray(state.scope.outOfScope) || !state.steps || !state.humanGates || !state.artifacts || !state.verification || !Array.isArray(state.verification.attempts) || state.interactions !== void 0 && (typeof state.interactions !== "object" || state.interactions === null || Array.isArray(state.interactions)) || !Array.isArray(state.blockingFindings) || typeof state.logicComplete !== "boolean" || !state.lastUpdatedBy || !state.workspace || !state.evidenceFreshness || !Array.isArray(state.qualityExceptions)) {
+    throw new DevFlowError("INVALID_STATE_SCHEMA", "\u72B6\u6001\u4E0D\u662F\u5408\u6CD5\u7684 schema v4 feature state\u3002");
   }
   if (state.lastUpdatedBy.host !== "claude" && state.lastUpdatedBy.host !== "codex") throw new DevFlowError("INVALID_STATE_SCHEMA", "lastUpdatedBy host is invalid");
   const pendingInteractions = Object.values(state.interactions ?? {}).filter((item) => item.status === "pending");
-  if (pendingInteractions.length > 1) throw new DevFlowError("MULTIPLE_PENDING_DECISIONS", "v3 state contains more than one pending decision", { userMessage: "\u5F53\u524D\u72B6\u6001\u540C\u65F6\u5B58\u5728\u591A\u4E2A\u5F85\u51B3\u95EE\u9898\uFF0C\u6D41\u7A0B\u5DF2\u5B89\u5168\u505C\u6B62\u3002", cause: "\u51B3\u7B56\u8D26\u672C\u4E0D\u662F\u5355\u4E00\u5F85\u51B3\u95EE\u9898\u3002", impact: "\u7CFB\u7EDF\u4E0D\u4F1A\u4EFB\u9009\u4E00\u4E2A\u95EE\u9898\u6D88\u8D39\u3002", recoveryKind: "repair", recoveryInstruction: "\u8FD0\u884C doctor \u68C0\u67E5\u51B3\u7B56\u8D26\u672C\uFF0C\u7136\u540E\u901A\u8FC7\u516C\u5F00\u56DE\u7B54\u63A5\u53E3\u6062\u590D\u3002", retryOriginal: false });
+  if (pendingInteractions.length > 1) throw new DevFlowError("MULTIPLE_PENDING_DECISIONS", "schema v4 \u72B6\u6001\u5305\u542B\u591A\u4E2A\u5F85\u51B3\u95EE\u9898\u3002", { userMessage: "\u5F53\u524D\u72B6\u6001\u540C\u65F6\u5B58\u5728\u591A\u4E2A\u5F85\u51B3\u95EE\u9898\uFF0C\u6D41\u7A0B\u5DF2\u5B89\u5168\u505C\u6B62\u3002", cause: "\u51B3\u7B56\u8D26\u672C\u4E0D\u662F\u5355\u4E00\u5F85\u51B3\u95EE\u9898\u3002", impact: "\u7CFB\u7EDF\u4E0D\u4F1A\u4EFB\u9009\u4E00\u4E2A\u95EE\u9898\u6D88\u8D39\u3002", recoveryKind: "repair", recoveryInstruction: "\u8FD0\u884C doctor \u68C0\u67E5\u51B3\u7B56\u8D26\u672C\uFF0C\u7136\u540E\u901A\u8FC7\u516C\u5F00\u56DE\u7B54\u63A5\u53E3\u6062\u590D\u3002", retryOriginal: false });
   if (state.pendingDecision !== void 0) {
     const decision = state.pendingDecision;
     if (!decision || decision.source !== "core" || typeof decision.question !== "string" || !decision.question.trim() || !/^[a-f0-9]{64}$/.test(decision.basisHash) || !Number.isInteger(decision.presentedRevision) || !Array.isArray(decision.options) || decision.options.length < 2 || decision.options.length > 3 || decision.options.some((option) => !option || typeof option.id !== "string" || typeof option.label !== "string" || !option.label.trim())) {
@@ -1446,11 +1506,11 @@ function validateFeatureState(value) {
     }
   }
   const workspace = state.workspace;
-  if (!workspace || typeof workspace.baseHead !== "string" || typeof workspace.baseBranch !== "string" || typeof workspace.observedHead !== "string" || typeof workspace.lastWorkspaceFingerprint !== "string" || !["current", "required", "blocked"].includes(workspace.reconciliationStatus) || typeof workspace.startedDirty !== "object" || workspace.startedDirty === null || Array.isArray(workspace.startedDirty) || typeof workspace.ownership !== "object" || workspace.ownership === null || Array.isArray(workspace.ownership) || typeof workspace.ownershipSource !== "object" || workspace.ownershipSource === null || Array.isArray(workspace.ownershipSource) || !Array.isArray(workspace.observedCommits)) {
+  if (!workspace || typeof workspace.baseHead !== "string" || typeof workspace.baseBranch !== "string" || typeof workspace.observedHead !== "string" || typeof workspace.lastWorkspaceFingerprint !== "string" || !["current", "required", "blocked"].includes(workspace.reconciliationStatus) || typeof workspace.startedDirty !== "object" || workspace.startedDirty === null || Array.isArray(workspace.startedDirty) || typeof workspace.ownership !== "object" || workspace.ownership === null || Array.isArray(workspace.ownership) || typeof workspace.ownershipSource !== "object" || workspace.ownershipSource === null || Array.isArray(workspace.ownershipSource) || typeof workspace.observedPathFingerprints !== "object" || workspace.observedPathFingerprints === null || Array.isArray(workspace.observedPathFingerprints) || !Array.isArray(workspace.observedCommits)) {
     throw new DevFlowError("INVALID_STATE_SCHEMA", "workspace lineage is invalid");
   }
-  if (state.lifecycle === "finalized" && !state.deliverySnapshot) throw new DevFlowError("INVALID_STATE_SCHEMA", "finalized v3 state requires a delivery result");
-  if (state.lifecycle === "abandoned" && !state.abandonment) throw new DevFlowError("INVALID_STATE_SCHEMA", "abandoned v3 state requires a user reason");
+  if (state.lifecycle === "finalized" && !state.deliverySnapshot) throw new DevFlowError("INVALID_STATE_SCHEMA", "schema v4 \u7684 finalized \u72B6\u6001\u5FC5\u987B\u5305\u542B\u4EA4\u4ED8\u5FEB\u7167\u3002");
+  if (state.lifecycle === "abandoned" && !state.abandonment) throw new DevFlowError("INVALID_STATE_SCHEMA", "schema v4 \u7684 abandoned \u72B6\u6001\u5FC5\u987B\u5305\u542B\u7528\u6237\u539F\u56E0\u3002");
   if (state.mode === "intake") {
     if (state.route !== void 0 || state.classification !== void 0 || state.classificationBasis !== void 0 || state.obligations !== void 0) {
       throw new DevFlowError("INVALID_STATE_SCHEMA", "intake state cannot contain route or classification fields");
@@ -1461,7 +1521,7 @@ function validateFeatureState(value) {
     return;
   }
   if (!state.route || !routeDefinition(state.route) || !state.classification || !state.classificationBasis || !Array.isArray(state.obligations)) {
-    throw new DevFlowError("INVALID_STATE_SCHEMA", "routed v3 state requires classification facts and obligations");
+    throw new DevFlowError("INVALID_STATE_SCHEMA", "schema v4 \u7684 routed \u72B6\u6001\u5FC5\u987B\u5305\u542B\u5206\u7C7B\u4E8B\u5B9E\u548C\u4E49\u52A1\u3002");
   }
   if (state.repair !== void 0 && (typeof state.repair !== "object" || !["active", "stalled", "waiting-user", "completed"].includes(state.repair.status) || !Array.isArray(state.repair.attempts) || !Number.isInteger(state.repair.maxAttempts) || state.repair.maxAttempts < 1)) {
     throw new DevFlowError("INVALID_STATE_SCHEMA", "repair state is invalid");
@@ -1485,8 +1545,8 @@ function validateFeatureState(value) {
       throw new DevFlowError("INVALID_STATE_SCHEMA", "traceability pointer is invalid");
     }
   }
-  if (traceEnforcementRequired(state.route, state.workflowCapabilities) && !state.traceability) {
-    throw new DevFlowError("INVALID_STATE_SCHEMA", "trace-enforced standard feature requires a traceability pointer");
+  if (traceEnforcementRequired(state.route, state.classification.controls) && !state.traceability) {
+    throw new DevFlowError("INVALID_STATE_SCHEMA", "\u542F\u7528 Trace \u63A7\u5236\u7684 feature \u5FC5\u987B\u5305\u542B traceability pointer\u3002");
   }
   if (state.review !== void 0) {
     const pointer = state.review;
@@ -1494,8 +1554,8 @@ function validateFeatureState(value) {
       throw new DevFlowError("INVALID_STATE_SCHEMA", "review pointer is invalid");
     }
   }
-  if (reviewEnforcementRequired(state.route, state.workflowCapabilities) && !state.review) {
-    throw new DevFlowError("INVALID_STATE_SCHEMA", "review-enabled standard feature requires a review pointer");
+  if (reviewEnforcementRequired(state.route, state.classification.controls) && !state.review) {
+    throw new DevFlowError("INVALID_STATE_SCHEMA", "\u542F\u7528\u8BA1\u5212\u5BA1\u67E5\u63A7\u5236\u7684 feature \u5FC5\u987B\u5305\u542B review pointer\u3002");
   }
   if (state.implementationUnits !== void 0) validateImplementationUnits(state.implementationUnits);
   if (state.rollbackGate !== void 0) {
@@ -1564,6 +1624,30 @@ async function writeAtomic(file, value) {
 async function prepareStatusProjection(root, state, revision) {
   const status = state.artifacts.status;
   if (!status) return;
+  if (state.mode !== "routed" || !state.route || !state.classification) {
+    const contents2 = [
+      "---",
+      "dev_flow:",
+      "  schema_version: 1",
+      `  feature_id: ${state.featureId}`,
+      "  kind: status",
+      "  generated: true",
+      "---",
+      "",
+      "# Dev Flow Status",
+      "",
+      `- Revision: ${revision}`,
+      `- Lifecycle: ${state.lifecycle}`,
+      "- Mode: intake",
+      "",
+      ...state.pendingDecision?.kind === "route-confirmation" ? ["## Pending", "", `- ${state.pendingDecision.question}`, ""] : []
+    ].join("\n");
+    const file2 = path7.join(features(root), state.featureId, status.path);
+    state.artifacts.status = { ...status, sha256: createHash5("sha256").update(contents2).digest("hex") };
+    return async () => {
+      await writeFile(file2, contents2);
+    };
+  }
   const trace = await inspectCurrentTrace(root, state);
   const summary = trace.effectiveSummary;
   const traceLines = [
@@ -1594,7 +1678,7 @@ async function prepareStatusProjection(root, state, revision) {
     "",
     "## Steps",
     "",
-    ...routeDefinitionForFeature(state.route, state.workflowCapabilities).orderedSteps.map((step) => `- ${step}: ${state.steps[step]?.status ?? "pending"}`),
+    ...routeDefinitionForFeature(state.route, state.classification.controls).orderedSteps.map((step) => `- ${step}: ${state.steps[step]?.status ?? "pending"}`),
     "",
     ...traceLines
   ].join("\n");
@@ -1707,6 +1791,44 @@ async function recordHostEvent(root, hostEvent) {
     await release();
   }
 }
+async function trustedWriteSummary(root, file) {
+  try {
+    const metadata = await lstat2(path7.join(root, file));
+    const bytes = metadata.isSymbolicLink() ? Buffer.from(await readlink2(path7.join(root, file))) : await readFile5(path7.join(root, file));
+    return `${metadata.isSymbolicLink() ? "symlink" : "file"}:${createHash5("sha256").update(bytes).digest("hex")}`;
+  } catch (error) {
+    if (error.code === "ENOENT") return "missing";
+    throw error;
+  }
+}
+async function recordTrustedWriteIntent(root, paths, host, eventId2) {
+  const active = await readActive(root);
+  if (!active || paths.length === 0) return;
+  const state = await readState(root, active.featureId);
+  if (state.mode !== "routed" || state.lifecycle !== "active" || state.currentStage !== "implementation") return;
+  const config = await readProjectConfig(root);
+  const governed = paths.filter((file) => config.governedRoots.some((entry) => entry === "." || file === entry || file.startsWith(`${entry}/`)));
+  if (!governed.length) return;
+  const before = Object.fromEntries(await Promise.all(governed.map(async (file) => [file, await trustedWriteSummary(root, file)])));
+  await appendFeatureEvent(root, state.featureId, state.revision, "trusted-write-before", { eventId: eventId2, host, paths: governed, before });
+}
+async function recordTrustedWriteOwnership(root, paths, host, eventId2) {
+  const active = await readActive(root);
+  if (!active || paths.length === 0) return;
+  const state = await readState(root, active.featureId);
+  if (state.mode !== "routed" || state.lifecycle !== "active" || state.currentStage !== "implementation") return;
+  const config = await readProjectConfig(root);
+  const governed = paths.filter((file) => config.governedRoots.some((entry) => entry === "." || file === entry || file.startsWith(`${entry}/`)));
+  if (!governed.length) return;
+  const after = Object.fromEntries(await Promise.all(governed.map(async (file) => [file, await trustedWriteSummary(root, file)])));
+  await mutate(root, state.featureId, state.revision, "trusted-write-owned", (draft) => {
+    for (const file of governed) {
+      draft.workspace.ownership[file] = "feature";
+      draft.workspace.ownershipSource[file] = "trusted-hook";
+    }
+    draft.lastUpdatedBy = { host, pluginVersion: "5.0.0" };
+  }, { eventId: eventId2, host, paths: governed, after });
+}
 async function recordHostAuthorizationEvent(root, type, record) {
   const active = await readActive(root);
   if (!active || active.featureId !== record.featureId) return;
@@ -1786,7 +1908,7 @@ async function mutatePreparedLocked(root, id, expectedRevision, operation, prepa
   try {
     const active = await readActive(root);
     if (active?.featureId === id && (state.lifecycle === "finalized" || state.lifecycle === "abandoned" || state.lifecycle === "paused")) await rm(activePath(root), { force: true });
-    else if (state.lifecycle === "active" && (active?.featureId === id || operation === "feature-resumed")) await writeAtomic(activePath(root), { featureId: id, revision: state.revision, updatedAt: (/* @__PURE__ */ new Date()).toISOString() });
+    else if (state.lifecycle === "active" && (active?.featureId === id || !active && ["feature-resumed", "workspace-reconciled", "feature-derived-state-repaired"].includes(operation))) await writeAtomic(activePath(root), { featureId: id, revision: state.revision, updatedAt: (/* @__PURE__ */ new Date()).toISOString() });
   } catch {
     failures.push("active");
   }
@@ -1852,6 +1974,7 @@ function validateRollbackTransaction(value) {
     if (candidate.action === "restore" && (!isSha2562(candidate.blobSha256) || typeof candidate.mode !== "string" || !/^[0-7]{3,4}$/.test(candidate.mode))) return false;
     if (candidate.blobSha256 !== void 0 && !isSha2562(candidate.blobSha256)) return false;
     if (candidate.mode !== void 0 && (typeof candidate.mode !== "string" || !/^[0-7]{3,4}$/.test(candidate.mode))) return false;
+    if (candidate.kind !== void 0 && candidate.kind !== "file" && candidate.kind !== "symlink") return false;
     return true;
   });
   if (transaction?.schemaVersion !== 1 || typeof transaction.transactionId !== "string" || !transaction.transactionId || typeof transaction.featureId !== "string" || !transaction.featureId || !rollbackTransactionPhases.has(transaction.phase) || typeof transaction.targetCheckpointId !== "string" || !/^CP-[0-9]{3,}$/.test(transaction.targetCheckpointId) || typeof transaction.targetUnitId !== "string" || !/^RU-[0-9]{3,}$/.test(transaction.targetUnitId) || !Array.isArray(transaction.undoOrder) || transaction.undoOrder.length === 0 || !transaction.undoOrder.every((unitId) => typeof unitId === "string" && /^RU-[0-9]{3,}$/.test(unitId)) || transaction.undoCheckpoints !== void 0 && (!Array.isArray(transaction.undoCheckpoints) || !transaction.undoCheckpoints.every((id) => typeof id === "string" && /^CP-[0-9]{3,}$/.test(id))) || !isSha2562(transaction.previewBasisHash) || !isSha2562(transaction.projectConfigSha256) || !Number.isInteger(transaction.stateRevision) || (transaction.stateRevision ?? -1) < 0 || typeof transaction.backupDirectory !== "string" || !/^checkpoints\/recovery\/[^/]+$/.test(transaction.backupDirectory) || !Number.isInteger(transaction.nextFileIndex) || (transaction.nextFileIndex ?? -1) < 0 || !validPlan || !Array.isArray(transaction.verificationAttemptIds) || !transaction.verificationAttemptIds.every((id) => typeof id === "string" && id.length > 0) || typeof transaction.startedAt !== "string" || transaction.completedAt !== void 0 && typeof transaction.completedAt !== "string" || transaction.error !== void 0 && typeof transaction.error !== "string") {
@@ -1910,11 +2033,30 @@ async function assertNoOpenRollbackTransaction(root, allow) {
     });
   }
 }
+async function appendFeatureEvent(root, id, revision, type, data) {
+  await appendEvent(root, id, revision, type, data);
+}
 
 // plugins/dev-flow/src/hosts/adapter-policy.ts
 import path11 from "node:path";
 import { execFile as execFile4 } from "node:child_process";
 import { promisify as promisify4 } from "node:util";
+
+// plugins/dev-flow/src/core/approval-basis.ts
+var approvalBasisArtifacts = [
+  "requirements",
+  "implementation-plan"
+];
+function approvalIds(state) {
+  return (state.obligations ?? []).filter((obligation) => obligation.kind === "approval").map((obligation) => obligation.id);
+}
+function confirmedApproval(state) {
+  for (const approvalId of approvalIds(state)) {
+    const record = state.humanGates[approvalId];
+    if (record?.status === "confirmed") return { approvalId, record };
+  }
+  return void 0;
+}
 
 // plugins/dev-flow/src/core/git-policy.ts
 var readOnly = /* @__PURE__ */ new Set(["status", "diff", "log", "show", "rev-parse", "ls-files", "ls-tree", "cat-file", "name-rev"]);
@@ -1975,7 +2117,7 @@ async function assertArtifactCurrent(root, id, state, kind) {
 
 // plugins/dev-flow/src/core/checkpoints.ts
 import { randomUUID as randomUUID5, createHash as createHash7 } from "node:crypto";
-import { access as access2, mkdir as mkdir5, open as open5, readFile as readFile7, readdir as readdir5, rename as rename5 } from "node:fs/promises";
+import { access as access2, mkdir as mkdir5, open as open5, readFile as readFile7, readlink as readlink3, readdir as readdir5, rename as rename5 } from "node:fs/promises";
 import path9 from "node:path";
 
 // plugins/dev-flow/src/core/verification.ts
@@ -2027,14 +2169,14 @@ async function writeBlobIfAbsent(root, featureId, bytes) {
 }
 async function captureUnitBaseline(root, featureId, unitId, snapshot) {
   for (const file2 of snapshot) {
-    const bytes = await readFile7(path9.join(root, file2.path));
+    const bytes = file2.kind === "symlink" ? Buffer.from(await readlink3(path9.join(root, file2.path))) : await readFile7(path9.join(root, file2.path));
     if (digest4(bytes) !== file2.sha256) {
-      throw new DevFlowError("CHECKPOINT_HASH_MISMATCH", "protected files changed while capturing the unit baseline", { path: file2.path });
+      throw new DevFlowError("CHECKPOINT_HASH_MISMATCH", "\u6355\u83B7\u5355\u5143\u57FA\u7EBF\u65F6 governed \u6587\u4EF6\u53D1\u751F\u53D8\u5316\u3002", { path: file2.path });
     }
     await writeBlobIfAbsent(root, featureId, bytes);
   }
   const baseline = {
-    schemaVersion: 1,
+    schemaVersion: 2,
     featureId,
     unitId,
     capturedAt: (/* @__PURE__ */ new Date()).toISOString(),
@@ -2095,7 +2237,7 @@ async function deriveReviewInput(root, state) {
   const scopeManifest = {
     inScope: [...state.scope.inScope].sort(),
     outOfScope: [...state.scope.outOfScope].sort(),
-    protectedRoots: [...config.protectedRoots].sort(),
+    governedRoots: [...config.governedRoots].sort(),
     rollbackFileScopes: Object.values(trace.nodes).reduce((scopes, node) => {
       if (node.kind === "rollback" && node.status === "current") {
         scopes.push({ id: node.id, fileScope: [...node.fileScope].sort() });
@@ -2103,7 +2245,7 @@ async function deriveReviewInput(root, state) {
       return scopes;
     }, []).sort((left, right) => left.id.localeCompare(right.id))
   };
-  const protectedRootsFingerprint = await fingerprintProtectedRoots(root, config);
+  const governedRootsFingerprint = await fingerprintGovernedRoots(root, config);
   const basis = {
     featureId: state.featureId,
     route: state.route,
@@ -2111,7 +2253,6 @@ async function deriveReviewInput(root, state) {
     classification: {
       level: state.classification.level,
       topology: state.classification.topology,
-      ...state.classification.execution ? { execution: state.classification.execution } : {},
       ...state.classification.requirements ? { requirements: state.classification.requirements } : {},
       riskLabels: [...state.classification.riskLabels].sort()
     },
@@ -2119,20 +2260,60 @@ async function deriveReviewInput(root, state) {
     traceability: { path: state.traceability.path, sha256: state.traceability.sha256, revision: trace.revision },
     projectConfigSha256,
     scopeManifestSha256: digest5(canonicalReviewValueJson(scopeManifest)),
-    protectedRootsFingerprint
+    governedRootsFingerprint
   };
+  const roleBasisHashes = Object.fromEntries(
+    state.classification.controls.reviewRoles.map((role) => [role, roleBasisHash(basis, frozenArtifacts, trace, role)])
+  );
   return {
     basis,
+    roleBasisHashes,
     frozenArtifacts,
     projectConfig: { sha256: projectConfigSha256, contents: projectContents },
     scopeManifest: {
-      protectedRoots: scopeManifest.protectedRoots,
-      rollbackFileScopes: scopeManifest.rollbackFileScopes.flatMap((item) => item.fileScope)
+      governedRoots: scopeManifest.governedRoots,
+      rollbackFileScopes: scopeManifest.rollbackFileScopes.flatMap((item) => item.fileScope),
+      traceIds: Object.values(trace.nodes).filter((node) => node.status === "current").map((node) => node.id).sort(),
+      frozenArtifactPaths: frozenArtifacts.map((artifact) => artifact.path).sort()
     }
   };
 }
 function basisHash(basis) {
   return digest5(canonicalReviewValueJson(basis));
+}
+function roleBasisHash(basis, frozenArtifacts, trace, role) {
+  const artifacts = frozenArtifacts.filter((artifact) => {
+    if (role === "requirements-coverage") return artifact.kind === "requirements" || artifact.kind === "implementation-plan";
+    if (role === "architecture-testability") return artifact.kind === "implementation-plan";
+    if (role === "rollback-operability") return artifact.kind === "implementation-plan" || artifact.kind === "rollback-units";
+    return artifact.kind === "requirements" || artifact.kind === "implementation-plan";
+  }).map(({ kind, path: artifactPath, sha256 }) => ({ kind, path: artifactPath, sha256 }));
+  const traceKinds = role === "requirements-coverage" ? ["requirement", "acceptance-criterion", "task", "test"] : role === "architecture-testability" ? ["task", "test"] : role === "rollback-operability" ? ["task", "rollback"] : ["requirement", "acceptance-criterion", "task", "test", "rollback"];
+  const traceSlice = Object.values(trace.nodes).filter((node) => node.status !== "tombstoned" && traceKinds.includes(node.kind)).sort((left, right) => left.id.localeCompare(right.id)).map(({ sourceArtifact: _sourceArtifact, sourceSha256: _sourceSha256, sourceAnchor: _sourceAnchor, sourceBlockSha256: _sourceBlockSha256, status: _status, ...semantic }) => semantic);
+  const specialtyRisk = {
+    security: ["security"],
+    "data-irreversibility": ["data", "irreversible_consequence"],
+    "money-safety": ["money"],
+    "contract-failure": ["external"],
+    "recovery-observability": ["availability"],
+    "critical-correctness": ["critical_correctness"]
+  };
+  if (specialtyRisk[role]) {
+    return digest5(canonicalReviewValueJson({
+      role,
+      route: basis.route,
+      level: basis.classification.level,
+      riskLabels: basis.classification.riskLabels.filter((label) => specialtyRisk[role].includes(label))
+    }));
+  }
+  return digest5(canonicalReviewValueJson({
+    role,
+    route: basis.route,
+    level: basis.classification.level,
+    artifacts,
+    traceSlice,
+    ...role === "architecture-testability" || role === "rollback-operability" ? { projectConfigSha256: basis.projectConfigSha256 } : {}
+  }));
 }
 function submittedFindings(ledger) {
   return ledger.batches.flatMap((batch) => batch.jobs.flatMap((job) => (job.submission?.findings ?? []).map((finding) => ({ batch, job, finding }))));
@@ -2230,7 +2411,7 @@ function currentRollbackNodes(ledger) {
   return Object.values(ledger?.nodes ?? {}).filter((node) => node.kind === "rollback" && node.status === "current");
 }
 async function ensureActiveImplementationUnit(root, id, state) {
-  if (!checkpointsEnforcementRequired(state.route, state.workflowCapabilities) || currentOpenStep(state) !== "implementation" || !confirmedApproval(state) || (state.implementationUnits ?? []).some((unit) => unit.status === "active")) return state;
+  if (!checkpointsEnforcementRequired(state.route, state.classification.controls) || currentOpenStep(state) !== "implementation" || !confirmedApproval(state) || (state.implementationUnits ?? []).some((unit) => unit.status === "active")) return state;
   const ledger = await readTraceability(root, state);
   const nodes = currentRollbackNodes(ledger).sort((a, b) => a.id.localeCompare(b.id));
   const statusByUnit = new Map((state.implementationUnits ?? []).map((unit) => [unit.unitId, unit.status]));
@@ -2245,14 +2426,14 @@ function implementationUnitBasisHash(state) {
   }));
 }
 function implementationUnitWriteBlock(state, ledger, _relativePath) {
-  if (!checkpointsEnforcementRequired(state.route, state.workflowCapabilities)) return void 0;
+  if (!checkpointsEnforcementRequired(state.route, state.classification.controls)) return void 0;
   if (currentOpenStep(state) !== "implementation") return void 0;
   if (!confirmedApproval(state)) return void 0;
   const active = (state.implementationUnits ?? []).find((unit) => unit.status === "active");
   if (!active) {
     return {
       code: "IMPLEMENTATION_UNIT_REQUIRED",
-      details: { recoveryHint: "Begin the next rollback unit via dev_flow_begin_implementation_unit before writing protected files" }
+      details: { recoveryHint: "\u5199\u5165 governed \u6587\u4EF6\u524D\uFF0C\u5148\u901A\u8FC7 dev_flow_begin_implementation_unit \u5F00\u59CB\u4E0B\u4E00\u4E2A rollback unit" }
     };
   }
   const node = currentRollbackNodes(ledger).find((candidate) => candidate.id === active.unitId);
@@ -2266,8 +2447,8 @@ function implementationUnitWriteBlock(state, ledger, _relativePath) {
 }
 async function beginImplementationUnit(root, id, expectedRevision, unitId) {
   return mutate(root, id, expectedRevision, "implementation-unit-begun", async (state) => {
-    if (!checkpointsEnforcementRequired(state.route, state.workflowCapabilities)) {
-      throw new DevFlowError("IMPLEMENTATION_UNITS_NOT_ENFORCED", "implementation units require a checkpoints:1 standard feature");
+    if (!checkpointsEnforcementRequired(state.route, state.classification.controls)) {
+      throw new DevFlowError("IMPLEMENTATION_UNITS_NOT_ENFORCED", "\u5F53\u524D\u52A8\u6001\u8DEF\u7EBF\u672A\u542F\u7528 unit-chain checkpoint \u63A7\u5236\u3002");
     }
     if (currentOpenStep(state) !== "implementation") {
       throw new DevFlowError("STEP_OUT_OF_ORDER", "begin requires the implementation step", { expected: currentOpenStep(state) });
@@ -2279,7 +2460,7 @@ async function beginImplementationUnit(root, id, expectedRevision, unitId) {
     for (const kind of ["requirements", "implementation-plan"]) {
       await assertArtifactCurrent(root, id, state, kind);
     }
-    if (reviewEnforcementRequired(state.route, state.workflowCapabilities)) {
+    if (reviewEnforcementRequired(state.route, state.classification.controls)) {
       await assertReviewComplete(root, state);
     }
     const nodes = currentRollbackNodes(ledger);
@@ -2317,13 +2498,13 @@ async function beginImplementationUnit(root, id, expectedRevision, unitId) {
       throw new DevFlowError("IMPLEMENTATION_UNIT_NOT_PENDING", "rollback unit cannot begin from its current status", { unitId, status: target.status });
     }
     const project = await readProjectConfig(root);
-    const snapshot = await snapshotProtectedRoots(root, project);
+    const snapshot = await snapshotGovernedRoots(root, project);
     await captureUnitBaseline(root, id, unitId, snapshot);
     delete target.checkpointId;
     target.basisHash = basisHash2;
     target.beginNonce = randomUUID7();
     target.status = "active";
-    target.startedFingerprint = await fingerprintProtectedRoots(root, project);
+    target.startedFingerprint = await fingerprintGovernedRoots(root, project);
     state.implementationUnits = merged;
   }, { unitId });
 }
@@ -2340,17 +2521,17 @@ function judgeWrite(context) {
     reason: "workflow control files are Core-owned",
     recoveryAction: { kind: "use-equivalent-operation", reason: "\u901A\u8FC7 MCP/Core \u53D8\u66F4\u72B6\u6001" }
   };
-  if (context.mode === "intake" && context.protectedPath) return {
+  if (context.mode === "intake" && context.governedPath) return {
     decision: "block",
     reason: "intake has no implementation stage",
     recoveryAction: { kind: "refresh-status", reason: "\u5148\u5B8C\u6210\u4E8B\u5B9E\u8C03\u67E5\u5E76\u9501\u5B9A\u8DEF\u7EBF" }
   };
-  if (context.stage === "implementation" && context.protectedPath) {
+  if (context.stage === "implementation" && context.governedPath) {
     return context.impactResolved ? { decision: "allow", reason: "implementation writes are semantically in scope; actual diff is audited at unit boundary" } : { decision: "audit", reason: "write target will be classified from post-tool actual diff" };
   }
-  if (context.protectedPath) return {
+  if (context.governedPath) return {
     decision: "block",
-    reason: "protected source write is outside implementation stage",
+    reason: "governed file write is outside implementation stage",
     recoveryAction: { kind: "revise-plan", reason: "\u5C06\u5B9E\u73B0\u5199\u5165\u653E\u5230 implementation stage" }
   };
   return { decision: "allow", reason: "unprotected or scratch write" };
@@ -2389,10 +2570,10 @@ function projectRelative(root, target) {
   if (relative === "" || relative.startsWith("..") || path11.isAbsolute(relative)) return void 0;
   return relative.split(path11.sep).join("/").normalize("NFC");
 }
-function isProtected(root, target, protectedRoots) {
+function isGoverned(root, target, governedRoots) {
   const relative = projectRelative(root, target);
   if (!relative) return false;
-  return protectedRoots.some((item) => relative === item || relative.startsWith(`${item}/`));
+  return governedRoots.some((item) => relative === item || relative.startsWith(`${item}/`));
 }
 function isDevFlowPath(relative) {
   return relative === ".dev-flow" || relative.startsWith(".dev-flow/");
@@ -2426,6 +2607,13 @@ function directTargets(event2) {
   const targets = [input.file_path, input.path, input.target_file].filter((value) => typeof value === "string");
   for (const key of ["patch", "diff", "input"]) targets.push(...patchTargets(input[key]));
   return targets;
+}
+function trustedWriteTargets(root, event2) {
+  const targets = toolName(event2) === "bash" ? (() => {
+    const analysis = analyzeBashWriteTargets(String(event2.tool_input?.command ?? ""));
+    return analysis.kind === "resolved" ? analysis.targets : [];
+  })() : directTargets(event2);
+  return [...new Set(targets.map((target) => projectRelative(root, target)).filter((value) => Boolean(value)))].sort();
 }
 function knownWriteTargets(event2) {
   if (toolName(event2) === "bash") {
@@ -2709,7 +2897,7 @@ async function loadActiveWorkflow(root) {
     if (recovery) {
       try {
         const project2 = await readProjectConfig(root);
-        return { kind: "unreadable", reason: `recovery journal open for ${recovery.featureId}`, protectedRoots: project2.protectedRoots, blockAllWrites: false };
+        return { kind: "unreadable", reason: `recovery journal open for ${recovery.featureId}`, governedRoots: project2.governedRoots, blockAllWrites: false };
       } catch {
         return { kind: "unreadable", reason: "project.json invalid while recovery journal is open", blockAllWrites: true };
       }
@@ -2723,7 +2911,7 @@ async function loadActiveWorkflow(root) {
   } catch {
     try {
       const project2 = await readProjectConfig(root);
-      return { kind: "unreadable", reason: "active.json unreadable", protectedRoots: project2.protectedRoots, blockAllWrites: false };
+      return { kind: "unreadable", reason: "active.json unreadable", governedRoots: project2.governedRoots, blockAllWrites: false };
     } catch {
       return { kind: "unreadable", reason: "project.json invalid while active.json is unreadable", blockAllWrites: true };
     }
@@ -2740,21 +2928,21 @@ async function loadActiveWorkflow(root) {
   try {
     state = await readState(root, active.featureId);
   } catch {
-    return { kind: "unreadable", reason: "state invalid", protectedRoots: project.protectedRoots, blockAllWrites: false };
+    return { kind: "unreadable", reason: "state invalid", governedRoots: project.governedRoots, blockAllWrites: false };
   }
-  if (state.lifecycle !== "active" || active.revision !== state.revision) return { kind: "unreadable", reason: "active pointer revision mismatch", protectedRoots: project.protectedRoots, blockAllWrites: false };
+  if (state.lifecycle !== "active" || active.revision !== state.revision) return { kind: "unreadable", reason: "active pointer revision mismatch", governedRoots: project.governedRoots, blockAllWrites: false };
   if (state.traceability) {
     try {
       ledger = await readTraceability(root, state);
     } catch {
-      return { kind: "unreadable", reason: "traceability snapshot invalid", protectedRoots: project.protectedRoots, blockAllWrites: false };
+      return { kind: "unreadable", reason: "traceability snapshot invalid", governedRoots: project.governedRoots, blockAllWrites: false };
     }
   }
   if (state.review) {
     try {
       await readReviewLedger(root, state);
     } catch {
-      return { kind: "unreadable", reason: "review snapshot invalid", protectedRoots: project.protectedRoots, blockAllWrites: false };
+      return { kind: "unreadable", reason: "review snapshot invalid", governedRoots: project.governedRoots, blockAllWrites: false };
     }
   }
   const allowedArtifacts = /* @__PURE__ */ new Set();
@@ -2762,7 +2950,7 @@ async function loadActiveWorkflow(root) {
     if (kind === "status" || !artifact?.path) continue;
     if (isGeneratedReviewProjectionPath(kind, artifact.path)) continue;
     if (typeof artifact.path !== "string" || path11.posix.dirname(artifact.path) !== "." || !artifact.path.endsWith(".md")) {
-      return { kind: "unreadable", reason: "artifact path invalid", protectedRoots: project.protectedRoots, blockAllWrites: false };
+      return { kind: "unreadable", reason: "artifact path invalid", governedRoots: project.governedRoots, blockAllWrites: false };
     }
     const relative = `.dev-flow/features/${active.featureId}/${artifact.path}`.split(path11.sep).join("/");
     allowedArtifacts.add(relative);
@@ -2776,7 +2964,7 @@ async function loadActiveWorkflow(root) {
       logicComplete: state.logicComplete,
       approvalConfirmed,
       allowedArtifacts,
-      protectedRoots: project.protectedRoots,
+      governedRoots: project.governedRoots,
       state,
       ledger
     }
@@ -2814,12 +3002,12 @@ function classifyTarget(root, target, workflow) {
     );
   }
   if (workflow.state?.mode === "intake") {
-    const decision = judgeWrite({ mode: "intake", controlPath: false, protectedPath: isProtected(root, target, workflow.protectedRoots), impactResolved: false });
+    const decision = judgeWrite({ mode: "intake", controlPath: false, governedPath: isGoverned(root, target, workflow.governedRoots), impactResolved: false });
     if (decision.decision === "block") {
       return createPreToolBlock(
         "DEV_FLOW_IMPLEMENTATION_APPROVAL_REQUIRED",
-        `feature \u4ECD\u5904\u4E8E intake\uFF0C\u76EE\u6807 ${relative} \u4F4D\u4E8E protected root\uFF0C\u5C1A\u672A\u8FDB\u5165\u53EF\u6267\u884C\u5B9E\u73B0\u9636\u6BB5`,
-        "\u539F\u5199\u5165\u672A\u6267\u884C\uFF1Bprotected \u76EE\u6807\u4FDD\u6301\u4E0D\u53D8",
+        `feature \u4ECD\u5904\u4E8E intake\uFF0C\u76EE\u6807 ${relative} \u4F4D\u4E8E governed root\uFF0C\u5C1A\u672A\u8FDB\u5165\u53EF\u6267\u884C\u5B9E\u73B0\u9636\u6BB5`,
+        "\u539F\u5199\u5165\u672A\u6267\u884C\uFF1Bgoverned \u76EE\u6807\u4FDD\u6301\u4E0D\u53D8",
         {
           mode: "user-decision",
           action: "\u5148\u5B8C\u6210 intake \u8C03\u67E5\u3001\u89E3\u51B3\u5206\u7C7B\u51B3\u7B56\u5E76\u9501\u5B9A\u57FA\u7840\u8DEF\u7EBF\uFF1B\u6EE1\u8DB3\u5B9E\u73B0\u6279\u51C6\u6761\u4EF6\u540E\u81EA\u52A8\u91CD\u8BD5\u539F\u5199\u5165",
@@ -2828,12 +3016,12 @@ function classifyTarget(root, target, workflow) {
       );
     }
   }
-  if (workflow.state?.mode === "routed" && currentOpenStep(workflow.state) === "implementation" && isProtected(root, target, workflow.protectedRoots)) {
+  if (workflow.state?.mode === "routed" && currentOpenStep(workflow.state) === "implementation" && isGoverned(root, target, workflow.governedRoots)) {
     const approvalPending = workflow.state.obligations?.some((obligation) => obligation.kind === "approval" && obligation.status !== "satisfied") ?? false;
     if (approvalPending && !workflow.approvalConfirmed) {
       return createPreToolBlock(
         "DEV_FLOW_IMPLEMENTATION_APPROVAL_REQUIRED",
-        `\u5F53\u524D open step \u662F implementation\uFF0C\u4F46\u76EE\u6807 ${projectRelative(root, target)} \u4F4D\u4E8E protected root\uFF0C\u6267\u884C\u6279\u51C6\u4E49\u52A1\u5C1A\u672A\u6EE1\u8DB3`,
+        `\u5F53\u524D open step \u662F implementation\uFF0C\u4F46\u76EE\u6807 ${projectRelative(root, target)} \u4F4D\u4E8E governed root\uFF0C\u6267\u884C\u6279\u51C6\u4E49\u52A1\u5C1A\u672A\u6EE1\u8DB3`,
         "\u539F\u5199\u5165\u672A\u6267\u884C\uFF1B\u76EE\u6807\u6587\u4EF6\u548C\u5F53\u524D feature \u72B6\u6001\u672A\u6539\u53D8",
         {
           mode: "user-decision",
@@ -2847,7 +3035,7 @@ function classifyTarget(root, target, workflow) {
       return createPreToolBlock(
         "DEV_FLOW_IMPLEMENTATION_UNIT_REQUIRED",
         `\u76EE\u6807 ${projectRelative(root, target)} \u5DF2\u901A\u8FC7\u5B9E\u73B0\u6279\u51C6\uFF0C\u4F46\u5F53\u524D\u6CA1\u6709\u6D3B\u52A8\u7684 rollback unit`,
-        "\u539F\u5199\u5165\u672A\u6267\u884C\uFF1Bprotected \u76EE\u6807\u4FDD\u6301\u4E0D\u53D8",
+        "\u539F\u5199\u5165\u672A\u6267\u884C\uFF1Bgoverned \u76EE\u6807\u4FDD\u6301\u4E0D\u53D8",
         {
           mode: "automatic",
           action: "\u8C03\u7528 dev_flow_begin_implementation_unit \u51C6\u5907\u5F53\u524D rollback unit\uFF1B\u6210\u529F\u540E\u81EA\u52A8\u91CD\u8BD5\u539F\u5199\u5165",
@@ -2867,16 +3055,16 @@ function classifyTarget(root, target, workflow) {
         }
       );
     }
-    const decision = judgeWrite({ mode: "routed", stage: "implementation", controlPath: false, protectedPath: true, impactResolved: true });
+    const decision = judgeWrite({ mode: "routed", stage: "implementation", controlPath: false, governedPath: true, impactResolved: true });
     if (decision.decision !== "block") return void 0;
   }
-  if (workflow.state && isProtected(root, target, workflow.protectedRoots)) {
+  if (workflow.state && isGoverned(root, target, workflow.governedRoots)) {
     const relative2 = projectRelative(root, target);
     const block = implementationUnitWriteBlock(workflow.state, workflow.ledger, relative2);
     if (block?.code === "IMPLEMENTATION_UNIT_REQUIRED") {
       return createPreToolBlock(
         "DEV_FLOW_IMPLEMENTATION_UNIT_REQUIRED",
-        `\u76EE\u6807 ${relative2} \u4F4D\u4E8E protected root\uFF0C\u4F46\u6CA1\u6709\u6D3B\u52A8\u7684 rollback unit`,
+        `\u76EE\u6807 ${relative2} \u4F4D\u4E8E governed root\uFF0C\u4F46\u6CA1\u6709\u6D3B\u52A8\u7684 rollback unit`,
         "\u539F\u5199\u5165\u672A\u6267\u884C\uFF1B\u76EE\u6807\u6587\u4EF6\u4FDD\u6301\u4E0D\u53D8",
         {
           mode: "automatic",
@@ -2970,7 +3158,7 @@ async function augmentApprovalBlock(root, workflow, block) {
     return unreadableBlock("events.jsonl invalid or unreadable");
   }
   if (!revokedKind) return block;
-  const action = `\u8BA1\u5212\u4F9D\u636E\uFF08${revokedKind}\uFF09\u5DF2\u5728\u5B9E\u73B0\u6279\u51C6\u540E\u53D8\u66F4\uFF0C\u6279\u51C6\u5DF2\u4F5C\u5E9F\uFF1B\u8BF7\u5148\u5B8C\u6210\u76F8\u5173\u6B65\u9AA4\u5E76\u91CD\u65B0\u786E\u8BA4\u5B9E\u73B0\u6279\u51C6\u540E\u518D\u5199 protected \u6587\u4EF6${scratchHint}`;
+  const action = `\u8BA1\u5212\u4F9D\u636E\uFF08${revokedKind}\uFF09\u5DF2\u5728\u5B9E\u73B0\u6279\u51C6\u540E\u53D8\u66F4\uFF0C\u6279\u51C6\u5DF2\u4F5C\u5E9F\uFF1B\u8BF7\u5148\u5B8C\u6210\u76F8\u5173\u6B65\u9AA4\u5E76\u91CD\u65B0\u786E\u8BA4\u5B9E\u73B0\u6279\u51C6\u540E\u518D\u5199 governed \u6587\u4EF6${scratchHint}`;
   return {
     ...block,
     reason: action,
@@ -3001,7 +3189,7 @@ function unreadableTargetBlock(root, target, workflow) {
   if (!relative) return void 0;
   if (isControlPath(relative)) return controlMutationBlock(relative);
   if (workflow.blockAllWrites) return unreadableBlock(workflow.reason);
-  if (isDevFlowPath(relative) || isProtected(root, target, workflow.protectedRoots ?? [])) return unreadableBlock(workflow.reason);
+  if (isDevFlowPath(relative) || isGoverned(root, target, workflow.governedRoots ?? [])) return unreadableBlock(workflow.reason);
   return void 0;
 }
 async function evaluatePreToolUse(root, event2) {
@@ -3057,7 +3245,7 @@ async function evaluatePreToolUseInternal(root, event2) {
   let { workflow } = loaded;
   const command = typeof event2.tool_input?.command === "string" ? event2.tool_input.command : "";
   const prepareImplementationWrite = async (targets2) => {
-    if (workflow.state?.mode !== "routed" || currentOpenStep(workflow.state) !== "implementation" || !targets2.some((target) => isProtected(root, target, workflow.protectedRoots))) return void 0;
+    if (workflow.state?.mode !== "routed" || currentOpenStep(workflow.state) !== "implementation" || !targets2.some((target) => isGoverned(root, target, workflow.governedRoots))) return void 0;
     try {
       const prepared = await ensureActiveImplementationUnit(root, workflow.featureId, workflow.state);
       if (prepared.revision !== workflow.state.revision) {
@@ -3278,6 +3466,8 @@ if (event.hook_event_name === "PreToolUse") {
           additionalContext: outcome.advisory.message
         }
       }) + "\n");
+    } else {
+      await recordTrustedWriteIntent(cwd, trustedWriteTargets(cwd, event), "claude", event.event_id ?? event.tool_use_id ?? `pre-${Date.now()}`);
     }
   } catch (error) {
     process.stderr.write(`Dev Flow Claude hook evaluation failed: ${String(error)}
@@ -3289,6 +3479,12 @@ if (event.hook_event_name === "UserPromptSubmit" || event.hook_event_name === "S
     try {
       await recordPermissionPostToolUse(cwd, event, "claude");
     } catch {
+    }
+    if (postToolSucceeded(event)) {
+      try {
+        await recordTrustedWriteOwnership(cwd, trustedWriteTargets(cwd, event), "claude", event.event_id ?? event.tool_use_id ?? `post-${Date.now()}`);
+      } catch {
+      }
     }
   }
   try {
