@@ -4,6 +4,7 @@ import { createTinyApp, strictProjectConfig } from "../helpers/fixture-repo.mjs"
 import { loadSource } from "../helpers/load-source.mjs";
 
 const store = await loadSource("plugins/dev-flow/src/core/state-store.ts");
+const decisions = await loadSource("plugins/dev-flow/src/core/decision-interactions.ts");
 const quality = await loadSource("plugins/dev-flow/src/core/quality-exceptions.ts");
 
 test("quality exception requires one later host answer and records accepted risk", async () => {
@@ -64,7 +65,7 @@ test("elicitation accept without the required comment is rejected and stays pend
       (error) => error.code === "INTERACTION_COMMENT_REQUIRED",
     );
     const state = await store.readState(fixture.root, "quality");
-    assert.equal(state.pendingDecision.kind, "quality-exception");
+    assert.equal(decisions.pendingDecisionForState(state).kind, "quality-exception");
     assert.equal(Object.values(state.interactions)[0].status, "pending");
   } finally {
     await fixture.dispose();

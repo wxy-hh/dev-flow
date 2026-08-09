@@ -8,6 +8,7 @@ import { createTinyApp, strictProjectConfig } from "../helpers/fixture-repo.mjs"
 import { loadSource } from "../helpers/load-source.mjs";
 
 const store = await loadSource("plugins/dev-flow/src/core/state-store.ts");
+const decisions = await loadSource("plugins/dev-flow/src/core/decision-interactions.ts");
 const featureCheck = await loadSource("plugins/dev-flow/src/core/feature-check.ts");
 const artifacts = await loadSource("plugins/dev-flow/src/core/artifacts.ts");
 const approvals = await loadSource("plugins/dev-flow/src/core/approval-interactions.ts");
@@ -44,7 +45,7 @@ test("resume after a manual pause commit requires an explicit ownership decision
     assert.equal(resumed.lifecycle, "active");
     assert.equal(resumed.workspace.ownership["src/counter.js"], undefined);
     assert.equal(resumed.workspace.ownershipSource["src/counter.js"], undefined);
-    assert.equal(resumed.pendingDecision.kind, "workspace-ownership");
+    assert.equal(decisions.pendingDecisionForState(resumed).kind, "workspace-ownership");
     assert.equal(resumed.evidenceFreshness.verification, "missing");
     assert.equal(resumed.evidenceFreshness.review, "missing");
   } finally {
@@ -63,7 +64,7 @@ test("starting another task never silently switches the active feature", async (
     );
     const old = await store.readState(fixture.root, "old");
     assert.equal(old.lifecycle, "active");
-    assert.equal(old.pendingDecision.kind, "task-switch");
+    assert.equal(decisions.pendingDecisionForState(old).kind, "task-switch");
     await assert.rejects(() => store.readState(fixture.root, "new"), (error) => error.code === "FEATURE_NOT_FOUND");
   } finally {
     await fixture.dispose();

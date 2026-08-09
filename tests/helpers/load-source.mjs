@@ -1,5 +1,6 @@
 import { build } from "esbuild";
 import { execFile } from "node:child_process";
+import { appendFile, mkdir } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
@@ -14,6 +15,20 @@ async function ensureLegacyFixtureGit(projectRoot) {
     await run("git", ["init", "--quiet"], { cwd: projectRoot });
     await run("git", ["-c", "user.name=Dev Flow Tests", "-c", "user.email=tests@example.invalid", "commit", "--quiet", "--allow-empty", "-m", "fixture baseline"], { cwd: projectRoot });
   }
+}
+
+async function ensureFixtureHookHealth(projectRoot, host = "codex") {
+  await mkdir(path.join(projectRoot, ".dev-flow"), { recursive: true });
+  const hosts = new Set([host, "claude", "codex"]);
+  const now = Date.now();
+  const at = new Date(now).toISOString();
+  const signals = [...hosts].map((signalHost) => JSON.stringify({
+    host: signalHost,
+    kind: "session-start",
+    eventId: `fixture-${signalHost}-${now}`,
+    at,
+  })).join("\n");
+  await appendFile(path.join(projectRoot, ".dev-flow", "host-health.jsonl"), `${signals}\n`);
 }
 
 export async function loadSource(relativePath) {
@@ -39,6 +54,7 @@ export async function loadSource(relativePath) {
       ...module,
       startFeature: async (root, input, options) => {
         await ensureLegacyFixtureGit(root);
+        await ensureFixtureHookHealth(root, input?.host ?? "codex");
         const state = await startFeature(root, input, options);
         if (input?.level === undefined || input?.topology === undefined) return state;
         const riskLabels = input.riskLabels ?? [];
@@ -66,7 +82,8 @@ export async function loadSource(relativePath) {
           ...(input.requirements ? { requirements: input.requirements } : {}),
           ...(riskLabels.length ? { riskLabels } : {}),
         }, { scanned: ["assumption", "free-space", "tbd", "fallback", "scope", "acceptance"], items: [] });
-        if (routed.pendingDecision?.kind === "route-confirmation") {
+        const routeInteraction = Object.values(routed.interactions ?? {}).find((value) => value.kind === "route-confirmation" && value.status === "pending");
+        if (routeInteraction) {
           await module.recordHostEvent(root, { eventId: `route-confirm-${routed.revision}`, type: "user-prompt", host: input.host ?? "claude", text: "确认这条路线" });
           routed = await module.confirmRouteClassification(root, routed.featureId, routed.revision, "确认这条路线", input.host ?? "claude");
         }

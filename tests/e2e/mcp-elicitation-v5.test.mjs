@@ -23,6 +23,7 @@ await build({
 });
 after(() => rm(staging, { recursive: true, force: true }));
 const store = await loadSource("plugins/dev-flow/src/core/state-store.ts");
+const decisions = await loadSource("plugins/dev-flow/src/core/decision-interactions.ts");
 
 function interactiveClient(cwd, timeoutMs = "1000") {
   const child = spawn(process.execPath, [server], {
@@ -95,7 +96,7 @@ test("decline and cancel preserve the pending decision and fall back to explicit
         const response = await nextMatching(client, (message) => message.id === "tool");
         assert.equal(response.result.structuredContent.interactionOutcome, "pending");
         const state = await store.readState(fixture.root, "elicitation");
-        assert.equal(state.pendingDecision.kind, "grill");
+        assert.equal(decisions.pendingDecisionForState(state).kind, "grill");
         await client.close();
       } finally { await fixture.dispose(); }
     });
@@ -118,7 +119,7 @@ test("missing elicitation capability and client protocol errors preserve text fa
         }
         const response = await nextMatching(client, (message) => message.id === "tool");
         assert.equal(response.result.structuredContent.interactionOutcome, "pending");
-        assert.equal((await store.readState(fixture.root, "elicitation")).pendingDecision.kind, "grill");
+        assert.equal(decisions.pendingDecisionForState(await store.readState(fixture.root, "elicitation")).kind, "grill");
         await client.close();
       } finally { await fixture.dispose(); }
     });
@@ -145,11 +146,57 @@ test("form elicitation uses oneOf const/title and accept atomically resolves the
     assert.equal(response.id, "tool");
     assert.equal(response.result.isError, undefined);
     const state = await store.readState(fixture.root, "elicitation");
-    assert.equal(state.pendingDecision, undefined);
+    assert.equal(decisions.pendingDecisionForState(state), undefined);
     assert.equal(state.decisionLedger.length, 1);
     assert.equal(state.decisionLedger[0].status, "resolved");
     await client.close();
   } finally { await fixture.dispose(); }
+});
+
+test("route confirmation uses the same native form and resolves in one MCP call", async () => {
+  const fixture = await createTinyApp();
+  try {
+    await mcpCall(server, fixture.root, "dev_flow_init_project", { config: strictProjectConfig });
+    const started = await mcpCall(server, fixture.root, "dev_flow_start", { featureId: "route-form", objective: "测试路线原生确认", host: "codex" });
+    await store.recordHostEvent(fixture.root, { eventId: "route-decision", type: "user-prompt", host: "codex", text: "保留" });
+    const recorded = await mcpCall(server, fixture.root, "dev_flow_record_decision", {
+      featureId: "route-form", expectedRevision: started.control.expectedRevision,
+      question: "是否保留兼容行为？", evidence: "用户已有明确结论", conclusion: "保留", factRefs: [], host: "codex",
+    });
+    const client = interactiveClient(fixture.root);
+    await initialize(client);
+    client.send({ jsonrpc: "2.0", id: "lock", method: "tools/call", params: {
+      name: "dev_flow_lock_classification",
+      arguments: {
+        featureId: "route-form", expectedRevision: recorded.control.expectedRevision,
+        classification: {
+          level: "M", topology: "local", requirements: "provided-confirmed",
+          classificationBasis: {
+            scopeFacts: ["只改一个模块"], topologyFacts: ["没有共享契约"], uncertaintyFacts: [],
+            riskFacts: {}, decisionRefs: [recorded.decisionId],
+            signals: { changeSurface: "multi-component", behaviorChange: "new-capability", topology: "local", unitCount: 1, requirements: "provided-confirmed", operationalRecovery: false, executableRollback: false },
+          },
+        },
+        boundaryAudit: { scanned: ["assumption", "free-space", "tbd", "fallback", "scope", "acceptance"], items: [] },
+      },
+    } });
+    const request = await nextMatching(client, (message) => message.method === "elicitation/create");
+    assert.deepEqual(request.params.requestedSchema.properties.action.oneOf, [
+      { const: "confirm", title: "确认这条路线" },
+      { const: "correct", title: "修正分类事实" },
+    ]);
+    client.send({ jsonrpc: "2.0", id: request.id, result: { action: "accept", content: { action: "confirm" } } });
+    const response = await nextMatching(client, (message) => message.id === "lock");
+    assert.equal(response.result.isError, undefined);
+    assert.equal(response.result.structuredContent.control.stage, "requirements_alignment");
+    const state = await store.readState(fixture.root, "route-form");
+    assert.equal(state.mode, "routed");
+    assert.equal(decisions.pendingDecisionForState(state), undefined);
+    assert.equal(Object.values(state.interactions).filter((value) => value.status === "pending").length, 0);
+    await client.close();
+  } finally {
+    await fixture.dispose();
+  }
 });
 
 test("quality-exception form accept records the accepted risk with the form comment", async () => {
@@ -174,7 +221,7 @@ test("quality-exception form accept records the accepted risk with the form comm
     assert.equal(state.qualityExceptions.length, 1);
     assert.equal(state.qualityExceptions[0].status, "current");
     assert.equal(state.qualityExceptions[0].userEvidence, "已了解验证风险");
-    assert.equal(state.pendingDecision, undefined);
+    assert.equal(decisions.pendingDecisionForState(state), undefined);
     await client.close();
   } finally { await fixture.dispose(); }
 });
@@ -194,7 +241,7 @@ test("quality-exception form decline resolves without recording acceptance", asy
     assert.equal(response.result.structuredContent.interactionOutcome, "先修复问题");
     const state = await store.readState(fixture.root, "elicitation");
     assert.equal(state.qualityExceptions.length, 0);
-    assert.equal(state.pendingDecision, undefined);
+    assert.equal(decisions.pendingDecisionForState(state), undefined);
     await client.close();
   } finally { await fixture.dispose(); }
 });
@@ -220,7 +267,7 @@ test("elicitation timeout cancels, ignores a late response, and fuses the sessio
     client.send({ jsonrpc: "2.0", id: "ping", method: "ping", params: {} });
     assert.equal((await nextMatching(client, (message) => message.id === "ping")).id, "ping");
     let state = await store.readState(fixture.root, "elicitation");
-    assert.equal(state.pendingDecision.kind, "grill");
+    assert.equal(decisions.pendingDecisionForState(state).kind, "grill");
 
     // Resolve through trusted text, then prove the same MCP session no longer
     // emits a second elicitation/create request.

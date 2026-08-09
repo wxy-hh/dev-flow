@@ -260,15 +260,17 @@ export async function readStatusView(root: string, featureId: string): Promise<S
   const rollback = await rollbackChainView(root, state);
   const review = await reviewStatus(root, state);
   const drift = await driftStatus(root, state);
+  const verificationFreshness = progress.verificationFreshness;
   return {
     ...state,
+    evidenceFreshness: { ...state.evidenceFreshness, verification: verificationFreshness.status === "fresh" ? "current" : verificationFreshness.status },
     progress,
     trace: await traceStatus(root, state),
     reviewStatus: review,
     implementation: await implementationStatus(root, state, rollback),
     rollback,
     stageCapabilities: stageCapabilitiesForAction(state, action),
-    ...(buildExecutionBrief(state, review.projection) ? { executionBrief: buildExecutionBrief(state, review.projection) } : {}),
+    ...(buildExecutionBrief(state, review.projection, verificationFreshness.status) ? { executionBrief: buildExecutionBrief(state, review.projection, verificationFreshness.status) } : {}),
     ...(drift ? { drift } : {}),
   };
 }

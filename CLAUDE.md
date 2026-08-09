@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## 项目定位
 
-Dev Flow 是面向 **Claude Code** 与 **Codex CLI** 的预构建双宿主开发流程插件。按 **规模（XS/S/M/L）× 拓扑 × 执行方式（light/standard）× 需求状态 × 风险标签** 选择路线，只强制该路线所需的步骤与证据；两端共用业务仓内的 `.dev-flow/` 状态，可跨宿主接力。
+Dev Flow 是面向 **Claude Code** 与 **Codex CLI** 的预构建双宿主开发流程插件。按 **规模（XS/S/M/L）× 拓扑 × 需求状态 × 风险标签** 动态编译路线，只强制该路线所需的步骤与证据；两端共用业务仓内的 `.dev-flow/` 状态，可跨宿主接力。
 
 - 运行时 **零 npm 依赖**：用户安装插件后无需 `npm install`
 - 流程状态 **只能** 经本地 MCP 变更；Skills **禁止** 手改状态文件
@@ -128,8 +128,8 @@ Marketplace 元数据：根 `.claude-plugin/marketplace.json`、`.agents/plugins
 
 - **唯一**路线选择器：`dev_flow_classify`；入口先进入 intake，读取代码、文档、测试和用户事实后再锁定路线。
 - 规模与风险 **独立**：拓扑决定最低规模；风险只叠加审查、验证、回滚、检查点或确认义务，不创建第二条路线。
-- 机器权威：`plugins/dev-flow/policy/contract.json`（六条基础路线为 `xs`、`s`、`light-m`、`standard-m`、`light-l`、`standard-l`）。
-- standard M/L 的计划审查由独立 review batch 驱动；同一义务只呈现一个用户门禁。
+- 机器权威：`plugins/dev-flow/policy/contract.json`（schema v4，四条基础路线为 `xs`、`s`、`m`、`l`；完整 `orderedRoute` 由 Core 编译，含 plan-review、execution-approval 等 Core-owned gate）。
+- plan-review 由独立 review batch 驱动：L 默认开启，M 在共享契约、多 RU、恢复或专项风险时开启；同一义务只呈现一个用户门禁。
 - 检查点由 Core 在实现边界自动捕获；只有明确进入恢复流程时才暴露回滚操作。
 - Hooks 仅阻断越界写入、控制面文件修改、未满足的事实/义务或真实漂移；等价实现方式不会因为命令写法不同而被拦截。
 
@@ -148,7 +148,7 @@ Marketplace 元数据：根 `.claude-plugin/marketplace.json`、`.agents/plugins
 
 ## Traceability（追溯账本，分支进行中）
 
-standard-m / standard-l 且 `workflowCapabilities.trace === 1` 时强制 `REQ/AC → TASK → TEST/RU` 可审计图：
+L 必有；M 在共享契约、多 RU、正式恢复或 plan-review 时开启（旧 feature 依 `workflowCapabilities.trace` 能力位判定）。启用后强制 `REQ/AC → TASK → TEST/RU` 可审计图：
 
 - 类型与策略：`src/policy/traceability.ts`、`policy/traceability.schema.json`  
 - 图校验与切片：`src/core/traceability.ts`  

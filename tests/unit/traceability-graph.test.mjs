@@ -23,6 +23,7 @@ function deltaInput(current, artifactKind, nodes, options = {}) {
     delta: { nodes },
     projectConfigSha256: options.projectConfigSha256 ?? "a".repeat(64),
     verificationCommandIds: options.verificationCommandIds ?? ["unit"],
+    ...(options.verificationCommandHashes ? { verificationCommandHashes: options.verificationCommandHashes } : {}),
     nextStateRevision: current.stateRevision + 1,
   };
 }
@@ -254,6 +255,24 @@ test("slice checks reject stale config and require a complete current graph", ()
     () => trace.assertTraceSliceCurrent(ledger, "m", "implementation_plan", "b".repeat(64)),
     /TRACE_SLICE_STALE/,
   );
+});
+
+test("semantic trace config checks only referenced verification command identities", () => {
+  let ledger = requirementsLedger();
+  const unitHash = "1".repeat(64);
+  const lintHash = "2".repeat(64);
+  ledger = trace.applyTraceDelta(deltaInput(ledger, "implementation-plan", [
+    { kind: "task", id: "TASK-001", covers: ["AC-001"], rollbackUnit: "RU-001" },
+    { kind: "rollback", id: "RU-001", tasks: ["TASK-001"], dependsOn: [], fileScope: ["src/one.ts"], covers: ["REQ-001"], forwardVerification: ["unit"], rollbackVerification: ["unit"] },
+    { kind: "task", id: "TASK-002", covers: ["AC-002"], rollbackUnit: "RU-002" },
+    { kind: "rollback", id: "RU-002", tasks: ["TASK-002"], dependsOn: [], fileScope: ["src/two.ts"], covers: ["REQ-002"], forwardVerification: ["unit"], rollbackVerification: ["unit"] },
+  ], { verificationCommandHashes: { unit: unitHash, lint: lintHash } }));
+  ledger = trace.applyTraceDelta(deltaInput(ledger, "coverage-matrix", [
+    { kind: "test", id: "TEST-001", verifies: ["AC-001"] },
+    { kind: "test", id: "TEST-002", verifies: ["AC-002"] },
+  ], { verificationCommandHashes: { unit: unitHash, lint: lintHash } }));
+  assert.doesNotThrow(() => trace.assertTraceabilityComplete(ledger, "m", "b".repeat(64), { unit: unitHash, lint: "3".repeat(64) }));
+  assert.throws(() => trace.assertTraceabilityComplete(ledger, "m", "b".repeat(64), { unit: "4".repeat(64), lint: lintHash }), /TRACE_SLICE_STALE/);
 });
 
 test("validateTraceGraph fail-closes on missing TraceSource fields and invalid status", () => {

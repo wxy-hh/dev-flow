@@ -135,6 +135,10 @@
         "traceabilitySha256": { "$ref": "#/$defs/sha256" },
         "approvalBasisHash": { "$ref": "#/$defs/sha256" },
         "projectConfigSha256": { "$ref": "#/$defs/sha256" },
+        "verificationCommandHashes": {
+          "type": "object",
+          "additionalProperties": { "$ref": "#/$defs/sha256" }
+        },
         "beginNonce": { "type": "string", "minLength": 1 },
         "verificationCommands": {
           "type": "array",

@@ -7,6 +7,7 @@ import { effectiveStage } from "../policy/stages.js";
 import { unresolvedBlockingFindings } from "./review-findings.js";
 import { DevFlowError } from "./errors.js";
 import type { FeatureState } from "./state-store.js";
+import { pendingDecisionForState } from "./decision-interactions.js";
 
 export const inspectionTopics = ["classification", "artifacts", "trace", "review", "implementation", "verification", "delivery", "history", "diagnostics"] as const;
 export type InspectionTopic = typeof inspectionTopics[number];
@@ -48,10 +49,11 @@ async function review(root: string, state: FeatureState) {
   if (state.mode === "intake" || !reviewEnforcementRequired(state.route, state.classification.controls)) return { enforced: false };
   const ledger = await readReviewLedger(root, state);
   const current = ledger.batches.find((batch) => batch.validity === "current");
+  const roleBasis = (origin: import("../policy/review.js").ReviewFindingEvent & { type: "origin" }) => current?.jobs.find((job) => job.role === origin.role)?.roleBasisHash;
   return {
     enforced: true,
     currentBatch: current ? { progress: current.progress, roles: current.jobs.map((job) => ({ role: job.role, status: job.status })) } : undefined,
-    unresolvedBlockingCount: unresolvedBlockingFindings({ findingEvents: ledger.findingEvents }, current?.basisHash).length,
+    unresolvedBlockingCount: unresolvedBlockingFindings({ findingEvents: ledger.findingEvents }, roleBasis).length,
     staleBatchCount: ledger.batches.filter((batch) => batch.validity === "stale").length,
   };
 }
@@ -96,7 +98,7 @@ async function diagnostics(root: string, state: FeatureState) {
     artifacts: state.artifacts,
     traceability: state.traceability,
     review: state.review,
-    pendingDecision: state.pendingDecision,
+    pendingDecision: pendingDecisionForState(state),
     recentEvents: events.slice(-20),
   };
 }

@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { mkdir, open, readFile, readdir, rename } from "node:fs/promises";
 import path from "node:path";
-import { assuranceForReviewBatch, type ReviewAgentAttestation, type ReviewBatch, type ReviewFindingEvent, type ReviewJob, type ReviewLedger, type ReviewPointer, type ReviewSamplingAttempt, type ReviewSummary } from "../policy/review.js";
+import { assuranceForReviewBatch, type ReviewAgentAttestation, type ReviewBasis, type ReviewBatch, type ReviewFindingEvent, type ReviewJob, type ReviewLedger, type ReviewPointer, type ReviewSamplingAttempt, type ReviewSummary } from "../policy/review.js";
 import type { FeatureState } from "./state-store.js";
 import { DevFlowError } from "./errors.js";
 
@@ -28,6 +28,18 @@ export function canonicalReviewJson(ledger: ReviewLedger): string {
 
 export function canonicalReviewValueJson(value: unknown): string {
   return `${JSON.stringify(sortValue(value), null, 2)}\n`;
+}
+
+/** Review batch ids and raw config/command catalogs are metadata, not overall semantics. */
+export function semanticReviewBasisHash(basis: ReviewBasis): string {
+  const { projectConfigSha256: _projectConfigSha256, verificationCommandHashes: _verificationCommandHashes, ...semanticBasis } = basis;
+  return digest(canonicalReviewValueJson(semanticBasis));
+}
+
+function validBasisHash(basis: ReviewBasis, basisHash: string): boolean {
+  // Accept the full legacy hash while reading 5.0 ledgers; all new writes use
+  // the semantic form so unrelated verification additions remain reusable.
+  return basisHash === digest(canonicalReviewValueJson(basis)) || basisHash === semanticReviewBasisHash(basis);
 }
 
 function snapshotDirectory(root: string, featureId: string): string {
@@ -173,7 +185,7 @@ function validateLedger(value: unknown): asserts value is ReviewLedger {
   for (const batch of ledger.batches) {
     if (batchIds.has(batch.batchId)
       || batch.basis.featureId !== ledger.featureId
-      || digest(canonicalReviewValueJson(batch.basis)) !== batch.basisHash
+      || !validBasisHash(batch.basis, batch.basisHash)
       || (batch.progress === "complete") !== batch.jobs.every((job) => job.status === "submitted" || job.status === "reused")) {
       integrity("review snapshot batch is inconsistent");
     }

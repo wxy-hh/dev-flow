@@ -74,6 +74,7 @@ export interface ExecutionBrief {
 export function buildExecutionBrief(
   state: FeatureState,
   review?: { assurance?: { level?: string }; batch?: { status?: string } },
+  verificationFreshness?: "missing" | "fresh" | "stale",
 ): ExecutionBrief | undefined {
   if (state.mode !== "routed" || !state.route || !state.classificationBasis || !state.obligations) return undefined;
   const plan = {
@@ -89,8 +90,12 @@ export function buildExecutionBrief(
   const checkpointed = (state.implementationUnits ?? []).some((unit) => unit.status === "checkpointed")
     || (state.checkpoints ?? []).length > 0;
   const requiredKinds = [...new Set(state.obligations.flatMap((obligation) => obligation.verificationKinds ?? []))].sort();
-  const verificationStatus = state.verification.verifiedFingerprint
-    ? state.verification.verifiedFingerprint === state.businessFingerprint ? "passed" : "stale"
+  const verificationStatus = verificationFreshness === "stale"
+    ? "stale"
+    : verificationFreshness === "fresh"
+      ? "passed"
+      : state.verification.verifiedFingerprint
+        ? state.verification.verifiedFingerprint === state.businessFingerprint ? "passed" : "stale"
     : "missing";
   const basis = {
     route: state.route,

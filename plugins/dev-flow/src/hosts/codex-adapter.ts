@@ -1,11 +1,14 @@
 import { recordHostEvent, recordTrustedWriteIntent, recordTrustedWriteOwnership } from "../core/state-store.js";
 import { evaluatePreToolUse, formatPreToolBlock, trustedWriteTargets } from "./adapter-policy.js";
 import { evaluatePermissionRequest, postToolSucceeded, recordPermissionPostToolUse } from "./host-authorization.js";
+import { recordAdapterHealth } from "./host-health-adapter.js";
 
 const chunks: Buffer[] = [];
 for await (const chunk of process.stdin) chunks.push(Buffer.from(chunk));
 const event = JSON.parse(Buffer.concat(chunks).toString("utf8") || "{}");
 const cwd = event.cwd ?? process.cwd();
+
+await recordAdapterHealth(cwd, event, "codex");
 
 if (event.hook_event_name === "PermissionRequest") {
   try {

@@ -15,7 +15,8 @@ import {
   type DeliverySnapshot,
 } from "./delivery-snapshot.js";
 import { assertRequirementsGrillSatisfied } from "./requirements-grill.js";
-import { mutate, readProjectConfig, readState, type FeatureState } from "./state-store.js";
+import { assertHostHealth } from "./host-health.js";
+import { assertWorkspaceOwnershipComplete, mutate, readProjectConfig, readState, type FeatureState } from "./state-store.js";
 import { assertCurrentStep, routeDefinitionForState } from "./step-order.js";
 import { assertTraceGateCurrent } from "./traceability-gates.js";
 import { readTraceability } from "./traceability-store.js";
@@ -23,7 +24,6 @@ import { invalidateStaleVerification } from "./verification.js";
 import { assertReviewComplete } from "./review-jobs.js";
 import { captureAutomaticCheckpoint } from "./auto-checkpoint.js";
 import { satisfyObligations } from "../policy/obligations.js";
-import { reconcileWorkspaceLineage } from "./git-reconciliation.js";
 import { hasCurrentQualityException } from "./quality-exceptions.js";
 
 function assertRequiredEvidence(step: string, required: RequiredEvidence, evidence: unknown): void {
@@ -91,9 +91,11 @@ export async function recordStep(
     });
   }
   assertRecordableStep(initial, step);
+  if (step === "implementation") await assertHostHealth(root, initial.lastUpdatedBy.host, "implementation 推进");
   if (step === "implementation") {
     const config = await readProjectConfig(root);
     const files = await deriveImplementationFiles(root, initial, config);
+    await assertWorkspaceOwnershipComplete(root, initial, config, "implementation 推进");
     assertImplementationFilesInGovernedRoots(files, config.governedRoots);
     // Validated before the mutation so a rejected registration leaves the step
     // open and can be re-recorded without a dead end.
@@ -175,6 +177,7 @@ export async function finalize(
   expectedRevision: number,
 ): Promise<FeatureState> {
   const initial = await readState(root, id);
+  await assertHostHealth(root, initial.lastUpdatedBy.host, "finalize");
   if (initial.revision !== expectedRevision) {
     throw new DevFlowError("STATE_REVISION_CONFLICT", "state revision changed", {
       currentRevision: initial.revision,
@@ -184,9 +187,7 @@ export async function finalize(
   await invalidateBeforeFinalClaim(root, id, expectedRevision);
   await assertArtifactIntegrity(root, id);
   const config = await readProjectConfig(root);
-  const reconciledWorkspace = initial.workspace.baseHead
-    ? await reconcileWorkspaceLineage(root, initial.workspace, config)
-    : initial.workspace;
+  const reconciledWorkspace = await assertWorkspaceOwnershipComplete(root, initial, config, "finalize");
   let snapshot: DeliverySnapshot | undefined;
   return mutate(root, id, expectedRevision, "finalized", async (state) => {
     await assertRequirementsGrillSatisfied(root, id, state);

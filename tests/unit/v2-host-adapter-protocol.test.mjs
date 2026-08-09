@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { writeFile } from "node:fs/promises";
 import test, { after } from "node:test";
 import { buildTestBundles } from "../helpers/test-bundle.mjs";
 import { createTinyApp, strictProjectConfig } from "../helpers/fixture-repo.mjs";
@@ -96,6 +97,34 @@ test("Codex PreToolUse block uses decision block without unsupported fields", as
     assert.equal("permissionDecision" in output, false);
   } finally {
     await fixture.dispose();
+  }
+});
+
+test("a recovered SessionStart asks Core to reconcile changed workspace automatically", async (t) => {
+  for (const host of ["claude", "codex"]) {
+    await t.test(host, async () => {
+      const fixture = await startIntake();
+      try {
+        await state.recordHostHealth(fixture.root, {
+          host,
+          kind: "session-start",
+          eventId: `stale-${host}`,
+          at: "2020-01-01T00:00:00.000Z",
+        });
+        await writeFile(`${fixture.root}/src/counter.js`, "export const counter = 2;\n");
+        const before = await state.readState(fixture.root, "protocol");
+        await invokeRaw(bundles.pathFor(`${host}-hook`), fixture.root, {
+          hook_event_name: "SessionStart",
+          event_id: `recovered-${host}`,
+        });
+        const after = await state.readState(fixture.root, "protocol");
+        assert.equal(after.revision, before.revision + 1);
+        assert.deepEqual(after.workspace.unownedPaths, ["src/counter.js"]);
+        assert.equal(Object.values(after.interactions ?? {}).filter((item) => item.status === "pending").length, 1);
+      } finally {
+        await fixture.dispose();
+      }
+    });
   }
 });
 

@@ -1,4 +1,4 @@
-import { normalizeReplyText } from "./user-interactions.js";
+import { normalizeReplyText, type UserInteraction } from "./user-interactions.js";
 import { DevFlowError } from "./errors.js";
 
 export interface HostEventRecord {
@@ -14,6 +14,22 @@ export interface ResolvedPromptEvent {
   at: string;
   text: string;
   host: "claude" | "codex";
+}
+
+function presentationEventIndex(
+  events: HostEventRecord[],
+  input: { presentationEventId?: string; presentedAt: string; presentedRevision: number },
+): number | undefined {
+  const index = events.findIndex((record) => {
+    if (record.type === "host-event") return false;
+    if (input.presentationEventId) {
+      if (!record.data || typeof record.data !== "object" || Array.isArray(record.data)) return false;
+      return (record.data as Record<string, unknown>).presentationEventId === input.presentationEventId;
+    }
+    return record.revision >= input.presentedRevision
+      && Date.parse(record.at) >= Date.parse(input.presentedAt);
+  });
+  return index >= 0 ? index : undefined;
 }
 
 function promptFrom(record: HostEventRecord): { eventId: string; text: string; host: "claude" | "codex"; at: string } | undefined {
@@ -33,14 +49,20 @@ export function resolvePromptEvent(
     userReply: string;
     presentedAt: string;
     presentedRevision: number;
+    presentationEventId?: string;
     consumedEventIds?: Iterable<string>;
   },
 ): ResolvedPromptEvent {
   const consumed = new Set(input.consumedEventIds ?? []);
-  const otherHost = events.flatMap((record) => {
+  const presentationIndex = presentationEventIndex(events, input);
+  const isAfterPresentation = (record: HostEventRecord, index: number): boolean => {
+    if (presentationIndex !== undefined) return index > presentationIndex;
+    return record.revision > input.presentedRevision && Date.parse(promptFrom(record)?.at ?? "") >= Date.parse(input.presentedAt);
+  };
+  const otherHost = events.flatMap((record, index) => {
     const prompt = promptFrom(record);
     if (!prompt || prompt.host === input.host || consumed.has(prompt.eventId)) return [];
-    if (record.revision <= input.presentedRevision || Date.parse(prompt.at) < Date.parse(input.presentedAt)) return [];
+    if (!isAfterPresentation(record, index)) return [];
     return normalizeReplyText(prompt.text) === normalizeReplyText(input.userReply) ? [prompt] : [];
   });
   if (otherHost.length) {
@@ -54,10 +76,10 @@ export function resolvePromptEvent(
       actualHost: otherHost[0].host,
     });
   }
-  const matches = events.flatMap((record) => {
+  const matches = events.flatMap((record, index) => {
     const prompt = promptFrom(record);
     if (!prompt || prompt.host !== input.host || consumed.has(prompt.eventId)) return [];
-    if (record.revision <= input.presentedRevision || Date.parse(prompt.at) < Date.parse(input.presentedAt)) return [];
+    if (!isAfterPresentation(record, index)) return [];
     if (normalizeReplyText(prompt.text) !== normalizeReplyText(input.userReply)) return [];
     return [{ eventId: prompt.eventId, revision: record.revision, at: prompt.at, text: prompt.text, host: prompt.host }];
   });
@@ -83,6 +105,33 @@ export function resolvePromptEvent(
     });
   }
   return matches[0];
+}
+
+/**
+ * Canonical interaction cursor adapter, including early 5.0 records that did
+ * not persist a presentation id/revision on the interaction itself.
+ */
+export function resolveInteractionPromptEvent(
+  events: HostEventRecord[],
+  state: { revision: number; pendingDecision?: { target?: string; presentedRevision: number } },
+  interaction: UserInteraction,
+  input: {
+    host: "claude" | "codex";
+    userReply: string;
+    consumedEventIds?: Iterable<string>;
+  },
+): ResolvedPromptEvent {
+  const presentedRevision = Number.isInteger(interaction.presentedRevision)
+    ? interaction.presentedRevision!
+    : state.pendingDecision?.target === interaction.target
+      ? state.pendingDecision.presentedRevision
+      : Math.max(0, state.revision - 1);
+  return resolvePromptEvent(events, {
+    ...input,
+    presentedAt: interaction.presentedAt,
+    presentedRevision,
+    ...(interaction.presentationEventId ? { presentationEventId: interaction.presentationEventId } : {}),
+  });
 }
 
 export function consumedPromptEventIds(events: HostEventRecord[]): Set<string> {

@@ -17,6 +17,7 @@ import { reopenObligations } from "../policy/obligations.js";
 import { normalizeUnicode } from "./path-normalization.js";
 import { detectRollbackSplitWarning } from "../policy/rollback-warnings.js";
 import { validatePlanTaskGraph } from "./plan-graph.js";
+import { verificationCommandHashes, verificationCommandHashesForRefs } from "./project-config.js";
 
 const names: Record<string, string> = {
   requirements: "需求文档.md",
@@ -122,17 +123,24 @@ export function invalidateFromStep(state: FeatureState, kind: string): { plannin
   return { planningReopened };
 }
 
-function invalidateArtifactDependents(state: FeatureState, kind: string, reason: "artifact-changed" | "trace-changed"): { planningReopened: boolean } {
+function invalidateArtifactDependents(
+  state: FeatureState,
+  kind: string,
+  reason: "artifact-changed" | "trace-changed",
+  executionBasisChanged: boolean,
+): { planningReopened: boolean } {
   const invalidation = invalidateFromStep(state, kind);
-  for (const approval of approvalIds(state)) {
-    delete state.humanGates[approval];
-    clearInteractionsForTarget(state, `approval:${approval}`);
+  if (executionBasisChanged) {
+    for (const approval of approvalIds(state)) {
+      delete state.humanGates[approval];
+      clearInteractionsForTarget(state, `approval:${approval}`);
+    }
+    state.obligations = reopenObligations(state.obligations, ["approval"]);
   }
   if (kind === "requirements") clearInteractionsByKind(state, "grill");
   state.logicComplete = false;
   delete state.steps.finalize;
   state.qualityExceptions = state.qualityExceptions.map((exception) => ({ ...exception, status: "stale" as const }));
-  state.obligations = reopenObligations(state.obligations, ["approval"]);
   // Keep the precise causal reason in the mutation event rather than state schema.
   void reason;
   return invalidation;
@@ -180,7 +188,7 @@ export async function recordArtifact(root: string, id: string, expectedRevision:
   return mutate(root, id, expectedRevision, "artifact-recorded", (current) => {
     assertPlanRevisionQuiescent(current, kind);
     current.artifacts[kind] = { ...artifact, path: normalizeUnicode(artifact.path), sha256: checksum };
-    invalidateArtifactDependents(current, kind, "artifact-changed");
+    invalidateArtifactDependents(current, kind, "artifact-changed", true);
   }, { kind, invalidationReason: "artifact-changed", planningReopened: kind === "implementation-plan" && reviewEnforcementRequired(state.route, state.classification.controls) });
 }
 
@@ -226,24 +234,33 @@ export async function recordArtifactWithTrace(
       delta: traceDelta,
       projectConfigSha256,
       verificationCommandIds: config.verification.commands.map((command) => command.id),
+      verificationCommandHashes: verificationCommandHashes(config),
       nextStateRevision,
     });
     if (artifactKind === "implementation-plan") {
-      assertTraceabilityComplete(ledger, current.route, projectConfigSha256);
+      assertTraceabilityComplete(ledger, current.route, projectConfigSha256, verificationCommandHashes(config));
     }
-    const executionSemanticBasisHash = hash(JSON.stringify(Object.values(ledger.nodes)
+    const executionNodes = Object.values(ledger.nodes)
       .filter((node) => node.status === "current" && node.kind !== "test")
       .map((node) => node.kind === "rollback" ? {
         kind: node.kind, id: node.id, tasks: node.tasks, dependsOn: node.dependsOn, fileScope: node.fileScope,
         covers: node.covers, forwardVerification: node.forwardVerification, rollbackVerification: node.rollbackVerification,
       } : node.kind === "task" ? { kind: node.kind, id: node.id, covers: node.covers, rollbackUnit: node.rollbackUnit }
         : { kind: node.kind, id: node.id })
-      .sort((left, right) => left.id.localeCompare(right.id))));
+      .sort((left, right) => left.id.localeCompare(right.id));
+    const executionVerificationRefs = Object.values(ledger.nodes)
+      .filter((node): node is Extract<typeof node, { kind: "rollback" }> => node.status === "current" && node.kind === "rollback")
+      .flatMap((node) => [...node.forwardVerification, ...node.rollbackVerification]);
+    const executionSemanticBasisHash = hash(JSON.stringify({
+      nodes: executionNodes,
+      verificationCommandHashes: verificationCommandHashesForRefs(config, executionVerificationRefs),
+    }));
     warnings = detectRollbackSplitWarning(Object.values(ledger.nodes).filter((node) => node.kind === "rollback"));
     const pointer = await writeTraceSnapshot(root, ledger, options.snapshot);
     const artifactChanged = artifact.sha256 !== artifactSha256;
     const traceChanged = JSON.stringify(currentLedger.nodes) !== JSON.stringify(ledger.nodes)
       || JSON.stringify(currentLedger.edges) !== JSON.stringify(ledger.edges);
+    const executionBasisChanged = current.executionSemanticBasisHash !== executionSemanticBasisHash;
     const reviewPointer = artifactChanged || traceChanged
       ? await prepareReviewInvalidation(root, current, nextStateRevision)
       : undefined;
@@ -252,6 +269,7 @@ export async function recordArtifactWithTrace(
       artifactChanged,
       traceChanged,
       invalidationReason: artifactChanged ? "artifact-changed" : traceChanged ? "trace-changed" : undefined,
+      ...(executionBasisChanged ? { executionBasisChanged: true } : {}),
       ...(warnings.length ? { warnings } : {}),
     };
     return {
@@ -260,8 +278,13 @@ export async function recordArtifactWithTrace(
         draft.traceability = pointer;
         draft.executionSemanticBasisHash = executionSemanticBasisHash;
         if (reviewPointer) draft.review = reviewPointer;
-        if (artifactChanged || traceChanged) {
-          const invalidation = invalidateArtifactDependents(draft, artifactKind, artifactChanged ? "artifact-changed" : "trace-changed");
+        if (artifactChanged || traceChanged || executionBasisChanged) {
+          const invalidation = invalidateArtifactDependents(
+            draft,
+            artifactKind,
+            artifactChanged ? "artifact-changed" : "trace-changed",
+            executionBasisChanged,
+          );
           cleanupTombstonedPendingUnits(draft, ledger);
           eventData = { ...eventData, planningReopened: invalidation.planningReopened };
         }

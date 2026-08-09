@@ -5,6 +5,7 @@ import { loadSource } from "../../helpers/load-source.mjs";
 
 const route = await loadSource("plugins/dev-flow/src/policy/route.ts");
 const store = await loadSource("plugins/dev-flow/src/core/state-store.ts");
+const decisions = await loadSource("plugins/dev-flow/src/core/decision-interactions.ts");
 
 const boundaryAudit = { scanned: ["assumption", "free-space", "tbd", "fallback", "scope", "acceptance"], items: [] };
 
@@ -59,12 +60,37 @@ test("M route confirmation atomically locks through a trusted later host event",
       requirements: "provided-confirmed",
     }, boundaryAudit);
     assert.equal(pending.mode, "intake");
-    assert.equal(pending.pendingDecision.kind, "route-confirmation");
+    assert.equal(decisions.pendingDecisionForState(pending).kind, "route-confirmation");
     await store.recordHostEvent(fixture.root, { eventId: "route-confirm-user", type: "user-prompt", host: "codex", text: "确认这条路线" });
     const routed = await store.confirmRouteClassification(fixture.root, pending.featureId, pending.revision, "确认这条路线", "codex");
     assert.equal(routed.mode, "routed");
     assert.equal(routed.route, "m");
-    assert.equal(routed.pendingDecision, undefined);
+    assert.equal(decisions.pendingDecisionForState(routed), undefined);
+  } finally {
+    await fixture.dispose();
+  }
+});
+
+test("route lock rejects missing non-preflight guarantees before creating route state", async () => {
+  const fixture = await createTinyApp();
+  try {
+    await store.initProject(fixture.root, {
+      ...strictProjectConfig,
+      verification: {
+        commands: [{ ...strictProjectConfig.verification.commands[0], provides: ["targeted"] }],
+      },
+    });
+    const intake = await store.startFeature(fixture.root, { featureId: "missing-guarantee", host: "codex" });
+    const classificationBasis = basis(signals({ changeSurface: "multi-component", behaviorChange: "new-capability" }));
+    await assert.rejects(
+      () => store.lockClassification(fixture.root, intake.featureId, intake.revision, {
+        ...classificationBasis, level: "M", topology: "local", requirements: "provided-confirmed",
+      }, boundaryAudit),
+      (error) => error.code === "VERIFICATION_GUARANTEE_UNCONFIGURED" && error.details.missingGuarantees.includes("behavior"),
+    );
+    const state = await store.readState(fixture.root, intake.featureId);
+    assert.equal(state.mode, "intake");
+    assert.equal(decisions.pendingDecisionForState(state), undefined);
   } finally {
     await fixture.dispose();
   }

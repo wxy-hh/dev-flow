@@ -88,6 +88,8 @@ export interface WorkspaceLineage {
   observedCommits: ObservedCommit[];
   /** Last reconciled per-path content/type/mode basis for precise freshness. */
   observedPathFingerprints: Record<string, string>;
+  /** Paths observed as changed but still lacking an explicit ownership conclusion. */
+  unownedPaths?: string[];
   lastWorkspaceFingerprint: string;
   reconciliationStatus: "current" | "required" | "blocked";
 }
@@ -129,6 +131,8 @@ export interface PendingDecision {
   source: "core";
   /** Internal correlation only; never copied to the default user view. */
   target?: string;
+  /** Append-only ledger cursor identifying the event that presented this decision. */
+  presentationEventId?: string;
 }
 
 export interface QualityException {

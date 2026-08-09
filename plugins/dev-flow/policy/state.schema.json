@@ -41,6 +41,7 @@
         "ownershipSource": { "type": "object", "additionalProperties": { "enum": ["user-adopted", "trusted-hook"] } },
         "observedCommits": { "type": "array" },
         "observedPathFingerprints": { "type": "object", "additionalProperties": { "type": "string" } },
+        "unownedPaths": { "type": "array", "items": { "type": "string" }, "uniqueItems": true },
         "lastWorkspaceFingerprint": { "type": "string" },
         "reconciliationStatus": { "enum": ["current", "required", "blocked"] }
       }

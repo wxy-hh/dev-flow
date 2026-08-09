@@ -138,6 +138,7 @@ export interface TraceabilityLedger {
   revision: number;
   stateRevision: number;
   projectConfigSha256: string;
+  verificationCommandHashes?: Record<string, string>;
   nodes: Record<string, TraceNode>;
   edges: TraceEdge[];
   summary: TraceSummary;

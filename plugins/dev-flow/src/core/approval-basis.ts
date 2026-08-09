@@ -1,5 +1,4 @@
 import type { FeatureState } from "./state-store.js";
-import { reviewEnforcementRequired, traceEnforcementRequired } from "../policy/contract.js";
 
 /** Editable evidence that can invalidate a pending or confirmed approval. */
 export const approvalBasisArtifacts: readonly string[] = [
@@ -27,14 +26,16 @@ export function approvalBasis(state: FeatureState, approvalId: string): Record<s
     classificationBasis: state.classificationBasis,
     executionSemanticBasisHash: state.executionSemanticBasisHash,
   };
-  if (reviewEnforcementRequired(state.route, state.classification.controls)) {
-    // The ledger pointer, rather than any caller-supplied batch string or
-    // generated Markdown, is the authoritative plan-review approval basis.
-    basis.review = state.review;
-  }
+  // Review batch ids, snapshot pointers, generated projections, and stage
+  // position are deliberately absent. Only the current blocking risk
+  // meaning can affect the execution authorization.
+  basis.blockingRisks = state.blockingFindings
+    .filter((finding) => finding.blocking)
+    .map((finding) => finding.message)
+    .sort();
   basis.verification = {
     riskLabels: state.classification.riskLabels,
-    obligations: state.obligations,
+    blockingRisks: basis.blockingRisks,
   };
   return basis;
 }

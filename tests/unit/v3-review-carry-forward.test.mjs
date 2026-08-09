@@ -61,5 +61,5 @@ test("resolved and risk-accepted findings leave the blocker gate", () => {
     at: "2026-08-05T01:00:00.000Z",
   }] };
   assert.equal(findings.unresolvedBlockingFindings(accepted).length, 0);
-  assert.equal(findings.effectiveFindingState(accepted, "F-1", "d".repeat(64)).status, "unresolved");
+  assert.equal(findings.effectiveFindingState(accepted, "F-1", "d".repeat(64)).status, "needs-revalidation");
 });

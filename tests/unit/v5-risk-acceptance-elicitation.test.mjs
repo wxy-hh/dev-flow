@@ -65,9 +65,9 @@ test("elicitation accept records dispositions with the form comment and resolves
     const resolved = await jobs.resolveReviewRiskAcceptanceElicitation(root, "risk", presented.state.revision, interactionId, "accept", "已了解边界测试风险", "claude");
     assert.deepEqual(resolved.acceptedFindingIds, [findingId]);
     assert.equal(resolved.idempotent, false);
-    assert.equal(Object.values(resolved.state.interactions)[0].status, "resolved");
-    assert.equal(Object.values(resolved.state.interactions)[0].response.action, "accept");
-    assert.equal(Object.values(resolved.state.interactions)[0].response.comment, "已了解边界测试风险");
+    assert.equal(resolved.state.interactions[interactionId].status, "resolved");
+    assert.equal(resolved.state.interactions[interactionId].response.action, "accept");
+    assert.equal(resolved.state.interactions[interactionId].response.comment, "已了解边界测试风险");
     assert.equal(resolved.state.pendingDecision, undefined);
     const { ledger } = await readCurrentReview(root, resolved.state);
     const current = ledger.batches.find((batch) => batch.validity === "current");
@@ -89,7 +89,7 @@ test("elicitation accept without the required comment is rejected and stays pend
       (error) => error.code === "INTERACTION_COMMENT_REQUIRED",
     );
     const pending = await readCurrentReview(root, presented.state);
-    assert.equal(Object.values(presented.state.interactions)[0].status, "pending");
+    assert.equal(presented.state.interactions[interactionId].status, "pending");
     assert.equal(pending.ledger.batches.find((batch) => batch.validity === "current").dispositions?.[findingId], undefined);
   } finally {
     await rm(root, { recursive: true, force: true });
@@ -105,8 +105,8 @@ test("elicitation decline resolves without recording any acceptance", async () =
     const resolved = await jobs.resolveReviewRiskAcceptanceElicitation(root, "risk", presented.state.revision, interactionId, "decline", undefined, "claude");
     assert.deepEqual(resolved.acceptedFindingIds, []);
     assert.equal(resolved.idempotent, false);
-    assert.equal(Object.values(resolved.state.interactions)[0].status, "resolved");
-    assert.equal(Object.values(resolved.state.interactions)[0].response.action, "decline");
+    assert.equal(resolved.state.interactions[interactionId].status, "resolved");
+    assert.equal(resolved.state.interactions[interactionId].response.action, "decline");
     const { ledger } = await readCurrentReview(root, resolved.state);
     assert.equal(ledger.batches.find((batch) => batch.validity === "current").dispositions?.[findingId], undefined);
     assert.equal(ledger.findingEvents.filter((event) => event.type === "risk-accepted").length, 0);

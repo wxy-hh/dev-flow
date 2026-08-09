@@ -78,6 +78,8 @@ export interface CheckpointManifest {
   approvalBasisHash: string;
   projectConfigSha256: string;
   verificationCommands: CheckpointVerificationCommand[];
+  /** Command identities consumed by this checkpoint; absent on legacy manifests. */
+  verificationCommandHashes?: Record<string, string>;
   /** Incarnation of the unit that produced this manifest; absent on pre-4A manifests. */
   beginNonce?: string;
 }
@@ -355,7 +357,7 @@ export function parseCheckpointManifest(value: unknown): CheckpointManifest {
     invalid("Dev Flow 4.x checkpoint manifest schema v1 is not supported by 5.0", "UNSUPPORTED_CHECKPOINT_SCHEMA");
   }
   if (!isRecord(value)
-    || !hasOnlyKeys(value, ["schemaVersion", "checkpointId", "unitId", "sequence", "basisHash", "startedFingerprint", "completedFingerprint", "startedAt", "completedAt", "files", "forwardPatchSha256", "reversePatchSha256", "verificationAttempts", "requirementsSha256", "planSha256", "traceabilitySha256", "approvalBasisHash", "projectConfigSha256", "verificationCommands", "beginNonce"])
+    || !hasOnlyKeys(value, ["schemaVersion", "checkpointId", "unitId", "sequence", "basisHash", "startedFingerprint", "completedFingerprint", "startedAt", "completedAt", "files", "forwardPatchSha256", "reversePatchSha256", "verificationAttempts", "requirementsSha256", "planSha256", "traceabilitySha256", "approvalBasisHash", "projectConfigSha256", "verificationCommands", "verificationCommandHashes", "beginNonce"])
     || value.schemaVersion !== 2
     || !isNonEmptyString(value.checkpointId)
     || !isRollbackId(value.unitId)
@@ -388,6 +390,10 @@ export function parseCheckpointManifest(value: unknown): CheckpointManifest {
     return { commandId: command.commandId, command: command.command };
   });
   const declaredCommandIds = new Set(verificationCommands.map((command) => command.commandId));
+  if (value.verificationCommandHashes !== undefined && (!isRecord(value.verificationCommandHashes)
+    || Object.entries(value.verificationCommandHashes).some(([id, hash]) => !declaredCommandIds.has(id) || !isSha256(hash)))) {
+    invalid("checkpoint verification command hashes have an invalid shape");
+  }
   for (const attempt of verificationAttempts) {
     if (!declaredCommandIds.has(attempt.commandId)) {
       invalid(`checkpoint verification attempt ${attempt.attemptId} references undeclared command ${attempt.commandId}`);
@@ -413,6 +419,9 @@ export function parseCheckpointManifest(value: unknown): CheckpointManifest {
     approvalBasisHash: value.approvalBasisHash,
     projectConfigSha256: value.projectConfigSha256,
     verificationCommands,
+    ...(value.verificationCommandHashes !== undefined
+      ? { verificationCommandHashes: Object.fromEntries(Object.entries(value.verificationCommandHashes).map(([id, hash]) => [id, hash as string])) }
+      : {}),
     ...(typeof value.beginNonce === "string" ? { beginNonce: value.beginNonce } : {}),
   };
 }

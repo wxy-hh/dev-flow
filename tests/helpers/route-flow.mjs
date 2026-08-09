@@ -96,12 +96,8 @@ async function satisfyHumanGate(root, featureId, state, step, options = {}) {
   const reply = "批准实现";
   const eventId = `${step}-prompt-${current.revision}`;
   const host = options.gateHosts?.[step] ?? options.host ?? "claude";
-  await store.recordHostEvent(root, {
-    eventId,
-    type: "user-prompt",
-    host,
-    text: reply,
-  });
+  if (options.recordPrompt) await options.recordPrompt({ root, eventId, host, text: reply });
+  else await store.recordHostEvent(root, { eventId, type: "user-prompt", host, text: reply });
   return gates.confirmApproval(
     root,
     featureId,

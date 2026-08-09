@@ -100,7 +100,9 @@ Core 使用三个下限的最高值：
 - `governedRoots` 同时决定写门禁、ownership、fingerprint、checkpoint、verification 和 delivery snapshot；exclude 先于 symlink 安全检查。
 - 只允许 Git tracked、目标仍在仓内且不进入 `.git/.dev-flow` 的 symlink。checkpoint 保存链接类型与 link target，rollback 重建链接本身。
 - Hook 为可信智能体写入记录规范化路径、宿主、事件和前后摘要，并自动归属。implementation 不接受手填 files。
-- IDE、人工与无法归因的变化创建唯一 ownership decision；位于 scope 内不代表自动接纳。
+- IDE、人工与无法归因的变化创建唯一 ownership decision；多个路径先展示完整清单，可一次选择“全部纳入当前任务”“全部排除并先处理”或“逐个确认”。位于 scope 内不代表自动接纳；已观察但未归属的路径会持续待决。
+- 普通决策的表单与文本入口共享同一语义匹配器：完整标签、唯一可判定的简称和已登记同义表达效果相同；含糊简称继续待决。执行批准仍使用严格整句白名单，带附加条件的文本不会被误认成无条件授权。
+- `.git`、`.dev-flow` 和 `node_modules` 是业务指纹的内建排除项，即使 governed root 是仓库根目录、且这些路径未写入 `.gitignore` 也不会污染证据。
 - 所有任务都有自动 baseline 和 delivery reverse。只有真实可逆且有 unit-chain 时才声明 executable rollback；不可逆变更使用 backup/preview/abort/compensation/full verification。
 
 ## 决策、审查与验证
@@ -110,7 +112,12 @@ Core 使用三个下限的最高值：
 - 不存在公开 `dev_flow_resolve_decision`、`dev_flow_feature_check`；finalize 内建完整性检查。
 - Elicitation 使用 `oneOf + const + title`。最长等待 60 秒；超时取消并对当前 MCP 会话降级为文本，迟到响应忽略。
 - Review v2 按角色保存 `roleBasisHash`；语义 diff 未影响的角色显示 `reused`，未知 diff 才全量重审。parallel-safe 在宿主支持时并行，否则顺序回退。
+- `dev_flow_update_project` 通过 `expectedSha256` 做 CAS 更新；新增未引用命令或扩充 `provides` 只更新验证能力，被 Trace/RU 引用的命令变化只使对应切片 stale，治理范围、enforcement 和 preflight 变化拒绝走普通增量入口。
+- 执行批准保存稳定的执行授权依据（范围、执行语义、REQ/AC/TASK/RU、文件范围、恢复语义和当前阻断风险），不因阶段重进、review batch 重建或无关配置变化重复询问。
+- Review finding 的修复结论绑定原审查角色依据；相关语义变化派生为 `needs-revalidation` 并交回原角色，不能直接改写为风险接受。
 - RU 只运行计划声明的 targeted forward verification。Final verification 从命令 `provides` 中选择覆盖 guarantee 集的最小去重集合；preflight 永不算 evidence。
+
+开始任务、进入 implementation、checkpoint 和 finalize 前，Core 要求当前 Claude/Codex hook 在 15 分钟内有可信健康信号；缺失或过期会返回可恢复的 `HOOK_HEALTH_REQUIRED` / `HOOK_HEALTH_STALE`。`dev_flow_doctor` 会分别报告各宿主的 missing、stale、healthy 状态。SessionStart 只记录健康，不修改 active feature；恢复 hook 后重试原操作，Core 会检查工作区，真正未知的路径再由 `dev_flow_reconcile_workspace` 创建正式归属问题。
 
 ## Skills
 

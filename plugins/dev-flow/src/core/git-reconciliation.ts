@@ -34,6 +34,12 @@ function normalizePath(value: string): string {
   return normalizeProjectPath(normalizeUnicode(value).replaceAll("\\", "/"));
 }
 
+function builtInControlPath(value: string): boolean {
+  return value === ".git" || value.startsWith(".git/")
+    || value === ".dev-flow" || value.startsWith(".dev-flow/")
+    || value === "node_modules" || value.startsWith("node_modules/");
+}
+
 function statusKind(code: string): StartedDirtyPath["status"] {
   if (code.includes("?") || code.includes("A")) return "untracked";
   if (code.includes("D")) return "deleted";
@@ -61,6 +67,10 @@ async function dirtyPaths(root: string, config: Pick<ProjectConfig, "governedRoo
     if (item.length < 4) continue;
     const code = item.slice(0, 2);
     const current = normalizePath(item.slice(3));
+    if (builtInControlPath(current)) {
+      if (code.includes("R")) index += 1;
+      continue;
+    }
     if (config.governedRootsExclude?.some((pattern) => current === pattern || current.startsWith(`${pattern}/`))) {
       if (code.includes("R")) index += 1;
       continue;
@@ -136,7 +146,7 @@ export async function captureObservedCommits(root: string, baseHead: string, obs
     commits.push({
       hash,
       parentHashes: parents.split(" ").filter(Boolean),
-      changedPaths: paths.split("\n").map((value) => value.trim()).filter(Boolean).map(normalizePath),
+      changedPaths: paths.split("\n").map((value) => value.trim()).filter(Boolean).map(normalizePath).filter((file) => !builtInControlPath(file)),
       source: "unknown",
       observedAt: new Date().toISOString(),
     });
@@ -147,7 +157,7 @@ export async function captureObservedCommits(root: string, baseHead: string, obs
 export async function changedPathsBetween(root: string, baseHead: string, observedHead: string): Promise<string[]> {
   if (!baseHead || !observedHead || baseHead === observedHead) return [];
   const output = await git(root, ["diff", "--name-only", "-z", baseHead, observedHead]);
-  return output.split("\0").filter(Boolean).map(normalizePath).sort();
+  return output.split("\0").filter(Boolean).map(normalizePath).filter((file) => !builtInControlPath(file)).sort();
 }
 
 export async function gitBranchAndHead(root: string): Promise<{ branch: string; head: string }> {
@@ -257,9 +267,19 @@ export async function reconcileWorkspaceForFeature(
   const previousPaths = state.workspace.observedPathFingerprints ?? {};
   const currentPaths = workspace.observedPathFingerprints;
   const candidates = new Set([...Object.keys(previousPaths), ...Object.keys(currentPaths), ...committedPaths, ...dirty]);
-  const changedPaths = [...candidates].filter((file) => previousPaths[file] !== currentPaths[file]).sort();
+  const knownUnowned = new Set([
+    ...(state.workspace.unownedPaths ?? []),
+    ...Object.keys(state.workspace.startedDirty).filter((file) => state.workspace.ownership[file] === undefined),
+  ]);
+  const changedPaths = [...candidates].filter((file) =>
+    previousPaths[file] !== currentPaths[file]
+    || knownUnowned.has(file),
+  ).sort();
+  const unownedPaths = [...new Set([...(state.workspace.unownedPaths ?? []), ...changedPaths])]
+    .filter((file) => workspace.ownership[file] === undefined)
+    .sort();
   return {
-    workspace,
+    workspace: { ...workspace, unownedPaths },
     contentChanged: changedPaths.length > 0,
     changedPaths,
   };

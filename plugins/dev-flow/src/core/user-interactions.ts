@@ -1,9 +1,9 @@
 import { randomUUID } from "node:crypto";
+import { matchNaturalDecision } from "./decision-language.js";
 import { DevFlowError } from "./errors.js";
 import type { FeatureState } from "./state-store.js";
-import type { PendingDecisionKind } from "../policy/types.js";
 
-export type InteractionKind = "approval" | "grill" | "risk-acceptance" | "rollback-confirmation" | "quality-exception" | "workspace-ownership" | "task-switch";
+export type InteractionKind = "approval" | "grill" | "risk-acceptance" | "rollback-confirmation" | "quality-exception" | "workspace-ownership" | "route-confirmation" | "task-switch";
 export type InteractionSource = "elicitation" | "text";
 
 /** 比较用归一化：trim + 折叠连续空白 + 小写。仅用于匹配比较，存储始终保留原始输入。 */
@@ -43,6 +43,16 @@ export interface UserInteraction {
   question?: string;
   options: InteractionOption[];
   presentedAt: string;
+  /** State revision captured when the question was presented. */
+  presentedRevision?: number;
+  /** Append-only ledger cursor identifying the event that presented this interaction. */
+  presentationEventId?: string;
+  /** Immutable workspace paths bound to an ownership question. */
+  workspacePaths?: string[];
+  /** Full unknown-path set captured when a batch ownership question was shown. */
+  workspaceBatchPaths?: string[];
+  /** Remaining paths for an explicit one-by-one ownership flow. */
+  workspaceRemainingPaths?: string[];
   status: "pending" | "resolved";
   response?: InteractionResponse;
 }
@@ -61,6 +71,10 @@ export interface InteractionInput {
   binding?: UserInteraction["binding"];
   question?: string;
   options: InteractionOption[];
+  presentationEventId?: string;
+  workspacePaths?: string[];
+  workspaceBatchPaths?: string[];
+  workspaceRemainingPaths?: string[];
 }
 
 function interactions(state: FeatureState): Record<string, UserInteraction> {
@@ -104,20 +118,14 @@ export function createInteraction(state: FeatureState, input: InteractionInput):
     question: input.question,
     options: input.options.map((option) => ({ ...option })),
     presentedAt: new Date().toISOString(),
+    presentedRevision: state.revision,
+    presentationEventId: input.presentationEventId ?? randomUUID(),
+    ...(input.workspacePaths ? { workspacePaths: [...input.workspacePaths] } : {}),
+    ...(input.workspaceBatchPaths ? { workspaceBatchPaths: [...input.workspaceBatchPaths] } : {}),
+    ...(input.workspaceRemainingPaths ? { workspaceRemainingPaths: [...input.workspaceRemainingPaths] } : {}),
     status: "pending",
   };
   interactions(state)[interaction.id] = interaction;
-  const kind: PendingDecisionKind = input.kind === "risk-acceptance" ? "review-risk" : input.kind;
-  state.pendingDecision = {
-    kind,
-    question: input.question ?? "请选择一个方案。",
-    options: input.options.map((option, index) => ({ ...option, recommended: index === 0 })),
-    basisHash: input.basisHash,
-    presentedAt: interaction.presentedAt,
-    presentedRevision: state.revision,
-    source: "core",
-    target: input.target,
-  };
   return interaction;
 }
 
@@ -163,31 +171,8 @@ function optionFor(interaction: UserInteraction, action: string): InteractionOpt
   return option;
 }
 
-/**
- * 用户回答只按完整中文选项匹配；内部 option id 和序号不是用户合同。
- */
 function matchNaturalOption(interaction: UserInteraction, userReply: string): { option: InteractionOption; comment?: string } | undefined {
-  const normalized = normalizeReplyText(userReply);
-  if (!normalized) return undefined;
-  // 修改类前缀：「修改需求: <意见>」「修改计划: <意见>」→ request-changes + comment
-  const editMatch = normalized.match(/^修改(?:需求|意见|计划|方案|)?[:：]?\s*([\s\S]*)$/u);
-  if (editMatch) {
-    const option = interaction.options.find((candidate) => candidate.id === "request-changes");
-    if (option) return { option, comment: editMatch[1] || undefined };
-  }
-  // label 匹配：精确/缩写（用户回 label 的一部分，如「其他」）对所有交互生效；
-  // 前缀 + 补充说明形式（label + comment）对 confirm 选项禁用（防“确认需求，但先别改”被误判为确认），其余选项允许
-  for (const candidate of interaction.options) {
-    const labelNorm = normalizeReplyText(candidate.label);
-    if (!labelNorm) continue;
-    if (labelNorm === normalized) {
-      return { option: candidate };
-    }
-    if (candidate.id !== "confirm" && normalized.startsWith(labelNorm) && normalized.length > labelNorm.length) {
-      return { option: candidate, comment: normalized.slice(labelNorm.length).trim() };
-    }
-  }
-  return undefined;
+  return matchNaturalDecision(interaction.kind, interaction.options, userReply);
 }
 
 function validateComment(option: InteractionOption, comment: string | undefined): string | undefined {
@@ -242,10 +227,10 @@ export function resolveTextInteraction(
   if (!match) {
     throw new DevFlowError("DECISION_REPLY_NOT_RECOGNIZED", "回答没有精确匹配当前问题的选项。", {
       userMessage: "没有识别出当前问题的有效回答。",
-      cause: "回答不是完整选项，也不是受支持的批准短语。",
+      cause: "回答无法唯一对应当前选项，也不是受支持的批准短语。",
       impact: "当前问题仍保持待回答，没有任何状态被改变。",
       recoveryKind: "retry",
-      recoveryInstruction: "请直接回复一个完整中文选项。",
+      recoveryInstruction: "请换一种能唯一指向某个选项的简短说法，或直接回复完整选项。",
       retryOriginal: true,
     });
   }
@@ -291,6 +276,6 @@ export function decisionHint(interaction: UserInteraction): string {
     const recommended = index === 0 ? "（推荐）" : "";
     lines.push(`- ${option.label}${recommended}`);
   });
-  lines.push("请直接回复一个完整选项；如需补充说明，请在选项后写明意见。");
+  lines.push("可直接回复完整选项、能唯一指向它的简称或同义说法；如需补充说明，请在选项后写明意见。");
   return lines.join("\n");
 }

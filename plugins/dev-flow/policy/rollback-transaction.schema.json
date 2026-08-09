@@ -69,6 +69,10 @@
       "items": { "type": "string", "minLength": 1 }
     },
     "projectConfigSha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+    "verificationCommandHashes": {
+      "type": "object",
+      "additionalProperties": { "type": "string", "pattern": "^[a-f0-9]{64}$" }
+    },
     "startedAt": { "type": "string", "format": "date-time" },
     "completedAt": { "type": "string", "format": "date-time" },
     "error": { "type": "string" }

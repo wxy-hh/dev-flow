@@ -3,12 +3,12 @@
 // plugins/dev-flow/src/mcp/server.ts
 import readline from "node:readline";
 import { fileURLToPath } from "node:url";
-import path17 from "node:path";
+import path19 from "node:path";
 
 // plugins/dev-flow/src/core/artifacts.ts
-import { createHash as createHash10 } from "node:crypto";
-import { readFile as readFile7, writeFile as writeFile2 } from "node:fs/promises";
-import path9 from "node:path";
+import { createHash as createHash11 } from "node:crypto";
+import { readFile as readFile9, writeFile as writeFile2 } from "node:fs/promises";
+import path11 from "node:path";
 
 // plugins/dev-flow/policy/contract.json
 var contract_default = {
@@ -309,7 +309,10 @@ var safeDetailKeys = /* @__PURE__ */ new Set([
   "recoveryHint"
 ]);
 function safeFailureDetails(details) {
-  return Object.fromEntries(Object.entries(details).filter(([key, value]) => safeDetailKeys.has(key) && !/(?:capability|token|secret|hash|sha|fingerprint)/iu.test(key) && (typeof value !== "string" || value.length <= 2e3)));
+  return Object.fromEntries(Object.entries(details).filter(([key, value]) => {
+    if (key === "currentSha256") return typeof value === "string" && /^[a-f0-9]{64}$/.test(value);
+    return safeDetailKeys.has(key) && !/(?:capability|token|secret|hash|sha|fingerprint)/iu.test(key) && (typeof value !== "string" || value.length <= 2e3);
+  }));
 }
 var DevFlowError = class extends Error {
   constructor(code, message, details = {}) {
@@ -376,12 +379,10 @@ function approvalBasis(state, approvalId2) {
     classificationBasis: state.classificationBasis,
     executionSemanticBasisHash: state.executionSemanticBasisHash
   };
-  if (reviewEnforcementRequired(state.route, state.classification.controls)) {
-    basis.review = state.review;
-  }
+  basis.blockingRisks = state.blockingFindings.filter((finding) => finding.blocking).map((finding) => finding.message).sort();
   basis.verification = {
     riskLabels: state.classification.riskLabels,
-    obligations: state.obligations
+    blockingRisks: basis.blockingRisks
   };
   return basis;
 }
@@ -394,10 +395,10 @@ function confirmedApproval(state) {
 }
 
 // plugins/dev-flow/src/core/state-store.ts
-import { randomUUID as randomUUID5, createHash as createHash8 } from "node:crypto";
-import { access, lstat as lstat3, mkdir as mkdir4, open as open4, readdir as readdir4, readFile as readFile6, readlink as readlink2, rename as rename4, rm, rmdir, writeFile } from "node:fs/promises";
+import { randomUUID as randomUUID5, createHash as createHash9 } from "node:crypto";
+import { access, lstat as lstat3, mkdir as mkdir5, open as open5, readdir as readdir4, readFile as readFile8, readlink as readlink2, rename as rename4, rm, rmdir, writeFile } from "node:fs/promises";
 import { hostname } from "node:os";
-import path8 from "node:path";
+import path10 from "node:path";
 
 // plugins/dev-flow/src/policy/obligations.ts
 import { createHash } from "node:crypto";
@@ -736,8 +737,8 @@ function validateBasis(basis, riskLabels) {
     }
   }
 }
-function issue(code, path18, message, recoveryHint) {
-  return { code, path: path18, message, recoveryHint };
+function issue(code, path20, message, recoveryHint) {
+  return { code, path: path20, message, recoveryHint };
 }
 function validateSignals(signals) {
   if (!signals || typeof signals !== "object" || Array.isArray(signals)) return [issue("CLASSIFICATION_SIGNALS_REQUIRED", "$.classificationBasis.signals", "signals is required", "\u8C03\u67E5\u4ED3\u5E93\u540E\u63D0\u4F9B\u5B8C\u6574\u7ED3\u6784\u5316\u4FE1\u53F7")];
@@ -885,8 +886,8 @@ var fileChanges = ["added", "modified", "deleted", "renamed", "mode-changed"];
 var ROLLBACK_ID = /^RU-[0-9]{3,}$/;
 var SHA256 = /^[0-9a-f]{64}$/;
 var FILE_MODE = /^[0-7]{3,4}$/;
-function pathWithinFileScope(path18, fileScope) {
-  return fileScope.some((pattern) => scopePatternMatches(pattern.normalize("NFC"), path18.normalize("NFC")));
+function pathWithinFileScope(path20, fileScope) {
+  return fileScope.some((pattern) => scopePatternMatches(pattern.normalize("NFC"), path20.normalize("NFC")));
 }
 function isSafeFileScopePattern(value) {
   if (typeof value !== "string" || !value || value.trim() !== value) return false;
@@ -1016,7 +1017,7 @@ function parseCheckpointManifest(value) {
   if (isRecord(value) && value.schemaVersion === 1) {
     invalid("Dev Flow 4.x checkpoint manifest schema v1 is not supported by 5.0", "UNSUPPORTED_CHECKPOINT_SCHEMA");
   }
-  if (!isRecord(value) || !hasOnlyKeys(value, ["schemaVersion", "checkpointId", "unitId", "sequence", "basisHash", "startedFingerprint", "completedFingerprint", "startedAt", "completedAt", "files", "forwardPatchSha256", "reversePatchSha256", "verificationAttempts", "requirementsSha256", "planSha256", "traceabilitySha256", "approvalBasisHash", "projectConfigSha256", "verificationCommands", "beginNonce"]) || value.schemaVersion !== 2 || !isNonEmptyString(value.checkpointId) || !isRollbackId(value.unitId) || typeof value.sequence !== "number" || !Number.isInteger(value.sequence) || value.sequence < 1 || !isSha256(value.basisHash) || !isSha256(value.startedFingerprint) || !isSha256(value.completedFingerprint) || value.beginNonce !== void 0 && !isNonEmptyString(value.beginNonce) || !isTimestamp(value.startedAt) || !isTimestamp(value.completedAt) || !Array.isArray(value.files) || !isSha256(value.forwardPatchSha256) || !isSha256(value.reversePatchSha256) || !Array.isArray(value.verificationAttempts) || !isSha256(value.requirementsSha256) || !isSha256(value.planSha256) || !isSha256(value.traceabilitySha256) || !isSha256(value.approvalBasisHash) || !isSha256(value.projectConfigSha256) || !Array.isArray(value.verificationCommands) || value.verificationCommands.length === 0) {
+  if (!isRecord(value) || !hasOnlyKeys(value, ["schemaVersion", "checkpointId", "unitId", "sequence", "basisHash", "startedFingerprint", "completedFingerprint", "startedAt", "completedAt", "files", "forwardPatchSha256", "reversePatchSha256", "verificationAttempts", "requirementsSha256", "planSha256", "traceabilitySha256", "approvalBasisHash", "projectConfigSha256", "verificationCommands", "verificationCommandHashes", "beginNonce"]) || value.schemaVersion !== 2 || !isNonEmptyString(value.checkpointId) || !isRollbackId(value.unitId) || typeof value.sequence !== "number" || !Number.isInteger(value.sequence) || value.sequence < 1 || !isSha256(value.basisHash) || !isSha256(value.startedFingerprint) || !isSha256(value.completedFingerprint) || value.beginNonce !== void 0 && !isNonEmptyString(value.beginNonce) || !isTimestamp(value.startedAt) || !isTimestamp(value.completedAt) || !Array.isArray(value.files) || !isSha256(value.forwardPatchSha256) || !isSha256(value.reversePatchSha256) || !Array.isArray(value.verificationAttempts) || !isSha256(value.requirementsSha256) || !isSha256(value.planSha256) || !isSha256(value.traceabilitySha256) || !isSha256(value.approvalBasisHash) || !isSha256(value.projectConfigSha256) || !Array.isArray(value.verificationCommands) || value.verificationCommands.length === 0) {
     invalid("checkpoint manifest has an invalid shape");
   }
   const files = value.files.map((file, index) => parseFileRecord(file, index));
@@ -1028,6 +1029,9 @@ function parseCheckpointManifest(value) {
     return { commandId: command2.commandId, command: command2.command };
   });
   const declaredCommandIds = new Set(verificationCommands.map((command2) => command2.commandId));
+  if (value.verificationCommandHashes !== void 0 && (!isRecord(value.verificationCommandHashes) || Object.entries(value.verificationCommandHashes).some(([id, hash2]) => !declaredCommandIds.has(id) || !isSha256(hash2)))) {
+    invalid("checkpoint verification command hashes have an invalid shape");
+  }
   for (const attempt of verificationAttempts) {
     if (!declaredCommandIds.has(attempt.commandId)) {
       invalid(`checkpoint verification attempt ${attempt.attemptId} references undeclared command ${attempt.commandId}`);
@@ -1053,6 +1057,7 @@ function parseCheckpointManifest(value) {
     approvalBasisHash: value.approvalBasisHash,
     projectConfigSha256: value.projectConfigSha256,
     verificationCommands,
+    ...value.verificationCommandHashes !== void 0 ? { verificationCommandHashes: Object.fromEntries(Object.entries(value.verificationCommandHashes).map(([id, hash2]) => [id, hash2])) } : {},
     ...typeof value.beginNonce === "string" ? { beginNonce: value.beginNonce } : {}
   };
 }
@@ -1076,6 +1081,9 @@ function normalizeProjectPath(value) {
 // plugins/dev-flow/src/core/fingerprint.ts
 var runFile = promisify(execFile);
 var ignored = /* @__PURE__ */ new Set([".git", ".dev-flow", "node_modules"]);
+function controlPath(relative) {
+  return relative === ".git" || relative.startsWith(".git/") || relative === ".dev-flow" || relative.startsWith(".dev-flow/") || relative === "node_modules" || relative.startsWith("node_modules/");
+}
 function configFor(input) {
   return Array.isArray(input) ? { governedRoots: input } : input;
 }
@@ -1171,9 +1179,9 @@ async function enumerateProtectedFiles(root2, input) {
     return Promise.all(governedRoots.map((item) => collect(root2, item, collected, config.governedRootsExclude))).then(() => collected);
   })();
   const resolved = await files;
-  const unique = applyExcludes([...new Set(resolved.map(normalizeProjectPath).filter((file) => withinConfiguredRoot(file, governedRoots)))].sort(), config.governedRootsExclude);
+  const unique2 = applyExcludes([...new Set(resolved.map(normalizeProjectPath).filter((file) => !controlPath(file)).filter((file) => withinConfiguredRoot(file, governedRoots)))].sort(), config.governedRootsExclude);
   const tracked = fromGit ? await gitTrackedFiles(root2, governedRoots) : /* @__PURE__ */ new Set();
-  for (const relative of unique) {
+  for (const relative of unique2) {
     let metadata;
     try {
       metadata = await lstat(path2.join(root2, relative));
@@ -1192,7 +1200,7 @@ async function enumerateProtectedFiles(root2, input) {
     }
   }
   const present = [];
-  for (const relative of unique) {
+  for (const relative of unique2) {
     try {
       await lstat(path2.join(root2, relative));
       present.push(relative);
@@ -1242,13 +1250,67 @@ async function snapshotGovernedRoots(root2, input) {
 
 // plugins/dev-flow/src/core/project-config.ts
 import path3 from "node:path";
+import { createHash as createHash3 } from "node:crypto";
+function projectConfigImpact(previous, next) {
+  const previousCommands = new Map(previous.verification.commands.map((command2) => [command2.id, command2]));
+  const nextCommands = new Map(next.verification.commands.map((command2) => [command2.id, command2]));
+  const addedCommandIds = [...nextCommands.keys()].filter((id) => !previousCommands.has(id)).sort();
+  const removedCommandIds = [...previousCommands.keys()].filter((id) => !nextCommands.has(id)).sort();
+  const modifiedCommandIds = [...nextCommands.keys()].filter((id) => previousCommands.has(id) && JSON.stringify({ ...previousCommands.get(id), provides: void 0 }) !== JSON.stringify({ ...nextCommands.get(id), provides: void 0 })).sort();
+  const capabilityOnlyIds = [...nextCommands.keys()].filter((id) => previousCommands.has(id) && JSON.stringify({ ...previousCommands.get(id), provides: void 0 }) === JSON.stringify({ ...nextCommands.get(id), provides: void 0 }) && JSON.stringify(previousCommands.get(id)?.provides) !== JSON.stringify(nextCommands.get(id)?.provides));
+  const changedCommandIds = [.../* @__PURE__ */ new Set([...addedCommandIds, ...removedCommandIds, ...modifiedCommandIds, ...capabilityOnlyIds])].sort();
+  const governanceChanged = JSON.stringify({
+    enforcement: previous.enforcement,
+    governedRoots: previous.governedRoots,
+    governedRootsExclude: previous.governedRootsExclude
+  }) !== JSON.stringify({
+    enforcement: next.enforcement,
+    governedRoots: next.governedRoots,
+    governedRootsExclude: next.governedRootsExclude
+  });
+  const preflightChanged = JSON.stringify(previous.verification.preflightCommands ?? []) !== JSON.stringify(next.verification.preflightCommands ?? []);
+  return {
+    changedCommandIds,
+    addedCommandIds,
+    removedCommandIds,
+    modifiedCommandIds,
+    capabilityOnlyCommandIds: capabilityOnlyIds.sort(),
+    verificationCapabilityChanged: capabilityOnlyIds.length > 0 || addedCommandIds.length > 0 || removedCommandIds.length > 0,
+    governanceChanged,
+    preflightChanged
+  };
+}
+function verificationCommandHashes(config) {
+  return Object.fromEntries(config.verification.commands.map((command2) => [
+    command2.id,
+    // `provides` is a governance declaration, not executable command
+    // identity. Expanding guarantees must not invalidate evidence that ran
+    // the same command bytes with the same cwd/args.
+    createHash3("sha256").update(JSON.stringify({ id: command2.id, command: command2.command, args: command2.args, cwd: command2.cwd })).digest("hex")
+  ]));
+}
+function verificationCommandIdsForRefs(refs) {
+  return [...new Set(refs.filter((ref) => typeof ref === "string"))].sort();
+}
+function verificationCommandHashesForRefs(config, refs) {
+  const all = verificationCommandHashes(config);
+  return Object.fromEntries(verificationCommandIdsForRefs(refs).filter((id) => all[id] !== void 0).map((id) => [id, all[id]]));
+}
+function verificationGuarantees(config) {
+  const preflight = new Set(config.verification.preflightCommands ?? []);
+  return new Set(config.verification.commands.filter((command2) => !preflight.has(command2.id)).flatMap((command2) => command2.provides));
+}
+function missingVerificationGuarantees(config, required) {
+  const available = verificationGuarantees(config);
+  return [...new Set(required)].filter((kind) => !available.has(kind));
+}
 function relativeDirectory(value) {
   return value.length > 0 && !path3.isAbsolute(value) && !value.split(/[\\/]+/).includes("..");
 }
 function normalizedRelativeDirectory(value) {
   if (!relativeDirectory(value)) return void 0;
   const normalized = normalizeProjectPath(value).replace(/\/+$/u, "");
-  return normalized || void 0;
+  return normalized || ".";
 }
 function validateProjectConfig(value) {
   const config = value;
@@ -1289,6 +1351,18 @@ function validateProjectConfig(value) {
     throw new DevFlowError("INVALID_PROJECT_CONFIG", "preflightCommands must reference configured command ids");
   }
   if (preflightCommands && config.verification) config.verification.preflightCommands = [...new Set(preflightCommands)];
+  const missing = missingVerificationGuarantees(config, ["targeted"]);
+  if (missing.length) {
+    throw new DevFlowError("VERIFICATION_GUARANTEE_UNCONFIGURED", "\u9879\u76EE\u5FC5\u987B\u914D\u7F6E\u81F3\u5C11\u4E00\u4E2A\u975E preflight \u547D\u4EE4\u63D0\u4F9B targeted guarantee\u3002", {
+      missingGuarantees: missing,
+      userMessage: "\u9879\u76EE\u9A8C\u8BC1\u914D\u7F6E\u7F3A\u5C11\u6700\u7EC8\u9A8C\u8BC1\u6240\u9700\u7684 targeted guarantee\u3002",
+      cause: "preflight \u547D\u4EE4\u53EA\u7528\u4E8E\u73AF\u5883\u51C6\u5907\u548C\u8BCA\u65AD\uFF0C\u4E0D\u80FD\u4F5C\u4E3A\u4E1A\u52A1\u9A8C\u8BC1\u8BC1\u636E\u3002",
+      impact: "\u9879\u76EE\u65E0\u6CD5\u5B89\u5168\u521B\u5EFA\u4F1A\u8BDD\u6216\u9501\u5B9A\u8DEF\u7EBF\u3002",
+      recoveryKind: "repair",
+      recoveryInstruction: "\u8865\u5145\u4E00\u4E2A\u975E preflight \u9A8C\u8BC1\u547D\u4EE4\u5E76\u91CD\u65B0\u521D\u59CB\u5316\u9879\u76EE\u3002",
+      retryOriginal: false
+    });
+  }
 }
 
 // plugins/dev-flow/src/core/traceability.ts
@@ -1622,6 +1696,9 @@ function assertPersistedLedgerShape(ledger, options) {
   if (typeof ledger.projectConfigSha256 !== "string" || !hex64.test(ledger.projectConfigSha256)) {
     invalid2("ledger projectConfigSha256 is invalid");
   }
+  if (ledger.verificationCommandHashes !== void 0 && (!isRecord2(ledger.verificationCommandHashes) || Object.values(ledger.verificationCommandHashes).some((value) => typeof value !== "string" || !hex64.test(value)))) {
+    invalid2("ledger verification command hashes are invalid");
+  }
   for (const [id, node] of Object.entries(ledger.nodes)) assertPersistedNode(id, node, options);
 }
 function validateTraceGraph(ledger, route, mode, options = {}) {
@@ -1717,6 +1794,7 @@ function applyTraceDelta(input) {
     revision: effectiveInput.current.revision + 1,
     stateRevision: effectiveInput.nextStateRevision,
     projectConfigSha256: effectiveInput.projectConfigSha256,
+    ...effectiveInput.verificationCommandHashes ? { verificationCommandHashes: { ...effectiveInput.verificationCommandHashes } } : {},
     nodes,
     edges: deriveTraceEdges(nodes),
     summary: traceSummary(nodes)
@@ -1724,10 +1802,21 @@ function applyTraceDelta(input) {
   validateTraceGraph(ledger, effectiveInput.route, "partial");
   return ledger;
 }
-function assertConfigCurrent(ledger, currentProjectConfigSha256) {
-  if (ledger.projectConfigSha256 !== currentProjectConfigSha256) sliceError("TRACE_SLICE_STALE", "project configuration changed since Trace registration");
+function assertConfigCurrent(ledger, currentProjectConfigSha256, currentCommandHashes) {
+  if (ledger.verificationCommandHashes && currentCommandHashes) {
+    const referenced = /* @__PURE__ */ new Set();
+    for (const node of currentNodes(ledger.nodes)) {
+      if (node.kind !== "rollback") continue;
+      for (const ref of [...node.forwardVerification, ...node.rollbackVerification]) if (typeof ref === "string") referenced.add(ref);
+    }
+    for (const id of referenced) {
+      if (ledger.verificationCommandHashes[id] !== currentCommandHashes[id]) sliceError("TRACE_SLICE_STALE", "referenced verification command changed", { commandId: id });
+    }
+  } else if (ledger.projectConfigSha256 !== currentProjectConfigSha256) {
+    sliceError("TRACE_SLICE_STALE", "project configuration changed since Trace registration");
+  }
   for (const node of currentNodes(ledger.nodes)) {
-    if (node.kind === "rollback" && node.verificationConfigSha256 !== currentProjectConfigSha256) {
+    if (node.kind === "rollback" && !ledger.verificationCommandHashes && node.verificationConfigSha256 !== currentProjectConfigSha256) {
       sliceError("TRACE_SLICE_STALE", "rollback verification configuration is stale", { id: node.id });
     }
   }
@@ -1739,8 +1828,8 @@ function requireCurrentKinds(ledger, kinds) {
     if (nodes.some((node) => node.status === "stale")) sliceError("TRACE_SLICE_STALE", "Trace slice contains stale nodes", { kind });
   }
 }
-function assertTraceabilityComplete(ledger, route, currentProjectConfigSha256) {
-  assertConfigCurrent(ledger, currentProjectConfigSha256);
+function assertTraceabilityComplete(ledger, route, currentProjectConfigSha256, currentCommandHashes) {
+  assertConfigCurrent(ledger, currentProjectConfigSha256, currentCommandHashes);
   if (Object.values(ledger.nodes).some((node) => node.status === "stale")) {
     sliceError("TRACE_SLICE_STALE", "complete Trace graph contains stale nodes");
   }
@@ -1751,10 +1840,10 @@ function assertTraceabilityComplete(ledger, route, currentProjectConfigSha256) {
     throw error;
   }
 }
-function assertTraceSliceCurrent(ledger, route, step, currentProjectConfigSha256) {
-  assertConfigCurrent(ledger, currentProjectConfigSha256);
+function assertTraceSliceCurrent(ledger, route, step, currentProjectConfigSha256, currentCommandHashes) {
+  assertConfigCurrent(ledger, currentProjectConfigSha256, currentCommandHashes);
   const completeSteps = /* @__PURE__ */ new Set(["planning", "implementation", "finalize"]);
-  if (completeSteps.has(step)) return assertTraceabilityComplete(ledger, route, currentProjectConfigSha256);
+  if (completeSteps.has(step)) return assertTraceabilityComplete(ledger, route, currentProjectConfigSha256, currentCommandHashes);
   const requirements = ["requirement", "acceptance-criterion"];
   if (["requirements"].includes(step)) {
     requireCurrentKinds(ledger, [...requirements]);
@@ -1805,7 +1894,7 @@ function assertCurrentStep(state, step) {
 }
 
 // plugins/dev-flow/src/core/traceability-store.ts
-import { createHash as createHash3, randomUUID } from "node:crypto";
+import { createHash as createHash4, randomUUID } from "node:crypto";
 import { mkdir, open, readFile as readFile2, readdir as readdir2, rename } from "node:fs/promises";
 import path4 from "node:path";
 function sortValue(value) {
@@ -1823,7 +1912,7 @@ function snapshotDirectory(root2, featureId) {
   return path4.join(root2, ".dev-flow", "features", featureId, "traceability", "snapshots");
 }
 function digest(contents) {
-  return createHash3("sha256").update(contents).digest("hex");
+  return createHash4("sha256").update(contents).digest("hex");
 }
 async function fsyncDirectory(directory) {
   const handle = await open(directory, "r");
@@ -1996,8 +2085,8 @@ async function inspectTraceGate(root2, state, step) {
   let ledger;
   try {
     ledger = await readTraceability(root2, state);
-    const { sha256 } = await readProjectConfigSnapshot(root2);
-    assertTraceSliceCurrent(ledger, state.route, traceStep, sha256);
+    const { config, sha256 } = await readProjectConfigSnapshot(root2);
+    assertTraceSliceCurrent(ledger, state.route, traceStep, sha256, verificationCommandHashes(config));
     return { enforced: true, ledger, effectiveSummary: ledger.summary };
   } catch (error) {
     return {
@@ -2023,7 +2112,7 @@ async function assertTraceGateCurrent(root2, state, step) {
 }
 
 // plugins/dev-flow/src/core/review-store.ts
-import { createHash as createHash4, randomUUID as randomUUID2 } from "node:crypto";
+import { createHash as createHash5, randomUUID as randomUUID2 } from "node:crypto";
 import { mkdir as mkdir2, open as open2, readFile as readFile3, readdir as readdir3, rename as rename2 } from "node:fs/promises";
 import path5 from "node:path";
 
@@ -2162,7 +2251,7 @@ function sortValue2(value) {
   return value;
 }
 var emptySummary = () => ({ batches: 0, current: 0, stale: 0, open: 0, complete: 0 });
-var digest2 = (contents) => createHash4("sha256").update(contents).digest("hex");
+var digest2 = (contents) => createHash5("sha256").update(contents).digest("hex");
 function emptyReviewLedger(featureId, stateRevision) {
   return { schemaVersion: 2, featureId, revision: 0, stateRevision, batches: [], summary: emptySummary(), findingEvents: [] };
 }
@@ -2173,6 +2262,13 @@ function canonicalReviewJson(ledger) {
 function canonicalReviewValueJson(value) {
   return `${JSON.stringify(sortValue2(value), null, 2)}
 `;
+}
+function semanticReviewBasisHash(basis) {
+  const { projectConfigSha256: _projectConfigSha256, verificationCommandHashes: _verificationCommandHashes, ...semanticBasis } = basis;
+  return digest2(canonicalReviewValueJson(semanticBasis));
+}
+function validBasisHash(basis, basisHash2) {
+  return basisHash2 === digest2(canonicalReviewValueJson(basis)) || basisHash2 === semanticReviewBasisHash(basis);
 }
 function snapshotDirectory2(root2, featureId) {
   return path5.join(root2, ".dev-flow", "features", featureId, "review", "snapshots");
@@ -2267,7 +2363,7 @@ function validateLedger(value) {
   }
   const batchIds = /* @__PURE__ */ new Set();
   for (const batch of ledger.batches) {
-    if (batchIds.has(batch.batchId) || batch.basis.featureId !== ledger.featureId || digest2(canonicalReviewValueJson(batch.basis)) !== batch.basisHash || batch.progress === "complete" !== batch.jobs.every((job) => job.status === "submitted" || job.status === "reused")) {
+    if (batchIds.has(batch.batchId) || batch.basis.featureId !== ledger.featureId || !validBasisHash(batch.basis, batch.basisHash) || batch.progress === "complete" !== batch.jobs.every((job) => job.status === "submitted" || job.status === "reused")) {
       integrity2("review snapshot batch is inconsistent");
     }
     if (batch.assuranceLevel !== assuranceForReviewBatch(batch)) {
@@ -2451,7 +2547,7 @@ async function listOrphanReviewSnapshots(root2, state) {
 }
 
 // plugins/dev-flow/src/core/review-projection.ts
-import { createHash as createHash5, randomUUID as randomUUID3 } from "node:crypto";
+import { createHash as createHash6, randomUUID as randomUUID3 } from "node:crypto";
 import { mkdir as mkdir3, open as open3, readFile as readFile4, rename as rename3 } from "node:fs/promises";
 import path6 from "node:path";
 
@@ -2469,8 +2565,9 @@ function effectiveFindingState(ledger, findingId, currentBasisHash) {
   const origin = originFor(ledger, findingId);
   if (!origin) return void 0;
   const latest = latestEvent(eventsFor(ledger, findingId));
-  const basisCurrent = !currentBasisHash || !latest || latest.basisHash === currentBasisHash;
-  const status = !basisCurrent ? "unresolved" : latest?.type === "resolved" ? "resolved" : latest?.type === "still-blocking" ? "still-blocking" : latest?.type === "risk-accepted" ? "risk-accepted" : "unresolved";
+  const expectedBasis = typeof currentBasisHash === "function" ? currentBasisHash(origin) : currentBasisHash;
+  const basisCurrent = !expectedBasis || !latest || latest.basisHash === expectedBasis;
+  const status = !basisCurrent ? "needs-revalidation" : latest?.type === "resolved" ? "resolved" : latest?.type === "still-blocking" ? "still-blocking" : latest?.type === "risk-accepted" ? "risk-accepted" : "unresolved";
   return {
     findingId,
     status,
@@ -2483,15 +2580,15 @@ function unresolvedBlockingFindings(ledger, currentBasisHash) {
   const ids = new Set((ledger.findingEvents ?? []).filter((event) => event.type === "origin" && event.finding.severity === "blocking").map((event) => event.finding.findingId));
   return [...ids].map((findingId) => effectiveFindingState(ledger, findingId, currentBasisHash)).filter((state) => Boolean(state?.blocking)).map((state) => state.origin.finding);
 }
-function carriedFindings(ledger, role) {
-  return unresolvedBlockingFindings(ledger).map((finding) => {
+function carriedFindings(ledger, role, currentBasisHash) {
+  return unresolvedBlockingFindings(ledger, currentBasisHash).map((finding) => {
     const origin = originFor(ledger, finding.findingId);
     return origin && origin.role === role ? { finding, originBatchId: origin.batchId, basisHash: origin.basisHash } : void 0;
   }).filter((value) => Boolean(value));
 }
 
 // plugins/dev-flow/src/core/review-projection.ts
-var digest3 = (contents) => createHash5("sha256").update(contents).digest("hex");
+var digest3 = (contents) => createHash6("sha256").update(contents).digest("hex");
 function projectionError(message, details = {}) {
   throw new DevFlowError("REVIEW_PROJECTION_INVALID", message, details);
 }
@@ -2518,7 +2615,8 @@ function publicFinding(finding) {
 function unresolvedBlockingFindingIds(ledger) {
   if (ledger.findingEvents?.length) {
     const current = ledger.batches.find((batch) => batch.validity === "current");
-    return unresolvedBlockingFindings(ledger, current?.basisHash).map((finding) => finding.findingId).sort();
+    const roleBasis = (origin) => current?.jobs.find((job) => job.role === origin.role)?.roleBasisHash;
+    return unresolvedBlockingFindings(ledger, roleBasis).map((finding) => finding.findingId).sort();
   }
   const dispositions = Object.fromEntries(ledger.batches.flatMap((batch) => Object.entries(batch.dispositions ?? {})));
   return ledger.batches.flatMap((batch) => batch.jobs.flatMap((job) => job.submission?.findings ?? [])).filter((finding) => finding.severity === "blocking" && !dispositions[finding.findingId]).map((finding) => finding.findingId).sort();
@@ -2704,9 +2802,9 @@ async function assertCurrentReviewProjection(root2, state) {
 }
 
 // plugins/dev-flow/src/core/decision-ledger.ts
-import { createHash as createHash6 } from "node:crypto";
+import { createHash as createHash7 } from "node:crypto";
 function idFor(question, refs = []) {
-  return `DEC-${createHash6("sha256").update(`${question}
+  return `DEC-${createHash7("sha256").update(`${question}
 ${[...refs].sort().join("\n")}`).digest("hex").slice(0, 16)}`;
 }
 function createDecision(question, factRefs = []) {
@@ -2721,7 +2819,7 @@ function resolveDecision(decision, evidence, conclusion) {
 
 // plugins/dev-flow/src/core/git-reconciliation.ts
 import { execFile as execFile2 } from "node:child_process";
-import { createHash as createHash7 } from "node:crypto";
+import { createHash as createHash8 } from "node:crypto";
 import { lstat as lstat2, readFile as readFile5 } from "node:fs/promises";
 import path7 from "node:path";
 import { promisify as promisify2 } from "node:util";
@@ -2746,6 +2844,9 @@ async function git(root2, args, allowExitOne = false) {
 function normalizePath(value) {
   return normalizeProjectPath(normalizeUnicode(value).replaceAll("\\", "/"));
 }
+function builtInControlPath(value) {
+  return value === ".git" || value.startsWith(".git/") || value === ".dev-flow" || value.startsWith(".dev-flow/") || value === "node_modules" || value.startsWith("node_modules/");
+}
 function statusKind(code) {
   if (code.includes("?") || code.includes("A")) return "untracked";
   if (code.includes("D")) return "deleted";
@@ -2757,7 +2858,7 @@ async function contentHash(root2, relative) {
   try {
     const metadata = await lstat2(path7.join(root2, relative));
     if (!metadata.isFile()) return void 0;
-    return createHash7("sha256").update(await readFile5(path7.join(root2, relative))).digest("hex");
+    return createHash8("sha256").update(await readFile5(path7.join(root2, relative))).digest("hex");
   } catch {
     return void 0;
   }
@@ -2771,6 +2872,10 @@ async function dirtyPaths(root2, config) {
     if (item.length < 4) continue;
     const code = item.slice(0, 2);
     const current = normalizePath(item.slice(3));
+    if (builtInControlPath(current)) {
+      if (code.includes("R")) index += 1;
+      continue;
+    }
     if (config.governedRootsExclude?.some((pattern) => current === pattern || current.startsWith(`${pattern}/`))) {
       if (code.includes("R")) index += 1;
       continue;
@@ -2831,7 +2936,7 @@ async function captureObservedCommits(root2, baseHead, observedHead) {
     commits.push({
       hash: hash2,
       parentHashes: parents.split(" ").filter(Boolean),
-      changedPaths: paths.split("\n").map((value) => value.trim()).filter(Boolean).map(normalizePath),
+      changedPaths: paths.split("\n").map((value) => value.trim()).filter(Boolean).map(normalizePath).filter((file) => !builtInControlPath(file)),
       source: "unknown",
       observedAt: (/* @__PURE__ */ new Date()).toISOString()
     });
@@ -2841,7 +2946,7 @@ async function captureObservedCommits(root2, baseHead, observedHead) {
 async function changedPathsBetween(root2, baseHead, observedHead) {
   if (!baseHead || !observedHead || baseHead === observedHead) return [];
   const output = await git(root2, ["diff", "--name-only", "-z", baseHead, observedHead]);
-  return output.split("\0").filter(Boolean).map(normalizePath).sort();
+  return output.split("\0").filter(Boolean).map(normalizePath).filter((file) => !builtInControlPath(file)).sort();
 }
 async function gitBranchAndHead(root2) {
   return { branch: await branchName(root2), head: await head(root2) };
@@ -2922,9 +3027,16 @@ async function reconcileWorkspaceForFeature(root2, state, config) {
   const previousPaths = state.workspace.observedPathFingerprints ?? {};
   const currentPaths = workspace.observedPathFingerprints;
   const candidates = /* @__PURE__ */ new Set([...Object.keys(previousPaths), ...Object.keys(currentPaths), ...committedPaths, ...dirty]);
-  const changedPaths = [...candidates].filter((file) => previousPaths[file] !== currentPaths[file]).sort();
+  const knownUnowned = /* @__PURE__ */ new Set([
+    ...state.workspace.unownedPaths ?? [],
+    ...Object.keys(state.workspace.startedDirty).filter((file) => state.workspace.ownership[file] === void 0)
+  ]);
+  const changedPaths = [...candidates].filter(
+    (file) => previousPaths[file] !== currentPaths[file] || knownUnowned.has(file)
+  ).sort();
+  const unownedPaths = [.../* @__PURE__ */ new Set([...state.workspace.unownedPaths ?? [], ...changedPaths])].filter((file) => workspace.ownership[file] === void 0).sort();
   return {
-    workspace,
+    workspace: { ...workspace, unownedPaths },
     contentChanged: changedPaths.length > 0,
     changedPaths
   };
@@ -2932,6 +3044,62 @@ async function reconcileWorkspaceForFeature(root2, state, config) {
 
 // plugins/dev-flow/src/core/user-interactions.ts
 import { randomUUID as randomUUID4 } from "node:crypto";
+
+// plugins/dev-flow/src/core/decision-language.ts
+function normalize(value) {
+  return value.trim().replace(/[\s\u00A0\uFEFF]+/g, " ").replace(/[，。！？、；：,.!?;:()（）【】\[\]“”"']/g, "").toLowerCase();
+}
+function unique(matches) {
+  const byOption = new Map(matches.map((match) => [match.option.id, match]));
+  return byOption.size === 1 ? [...byOption.values()][0] : void 0;
+}
+var optionAliases = {
+  "adopt-all": ["\u5168\u90E8\u7EB3\u5165", "\u90FD\u7EB3\u5165", "\u5168\u90FD\u7EB3\u5165", "\u5168\u90E8\u7B97\u5F53\u524D\u4EFB\u52A1", "\u90FD\u7B97\u5F53\u524D\u4EFB\u52A1", "\u8FD9\u4E9B\u90FD\u7B97\u5F53\u524D\u4EFB\u52A1\u7684"],
+  "exclude-all": ["\u5168\u90E8\u6392\u9664", "\u90FD\u6392\u9664", "\u5168\u90FD\u6392\u9664", "\u8FD9\u4E9B\u90FD\u4E0D\u7B97\u5F53\u524D\u4EFB\u52A1", "\u90FD\u5148\u6392\u9664"],
+  "one-by-one": ["\u9010\u4E2A\u786E\u8BA4", "\u4E00\u4E2A\u4E2A\u786E\u8BA4", "\u4E00\u4E2A\u4E2A\u6765", "\u9010\u4E2A\u6765"],
+  adopt: ["\u7EB3\u5165\u5F53\u524D\u4EFB\u52A1", "\u7EB3\u5165", "\u7B97\u5F53\u524D\u4EFB\u52A1"],
+  include: ["\u7EB3\u5165\u5F53\u524D\u4EFB\u52A1", "\u8FD9\u4E2A\u7B97\u5F53\u524D\u4EFB\u52A1", "\u7B97\u5F53\u524D\u4EFB\u52A1"],
+  exclude: ["\u6392\u9664\u5E76\u5148\u5904\u7406", "\u6392\u9664", "\u4E0D\u7B97\u5F53\u524D\u4EFB\u52A1"],
+  "request-changes": ["\u4FEE\u6539", "\u8981\u4FEE\u6539", "\u63D0\u51FA\u4FEE\u6539\u610F\u89C1", "\u8C03\u6574", "\u9700\u8981\u8C03\u6574"],
+  accept: ["\u63A5\u53D7", "\u63A5\u53D7\u98CE\u9669", "\u4ECD\u7136\u7EE7\u7EED"],
+  decline: ["\u4E0D\u63A5\u53D7", "\u62D2\u7EDD", "\u6682\u4E0D\u7EE7\u7EED"]
+};
+var interactionAliases = {
+  "route-confirmation": {
+    confirm: ["\u786E\u8BA4\u8DEF\u7EBF", "\u8DEF\u7EBF\u6CA1\u95EE\u9898", "\u5C31\u6309\u8FD9\u6761\u8DEF\u7EBF", "\u6309\u8FD9\u6761\u8DEF\u7EBF"]
+  }
+};
+function matchNaturalDecision(kind, options, userReply) {
+  const raw = userReply.trim();
+  const normalized = normalize(raw);
+  if (!normalized) return void 0;
+  const editMatch = raw.match(/^修改(?:需求|意见|计划|方案|)?[:：]?\s*([\s\S]*)$/u);
+  if (editMatch) {
+    const option = options.find((candidate) => candidate.id === "request-changes");
+    if (option) return { option, comment: editMatch[1]?.trim() || void 0 };
+  }
+  const matches = [];
+  for (const option of options) {
+    const label = normalize(option.label);
+    if (!label) continue;
+    if (label === normalized) matches.push({ option });
+    if (kind !== "approval" && normalized.length >= 4 && label.includes(normalized)) {
+      matches.push({ option });
+    }
+    if (option.id !== "confirm" && normalized.startsWith(label) && normalized.length > label.length) {
+      matches.push({ option, comment: raw.slice(option.label.length).trim() });
+    }
+    if (kind !== "approval" && (optionAliases[option.id] ?? []).some((alias) => normalize(alias) === normalized)) {
+      matches.push({ option });
+    }
+    if (kind !== "approval" && (interactionAliases[kind]?.[option.id] ?? []).some((alias) => normalize(alias) === normalized)) {
+      matches.push({ option });
+    }
+  }
+  return unique(matches);
+}
+
+// plugins/dev-flow/src/core/user-interactions.ts
 function normalizeReplyText(value) {
   return value.trim().replace(/[\s\u00A0\uFEFF]+/g, " ").toLowerCase();
 }
@@ -2974,20 +3142,14 @@ function createInteraction(state, input) {
     question: input.question,
     options: input.options.map((option) => ({ ...option })),
     presentedAt: (/* @__PURE__ */ new Date()).toISOString(),
+    presentedRevision: state.revision,
+    presentationEventId: input.presentationEventId ?? randomUUID4(),
+    ...input.workspacePaths ? { workspacePaths: [...input.workspacePaths] } : {},
+    ...input.workspaceBatchPaths ? { workspaceBatchPaths: [...input.workspaceBatchPaths] } : {},
+    ...input.workspaceRemainingPaths ? { workspaceRemainingPaths: [...input.workspaceRemainingPaths] } : {},
     status: "pending"
   };
   interactions(state)[interaction.id] = interaction;
-  const kind = input.kind === "risk-acceptance" ? "review-risk" : input.kind;
-  state.pendingDecision = {
-    kind,
-    question: input.question ?? "\u8BF7\u9009\u62E9\u4E00\u4E2A\u65B9\u6848\u3002",
-    options: input.options.map((option, index) => ({ ...option, recommended: index === 0 })),
-    basisHash: input.basisHash,
-    presentedAt: interaction.presentedAt,
-    presentedRevision: state.revision,
-    source: "core",
-    target: input.target
-  };
   return interaction;
 }
 function getInteraction(state, interactionId) {
@@ -3026,24 +3188,7 @@ function optionFor(interaction, action) {
   return option;
 }
 function matchNaturalOption(interaction, userReply) {
-  const normalized = normalizeReplyText(userReply);
-  if (!normalized) return void 0;
-  const editMatch = normalized.match(/^修改(?:需求|意见|计划|方案|)?[:：]?\s*([\s\S]*)$/u);
-  if (editMatch) {
-    const option = interaction.options.find((candidate) => candidate.id === "request-changes");
-    if (option) return { option, comment: editMatch[1] || void 0 };
-  }
-  for (const candidate of interaction.options) {
-    const labelNorm = normalizeReplyText(candidate.label);
-    if (!labelNorm) continue;
-    if (labelNorm === normalized) {
-      return { option: candidate };
-    }
-    if (candidate.id !== "confirm" && normalized.startsWith(labelNorm) && normalized.length > labelNorm.length) {
-      return { option: candidate, comment: normalized.slice(labelNorm.length).trim() };
-    }
-  }
-  return void 0;
+  return matchNaturalDecision(interaction.kind, interaction.options, userReply);
 }
 function validateComment(option, comment) {
   const normalized = comment?.trim();
@@ -3080,10 +3225,10 @@ function resolveTextInteraction(state, interactionId, userReply, host, provenanc
   if (!match) {
     throw new DevFlowError("DECISION_REPLY_NOT_RECOGNIZED", "\u56DE\u7B54\u6CA1\u6709\u7CBE\u786E\u5339\u914D\u5F53\u524D\u95EE\u9898\u7684\u9009\u9879\u3002", {
       userMessage: "\u6CA1\u6709\u8BC6\u522B\u51FA\u5F53\u524D\u95EE\u9898\u7684\u6709\u6548\u56DE\u7B54\u3002",
-      cause: "\u56DE\u7B54\u4E0D\u662F\u5B8C\u6574\u9009\u9879\uFF0C\u4E5F\u4E0D\u662F\u53D7\u652F\u6301\u7684\u6279\u51C6\u77ED\u8BED\u3002",
+      cause: "\u56DE\u7B54\u65E0\u6CD5\u552F\u4E00\u5BF9\u5E94\u5F53\u524D\u9009\u9879\uFF0C\u4E5F\u4E0D\u662F\u53D7\u652F\u6301\u7684\u6279\u51C6\u77ED\u8BED\u3002",
       impact: "\u5F53\u524D\u95EE\u9898\u4ECD\u4FDD\u6301\u5F85\u56DE\u7B54\uFF0C\u6CA1\u6709\u4EFB\u4F55\u72B6\u6001\u88AB\u6539\u53D8\u3002",
       recoveryKind: "retry",
-      recoveryInstruction: "\u8BF7\u76F4\u63A5\u56DE\u590D\u4E00\u4E2A\u5B8C\u6574\u4E2D\u6587\u9009\u9879\u3002",
+      recoveryInstruction: "\u8BF7\u6362\u4E00\u79CD\u80FD\u552F\u4E00\u6307\u5411\u67D0\u4E2A\u9009\u9879\u7684\u7B80\u77ED\u8BF4\u6CD5\uFF0C\u6216\u76F4\u63A5\u56DE\u590D\u5B8C\u6574\u9009\u9879\u3002",
       retryOriginal: true
     });
   }
@@ -3126,11 +3271,22 @@ function decisionHint(interaction) {
     const recommended = index === 0 ? "\uFF08\u63A8\u8350\uFF09" : "";
     lines.push(`- ${option.label}${recommended}`);
   });
-  lines.push("\u8BF7\u76F4\u63A5\u56DE\u590D\u4E00\u4E2A\u5B8C\u6574\u9009\u9879\uFF1B\u5982\u9700\u8865\u5145\u8BF4\u660E\uFF0C\u8BF7\u5728\u9009\u9879\u540E\u5199\u660E\u610F\u89C1\u3002");
+  lines.push("\u53EF\u76F4\u63A5\u56DE\u590D\u5B8C\u6574\u9009\u9879\u3001\u80FD\u552F\u4E00\u6307\u5411\u5B83\u7684\u7B80\u79F0\u6216\u540C\u4E49\u8BF4\u6CD5\uFF1B\u5982\u9700\u8865\u5145\u8BF4\u660E\uFF0C\u8BF7\u5728\u9009\u9879\u540E\u5199\u660E\u610F\u89C1\u3002");
   return lines.join("\n");
 }
 
 // plugins/dev-flow/src/core/interaction-provenance.ts
+function presentationEventIndex(events, input) {
+  const index = events.findIndex((record) => {
+    if (record.type === "host-event") return false;
+    if (input.presentationEventId) {
+      if (!record.data || typeof record.data !== "object" || Array.isArray(record.data)) return false;
+      return record.data.presentationEventId === input.presentationEventId;
+    }
+    return record.revision >= input.presentedRevision && Date.parse(record.at) >= Date.parse(input.presentedAt);
+  });
+  return index >= 0 ? index : void 0;
+}
 function promptFrom(record) {
   if (record.type !== "host-event" || !record.data || typeof record.data !== "object" || Array.isArray(record.data)) return void 0;
   const data = record.data;
@@ -3141,10 +3297,15 @@ function promptFrom(record) {
 }
 function resolvePromptEvent(events, input) {
   const consumed = new Set(input.consumedEventIds ?? []);
-  const otherHost = events.flatMap((record) => {
+  const presentationIndex = presentationEventIndex(events, input);
+  const isAfterPresentation = (record, index) => {
+    if (presentationIndex !== void 0) return index > presentationIndex;
+    return record.revision > input.presentedRevision && Date.parse(promptFrom(record)?.at ?? "") >= Date.parse(input.presentedAt);
+  };
+  const otherHost = events.flatMap((record, index) => {
     const prompt = promptFrom(record);
     if (!prompt || prompt.host === input.host || consumed.has(prompt.eventId)) return [];
-    if (record.revision <= input.presentedRevision || Date.parse(prompt.at) < Date.parse(input.presentedAt)) return [];
+    if (!isAfterPresentation(record, index)) return [];
     return normalizeReplyText(prompt.text) === normalizeReplyText(input.userReply) ? [prompt] : [];
   });
   if (otherHost.length) {
@@ -3158,10 +3319,10 @@ function resolvePromptEvent(events, input) {
       actualHost: otherHost[0].host
     });
   }
-  const matches = events.flatMap((record) => {
+  const matches = events.flatMap((record, index) => {
     const prompt = promptFrom(record);
     if (!prompt || prompt.host !== input.host || consumed.has(prompt.eventId)) return [];
-    if (record.revision <= input.presentedRevision || Date.parse(prompt.at) < Date.parse(input.presentedAt)) return [];
+    if (!isAfterPresentation(record, index)) return [];
     if (normalizeReplyText(prompt.text) !== normalizeReplyText(input.userReply)) return [];
     return [{ eventId: prompt.eventId, revision: record.revision, at: prompt.at, text: prompt.text, host: prompt.host }];
   });
@@ -3187,6 +3348,222 @@ function resolvePromptEvent(events, input) {
     });
   }
   return matches[0];
+}
+function resolveInteractionPromptEvent(events, state, interaction, input) {
+  const presentedRevision = Number.isInteger(interaction.presentedRevision) ? interaction.presentedRevision : state.pendingDecision?.target === interaction.target ? state.pendingDecision.presentedRevision : Math.max(0, state.revision - 1);
+  return resolvePromptEvent(events, {
+    ...input,
+    presentedAt: interaction.presentedAt,
+    presentedRevision,
+    ...interaction.presentationEventId ? { presentationEventId: interaction.presentationEventId } : {}
+  });
+}
+
+// plugins/dev-flow/src/core/approval.ts
+var approvalPhrases = [
+  "\u786E\u8BA4",
+  "\u786E\u8BA4\u9700\u6C42",
+  "\u9700\u6C42\u5DF2\u786E\u8BA4",
+  "\u540C\u610F\u9700\u6C42",
+  "\u786E\u8BA4\u6267\u884C",
+  "\u6279\u51C6\u5B9E\u73B0",
+  "\u540C\u610F\u5B9E\u73B0",
+  "\u5F00\u59CB\u5B9E\u73B0",
+  "\u5F00\u59CB\u6267\u884C",
+  "\u786E\u8BA4\u5F00\u59CB\u6267\u884C",
+  "\u540C\u610F\u5F00\u59CB\u6267\u884C",
+  "\u6279\u51C6\u6267\u884C",
+  "\u540C\u610F\u6267\u884C",
+  "approved",
+  "LGTM"
+];
+function approvalReplyHint() {
+  return `\u2705 \u5982\u9700\u786E\u8BA4\u5F00\u59CB\u6267\u884C\uFF0C\u76F4\u63A5\u56DE\u590D\uFF1A${approvalPhrases.join(" / ")}`;
+}
+function isExplicitApproval(userReply) {
+  const normalized = normalizeReplyText(userReply);
+  return approvalPhrases.some((phrase) => normalizeReplyText(phrase) === normalized);
+}
+
+// plugins/dev-flow/src/core/decision-interactions.ts
+function pendingInteraction(state) {
+  return Object.values(state.interactions ?? {}).find((value) => value.status === "pending");
+}
+function pendingDecisionForState(state) {
+  const interaction = pendingInteraction(state);
+  if (interaction) {
+    return {
+      kind: interaction.kind === "risk-acceptance" ? "review-risk" : interaction.kind,
+      question: interaction.question ?? "\u8BF7\u9009\u62E9\u4E00\u4E2A\u65B9\u6848\u3002",
+      options: interaction.options.map((option, index) => ({ ...option, recommended: index === 0 })),
+      basisHash: interaction.basisHash,
+      presentedAt: interaction.presentedAt,
+      presentedRevision: interaction.presentedRevision ?? state.pendingDecision?.presentedRevision ?? state.revision,
+      source: "core",
+      target: interaction.target,
+      ...interaction.presentationEventId ? { presentationEventId: interaction.presentationEventId } : {}
+    };
+  }
+  return state.pendingDecision;
+}
+function publicPendingDecision(state) {
+  const decision = pendingDecisionForState(state);
+  if (!decision) return void 0;
+  return {
+    kind: decision.kind,
+    question: decision.question,
+    options: decision.options.map((option, index) => ({
+      label: option.label,
+      ...option.description ? { description: option.description } : {},
+      recommended: option.recommended ?? index === 0,
+      requiresComment: Boolean(option.requiresComment)
+    }))
+  };
+}
+function matchDecisionReply(decision, userReply) {
+  const normalized = normalizeReplyText(userReply);
+  if (!normalized) throw new DevFlowError("DECISION_REPLY_REQUIRED", "\u8BF7\u56DE\u7B54\u5F53\u524D\u95EE\u9898\u3002", { userMessage: "\u5F53\u524D\u95EE\u9898\u8FD8\u6CA1\u6709\u5F97\u5230\u56DE\u7B54\u3002", recoveryKind: "retry", recoveryInstruction: "\u8BF7\u56DE\u590D\u4E00\u4E2A\u9009\u9879\u3001\u80FD\u552F\u4E00\u6307\u5411\u5B83\u7684\u7B80\u79F0\u6216\u540C\u4E49\u8BF4\u6CD5\u3002", retryOriginal: true });
+  const options = decision.options;
+  let match;
+  if (decision.kind === "approval" && isExplicitApproval(userReply)) {
+    const option = options.find((candidate) => candidate.id === "confirm");
+    if (option) match = { option };
+  }
+  if (!match) match = matchNaturalDecision(decision.kind === "review-risk" ? "risk-acceptance" : decision.kind, options, userReply);
+  if (!match) {
+    throw new DevFlowError("DECISION_REPLY_NOT_RECOGNIZED", "\u56DE\u7B54\u6CA1\u6709\u7CBE\u786E\u5339\u914D\u5F53\u524D\u95EE\u9898\u7684\u9009\u9879\u3002", {
+      userMessage: "\u6CA1\u6709\u8BC6\u522B\u51FA\u5F53\u524D\u95EE\u9898\u7684\u6709\u6548\u56DE\u7B54\u3002",
+      cause: "\u56DE\u7B54\u65E0\u6CD5\u552F\u4E00\u5BF9\u5E94\u5F53\u524D\u9009\u9879\uFF0C\u4E5F\u4E0D\u662F\u53D7\u652F\u6301\u7684\u6279\u51C6\u77ED\u8BED\u3002",
+      impact: "\u5F53\u524D\u95EE\u9898\u4ECD\u4FDD\u6301\u5F85\u56DE\u7B54\uFF0C\u6CA1\u6709\u4EFB\u4F55\u72B6\u6001\u88AB\u6539\u53D8\u3002",
+      recoveryKind: "retry",
+      recoveryInstruction: "\u8BF7\u6362\u4E00\u79CD\u80FD\u552F\u4E00\u6307\u5411\u67D0\u4E2A\u9009\u9879\u7684\u7B80\u77ED\u8BF4\u6CD5\uFF0C\u6216\u76F4\u63A5\u56DE\u590D\u5B8C\u6574\u9009\u9879\u3002",
+      retryOriginal: true
+    });
+  }
+  if (match.option.requiresComment && !match.comment?.trim()) {
+    throw new DevFlowError("DECISION_COMMENT_REQUIRED", "\u8BE5\u9009\u9879\u9700\u8981\u8865\u5145\u8BF4\u660E\u3002", { userMessage: "\u8BF7\u8865\u5145\u4E00\u53E5\u5177\u4F53\u8BF4\u660E\u540E\u518D\u63D0\u4EA4\u3002", recoveryKind: "retry", recoveryInstruction: "\u5728\u9009\u9879\u540E\u8865\u5145\u4FEE\u6539\u610F\u89C1\u6216\u98CE\u9669\u8BF4\u660E\u3002", retryOriginal: true });
+  }
+  return match;
+}
+function pendingInteractionForDecision(state, decision) {
+  return pendingInteraction(state) ?? (decision.target ? Object.values(state.interactions ?? {}).find((value) => value.target === decision.target) : void 0);
+}
+
+// plugins/dev-flow/src/core/host-health.ts
+import { mkdir as mkdir4, open as open4, readFile as readFile6 } from "node:fs/promises";
+import path8 from "node:path";
+var healthWindowMs = 15 * 60 * 1e3;
+var hostHealthPath = (root2) => path8.join(root2, ".dev-flow", "host-health.jsonl");
+async function readHostHealth(root2) {
+  try {
+    const raw = await readFile6(hostHealthPath(root2), "utf8");
+    return raw.split("\n").filter(Boolean).flatMap((line) => {
+      try {
+        const signal = JSON.parse(line);
+        return (signal.host === "claude" || signal.host === "codex") && typeof signal.kind === "string" && typeof signal.eventId === "string" && typeof signal.at === "string" ? [signal] : [];
+      } catch {
+        return [];
+      }
+    });
+  } catch (error) {
+    if (error.code === "ENOENT") return [];
+    throw error;
+  }
+}
+async function assertHostHealth(root2, host, operation) {
+  const latest = [...await readHostHealth(root2)].reverse().find((signal) => signal.host === host);
+  const ageMs = latest ? Date.now() - Date.parse(latest.at) : Number.POSITIVE_INFINITY;
+  if (!latest) {
+    throw new DevFlowError("HOOK_HEALTH_REQUIRED", `${host} hook health is required before ${operation}`, {
+      userMessage: `\u5F00\u59CB${operation}\u524D\u6CA1\u6709\u53D1\u73B0 ${host} \u5BBF\u4E3B\u7684\u53EF\u4FE1 hook \u5065\u5EB7\u4FE1\u53F7\u3002`,
+      cause: "\u5BBF\u4E3B\u63A5\u7EBF\u5C1A\u672A\u8BC1\u660E\u5F53\u524D\u4F1A\u8BDD\u80FD\u591F\u6355\u83B7\u7528\u6237\u56DE\u5408\u548C\u5199\u5165\u5F52\u5C5E\u3002",
+      impact: "\u64CD\u4F5C\u6CA1\u6709\u6539\u53D8 feature\u3001ownership \u6216\u8BC1\u636E\u72B6\u6001\u3002",
+      recoveryKind: "refresh",
+      recoveryInstruction: `\u786E\u8BA4 ${host} manifest\u3001MCP \u4E0E hook \u5DF2\u5171\u540C\u5B89\u88C5\uFF0C\u91CD\u65B0\u5F00\u542F\u5BBF\u4E3B\u4F1A\u8BDD\u540E\u91CD\u8BD5\u3002`,
+      retryOriginal: true,
+      host,
+      operation
+    });
+  }
+  if (!Number.isFinite(ageMs) || ageMs > healthWindowMs) {
+    throw new DevFlowError("HOOK_HEALTH_STALE", `${host} hook health is stale before ${operation}`, {
+      userMessage: `${host} \u5BBF\u4E3B hook \u7684\u6700\u8FD1\u53EF\u4FE1\u4FE1\u53F7\u5DF2\u8FC7\u671F\uFF0C\u5DF2\u5B89\u5168\u6682\u505C\u5F53\u524D\u64CD\u4F5C\u3002`,
+      cause: `\u6700\u8FD1\u4FE1\u53F7\u8DDD\u73B0\u5728\u7EA6 ${Math.round(ageMs / 6e4)} \u5206\u949F\uFF0C\u8D85\u8FC7 15 \u5206\u949F\u5065\u5EB7\u7A97\u53E3\u3002`,
+      impact: "\u64CD\u4F5C\u6CA1\u6709\u6539\u53D8 feature\u3001ownership \u6216\u8BC1\u636E\u72B6\u6001\u3002",
+      recoveryKind: "refresh",
+      recoveryInstruction: `\u6062\u590D ${host} hook \u5E76\u91CD\u65B0\u5F00\u542F\u4F1A\u8BDD\u540E\u91CD\u8BD5\u539F\u64CD\u4F5C\uFF1B\u82E5\u53D1\u73B0\u672A\u77E5\u8DEF\u5F84\uFF0C\u518D\u8C03\u7528 dev_flow_reconcile_workspace\u3002`,
+      retryOriginal: true,
+      host,
+      operation,
+      latestAt: latest.at
+    });
+  }
+  return latest;
+}
+
+// plugins/dev-flow/src/core/checkpoint-store.ts
+import { readFile as readFile7 } from "node:fs/promises";
+import path9 from "node:path";
+async function readCheckpointManifest(root2, featureId, checkpointId) {
+  const file = path9.join(root2, ".dev-flow", "features", featureId, "checkpoints", "manifests", `${checkpointId}.json`);
+  let raw;
+  try {
+    raw = await readFile7(file, "utf8");
+  } catch {
+    throw new DevFlowError("CHECKPOINT_NOT_FOUND", "checkpoint manifest does not exist", { checkpointId });
+  }
+  try {
+    const manifest = parseCheckpointManifest(JSON.parse(raw));
+    if (manifest.checkpointId !== checkpointId) {
+      throw new DevFlowError("CHECKPOINT_INTEGRITY_FAILED", "checkpoint manifest id does not match its path", { checkpointId });
+    }
+    return manifest;
+  } catch (error) {
+    if (error instanceof DevFlowError) throw error;
+    if (error instanceof RollbackProtocolError && error.code === "UNSUPPORTED_CHECKPOINT_SCHEMA") {
+      throw new DevFlowError("UNSUPPORTED_CHECKPOINT_SCHEMA", "\u68C0\u6D4B\u5230 Dev Flow 4.x checkpoint manifest schema v1\u3002", {
+        checkpointId,
+        recoveryHint: "\u56DE\u5230 4.x \u5B8C\u6210\u6216\u653E\u5F03\u8BE5 feature\uFF0C\u5907\u4EFD .dev-flow \u540E\u7528 5.0 \u91CD\u65B0\u521D\u59CB\u5316"
+      });
+    }
+    throw new DevFlowError("CHECKPOINT_INTEGRITY_FAILED", "checkpoint manifest is unreadable", { checkpointId });
+  }
+}
+
+// plugins/dev-flow/src/core/project-config-impact.ts
+async function collectProjectConfigAffectedEvidence(root2, state, impact) {
+  const commandIds = [.../* @__PURE__ */ new Set([...impact.modifiedCommandIds, ...impact.removedCommandIds])].sort();
+  const empty = { commandIds, traceNodeIds: [], checkpointIds: [], verificationAttemptIds: [], reviewRoles: [] };
+  if (!commandIds.length || !state) return empty;
+  const changed = new Set(commandIds);
+  const traceNodeIds = [];
+  if (state.traceability) {
+    const ledger = await readTraceability(root2, state);
+    for (const node of Object.values(ledger.nodes)) {
+      if (node.status === "tombstoned" || node.kind !== "rollback") continue;
+      const refs = [...node.forwardVerification, ...node.rollbackVerification].filter((ref) => typeof ref === "string");
+      if (refs.some((id) => changed.has(id))) traceNodeIds.push(node.id);
+    }
+  }
+  const verificationAttemptIds = state.verification.attempts.flatMap((value) => {
+    const attempt = value;
+    if (!Number.isInteger(attempt.id) || !attempt.verificationCommandHashes || typeof attempt.verificationCommandHashes !== "object") return [];
+    return Object.keys(attempt.verificationCommandHashes).some((id) => changed.has(id)) ? [attempt.id] : [];
+  }).sort((left, right) => left - right);
+  const checkpointIds = [];
+  for (const unit of state.implementationUnits ?? []) {
+    if (!unit.checkpointId) continue;
+    const manifest = await readCheckpointManifest(root2, state.featureId, unit.checkpointId);
+    if (Object.keys(manifest.verificationCommandHashes ?? {}).some((id) => changed.has(id))) checkpointIds.push(unit.checkpointId);
+  }
+  return {
+    featureId: state.featureId,
+    commandIds,
+    traceNodeIds: traceNodeIds.sort(),
+    checkpointIds: checkpointIds.sort(),
+    verificationAttemptIds,
+    reviewRoles: traceNodeIds.length ? ["rollback-operability"] : []
+  };
 }
 
 // plugins/dev-flow/src/core/state-store.ts
@@ -3225,12 +3602,12 @@ function validateFeatureState(value) {
   if (pendingInteractions.length > 1) throw new DevFlowError("MULTIPLE_PENDING_DECISIONS", "schema v4 \u72B6\u6001\u5305\u542B\u591A\u4E2A\u5F85\u51B3\u95EE\u9898\u3002", { userMessage: "\u5F53\u524D\u72B6\u6001\u540C\u65F6\u5B58\u5728\u591A\u4E2A\u5F85\u51B3\u95EE\u9898\uFF0C\u6D41\u7A0B\u5DF2\u5B89\u5168\u505C\u6B62\u3002", cause: "\u51B3\u7B56\u8D26\u672C\u4E0D\u662F\u5355\u4E00\u5F85\u51B3\u95EE\u9898\u3002", impact: "\u7CFB\u7EDF\u4E0D\u4F1A\u4EFB\u9009\u4E00\u4E2A\u95EE\u9898\u6D88\u8D39\u3002", recoveryKind: "repair", recoveryInstruction: "\u8FD0\u884C doctor \u68C0\u67E5\u51B3\u7B56\u8D26\u672C\uFF0C\u7136\u540E\u901A\u8FC7\u516C\u5F00\u56DE\u7B54\u63A5\u53E3\u6062\u590D\u3002", retryOriginal: false });
   if (state.pendingDecision !== void 0) {
     const decision = state.pendingDecision;
-    if (!decision || decision.source !== "core" || typeof decision.question !== "string" || !decision.question.trim() || !/^[a-f0-9]{64}$/.test(decision.basisHash) || !Number.isInteger(decision.presentedRevision) || !Array.isArray(decision.options) || decision.options.length < 2 || decision.options.length > 3 || decision.options.some((option) => !option || typeof option.id !== "string" || typeof option.label !== "string" || !option.label.trim())) {
+    if (!decision || decision.source !== "core" || typeof decision.question !== "string" || !decision.question.trim() || !/^[a-f0-9]{64}$/.test(decision.basisHash) || !Number.isInteger(decision.presentedRevision) || decision.presentationEventId !== void 0 && typeof decision.presentationEventId !== "string" || !Array.isArray(decision.options) || decision.options.length < 2 || decision.options.length > 3 || decision.options.some((option) => !option || typeof option.id !== "string" || typeof option.label !== "string" || !option.label.trim())) {
       throw new DevFlowError("INVALID_STATE_SCHEMA", "pendingDecision is invalid");
     }
   }
   const workspace = state.workspace;
-  if (!workspace || typeof workspace.baseHead !== "string" || typeof workspace.baseBranch !== "string" || typeof workspace.observedHead !== "string" || typeof workspace.lastWorkspaceFingerprint !== "string" || !["current", "required", "blocked"].includes(workspace.reconciliationStatus) || typeof workspace.startedDirty !== "object" || workspace.startedDirty === null || Array.isArray(workspace.startedDirty) || typeof workspace.ownership !== "object" || workspace.ownership === null || Array.isArray(workspace.ownership) || typeof workspace.ownershipSource !== "object" || workspace.ownershipSource === null || Array.isArray(workspace.ownershipSource) || typeof workspace.observedPathFingerprints !== "object" || workspace.observedPathFingerprints === null || Array.isArray(workspace.observedPathFingerprints) || !Array.isArray(workspace.observedCommits)) {
+  if (!workspace || typeof workspace.baseHead !== "string" || typeof workspace.baseBranch !== "string" || typeof workspace.observedHead !== "string" || typeof workspace.lastWorkspaceFingerprint !== "string" || !["current", "required", "blocked"].includes(workspace.reconciliationStatus) || typeof workspace.startedDirty !== "object" || workspace.startedDirty === null || Array.isArray(workspace.startedDirty) || typeof workspace.ownership !== "object" || workspace.ownership === null || Array.isArray(workspace.ownership) || typeof workspace.ownershipSource !== "object" || workspace.ownershipSource === null || Array.isArray(workspace.ownershipSource) || typeof workspace.observedPathFingerprints !== "object" || workspace.observedPathFingerprints === null || Array.isArray(workspace.observedPathFingerprints) || workspace.unownedPaths !== void 0 && (!Array.isArray(workspace.unownedPaths) || workspace.unownedPaths.some((file) => typeof file !== "string")) || !Array.isArray(workspace.observedCommits)) {
     throw new DevFlowError("INVALID_STATE_SCHEMA", "workspace lineage is invalid");
   }
   if (state.lifecycle === "finalized" && !state.deliverySnapshot) throw new DevFlowError("INVALID_STATE_SCHEMA", "schema v4 \u7684 finalized \u72B6\u6001\u5FC5\u987B\u5305\u542B\u4EA4\u4ED8\u5FEB\u7167\u3002");
@@ -3319,17 +3696,17 @@ function validateScopeInput(scope) {
   };
 }
 var delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-var devFlow = (root2) => path8.join(root2, ".dev-flow");
-var features = (root2) => path8.join(devFlow(root2), "features");
-var statePath = (root2, id) => path8.join(features(root2), id, "state.json");
-var eventPath = (root2, id) => path8.join(features(root2), id, "events.jsonl");
-var activePath = (root2) => path8.join(devFlow(root2), "active.json");
-var recoveryTxnPath = (root2) => path8.join(devFlow(root2), "recovery-transaction.json");
-var recoveryEventsPath = (root2) => path8.join(devFlow(root2), "recovery-events.jsonl");
-var rollbackTxnPath = (root2, featureId) => path8.join(features(root2), featureId, "rollback-transaction.json");
+var devFlow = (root2) => path10.join(root2, ".dev-flow");
+var features = (root2) => path10.join(devFlow(root2), "features");
+var statePath = (root2, id) => path10.join(features(root2), id, "state.json");
+var eventPath = (root2, id) => path10.join(features(root2), id, "events.jsonl");
+var activePath = (root2) => path10.join(devFlow(root2), "active.json");
+var recoveryTxnPath = (root2) => path10.join(devFlow(root2), "recovery-transaction.json");
+var recoveryEventsPath = (root2) => path10.join(devFlow(root2), "recovery-events.jsonl");
+var rollbackTxnPath = (root2, featureId) => path10.join(features(root2), featureId, "rollback-transaction.json");
 async function readProjectConfig(root2) {
   try {
-    const raw = await readFile6(path8.join(devFlow(root2), "project.json"), "utf8");
+    const raw = await readFile8(path10.join(devFlow(root2), "project.json"), "utf8");
     const value = JSON.parse(raw);
     validateProjectConfig(value);
     return value;
@@ -3359,12 +3736,77 @@ async function readProjectConfig(root2) {
 }
 async function initProject(root2, config) {
   validateProjectConfig(config);
-  await mkdir4(devFlow(root2), { recursive: true });
-  await writeAtomic(path8.join(devFlow(root2), "project.json"), config);
+  await mkdir5(devFlow(root2), { recursive: true });
+  try {
+    const existing = JSON.parse(await readFile8(path10.join(devFlow(root2), "project.json"), "utf8"));
+    validateProjectConfig(existing);
+    if (JSON.stringify(existing) === JSON.stringify(config)) return;
+    throw new DevFlowError("PROJECT_CONFIG_UPDATE_REQUIRED", "project.json \u5DF2\u5B58\u5728\u4E14\u5185\u5BB9\u4E0D\u540C\u3002", {
+      userMessage: "\u9879\u76EE\u914D\u7F6E\u5DF2\u7ECF\u521D\u59CB\u5316\uFF1B\u4FEE\u6539\u914D\u7F6E\u5FC5\u987B\u901A\u8FC7\u5E76\u53D1\u5B89\u5168\u7684\u66F4\u65B0\u5165\u53E3\u3002",
+      cause: "\u521D\u59CB\u5316\u5165\u53E3\u4E0D\u4F1A\u8986\u76D6\u73B0\u6709\u9879\u76EE\u914D\u7F6E\u3002",
+      impact: "\u5F53\u524D\u914D\u7F6E\u4E0E\u8BF7\u6C42\u914D\u7F6E\u5747\u4FDD\u6301\u4E0D\u53D8\u3002",
+      recoveryKind: "retry",
+      recoveryInstruction: "\u5148\u8BFB\u53D6\u5F53\u524D\u914D\u7F6E\u6458\u8981\u5E76\u4F7F\u7528 dev_flow_update_project \u63D0\u4EA4 expectedSha256 \u540E\u91CD\u8BD5\u3002",
+      retryOriginal: false
+    });
+  } catch (error) {
+    if (error instanceof DevFlowError) throw error;
+    if (error.code !== "ENOENT") throw error;
+  }
+  await writeAtomic(path10.join(devFlow(root2), "project.json"), config);
+}
+async function updateProjectConfig(root2, config, expectedSha256) {
+  validateProjectConfig(config);
+  const release = await lock(root2, "project-config", "update-project");
+  try {
+    const file = path10.join(devFlow(root2), "project.json");
+    let raw;
+    try {
+      raw = await readFile8(file, "utf8");
+    } catch {
+      throw new DevFlowError("PROJECT_NOT_INITIALIZED", "run dev_flow_init_project first");
+    }
+    const previousSha256 = createHash9("sha256").update(raw).digest("hex");
+    if (!/^[a-f0-9]{64}$/.test(expectedSha256) || previousSha256 !== expectedSha256) {
+      throw new DevFlowError("PROJECT_CONFIG_REVISION_CONFLICT", "project configuration changed since it was read", {
+        userMessage: "\u9879\u76EE\u914D\u7F6E\u5DF2\u88AB\u5176\u4ED6\u64CD\u4F5C\u66F4\u65B0\uFF0C\u65E7 expectedSha256 \u4E0D\u80FD\u8986\u76D6\u5F53\u524D\u914D\u7F6E\u3002",
+        cause: "\u914D\u7F6E\u66F4\u65B0\u4F7F\u7528 sha256 CAS\uFF0C\u68C0\u6D4B\u5230\u57FA\u7EBF\u4E0D\u4E00\u81F4\u3002",
+        impact: "\u6CA1\u6709\u5199\u5165\u65B0\u914D\u7F6E\uFF0C\u4E5F\u6CA1\u6709\u4F7F\u73B0\u6709 feature \u5931\u6548\u3002",
+        recoveryKind: "refresh",
+        recoveryInstruction: "\u91CD\u65B0\u8BFB\u53D6\u5F53\u524D\u914D\u7F6E\u6458\u8981\uFF0C\u786E\u8BA4\u5DEE\u5F02\u540E\u518D\u63D0\u4EA4\u66F4\u65B0\u3002",
+        retryOriginal: true,
+        currentSha256: previousSha256
+      });
+    }
+    const previousConfig = JSON.parse(raw);
+    validateProjectConfig(previousConfig);
+    const impact = projectConfigImpact(previousConfig, config);
+    if (impact.governanceChanged || impact.preflightChanged) {
+      throw new DevFlowError("PROJECT_CONFIG_HIGH_IMPACT", "governance roots, enforcement or preflight policy changed\u3002", {
+        userMessage: "\u8FD9\u662F\u9AD8\u5F71\u54CD\u9879\u76EE\u7B56\u7565\u53D8\u66F4\uFF0C\u4E0D\u80FD\u4F5C\u4E3A\u666E\u901A\u589E\u91CF\u914D\u7F6E\u66F4\u65B0\u3002",
+        cause: "\u6CBB\u7406\u8303\u56F4\u6216\u6267\u884C\u524D\u7F6E\u7B56\u7565\u4F1A\u6539\u53D8\u73B0\u6709 feature \u7684\u8DEF\u7EBF\u4E0E\u8BC1\u636E\u542B\u4E49\u3002",
+        impact: "\u6CA1\u6709\u5199\u5165\u65B0\u914D\u7F6E\uFF1B\u73B0\u6709 feature \u4FDD\u6301\u539F\u72B6\u6001\u3002",
+        recoveryKind: "repair",
+        recoveryInstruction: "\u5148\u6682\u505C\u76F8\u5173 feature\uFF0C\u5B8C\u6210\u663E\u5F0F\u91CD\u5206\u7C7B\u6216\u6062\u590D\u8BC4\u4F30\u540E\u518D\u66F4\u65B0\u9879\u76EE\u914D\u7F6E\u3002",
+        retryOriginal: false
+      });
+    }
+    const active = await readActive(root2);
+    const affectedEvidence = await collectProjectConfigAffectedEvidence(
+      root2,
+      active ? await readState(root2, active.featureId) : void 0,
+      impact
+    );
+    await writeAtomic(file, config);
+    const nextRaw = await readFile8(file, "utf8");
+    return { config, previousSha256, sha256: createHash9("sha256").update(nextRaw).digest("hex"), impact, affectedEvidence };
+  } finally {
+    await release();
+  }
 }
 async function writeAtomic(file, value) {
   const temp = `${file}.${randomUUID5()}.tmp`;
-  const handle = await open4(temp, "w");
+  const handle = await open5(temp, "w");
   try {
     await handle.writeFile(`${JSON.stringify(value, null, 2)}
 `);
@@ -3373,7 +3815,7 @@ async function writeAtomic(file, value) {
     await handle.close();
   }
   await rename4(temp, file);
-  const directory = await open4(path8.dirname(file), "r");
+  const directory = await open5(path10.dirname(file), "r");
   try {
     await directory.sync();
   } finally {
@@ -3384,6 +3826,7 @@ async function prepareStatusProjection(root2, state, revision) {
   const status = state.artifacts.status;
   if (!status) return;
   if (state.mode !== "routed" || !state.route || !state.classification) {
+    const pending = pendingDecisionForState(state);
     const contents2 = [
       "---",
       "dev_flow:",
@@ -3399,10 +3842,10 @@ async function prepareStatusProjection(root2, state, revision) {
       `- Lifecycle: ${state.lifecycle}`,
       "- Mode: intake",
       "",
-      ...state.pendingDecision?.kind === "route-confirmation" ? ["## Pending", "", `- ${state.pendingDecision.question}`, ""] : []
+      ...pending?.kind === "route-confirmation" ? ["## Pending", "", `- ${pending.question}`, ""] : []
     ].join("\n");
-    const file2 = path8.join(features(root2), state.featureId, status.path);
-    state.artifacts.status = { ...status, sha256: createHash8("sha256").update(contents2).digest("hex") };
+    const file2 = path10.join(features(root2), state.featureId, status.path);
+    state.artifacts.status = { ...status, sha256: createHash9("sha256").update(contents2).digest("hex") };
     return async () => {
       await writeFile(file2, contents2);
     };
@@ -3443,27 +3886,27 @@ async function prepareStatusProjection(root2, state, revision) {
   ].join("\n");
   const contents = `${projection}
 `;
-  const file = path8.join(features(root2), state.featureId, status.path);
-  state.artifacts.status = { ...status, sha256: createHash8("sha256").update(contents).digest("hex") };
+  const file = path10.join(features(root2), state.featureId, status.path);
+  state.artifacts.status = { ...status, sha256: createHash9("sha256").update(contents).digest("hex") };
   return async () => {
     await writeFile(file, contents);
   };
 }
 async function lock(root2, featureId, operation) {
-  const directory = path8.join(devFlow(root2), ".lock");
+  const directory = path10.join(devFlow(root2), ".lock");
   const started = Date.now();
-  await mkdir4(devFlow(root2), { recursive: true });
+  await mkdir5(devFlow(root2), { recursive: true });
   while (true) {
     try {
-      await mkdir4(directory);
-      await writeFile(path8.join(directory, "owner.json"), JSON.stringify({ pid: process.pid, hostname: hostname(), acquiredAt: (/* @__PURE__ */ new Date()).toISOString(), featureId, operation }));
+      await mkdir5(directory);
+      await writeFile(path10.join(directory, "owner.json"), JSON.stringify({ pid: process.pid, hostname: hostname(), acquiredAt: (/* @__PURE__ */ new Date()).toISOString(), featureId, operation }));
       return async () => {
         await rm(directory, { recursive: true, force: true });
       };
     } catch (error) {
       if (error.code !== "EEXIST") throw error;
       try {
-        const owner = JSON.parse(await readFile6(path8.join(directory, "owner.json"), "utf8"));
+        const owner = JSON.parse(await readFile8(path10.join(directory, "owner.json"), "utf8"));
         const age = Date.now() - Date.parse(owner.acquiredAt);
         let live = owner.hostname === hostname();
         if (live) {
@@ -3486,7 +3929,7 @@ async function lock(root2, featureId, operation) {
 }
 async function readState(root2, featureId) {
   try {
-    const state = JSON.parse(await readFile6(statePath(root2, featureId), "utf8"));
+    const state = JSON.parse(await readFile8(statePath(root2, featureId), "utf8"));
     validateFeatureState(state);
     if (state.featureId !== featureId) throw new DevFlowError("INVALID_STATE_SCHEMA", "state feature id does not match its path");
     return state;
@@ -3509,7 +3952,7 @@ async function readState(root2, featureId) {
 async function readActive(root2) {
   let raw;
   try {
-    raw = await readFile6(activePath(root2), "utf8");
+    raw = await readFile8(activePath(root2), "utf8");
   } catch (error) {
     if (error.code === "ENOENT") return void 0;
     throw new DevFlowError("ACTIVE_POINTER_UNREADABLE", "active.json cannot be read", { recoveryHint: "Run dev_flow_doctor and use recovery; do not start a new feature" });
@@ -3554,7 +3997,7 @@ async function assertActivePointerConsistent(root2) {
   }
 }
 async function appendEvent(root2, id, revision, type, data) {
-  const handle = await open4(eventPath(root2, id), "a");
+  const handle = await open5(eventPath(root2, id), "a");
   try {
     await handle.writeFile(`${JSON.stringify({ revision, type, at: (/* @__PURE__ */ new Date()).toISOString(), data })}
 `);
@@ -3564,14 +4007,31 @@ async function appendEvent(root2, id, revision, type, data) {
   }
 }
 async function stateFileSha256(root2, featureId) {
-  const contents = await readFile6(statePath(root2, featureId));
-  return createHash8("sha256").update(contents).digest("hex");
+  const contents = await readFile8(statePath(root2, featureId));
+  return createHash9("sha256").update(contents).digest("hex");
+}
+async function assertWorkspaceOwnershipComplete(root2, state, config, operation) {
+  const reconciled = await reconcileWorkspaceForFeature(root2, state, config);
+  const unownedPaths = reconciled.workspace.unownedPaths ?? [];
+  if (unownedPaths.length) {
+    throw new DevFlowError("WORKSPACE_OWNERSHIP_REQUIRED", `unknown workspace ownership before ${operation}`, {
+      userMessage: `${operation} \u524D\u53D1\u73B0\u5C1A\u672A\u786E\u8BA4\u5F52\u5C5E\u7684\u5DE5\u4F5C\u533A\u8DEF\u5F84\u3002`,
+      cause: `\u4EE5\u4E0B\u8DEF\u5F84\u5DF2\u88AB\u89C2\u5BDF\u5230\uFF0C\u4F46\u6CA1\u6709\u53EF\u4FE1\u7684 ownership \u7ED3\u8BBA\uFF1A${unownedPaths.join("\u3001")}`,
+      impact: "\u64CD\u4F5C\u6CA1\u6709\u63A8\u8FDB feature\u3001checkpoint\u3001verification \u6216\u4EA4\u4ED8\u72B6\u6001\u3002",
+      recoveryKind: "refresh",
+      recoveryInstruction: "\u5148\u8C03\u7528 dev_flow_reconcile_workspace\uFF0C\u6309\u5F53\u524D\u6E05\u5355\u5B8C\u6210\u5168\u90E8\u7EB3\u5165\u3001\u5168\u90E8\u6392\u9664\u6216\u9010\u4E2A\u786E\u8BA4\uFF0C\u518D\u91CD\u8BD5\u539F\u64CD\u4F5C\u3002",
+      retryOriginal: true,
+      operation,
+      unownedPaths
+    });
+  }
+  return reconciled.workspace;
 }
 async function trustedWriteSummary(root2, file) {
   try {
-    const metadata = await lstat3(path8.join(root2, file));
-    const bytes = metadata.isSymbolicLink() ? Buffer.from(await readlink2(path8.join(root2, file))) : await readFile6(path8.join(root2, file));
-    return `${metadata.isSymbolicLink() ? "symlink" : "file"}:${createHash8("sha256").update(bytes).digest("hex")}`;
+    const metadata = await lstat3(path10.join(root2, file));
+    const bytes = metadata.isSymbolicLink() ? Buffer.from(await readlink2(path10.join(root2, file))) : await readFile8(path10.join(root2, file));
+    return `${metadata.isSymbolicLink() ? "symlink" : "file"}:${createHash9("sha256").update(bytes).digest("hex")}`;
   } catch (error) {
     if (error.code === "ENOENT") return "missing";
     throw error;
@@ -3579,7 +4039,7 @@ async function trustedWriteSummary(root2, file) {
 }
 async function readFeatureEvents(root2, id) {
   try {
-    return (await readFile6(eventPath(root2, id), "utf8")).split("\n").filter(Boolean).map((line) => JSON.parse(line));
+    return (await readFile8(eventPath(root2, id), "utf8")).split("\n").filter(Boolean).map((line) => JSON.parse(line));
   } catch (error) {
     if (error.code === "ENOENT") return [];
     throw error;
@@ -3587,6 +4047,7 @@ async function readFeatureEvents(root2, id) {
 }
 async function startFeature(root2, input, options = {}) {
   await readProjectConfig(root2);
+  await assertHostHealth(root2, input.host, "\u5F00\u59CB\u4EFB\u52A1");
   await assertNoOpenRecovery(root2);
   await assertNoOpenRollbackTransaction(root2);
   const scope = validateScopeInput(input.scope);
@@ -3599,27 +4060,24 @@ async function startFeature(root2, input, options = {}) {
     const lifecycle = input.activation ?? "active";
     if (lifecycle === "active" && active) {
       const activeState = await readState(root2, active.featureId);
-      if (!activeState.pendingDecision) {
+      if (!pendingDecisionForState(activeState)) {
         const pendingState = structuredClone(activeState);
-        pendingState.pendingDecision = {
+        const interaction = createInteraction(pendingState, {
           kind: "task-switch",
+          target: `task-switch:${id}`,
+          basisHash: createHash9("sha256").update(`${active.featureId}
+${objectiveForSwitch(input)}`).digest("hex"),
           question: "\u5F53\u524D\u5DF2\u6709\u4E00\u4E2A\u8FDB\u884C\u4E2D\u7684\u4EFB\u52A1\u3002\u5F00\u59CB\u65B0\u4EFB\u52A1\u524D\uFF0C\u4F60\u5E0C\u671B\u5982\u4F55\u5904\u7406\u65E7\u4EFB\u52A1\uFF1F",
           options: [
-            { id: "finish-old", label: "\u5148\u5B8C\u6210\u5F53\u524D\u4EFB\u52A1", recommended: true },
+            { id: "finish-old", label: "\u5148\u5B8C\u6210\u5F53\u524D\u4EFB\u52A1" },
             { id: "pause-old", label: "\u6682\u505C\u5F53\u524D\u4EFB\u52A1\u540E\u5F00\u59CB\u65B0\u4EFB\u52A1" },
             { id: "return-old", label: "\u8FD4\u56DE\u5F53\u524D\u4EFB\u52A1" }
-          ],
-          basisHash: createHash8("sha256").update(`${active.featureId}
-${objectiveForSwitch(input)}`).digest("hex"),
-          presentedAt: (/* @__PURE__ */ new Date()).toISOString(),
-          presentedRevision: activeState.revision,
-          source: "core",
-          target: `task-switch:${id}`
-        };
+          ]
+        });
         pendingState.revision += 1;
         validateFeatureState(pendingState);
         await writeAtomic(statePath(root2, active.featureId), pendingState);
-        await appendEvent(root2, active.featureId, pendingState.revision, "task-switch-presented", { targetFeatureId: id });
+        await appendEvent(root2, active.featureId, pendingState.revision, "task-switch-presented", { targetFeatureId: id, presentationEventId: interaction.presentationEventId });
         await writeAtomic(activePath(root2), { featureId: active.featureId, revision: pendingState.revision, updatedAt: (/* @__PURE__ */ new Date()).toISOString() });
       }
       throw new DevFlowError("TASK_SWITCH_REQUIRED", "\u53E6\u4E00\u4E2A feature \u5F53\u524D\u5904\u4E8E active \u72B6\u6001\u3002", {
@@ -3636,11 +4094,11 @@ ${objectiveForSwitch(input)}`).digest("hex"),
     const objective = typeof input.objective === "string" && input.objective.trim().length > 0 ? input.objective.trim() : "\u672A\u547D\u540D\u9700\u6C42";
     const project = await readProjectConfig(root2);
     const startBusinessFingerprint = await fingerprintGovernedRoots(root2, project);
-    const directory = path8.join(features(root2), id);
+    const directory = path10.join(features(root2), id);
     const existedBefore = await pathExists(directory);
     let stateCommitted = false;
     try {
-      await mkdir4(directory, { recursive: true });
+      await mkdir5(directory, { recursive: true });
       const workflowCapabilities = normalizeWorkflowCapabilities(SUPPORTED_WORKFLOW_CAPABILITIES);
       const capturedWorkspace = ownershipForScope(await captureWorkspaceLineage(root2, project), scope.inScope, scope.outOfScope);
       const deliveryBaseline = {
@@ -3674,23 +4132,12 @@ ${objectiveForSwitch(input)}`).digest("hex"),
         logicComplete: false,
         lastUpdatedBy: { host: input.host, pluginVersion: "5.0.0" }
       };
-      const ownershipPath = Object.keys(capturedWorkspace.startedDirty).find((file) => capturedWorkspace.ownership[file] === void 0);
-      if (ownershipPath) {
-        state.pendingDecision = {
-          kind: "workspace-ownership",
-          question: `\u542F\u52A8\u524D\u5DF2\u53D1\u73B0\u8DEF\u5F84\u201C${ownershipPath}\u201D\u5B58\u5728\u6539\u52A8\u3002\u5B83\u662F\u5426\u5C5E\u4E8E\u5F53\u524D\u4EFB\u52A1\uFF1F`,
-          options: [
-            { id: "adopt", label: "\u7EB3\u5165\u5F53\u524D\u4EFB\u52A1", recommended: true },
-            { id: "exclude", label: "\u5148\u5904\u7406\u540E\u7EE7\u7EED" }
-          ],
-          basisHash: createHash8("sha256").update(`${id}
-${ownershipPath}
-${capturedWorkspace.lastWorkspaceFingerprint}`).digest("hex"),
-          presentedAt: (/* @__PURE__ */ new Date()).toISOString(),
-          presentedRevision: 0,
-          source: "core",
-          target: `workspace:${ownershipPath}`
-        };
+      const ownershipPaths = unknownOwnershipPaths(state);
+      state.workspace.unownedPaths = ownershipPaths;
+      let presentationEventId;
+      if (ownershipPaths.length) {
+        const presentation = presentWorkspaceOwnership(state, ownershipPaths);
+        presentationEventId = presentation.presentationEventId;
       }
       validateFeatureState(state);
       await options.fault?.("before-state-commit");
@@ -3704,7 +4151,12 @@ ${capturedWorkspace.lastWorkspaceFingerprint}`).digest("hex"),
       }
       try {
         await options.fault?.("before-event");
-        await appendEvent(root2, id, state.revision, "started", { lifecycle, mode: state.mode, objective });
+        await appendEvent(root2, id, state.revision, "started", {
+          lifecycle,
+          mode: state.mode,
+          objective,
+          ...presentationEventId ? { presentationEventId } : {}
+        });
       } catch {
         failures.push("event");
       }
@@ -3735,6 +4187,119 @@ ${capturedWorkspace.lastWorkspaceFingerprint}`).digest("hex"),
 function objectiveForSwitch(input) {
   return typeof input.objective === "string" ? input.objective.trim() : "\u672A\u547D\u540D\u9700\u6C42";
 }
+function unknownOwnershipPaths(state) {
+  const candidates = new Set(state.workspace.unownedPaths ?? Object.keys(state.workspace.startedDirty));
+  return [...candidates].filter((file) => state.workspace.ownership[file] === void 0).sort();
+}
+function presentedOwnershipPaths(interaction) {
+  const persisted = interaction.workspaceBatchPaths ?? interaction.workspacePaths;
+  if (persisted?.length) return [...new Set(persisted)].sort();
+  const legacyPrefix = "workspace-ownership:";
+  return interaction.target.startsWith(legacyPrefix) && interaction.target.length > legacyPrefix.length ? [interaction.target.slice(legacyPrefix.length)] : [];
+}
+function workspaceOwnershipQuestion(paths, single) {
+  if (single) return `\u8DEF\u5F84\u201C${paths[0]}\u201D\u662F\u5426\u5C5E\u4E8E\u5F53\u524D\u4EFB\u52A1\uFF1F`;
+  return `\u53D1\u73B0 ${paths.length} \u4E2A\u65E0\u6CD5\u5F52\u5C5E\u7684\u5DE5\u4F5C\u533A\u8DEF\u5F84\uFF1A
+${paths.map((file) => `- ${file}`).join("\n")}
+\u8BF7\u9009\u62E9\u5904\u7406\u65B9\u5F0F\u3002`;
+}
+function presentWorkspaceOwnership(state, paths, options = {}) {
+  const currentPaths = [...new Set(paths)].sort();
+  const batchPaths = [...new Set(options.batchPaths ?? currentPaths)].sort();
+  const single = options.single ?? currentPaths.length === 1;
+  const presentationEventId = options.presentationEventId ?? randomUUID5();
+  const basisHash2 = createHash9("sha256").update(JSON.stringify({ kind: "workspace-ownership", paths: batchPaths, fingerprint: state.workspace.lastWorkspaceFingerprint })).digest("hex");
+  const interaction = createInteraction(state, {
+    kind: "workspace-ownership",
+    target: `workspace:${createHash9("sha256").update(batchPaths.join("\n")).digest("hex").slice(0, 16)}:${currentPaths[0] ?? "batch"}`,
+    basisHash: basisHash2,
+    question: workspaceOwnershipQuestion(currentPaths, single),
+    options: single ? [
+      { id: "adopt", label: "\u7EB3\u5165\u5F53\u524D\u4EFB\u52A1" },
+      { id: "exclude", label: "\u6392\u9664\u5E76\u5148\u5904\u7406" }
+    ] : [
+      { id: "adopt-all", label: "\u5168\u90E8\u7EB3\u5165\u5F53\u524D\u4EFB\u52A1" },
+      { id: "exclude-all", label: "\u5168\u90E8\u6392\u9664\u5E76\u5148\u5904\u7406" },
+      { id: "one-by-one", label: "\u9010\u4E2A\u786E\u8BA4" }
+    ],
+    presentationEventId,
+    workspacePaths: currentPaths,
+    workspaceBatchPaths: batchPaths,
+    ...options.remainingPaths ? { workspaceRemainingPaths: [...options.remainingPaths] } : {}
+  });
+  return { interaction, presentationEventId };
+}
+async function resolveWorkspaceOwnershipText(root2, id, expectedRevision, interactionId, userReply, host) {
+  const current = await readState(root2, id);
+  const decision = pendingDecisionForState(current);
+  const interaction = current.interactions?.[interactionId];
+  if (decision?.kind !== "workspace-ownership" || !interaction || interaction.status !== "pending") {
+    throw new DevFlowError("WORKSPACE_OWNERSHIP_NOT_PENDING", "\u5F53\u524D\u6CA1\u6709\u5F85\u786E\u8BA4\u7684\u5DE5\u4F5C\u533A\u5F52\u5C5E\u95EE\u9898\u3002");
+  }
+  const prompt = resolveInteractionPromptEvent(await readFeatureEvents(root2, id), current, interaction, { host, userReply });
+  const presentedPaths = presentedOwnershipPaths(interaction);
+  const currentPaths = unknownOwnershipPaths(current);
+  if (JSON.stringify(presentedPaths) !== JSON.stringify(currentPaths)) {
+    throw new DevFlowError("WORKSPACE_OWNERSHIP_STALE", "\u5F85\u786E\u8BA4\u8DEF\u5F84\u6E05\u5355\u5DF2\u53D8\u5316\uFF0C\u8BF7\u91CD\u65B0\u5BF9\u8D26\u540E\u56DE\u7B54\u3002", {
+      userMessage: "\u5DE5\u4F5C\u533A\u8DEF\u5F84\u6E05\u5355\u5DF2\u53D8\u5316\uFF0C\u65E7\u56DE\u7B54\u4E0D\u4F1A\u88AB\u5957\u7528\u3002",
+      cause: "\u5448\u73B0\u540E\u7684\u672A\u77E5\u8DEF\u5F84\u96C6\u5408\u4E0E\u5F53\u524D\u672A\u77E5\u8DEF\u5F84\u96C6\u5408\u4E0D\u4E00\u81F4\u3002",
+      impact: "\u7CFB\u7EDF\u6CA1\u6709\u6279\u91CF\u63A5\u7EB3\u6216\u6392\u9664\u65B0\u7684\u672A\u786E\u8BA4\u8DEF\u5F84\u3002",
+      recoveryKind: "refresh",
+      recoveryInstruction: "\u5148\u8C03\u7528 dev_flow_reconcile_workspace \u5237\u65B0\u6E05\u5355\uFF0C\u518D\u56DE\u7B54\u5F53\u524D\u95EE\u9898\u3002",
+      retryOriginal: true,
+      paths: presentedPaths
+    });
+  }
+  const matched = matchDecisionReply(decision, userReply);
+  let nextPresentationEventId;
+  const state = await mutate(root2, id, expectedRevision, "workspace-ownership-answered", async (draft) => {
+    const draftInteraction = draft.interactions?.[interactionId];
+    if (!draftInteraction || draftInteraction.status !== "pending" || pendingDecisionForState(draft)?.basisHash !== decision.basisHash) {
+      throw new DevFlowError("WORKSPACE_OWNERSHIP_STALE", "\u5DE5\u4F5C\u533A\u5F52\u5C5E\u95EE\u9898\u7684\u4F9D\u636E\u5DF2\u53D8\u5316\uFF0C\u8BF7\u91CD\u65B0\u5BF9\u8D26\u540E\u56DE\u7B54\u3002");
+    }
+    const batchPaths = presentedOwnershipPaths(draftInteraction);
+    const unknown = unknownOwnershipPaths(draft);
+    if (JSON.stringify(batchPaths) !== JSON.stringify(unknown)) {
+      throw new DevFlowError("WORKSPACE_OWNERSHIP_STALE", "\u5F85\u786E\u8BA4\u8DEF\u5F84\u6E05\u5355\u5DF2\u53D8\u5316\uFF0C\u8BF7\u91CD\u65B0\u5BF9\u8D26\u540E\u56DE\u7B54\u3002", {
+        userMessage: "\u5DE5\u4F5C\u533A\u8DEF\u5F84\u6E05\u5355\u5DF2\u53D8\u5316\uFF0C\u65E7\u56DE\u7B54\u4E0D\u4F1A\u88AB\u5957\u7528\u3002",
+        cause: "\u5448\u73B0\u540E\u7684\u672A\u77E5\u8DEF\u5F84\u96C6\u5408\u4E0E\u5F53\u524D\u672A\u77E5\u8DEF\u5F84\u96C6\u5408\u4E0D\u4E00\u81F4\u3002",
+        impact: "\u7CFB\u7EDF\u6CA1\u6709\u6279\u91CF\u63A5\u7EB3\u6216\u6392\u9664\u65B0\u7684\u672A\u786E\u8BA4\u8DEF\u5F84\u3002",
+        recoveryKind: "refresh",
+        recoveryInstruction: "\u5148\u8C03\u7528 dev_flow_reconcile_workspace \u5237\u65B0\u6E05\u5355\uFF0C\u518D\u56DE\u7B54\u5F53\u524D\u95EE\u9898\u3002",
+        retryOriginal: true,
+        paths: batchPaths
+      });
+    }
+    resolveTextInteraction(draft, interactionId, userReply, host, { promptEventId: prompt.eventId });
+    const currentPaths2 = draftInteraction.workspacePaths ?? batchPaths;
+    if (matched.option.id === "adopt-all" || matched.option.id === "adopt" || matched.option.id === "include") {
+      for (const file of matched.option.id === "adopt" || matched.option.id === "include" ? currentPaths2 : batchPaths) {
+        draft.workspace.ownership[file] = "feature";
+        draft.workspace.ownershipSource[file] = "user-adopted";
+      }
+    } else if (matched.option.id === "exclude-all" || matched.option.id === "exclude") {
+      for (const file of matched.option.id === "exclude" ? currentPaths2 : batchPaths) {
+        draft.workspace.ownership[file] = "excluded";
+      }
+    }
+    draft.workspace.unownedPaths = (draft.workspace.unownedPaths ?? []).filter((file) => draft.workspace.ownership[file] === void 0);
+    if (matched.option.id === "one-by-one") {
+      const first = batchPaths[0];
+      const next = presentWorkspaceOwnership(draft, [first], { batchPaths, remainingPaths: batchPaths.slice(1), single: true });
+      nextPresentationEventId = next.presentationEventId;
+    } else if ((matched.option.id === "adopt" || matched.option.id === "include" || matched.option.id === "exclude") && draftInteraction.workspaceRemainingPaths?.length) {
+      const remaining = draftInteraction.workspaceRemainingPaths;
+      const next = presentWorkspaceOwnership(draft, [remaining[0]], { batchPaths: remaining, remainingPaths: remaining.slice(1), single: true });
+      nextPresentationEventId = next.presentationEventId;
+    }
+    draft.lastUpdatedBy = { host, pluginVersion: "5.0.0" };
+  }, () => ({
+    promptEventId: prompt.eventId,
+    action: matched.option.id,
+    ...nextPresentationEventId ? { presentationEventId: nextPresentationEventId } : {}
+  }));
+  return { state, action: matched.option.id };
+}
 async function lockClassification(root2, id, expectedRevision, facts, boundaryAudit) {
   assertBoundaryAuditComplete(boundaryAudit, facts.decisionRefs);
   const selected = selectBaseRoute(facts);
@@ -3759,25 +4324,43 @@ async function lockClassification(root2, id, expectedRevision, facts, boundaryAu
     const openDecisions = (current.decisionLedger ?? []).filter((decision) => decision.status === "open" && (decisionRefs.has(decision.id) || decisionRefs.size === 0));
     if (openDecisions.length) throw new DevFlowError("OPEN_CLASSIFICATION_DECISIONS", "classification-affecting decisions remain open", { decisionIds: openDecisions.map((decision) => decision.id), recoveryHint: "Resolve the listed decisions with grillme, then retry lock" });
     const project = await readProjectConfig(root2);
+    const missingGuarantees = missingVerificationGuarantees(project, selected.classification.controls.verification);
+    if (missingGuarantees.length) {
+      throw new DevFlowError("VERIFICATION_GUARANTEE_UNCONFIGURED", "\u9879\u76EE\u9A8C\u8BC1\u914D\u7F6E\u4E0D\u80FD\u8986\u76D6\u5F53\u524D\u8DEF\u7EBF\u7684\u6700\u7EC8\u4FDD\u8BC1\u96C6\u3002", {
+        missingGuarantees,
+        route: selected.route,
+        userMessage: "\u5F53\u524D\u8DEF\u7EBF\u9700\u8981\u7684\u9A8C\u8BC1\u4FDD\u8BC1\u5C1A\u672A\u914D\u7F6E\u3002",
+        cause: `\u5F53\u524D\u8DEF\u7EBF\u9700\u8981 ${missingGuarantees.join("\u3001")} guarantee\uFF0C\u4F46\u975E preflight \u9A8C\u8BC1\u547D\u4EE4\u6CA1\u6709\u63D0\u4F9B\u8FD9\u4E9B\u4FDD\u8BC1\u3002`,
+        impact: "\u8DEF\u7EBF\u4E0D\u4F1A\u9501\u5B9A\uFF0C\u4E5F\u4E0D\u4F1A\u521B\u5EFA Trace\u3001review \u6216\u8DEF\u7EBF\u786E\u8BA4\u72B6\u6001\u3002",
+        recoveryKind: "repair",
+        recoveryInstruction: "\u901A\u8FC7\u9879\u76EE\u914D\u7F6E\u66F4\u65B0\u5165\u53E3\u8865\u9F50\u975E preflight \u9A8C\u8BC1\u547D\u4EE4\u540E\u91CD\u8BD5\u8DEF\u7EBF\u9501\u5B9A\u3002",
+        retryOriginal: true
+      });
+    }
     const capabilities = normalizeWorkflowCapabilities(SUPPORTED_WORKFLOW_CAPABILITIES);
     if (selected.classification.routeConfirmationRequired) {
+      let presentationEventId;
       return mutatePreparedLocked(root2, id, expectedRevision, "route-confirmation-presented", async () => ({ mutate: (draft) => {
-        const basisHash2 = createHash8("sha256").update(JSON.stringify({ facts, route: selected.classification.orderedRoute, controls: selected.classification.controls })).digest("hex");
+        const basisHash2 = createHash9("sha256").update(JSON.stringify({ facts, route: selected.classification.orderedRoute, controls: selected.classification.controls })).digest("hex");
+        presentationEventId = randomUUID5();
         draft.routeConfirmation = { facts, basisHash: basisHash2 };
-        draft.pendingDecision = {
+        createInteraction(draft, {
           kind: "route-confirmation",
+          target: "route-confirmation",
+          basisHash: basisHash2,
           question: `\u8BF7\u786E\u8BA4 Dev Flow 5.0 \u8DEF\u7EBF\uFF1A${selected.classification.orderedRoute.join(" \u2192 ")}`,
           options: [
-            { id: "confirm", label: "\u786E\u8BA4\u8FD9\u6761\u8DEF\u7EBF", recommended: true },
+            { id: "confirm", label: "\u786E\u8BA4\u8FD9\u6761\u8DEF\u7EBF" },
             { id: "correct", label: "\u4FEE\u6B63\u5206\u7C7B\u4E8B\u5B9E", requiresComment: true }
           ],
-          basisHash: basisHash2,
-          presentedAt: (/* @__PURE__ */ new Date()).toISOString(),
-          presentedRevision: draft.revision,
-          source: "core",
-          target: "route-confirmation"
-        };
-      }, eventData: { level: selected.classification.level, controls: selected.classification.controls, orderedRoute: selected.classification.orderedRoute } }));
+          presentationEventId
+        });
+      }, eventData: () => ({
+        level: selected.classification.level,
+        controls: selected.classification.controls,
+        orderedRoute: selected.classification.orderedRoute,
+        ...presentationEventId ? { presentationEventId } : {}
+      }) }));
     }
     return mutatePreparedLocked(root2, id, expectedRevision, "classification-locked", async (_current, nextRevision) => {
       const definition = routeDefinitionForFeature(selected.route, selected.classification.controls);
@@ -3808,21 +4391,27 @@ async function lockClassification(root2, id, expectedRevision, facts, boundaryAu
 }
 async function confirmRouteClassification(root2, id, expectedRevision, userReply, host) {
   const current = await readState(root2, id);
-  const pending = current.pendingDecision;
+  const pending = pendingDecisionForState(current);
   if (pending?.kind !== "route-confirmation" || !current.routeConfirmation) throw new DevFlowError("ROUTE_CONFIRMATION_NOT_PENDING", "\u5F53\u524D\u6CA1\u6709\u5F85\u786E\u8BA4\u8DEF\u7EBF\u3002");
-  if (userReply !== "\u786E\u8BA4\u8FD9\u6761\u8DEF\u7EBF") throw new DevFlowError("DECISION_REPLY_NOT_RECOGNIZED", "\u8BF7\u56DE\u590D\u5B8C\u6574\u9009\u9879\u201C\u786E\u8BA4\u8FD9\u6761\u8DEF\u7EBF\u201D\u3002");
-  const prompt = resolvePromptEvent(await readFeatureEvents(root2, id), {
+  const matched = matchDecisionReply(pending, userReply);
+  if (matched.option.id !== "confirm") throw new DevFlowError("ROUTE_CONFIRMATION_CORRECTION_REQUIRED", "\u8DEF\u7EBF\u9700\u8981\u4FEE\u6B63\uFF0C\u4E0D\u80FD\u6309\u5F53\u524D\u5206\u7C7B\u9501\u5B9A\u3002", { comment: matched.comment });
+  const currentInteraction = pendingInteractionForDecision(current, pending);
+  const events = await readFeatureEvents(root2, id);
+  const prompt = currentInteraction ? resolveInteractionPromptEvent(events, current, currentInteraction, { host, userReply }) : resolvePromptEvent(events, {
     host,
     userReply,
     presentedAt: pending.presentedAt,
-    presentedRevision: pending.presentedRevision
+    presentedRevision: pending.presentedRevision,
+    ...pending.presentationEventId ? { presentationEventId: pending.presentationEventId } : {}
   });
   const selected = selectBaseRoute(current.routeConfirmation.facts);
   const definition = routeDefinitionForFeature(selected.route, selected.classification.controls);
   const traceability = traceEnforcementRequired(selected.route, selected.classification.controls) ? await writeTraceSnapshot(root2, emptyTraceabilityLedger(id, expectedRevision + 1, (await readProjectConfigSnapshot(root2)).sha256)) : void 0;
   const review2 = reviewEnforcementRequired(selected.route, selected.classification.controls) ? await writeReviewSnapshot(root2, emptyReviewLedger(id, expectedRevision + 1)) : void 0;
   return mutate(root2, id, expectedRevision, "route-confirmation-accepted", (draft) => {
-    if (draft.pendingDecision?.basisHash !== pending.basisHash || draft.routeConfirmation?.basisHash !== pending.basisHash) throw new DevFlowError("ROUTE_CONFIRMATION_STALE", "\u8DEF\u7EBF\u786E\u8BA4\u4F9D\u636E\u5DF2\u53D8\u5316\u3002");
+    if (pendingDecisionForState(draft)?.basisHash !== pending.basisHash || draft.routeConfirmation?.basisHash !== pending.basisHash) throw new DevFlowError("ROUTE_CONFIRMATION_STALE", "\u8DEF\u7EBF\u786E\u8BA4\u4F9D\u636E\u5DF2\u53D8\u5316\u3002");
+    const interaction = Object.values(draft.interactions ?? {}).find((value) => value.target === "route-confirmation" && value.status === "pending");
+    if (interaction) resolveTextInteraction(draft, interaction.id, userReply, host, { promptEventId: prompt.eventId });
     draft.mode = "routed";
     draft.route = selected.route;
     draft.classification = selected.classification;
@@ -3837,6 +4426,55 @@ async function confirmRouteClassification(root2, id, expectedRevision, userReply
     delete draft.routeConfirmation;
     draft.lastUpdatedBy = { host, pluginVersion: "5.0.0" };
   }, { promptEventId: prompt.eventId, level: selected.classification.level, orderedRoute: selected.classification.orderedRoute });
+}
+async function resolveTaskSwitchAnswer(root2, id, expectedRevision, userReply, host) {
+  const current = await readState(root2, id);
+  const decision = pendingDecisionForState(current);
+  const interaction = decision ? pendingInteractionForDecision(current, decision) : void 0;
+  if (decision?.kind !== "task-switch" || !interaction || interaction.status !== "pending") {
+    throw new DevFlowError("TASK_SWITCH_NOT_PENDING", "\u5F53\u524D\u6CA1\u6709\u5F85\u5904\u7406\u7684\u4EFB\u52A1\u5207\u6362\u95EE\u9898\u3002", { recoveryHint: "\u5237\u65B0\u72B6\u6001\u540E\u7EE7\u7EED\u5F53\u524D\u4EFB\u52A1" });
+  }
+  const prompt = resolveInteractionPromptEvent(await readFeatureEvents(root2, id), current, interaction, { host, userReply });
+  const match = matchDecisionReply(decision, userReply);
+  const state = await mutate(root2, id, expectedRevision, "task-switch-answered", (draft) => {
+    const live = draft.interactions?.[interaction.id];
+    if (!live || live.status !== "pending") throw new DevFlowError("INTERACTION_ALREADY_RESOLVED", interaction.id);
+    resolveTextInteraction(draft, interaction.id, userReply, host, { promptEventId: prompt.eventId });
+    if (match.option.id === "pause-old") {
+      draft.lifecycle = "paused";
+      draft.resumeSummary = "\u65E7\u4EFB\u52A1\u5DF2\u6682\u505C\uFF1B\u6062\u590D\u65F6\u4F1A\u81EA\u52A8\u5BF9\u8D26\u5DE5\u4F5C\u533A\u3002";
+    }
+  }, () => ({ targetFeatureId: interaction.target.slice("task-switch:".length), action: match.option.id, promptEventId: prompt.eventId }));
+  return { state, action: match.option.id };
+}
+async function resolveRouteClassificationElicitation(root2, id, expectedRevision, interactionId, action, comment, host) {
+  if (action !== "confirm") throw new DevFlowError("DECISION_REPLY_NOT_RECOGNIZED", "\u8BF7\u786E\u8BA4\u5F53\u524D\u8DEF\u7EBF\uFF0C\u6216\u5173\u95ED\u8868\u5355\u540E\u8865\u5145\u5206\u7C7B\u4E8B\u5B9E\u3002");
+  const current = await readState(root2, id);
+  const pending = pendingDecisionForState(current);
+  const interaction = current.interactions?.[interactionId];
+  if (pending?.kind !== "route-confirmation" || !current.routeConfirmation || !interaction || interaction.status !== "pending") {
+    throw new DevFlowError("ROUTE_CONFIRMATION_NOT_PENDING", "\u5F53\u524D\u6CA1\u6709\u5F85\u786E\u8BA4\u8DEF\u7EBF\u3002");
+  }
+  const selected = selectBaseRoute(current.routeConfirmation.facts);
+  const definition = routeDefinitionForFeature(selected.route, selected.classification.controls);
+  const traceability = traceEnforcementRequired(selected.route, selected.classification.controls) ? await writeTraceSnapshot(root2, emptyTraceabilityLedger(id, expectedRevision + 1, (await readProjectConfigSnapshot(root2)).sha256)) : void 0;
+  const review2 = reviewEnforcementRequired(selected.route, selected.classification.controls) ? await writeReviewSnapshot(root2, emptyReviewLedger(id, expectedRevision + 1)) : void 0;
+  return mutate(root2, id, expectedRevision, "route-confirmation-accepted", (draft) => {
+    if (pendingDecisionForState(draft)?.basisHash !== pending.basisHash || draft.routeConfirmation?.basisHash !== pending.basisHash) throw new DevFlowError("ROUTE_CONFIRMATION_STALE", "\u8DEF\u7EBF\u786E\u8BA4\u4F9D\u636E\u5DF2\u53D8\u5316\u3002");
+    resolveNativeInteraction(draft, interactionId, action, comment, host);
+    draft.mode = "routed";
+    draft.route = selected.route;
+    draft.classification = selected.classification;
+    draft.classificationBasis = selected.classificationBasis;
+    draft.obligations = selected.obligations;
+    draft.currentStage = definition.orderedSteps[0];
+    draft.workflowCapabilities = normalizeWorkflowCapabilities(SUPPORTED_WORKFLOW_CAPABILITIES);
+    draft.steps = Object.fromEntries(definition.orderedSteps.map((step) => [step, { status: "pending" }]));
+    if (traceability) draft.traceability = traceability;
+    if (review2) draft.review = review2;
+    delete draft.routeConfirmation;
+    draft.lastUpdatedBy = { host, pluginVersion: "5.0.0" };
+  }, { interactionId, action, level: selected.classification.level, orderedRoute: selected.classification.orderedRoute });
 }
 async function recordDecision(root2, id, expectedRevision, question, evidence, conclusion, factRefs = [], host) {
   const prompt = resolvePromptEvent(await readFeatureEvents(root2, id), {
@@ -3940,41 +4578,29 @@ async function reconcileWorkspace(root2, id, expectedRevision, host) {
   const active = state.lifecycle === "finalized" && contentChanged ? await readActive(root2) : void 0;
   const reopenedLifecycle = state.lifecycle === "finalized" && contentChanged ? !active || active.featureId === id ? "active" : "paused" : void 0;
   const checkpointAffected = contentChanged ? checkpointAffectedByPaths(state, changedPaths, legalCheckpointPaths) : false;
+  let presentationEventId;
   return mutate(root2, id, expectedRevision, "workspace-reconciled", (draft) => {
     draft.workspace = workspace;
     if (contentChanged) {
       markAffectedEvidenceStale(draft, changedPaths, reopenedLifecycle, legalCheckpointPaths);
     }
-    queueNextOwnershipDecision(draft, changedPaths);
+    presentationEventId = queueNextOwnershipDecision(draft);
     draft.lastUpdatedBy = { host, pluginVersion: "5.0.0" };
-  }, {
+  }, () => ({
     observedHead: workspace.observedHead,
     commitCount: workspace.observedCommits.length,
     contentChanged,
     checkpointAffected,
     reopenedLifecycle,
-    unresolvedOwnership: changedPaths.filter((file) => workspace.ownership[file] === void 0)
-  });
+    unresolvedOwnership: changedPaths.filter((file) => workspace.ownership[file] === void 0),
+    ...presentationEventId ? { presentationEventId } : {}
+  }));
 }
-function queueNextOwnershipDecision(draft, changedPaths) {
-  if (draft.pendingDecision) return;
-  const file = changedPaths.find((candidate) => draft.workspace.ownership[candidate] === void 0);
-  if (!file) return;
-  draft.pendingDecision = {
-    kind: "workspace-ownership",
-    question: `\u53D1\u73B0\u65E0\u6CD5\u5F52\u56E0\u7684\u53D8\u66F4\u201C${file}\u201D\u3002\u5B83\u662F\u5426\u5C5E\u4E8E\u5F53\u524D\u4EFB\u52A1\uFF1F`,
-    options: [
-      { id: "adopt", label: "\u7EB3\u5165\u5F53\u524D\u4EFB\u52A1", recommended: true },
-      { id: "exclude", label: "\u6392\u9664\u5E76\u5148\u5904\u7406" }
-    ],
-    basisHash: createHash8("sha256").update(`ownership
-${file}
-${draft.workspace.lastWorkspaceFingerprint}`).digest("hex"),
-    presentedAt: (/* @__PURE__ */ new Date()).toISOString(),
-    presentedRevision: draft.revision,
-    source: "core",
-    target: `workspace:${file}`
-  };
+function queueNextOwnershipDecision(draft) {
+  if (pendingDecisionForState(draft)) return void 0;
+  const paths = unknownOwnershipPaths(draft);
+  if (!paths.length) return void 0;
+  return presentWorkspaceOwnership(draft, paths).presentationEventId;
 }
 function markAffectedEvidenceStale(draft, changedPaths, reopenedLifecycle, legalCheckpointPaths = /* @__PURE__ */ new Set()) {
   const checkpointAffected = checkpointAffectedByPaths(draft, changedPaths, legalCheckpointPaths);
@@ -4063,16 +4689,17 @@ async function resumeFeature(root2, id, host) {
   const { workspace, contentChanged, changedPaths } = await reconcileWorkspaceForFeature(root2, current, config);
   const legalCheckpointPaths = contentChanged ? await legalActiveUnitChanges(root2, current, changedPaths) : /* @__PURE__ */ new Set();
   const checkpointAffected = contentChanged ? checkpointAffectedByPaths(current, changedPaths, legalCheckpointPaths) : false;
+  let presentationEventId;
   return mutate(root2, id, current.revision, "feature-resumed", (state) => {
     state.lifecycle = "active";
     state.workspace = workspace;
     if (contentChanged) {
       markAffectedEvidenceStale(state, changedPaths, void 0, legalCheckpointPaths);
     }
-    queueNextOwnershipDecision(state, changedPaths);
+    presentationEventId = queueNextOwnershipDecision(state);
     state.resumeSummary = `\u5DF2\u6062\u590D${state.currentStage ? `\uFF0C\u4ECE\u201C${state.currentStage}\u201D\u7EE7\u7EED` : "\u5F53\u524D\u4EFB\u52A1"}\u3002${contentChanged ? "\u5DE5\u4F5C\u533A\u5185\u5BB9\u6709\u53D8\u5316\uFF0C\u76F8\u5173\u8BC1\u636E\u5DF2\u6807\u8BB0\u4E3A\u5F85\u66F4\u65B0\u3002" : ""}`;
     state.lastUpdatedBy = { host, pluginVersion: "5.0.0" };
-  }, { observedHead: workspace.observedHead, contentChanged, checkpointAffected });
+  }, () => ({ observedHead: workspace.observedHead, contentChanged, checkpointAffected, ...presentationEventId ? { presentationEventId } : {} }));
 }
 async function abandonFeature(root2, id, expectedRevision, reason, userEvidence) {
   if (!reason || !userEvidence) throw new DevFlowError("ABANDON_EVIDENCE_REQUIRED", "abandon requires reason and user evidence");
@@ -4135,19 +4762,19 @@ function isRecoveryPhase(value) {
 }
 function validateRecoveryTransaction(value) {
   const transaction = value;
-  if (transaction?.schemaVersion !== 1 || typeof transaction.transactionId !== "string" || !transaction.transactionId || !isRecoveryPhase(transaction.phase) || typeof transaction.featureId !== "string" || !transaction.featureId || typeof transaction.stateSha256 !== "string" || !transaction.stateSha256 || typeof transaction.recoveredTo !== "string" || !path8.isAbsolute(transaction.recoveredTo) || typeof transaction.reason !== "string" || typeof transaction.userEvidence !== "string" || transaction.host !== "claude" && transaction.host !== "codex" || typeof transaction.at !== "string" || transaction.activeSha256 !== void 0 && typeof transaction.activeSha256 !== "string") {
+  if (transaction?.schemaVersion !== 1 || typeof transaction.transactionId !== "string" || !transaction.transactionId || !isRecoveryPhase(transaction.phase) || typeof transaction.featureId !== "string" || !transaction.featureId || typeof transaction.stateSha256 !== "string" || !transaction.stateSha256 || typeof transaction.recoveredTo !== "string" || !path10.isAbsolute(transaction.recoveredTo) || typeof transaction.reason !== "string" || typeof transaction.userEvidence !== "string" || transaction.host !== "claude" && transaction.host !== "codex" || typeof transaction.at !== "string" || transaction.activeSha256 !== void 0 && typeof transaction.activeSha256 !== "string") {
     throw new DevFlowError("RECOVERY_TRANSACTION_UNREADABLE", "recovery journal is invalid", {
       recoveryHint: "Run dev_flow_doctor; do not start a new feature or hand-edit .dev-flow"
     });
   }
-  if (path8.basename(transaction.featureId) !== transaction.featureId || transaction.featureId === "." || transaction.featureId === "..") {
+  if (path10.basename(transaction.featureId) !== transaction.featureId || transaction.featureId === "." || transaction.featureId === "..") {
     throw new DevFlowError("RECOVERY_TRANSACTION_UNREADABLE", "recovery journal has an unsafe feature id", { recoveryHint: "Run dev_flow_doctor; recovery remains fail-closed" });
   }
 }
 function validateRecoveryLocation(root2, transaction) {
-  const recoveredRoot = path8.join(devFlow(root2), "recovered");
-  const relative = path8.relative(recoveredRoot, transaction.recoveredTo);
-  if (!relative || relative.startsWith("..") || path8.isAbsolute(relative) || path8.basename(relative) !== relative) {
+  const recoveredRoot = path10.join(devFlow(root2), "recovered");
+  const relative = path10.relative(recoveredRoot, transaction.recoveredTo);
+  if (!relative || relative.startsWith("..") || path10.isAbsolute(relative) || path10.basename(relative) !== relative) {
     throw new DevFlowError("RECOVERY_TRANSACTION_UNREADABLE", "recovery journal points outside the recovered directory", {
       recoveryHint: "Run dev_flow_doctor; do not start a new feature or hand-edit .dev-flow"
     });
@@ -4156,7 +4783,7 @@ function validateRecoveryLocation(root2, transaction) {
 async function readRecoveryTransaction(root2) {
   let raw;
   try {
-    raw = await readFile6(recoveryTxnPath(root2), "utf8");
+    raw = await readFile8(recoveryTxnPath(root2), "utf8");
   } catch (error) {
     if (error.code === "ENOENT") return void 0;
     throw new DevFlowError("RECOVERY_TRANSACTION_UNREADABLE", "recovery journal cannot be read", { recoveryHint: "Run dev_flow_doctor; do not start a new feature" });
@@ -4188,7 +4815,7 @@ async function pathExists(file) {
   }
 }
 async function fileSha256(file) {
-  return createHash8("sha256").update(await readFile6(file)).digest("hex");
+  return createHash9("sha256").update(await readFile8(file)).digest("hex");
 }
 async function updateRecoveryTransaction(root2, transaction, phase) {
   const next = { ...transaction, phase, ...phase === "completed" ? { completedAt: (/* @__PURE__ */ new Date()).toISOString() } : {} };
@@ -4197,7 +4824,7 @@ async function updateRecoveryTransaction(root2, transaction, phase) {
 }
 async function recoveryEventExists(root2, transactionId) {
   try {
-    return (await readFile6(recoveryEventsPath(root2), "utf8")).split("\n").filter(Boolean).some((line) => {
+    return (await readFile8(recoveryEventsPath(root2), "utf8")).split("\n").filter(Boolean).some((line) => {
       try {
         return JSON.parse(line).transactionId === transactionId;
       } catch {
@@ -4211,7 +4838,7 @@ async function recoveryEventExists(root2, transactionId) {
 }
 async function appendRecoveryEvent(root2, transaction) {
   if (await recoveryEventExists(root2, transaction.transactionId)) return;
-  const handle = await open4(recoveryEventsPath(root2), "a");
+  const handle = await open5(recoveryEventsPath(root2), "a");
   try {
     await handle.writeFile(`${JSON.stringify({ ...transaction, phase: "completed", completedAt: (/* @__PURE__ */ new Date()).toISOString() })}
 `);
@@ -4221,7 +4848,7 @@ async function appendRecoveryEvent(root2, transaction) {
   }
 }
 async function resumeRecovery(root2, transaction) {
-  const sourceDir = path8.join(features(root2), transaction.featureId);
+  const sourceDir = path10.join(features(root2), transaction.featureId);
   if (transaction.phase === "prepared") {
     const [sourceExists, recoveredExists] = await Promise.all([pathExists(sourceDir), pathExists(transaction.recoveredTo)]);
     if (sourceExists === recoveredExists) throw new DevFlowError("RECOVERY_TRANSACTION_INCONSISTENT", "cannot safely determine feature-directory recovery stage", { recoveryHint: "Run dev_flow_doctor; do not start a new feature" });
@@ -4234,7 +4861,7 @@ async function resumeRecovery(root2, transaction) {
         if (await fileSha256(activePath(root2)) !== transaction.activeSha256) {
           throw new DevFlowError("RECOVERY_POINTER_DIGEST_MISMATCH", "active pointer changed during recovery", { recoveryHint: "Run dev_flow_doctor; recovery remains fail-closed" });
         }
-        await rename4(activePath(root2), path8.join(transaction.recoveredTo, "active.json"));
+        await rename4(activePath(root2), path10.join(transaction.recoveredTo, "active.json"));
       }
     } else {
       const active = await readActive(root2);
@@ -4267,7 +4894,7 @@ function validateRollbackTransaction(value) {
     if (candidate.kind !== void 0 && candidate.kind !== "file" && candidate.kind !== "symlink") return false;
     return true;
   });
-  if (transaction?.schemaVersion !== 1 || typeof transaction.transactionId !== "string" || !transaction.transactionId || typeof transaction.featureId !== "string" || !transaction.featureId || !rollbackTransactionPhases.has(transaction.phase) || typeof transaction.targetCheckpointId !== "string" || !/^CP-[0-9]{3,}$/.test(transaction.targetCheckpointId) || typeof transaction.targetUnitId !== "string" || !/^RU-[0-9]{3,}$/.test(transaction.targetUnitId) || !Array.isArray(transaction.undoOrder) || transaction.undoOrder.length === 0 || !transaction.undoOrder.every((unitId) => typeof unitId === "string" && /^RU-[0-9]{3,}$/.test(unitId)) || transaction.undoCheckpoints !== void 0 && (!Array.isArray(transaction.undoCheckpoints) || !transaction.undoCheckpoints.every((id) => typeof id === "string" && /^CP-[0-9]{3,}$/.test(id))) || !isSha2562(transaction.previewBasisHash) || !isSha2562(transaction.projectConfigSha256) || !Number.isInteger(transaction.stateRevision) || (transaction.stateRevision ?? -1) < 0 || typeof transaction.backupDirectory !== "string" || !/^checkpoints\/recovery\/[^/]+$/.test(transaction.backupDirectory) || !Number.isInteger(transaction.nextFileIndex) || (transaction.nextFileIndex ?? -1) < 0 || !validPlan || !Array.isArray(transaction.verificationAttemptIds) || !transaction.verificationAttemptIds.every((id) => typeof id === "string" && id.length > 0) || typeof transaction.startedAt !== "string" || transaction.completedAt !== void 0 && typeof transaction.completedAt !== "string" || transaction.error !== void 0 && typeof transaction.error !== "string") {
+  if (transaction?.schemaVersion !== 1 || typeof transaction.transactionId !== "string" || !transaction.transactionId || typeof transaction.featureId !== "string" || !transaction.featureId || !rollbackTransactionPhases.has(transaction.phase) || typeof transaction.targetCheckpointId !== "string" || !/^CP-[0-9]{3,}$/.test(transaction.targetCheckpointId) || typeof transaction.targetUnitId !== "string" || !/^RU-[0-9]{3,}$/.test(transaction.targetUnitId) || !Array.isArray(transaction.undoOrder) || transaction.undoOrder.length === 0 || !transaction.undoOrder.every((unitId) => typeof unitId === "string" && /^RU-[0-9]{3,}$/.test(unitId)) || transaction.undoCheckpoints !== void 0 && (!Array.isArray(transaction.undoCheckpoints) || !transaction.undoCheckpoints.every((id) => typeof id === "string" && /^CP-[0-9]{3,}$/.test(id))) || !isSha2562(transaction.previewBasisHash) || !isSha2562(transaction.projectConfigSha256) || transaction.verificationCommandHashes !== void 0 && (typeof transaction.verificationCommandHashes !== "object" || transaction.verificationCommandHashes === null || Array.isArray(transaction.verificationCommandHashes) || Object.values(transaction.verificationCommandHashes).some((hash2) => !isSha2562(hash2))) || !Number.isInteger(transaction.stateRevision) || (transaction.stateRevision ?? -1) < 0 || typeof transaction.backupDirectory !== "string" || !/^checkpoints\/recovery\/[^/]+$/.test(transaction.backupDirectory) || !Number.isInteger(transaction.nextFileIndex) || (transaction.nextFileIndex ?? -1) < 0 || !validPlan || !Array.isArray(transaction.verificationAttemptIds) || !transaction.verificationAttemptIds.every((id) => typeof id === "string" && id.length > 0) || typeof transaction.startedAt !== "string" || transaction.completedAt !== void 0 && typeof transaction.completedAt !== "string" || transaction.error !== void 0 && typeof transaction.error !== "string") {
     throw new DevFlowError("ROLLBACK_TRANSACTION_UNREADABLE", "rollback transaction journal is invalid", {
       recoveryHint: "Run dev_flow_doctor; the workspace may be mid-rollback \u2014 do not hand-edit .dev-flow"
     });
@@ -4279,7 +4906,7 @@ function rollbackTransactionFinished(transaction) {
 async function readRollbackTransaction(root2, featureId) {
   let raw;
   try {
-    raw = await readFile6(rollbackTxnPath(root2, featureId), "utf8");
+    raw = await readFile8(rollbackTxnPath(root2, featureId), "utf8");
   } catch (error) {
     if (error.code === "ENOENT") return void 0;
     throw new DevFlowError("ROLLBACK_TRANSACTION_UNREADABLE", "rollback transaction journal cannot be read", {
@@ -4356,14 +4983,14 @@ async function prepareRollbackTransaction(root2, featureId, expectedRevision, tr
 var ROLLBACK_DRIVE_LEASE_STALE_MS = 3e4;
 var ROLLBACK_DRIVE_LEASE_HEARTBEAT_MS = 1e4;
 function driveLeasePath(root2, featureId, transactionId) {
-  return path8.join(features(root2), featureId, "checkpoints", "recovery", `${transactionId}-drive-lease.json`);
+  return path10.join(features(root2), featureId, "checkpoints", "recovery", `${transactionId}-drive-lease.json`);
 }
 function legacyDriveLeasePath(root2, featureId, transactionId) {
-  return path8.join(features(root2), featureId, "checkpoints", "recovery", transactionId, "drive-lease.json");
+  return path10.join(features(root2), featureId, "checkpoints", "recovery", transactionId, "drive-lease.json");
 }
 async function readLeaseAt(leaseFile, transactionId) {
   try {
-    const raw = await readFile6(leaseFile, "utf8");
+    const raw = await readFile8(leaseFile, "utf8");
     return JSON.parse(raw);
   } catch (error) {
     if (error.code === "ENOENT") return void 0;
@@ -4383,8 +5010,8 @@ async function readDriveLeases(root2, featureId, transactionId) {
 async function writeDriveLeasePair(root2, featureId, transactionId, lease) {
   const legacyFile = legacyDriveLeasePath(root2, featureId, transactionId);
   const sidecarFile = driveLeasePath(root2, featureId, transactionId);
-  await mkdir4(path8.dirname(legacyFile), { recursive: true });
-  await mkdir4(path8.dirname(sidecarFile), { recursive: true });
+  await mkdir5(path10.dirname(legacyFile), { recursive: true });
+  await mkdir5(path10.dirname(sidecarFile), { recursive: true });
   await writeAtomic(legacyFile, lease);
   await writeAtomic(sidecarFile, lease);
 }
@@ -4519,21 +5146,21 @@ async function releaseRollbackDriveLease(root2, featureId, lease) {
     const legacyFile = legacyDriveLeasePath(root2, featureId, lease.transactionId);
     let sidecar;
     try {
-      sidecar = JSON.parse(await readFile6(sidecarFile, "utf8"));
+      sidecar = JSON.parse(await readFile8(sidecarFile, "utf8"));
     } catch {
     }
     if (sidecar?.ownerId === lease.ownerId) {
       await rm(sidecarFile, { force: true });
     }
     try {
-      const legacyExisting = JSON.parse(await readFile6(legacyFile, "utf8"));
+      const legacyExisting = JSON.parse(await readFile8(legacyFile, "utf8"));
       if (legacyExisting?.ownerId === lease.ownerId) {
         await rm(legacyFile, { force: true });
       }
     } catch {
     }
     try {
-      await rmdir(path8.dirname(legacyFile));
+      await rmdir(path10.dirname(legacyFile));
     } catch {
     }
   } finally {
@@ -4546,7 +5173,7 @@ async function appendFeatureEvent(root2, id, revision, type, data) {
 async function recoverCorruptFeature(root2, input) {
   if (input.action !== "abandon") throw new DevFlowError("INVALID_RECOVERY_ACTION", "only abandon is supported in 1.3");
   if (!input.reason || !input.userEvidence) throw new DevFlowError("RECOVERY_EVIDENCE_REQUIRED", "reason and userEvidence are required");
-  if (path8.basename(input.featureId) !== input.featureId || input.featureId === "." || input.featureId === "..") throw new DevFlowError("INVALID_FEATURE_ID", "recovery featureId must name one feature directory");
+  if (path10.basename(input.featureId) !== input.featureId || input.featureId === "." || input.featureId === "..") throw new DevFlowError("INVALID_FEATURE_ID", "recovery featureId must name one feature directory");
   const release = await lock(root2, input.featureId, "recover-corrupt");
   try {
     await assertNoOpenRollbackTransaction(root2);
@@ -4582,8 +5209,8 @@ async function recoverCorruptFeature(root2, input) {
       if (error instanceof DevFlowError && error.code === "RECOVERY_STATE_VALID") throw error;
     }
     const timestamp = (/* @__PURE__ */ new Date()).toISOString().replace(/[:.]/g, "-");
-    const recoveredDir = path8.join(devFlow(root2), "recovered", `${input.featureId}-${timestamp}`);
-    await mkdir4(path8.join(devFlow(root2), "recovered"), { recursive: true });
+    const recoveredDir = path10.join(devFlow(root2), "recovered", `${input.featureId}-${timestamp}`);
+    await mkdir5(path10.join(devFlow(root2), "recovered"), { recursive: true });
     const prepared = {
       schemaVersion: 1,
       transactionId: randomUUID5(),
@@ -4662,7 +5289,7 @@ async function reclassifyFeature(root2, id, expectedRevision, next, reason, user
     }
     if (!changedAtLock) throw new DevFlowError("RECLASSIFICATION_NOT_CHANGED", "\u5206\u7C7B\u4E8B\u5B9E\u548C\u63A7\u5236\u6CA1\u6709\u53D1\u751F\u53D8\u5316\u3002", { recoveryHint: "\u65E0\u9700\u91CD\u5206\u7C7B\uFF1B\u7EE7\u7EED\u5F53\u524D\u8DEF\u7EBF" });
     if (!governedWriteStarted && selectedAtLock.classification.routeConfirmationRequired) {
-      if (initial.pendingDecision) throw new DevFlowError("DECISION_ALREADY_PENDING", "\u5148\u5904\u7406\u5F53\u524D\u552F\u4E00\u7528\u6237\u51B3\u7B56\uFF0C\u518D\u91CD\u7B97\u8DEF\u7EBF\u3002", { recoveryHint: "\u4F7F\u7528 dev_flow_answer \u56DE\u7B54\u5F53\u524D\u95EE\u9898" });
+      if (pendingDecisionForState(initial)) throw new DevFlowError("DECISION_ALREADY_PENDING", "\u5148\u5904\u7406\u5F53\u524D\u552F\u4E00\u7528\u6237\u51B3\u7B56\uFF0C\u518D\u91CD\u7B97\u8DEF\u7EBF\u3002", { recoveryHint: "\u4F7F\u7528 dev_flow_answer \u56DE\u7B54\u5F53\u524D\u95EE\u9898" });
       const facts = {
         level: selectedAtLock.classification.level,
         topology: selectedAtLock.classification.topology,
@@ -4675,20 +5302,19 @@ async function reclassifyFeature(root2, id, expectedRevision, next, reason, user
         decisionRefs: selectedAtLock.classificationBasis.decisionRefs,
         signals: selectedAtLock.classificationBasis.signals
       };
+      let presentationEventId;
       return mutatePreparedLocked(root2, id, expectedRevision, "route-confirmation-represented", async () => ({ mutate: (draft) => {
-        const basisHash2 = createHash8("sha256").update(JSON.stringify({ facts, controls: selectedAtLock.classification.controls, reason })).digest("hex");
+        const basisHash2 = createHash9("sha256").update(JSON.stringify({ facts, controls: selectedAtLock.classification.controls, reason })).digest("hex");
         draft.routeConfirmation = { facts, basisHash: basisHash2 };
-        draft.pendingDecision = {
+        const interaction = createInteraction(draft, {
           kind: "route-confirmation",
-          question: `\u5206\u7C7B\u4E8B\u5B9E\u53D8\u5316\uFF0C\u8BF7\u91CD\u65B0\u786E\u8BA4\u8DEF\u7EBF\uFF1A${selectedAtLock.classification.orderedRoute.join(" \u2192 ")}`,
-          options: [{ id: "confirm", label: "\u786E\u8BA4\u8FD9\u6761\u8DEF\u7EBF", recommended: true }, { id: "correct", label: "\u4FEE\u6B63\u5206\u7C7B\u4E8B\u5B9E", requiresComment: true }],
+          target: "route-confirmation",
           basisHash: basisHash2,
-          presentedAt: (/* @__PURE__ */ new Date()).toISOString(),
-          presentedRevision: draft.revision,
-          source: "core",
-          target: "route-confirmation"
-        };
-      }, eventData: { reason, previousRoute: initial.classification.orderedRoute, nextRoute: selectedAtLock.classification.orderedRoute } }));
+          question: `\u5206\u7C7B\u4E8B\u5B9E\u53D8\u5316\uFF0C\u8BF7\u91CD\u65B0\u786E\u8BA4\u8DEF\u7EBF\uFF1A${selectedAtLock.classification.orderedRoute.join(" \u2192 ")}`,
+          options: [{ id: "confirm", label: "\u786E\u8BA4\u8FD9\u6761\u8DEF\u7EBF" }, { id: "correct", label: "\u4FEE\u6B63\u5206\u7C7B\u4E8B\u5B9E", requiresComment: true }]
+        });
+        presentationEventId = interaction.presentationEventId;
+      }, eventData: () => ({ reason, previousRoute: initial.classification.orderedRoute, nextRoute: selectedAtLock.classification.orderedRoute, presentationEventId }) }));
     }
     let notice;
     let eventData = { reason };
@@ -4728,7 +5354,7 @@ async function reclassifyFeature(root2, id, expectedRevision, next, reason, user
 }
 
 // plugins/dev-flow/src/core/traceability-anchors.ts
-import { createHash as createHash9 } from "node:crypto";
+import { createHash as createHash10 } from "node:crypto";
 var TRACE_ANCHOR = /<!-- dev-flow:id=(REQ|AC|TASK|TEST|RU)-([0-9]{3,}) kind=(requirement|acceptance-criterion|task|test|rollback) -->/g;
 var expectedKind = {
   REQ: "requirement",
@@ -4767,7 +5393,7 @@ function parseTraceSourceBlocks(markdown) {
       id: anchor.id,
       kind: anchor.kind,
       sourceAnchor: anchor.sourceAnchor,
-      sourceBlockSha256: createHash9("sha256").update(sourceBlock, "utf8").digest("hex")
+      sourceBlockSha256: createHash10("sha256").update(sourceBlock, "utf8").digest("hex")
     };
   });
 }
@@ -4928,8 +5554,8 @@ var names = {
   requirements: "\u9700\u6C42\u6587\u6863.md",
   "implementation-plan": "\u5B9E\u65BD\u8BA1\u5212.md"
 };
-var hash = (value) => createHash10("sha256").update(value).digest("hex");
-var featureDirectory = (root2, id) => path9.join(root2, ".dev-flow", "features", id);
+var hash = (value) => createHash11("sha256").update(value).digest("hex");
+var featureDirectory = (root2, id) => path11.join(root2, ".dev-flow", "features", id);
 var traceArtifactKinds = /* @__PURE__ */ new Set(["requirements", "implementation-plan"]);
 var traceArtifactKindList = /* @__PURE__ */ new Set(["requirements", "implementation-plan"]);
 var artifactInvalidations = {
@@ -5007,24 +5633,26 @@ function invalidateFromStep(state, kind) {
   delete state.steps.finalize;
   return { planningReopened };
 }
-function invalidateArtifactDependents(state, kind, reason) {
+function invalidateArtifactDependents(state, kind, reason, executionBasisChanged) {
   const invalidation = invalidateFromStep(state, kind);
-  for (const approval of approvalIds(state)) {
-    delete state.humanGates[approval];
-    clearInteractionsForTarget(state, `approval:${approval}`);
+  if (executionBasisChanged) {
+    for (const approval of approvalIds(state)) {
+      delete state.humanGates[approval];
+      clearInteractionsForTarget(state, `approval:${approval}`);
+    }
+    state.obligations = reopenObligations(state.obligations, ["approval"]);
   }
   if (kind === "requirements") clearInteractionsByKind(state, "grill");
   state.logicComplete = false;
   delete state.steps.finalize;
   state.qualityExceptions = state.qualityExceptions.map((exception) => ({ ...exception, status: "stale" }));
-  state.obligations = reopenObligations(state.obligations, ["approval"]);
   void reason;
   return invalidation;
 }
 async function assertArtifactCurrent(root2, id, state, kind) {
   const artifact = state.artifacts[kind];
   if (!artifact) throw new DevFlowError("MISSING_REQUIRED_ARTIFACT", kind);
-  const contents = await readFile7(path9.join(featureDirectory(root2, id), normalizeUnicode(artifact.path)), "utf8");
+  const contents = await readFile9(path11.join(featureDirectory(root2, id), normalizeUnicode(artifact.path)), "utf8");
   if (hash(contents) !== artifact.sha256) throw new DevFlowError("ARTIFACT_INTEGRITY_FAILED", kind);
   return contents;
 }
@@ -5041,12 +5669,12 @@ async function scaffoldArtifact(root2, id, expectedRevision, kind) {
   if (!requiredNow.includes(kind)) throw new DevFlowError("ARTIFACT_OUT_OF_ORDER", `${kind} is not required by ${currentStep ?? "a pending step"}`, { expectedStep: currentStep });
   const filename = names[kind] ? normalizeUnicode(names[kind]) : void 0;
   if (!filename) throw new DevFlowError("INVALID_ARTIFACT", "unknown artifact kind");
-  const target = path9.join(featureDirectory(root2, id), filename);
+  const target = path11.join(featureDirectory(root2, id), filename);
   const content = template(state, id, kind);
   await writeFile2(target, content, { flag: "wx" }).catch(async (error) => {
     if (error.code !== "EEXIST") throw error;
   });
-  const contents = await readFile7(target, "utf8");
+  const contents = await readFile9(target, "utf8");
   return mutate(root2, id, expectedRevision, "artifact-scaffolded", (current) => {
     current.artifacts[kind] = { path: filename, sha256: hash(contents) };
   });
@@ -5057,7 +5685,7 @@ async function recordArtifact(root2, id, expectedRevision, kind) {
   assertPlanRevisionQuiescent(state, kind);
   const artifact = state.artifacts[kind];
   if (!artifact) throw new DevFlowError("MISSING_REQUIRED_ARTIFACT", kind);
-  const contents = await readFile7(path9.join(featureDirectory(root2, id), normalizeUnicode(artifact.path)), "utf8");
+  const contents = await readFile9(path11.join(featureDirectory(root2, id), normalizeUnicode(artifact.path)), "utf8");
   const checksum = hash(contents);
   if (kind === "implementation-plan" && state.classification.controls.plan === "formal") {
     const errors = validatePlanTaskGraph(contents);
@@ -5071,7 +5699,7 @@ async function recordArtifact(root2, id, expectedRevision, kind) {
   return mutate(root2, id, expectedRevision, "artifact-recorded", (current) => {
     assertPlanRevisionQuiescent(current, kind);
     current.artifacts[kind] = { ...artifact, path: normalizeUnicode(artifact.path), sha256: checksum };
-    invalidateArtifactDependents(current, kind, "artifact-changed");
+    invalidateArtifactDependents(current, kind, "artifact-changed", true);
   }, { kind, invalidationReason: "artifact-changed", planningReopened: kind === "implementation-plan" && reviewEnforcementRequired(state.route, state.classification.controls) });
 }
 async function recordArtifactWithTrace(root2, id, expectedRevision, artifactKind, traceDelta, options = {}) {
@@ -5090,7 +5718,7 @@ async function recordArtifactWithTrace(root2, id, expectedRevision, artifactKind
     assertPlanRevisionQuiescent(current, artifactKind);
     const artifact = current.artifacts[artifactKind];
     if (!artifact) throw new DevFlowError("MISSING_REQUIRED_ARTIFACT", artifactKind);
-    const contents = await readFile7(path9.join(featureDirectory(root2, id), normalizeUnicode(artifact.path)), "utf8");
+    const contents = await readFile9(path11.join(featureDirectory(root2, id), normalizeUnicode(artifact.path)), "utf8");
     const artifactSha256 = hash(contents);
     const sourceBlocks = parseTraceSourceBlocks(contents);
     const { config, sha256: projectConfigSha256 } = await readProjectConfigSnapshot(root2);
@@ -5104,12 +5732,13 @@ async function recordArtifactWithTrace(root2, id, expectedRevision, artifactKind
       delta: traceDelta,
       projectConfigSha256,
       verificationCommandIds: config.verification.commands.map((command2) => command2.id),
+      verificationCommandHashes: verificationCommandHashes(config),
       nextStateRevision
     });
     if (artifactKind === "implementation-plan") {
-      assertTraceabilityComplete(ledger, current.route, projectConfigSha256);
+      assertTraceabilityComplete(ledger, current.route, projectConfigSha256, verificationCommandHashes(config));
     }
-    const executionSemanticBasisHash = hash(JSON.stringify(Object.values(ledger.nodes).filter((node) => node.status === "current" && node.kind !== "test").map((node) => node.kind === "rollback" ? {
+    const executionNodes = Object.values(ledger.nodes).filter((node) => node.status === "current" && node.kind !== "test").map((node) => node.kind === "rollback" ? {
       kind: node.kind,
       id: node.id,
       tasks: node.tasks,
@@ -5118,17 +5747,24 @@ async function recordArtifactWithTrace(root2, id, expectedRevision, artifactKind
       covers: node.covers,
       forwardVerification: node.forwardVerification,
       rollbackVerification: node.rollbackVerification
-    } : node.kind === "task" ? { kind: node.kind, id: node.id, covers: node.covers, rollbackUnit: node.rollbackUnit } : { kind: node.kind, id: node.id }).sort((left, right) => left.id.localeCompare(right.id))));
+    } : node.kind === "task" ? { kind: node.kind, id: node.id, covers: node.covers, rollbackUnit: node.rollbackUnit } : { kind: node.kind, id: node.id }).sort((left, right) => left.id.localeCompare(right.id));
+    const executionVerificationRefs = Object.values(ledger.nodes).filter((node) => node.status === "current" && node.kind === "rollback").flatMap((node) => [...node.forwardVerification, ...node.rollbackVerification]);
+    const executionSemanticBasisHash = hash(JSON.stringify({
+      nodes: executionNodes,
+      verificationCommandHashes: verificationCommandHashesForRefs(config, executionVerificationRefs)
+    }));
     warnings = detectRollbackSplitWarning(Object.values(ledger.nodes).filter((node) => node.kind === "rollback"));
     const pointer = await writeTraceSnapshot(root2, ledger, options.snapshot);
     const artifactChanged = artifact.sha256 !== artifactSha256;
     const traceChanged = JSON.stringify(currentLedger.nodes) !== JSON.stringify(ledger.nodes) || JSON.stringify(currentLedger.edges) !== JSON.stringify(ledger.edges);
+    const executionBasisChanged = current.executionSemanticBasisHash !== executionSemanticBasisHash;
     const reviewPointer = artifactChanged || traceChanged ? await prepareReviewInvalidation(root2, current, nextStateRevision) : void 0;
     eventData = {
       kind: artifactKind,
       artifactChanged,
       traceChanged,
       invalidationReason: artifactChanged ? "artifact-changed" : traceChanged ? "trace-changed" : void 0,
+      ...executionBasisChanged ? { executionBasisChanged: true } : {},
       ...warnings.length ? { warnings } : {}
     };
     return {
@@ -5137,8 +5773,13 @@ async function recordArtifactWithTrace(root2, id, expectedRevision, artifactKind
         draft.traceability = pointer;
         draft.executionSemanticBasisHash = executionSemanticBasisHash;
         if (reviewPointer) draft.review = reviewPointer;
-        if (artifactChanged || traceChanged) {
-          const invalidation = invalidateArtifactDependents(draft, artifactKind, artifactChanged ? "artifact-changed" : "trace-changed");
+        if (artifactChanged || traceChanged || executionBasisChanged) {
+          const invalidation = invalidateArtifactDependents(
+            draft,
+            artifactKind,
+            artifactChanged ? "artifact-changed" : "trace-changed",
+            executionBasisChanged
+          );
           cleanupTombstonedPendingUnits(draft, ledger);
           eventData = { ...eventData, planningReopened: invalidation.planningReopened };
         }
@@ -5222,13 +5863,13 @@ function missingRequiredEvidence(required, evidence) {
 }
 
 // plugins/dev-flow/src/core/delivery-snapshot.ts
-import { createHash as createHash11 } from "node:crypto";
+import { createHash as createHash12 } from "node:crypto";
 import { execFile as execFile3 } from "node:child_process";
-import { lstat as lstat4, readFile as readFile8, writeFile as writeFile3 } from "node:fs/promises";
-import path10 from "node:path";
+import { lstat as lstat4, readFile as readFile10, writeFile as writeFile3 } from "node:fs/promises";
+import path12 from "node:path";
 import { promisify as promisify3 } from "node:util";
 var run2 = promisify3(execFile3);
-var digest4 = (value) => createHash11("sha256").update(value).digest("hex");
+var digest4 = (value) => createHash12("sha256").update(value).digest("hex");
 async function git2(root2, args, allowExitOne = false) {
   try {
     const result = await run2("git", args, { cwd: root2, encoding: "buffer", maxBuffer: 8 * 1024 * 1024 });
@@ -5249,7 +5890,7 @@ function nulItems(value) {
 function normalizePath2(value) {
   const slashPath = normalizeUnicode(value).replaceAll("\\", "/");
   const normalized = normalizeProjectPath(slashPath);
-  if (!normalized || path10.posix.isAbsolute(normalized) || normalized.startsWith("../") || normalized === ".." || normalized.startsWith(".dev-flow/") || normalized !== slashPath) {
+  if (!normalized || path12.posix.isAbsolute(normalized) || normalized.startsWith("../") || normalized === ".." || normalized.startsWith(".dev-flow/") || normalized !== slashPath) {
     throw new DevFlowError("INVALID_IMPLEMENTATION_FILE", "\u5B9E\u73B0\u6587\u4EF6\u5FC5\u987B\u662F\u89C4\u8303\u5316\u7684\u9879\u76EE\u76F8\u5BF9 governed \u8DEF\u5F84\u3002", {
       path: value
     });
@@ -5298,7 +5939,7 @@ async function assertImplementationFilesExist(root2, files) {
   const missing = [];
   for (const file of files) {
     try {
-      await lstat4(path10.join(root2, file));
+      await lstat4(path12.join(root2, file));
     } catch (error) {
       if (error.code !== "ENOENT") throw error;
       missing.push(file);
@@ -5364,14 +6005,14 @@ async function dirtyPaths2(root2, config) {
 }
 async function fileHash(root2, file) {
   try {
-    return digest4(await readFile8(path10.join(root2, file)));
+    return digest4(await readFile10(path12.join(root2, file)));
   } catch (error) {
     if (error.code === "ENOENT") return "deleted";
     throw error;
   }
 }
 async function assertPlainFile(root2, file) {
-  const metadata = await lstat4(path10.join(root2, file));
+  const metadata = await lstat4(path12.join(root2, file));
   if (!metadata.isFile()) throw new DevFlowError("INVALID_IMPLEMENTATION_FILE", "untracked implementation files must be regular files", { path: file });
 }
 async function untrackedFiles(root2, files) {
@@ -5444,14 +6085,14 @@ async function createDeliverySnapshot(root2, featureId, state, config) {
     await assertPlainFile(root2, file);
     patches.push(await git2(root2, ["diff", "--binary", "--no-index", "--", "/dev/null", file], true));
   }
-  const relativeDirectory2 = path10.posix.join(".dev-flow", "features", featureId);
+  const relativeDirectory2 = path12.posix.join(".dev-flow", "features", featureId);
   const patchFilename = "\u4EA4\u4ED8\u5FEB\u7167.patch";
   const manifestFilename = "\u4EA4\u4ED8\u5FEB\u7167\u6587\u6863.md";
-  const patchPath = path10.posix.join(relativeDirectory2, patchFilename);
-  const manifestPath2 = path10.posix.join(relativeDirectory2, manifestFilename);
+  const patchPath = path12.posix.join(relativeDirectory2, patchFilename);
+  const manifestPath2 = path12.posix.join(relativeDirectory2, manifestFilename);
   const patch = patches.filter(Boolean).join("\n");
   const patchHash = digest4(patch);
-  await writeFile3(path10.join(root2, patchPath), patch, "utf8");
+  await writeFile3(path12.join(root2, patchPath), patch, "utf8");
   const rows = await Promise.all(files.map(async (file) => `| ${file} | ${currentDirty.includes(file) ? "changed" : "unchanged"} | ${await fileHash(root2, file)} |`));
   const manifest = [
     "# \u4EA4\u4ED8\u5FEB\u7167",
@@ -5483,7 +6124,7 @@ async function createDeliverySnapshot(root2, featureId, state, config) {
     ""
   ].join("\n");
   const manifestHash = digest4(manifest);
-  await writeFile3(path10.join(root2, manifestPath2), manifest, "utf8");
+  await writeFile3(path12.join(root2, manifestPath2), manifest, "utf8");
   return {
     manifestPath: manifestPath2,
     manifestSha256: manifestHash,
@@ -5529,7 +6170,7 @@ async function requestGrillDecision(root2, id, expectedRevision, input) {
     else ledger.push({ id: input.questionId, question: input.question, status: "open", source: "grill" });
     draft.decisionLedger = ledger;
     draft.lastUpdatedBy = { host: input.host, pluginVersion: "5.0.0" };
-  }, () => ({ questionId: input.questionId, mode: "decision" }));
+  }, () => ({ questionId: input.questionId, mode: "decision", presentationEventId: interaction?.presentationEventId }));
   if (!interaction) throw new DevFlowError("INTERACTION_NOT_CREATED", target);
   return { state, interaction: toPublicInteraction(interaction), interactionId: interaction.id };
 }
@@ -5541,11 +6182,9 @@ async function resolveGrillDecision(root2, id, expectedRevision, interactionId, 
   let promptEventId;
   if (input.source === "text") {
     const events = await readFeatureEvents(root2, id);
-    const match = resolvePromptEvent(events, {
+    const match = resolveInteractionPromptEvent(events, initial, interaction, {
       host,
-      userReply: input.userReply,
-      presentedAt: interaction.presentedAt,
-      presentedRevision: initial.pendingDecision?.presentedRevision ?? initial.revision - 1
+      userReply: input.userReply
     });
     promptEventId = match.eventId;
   }
@@ -5576,7 +6215,7 @@ async function assertRequirementsGrillSatisfied(root2, id, state) {
   const pending = Object.values(state.interactions ?? {}).some((value) => {
     const interaction = value;
     return interaction.kind === "grill" && interaction.status === "pending";
-  }) || state.pendingDecision?.kind === "grill";
+  }) || pendingDecisionForState(state)?.kind === "grill";
   if (pending) throw new DevFlowError("GRILL_INCOMPLETE", "\u8FD8\u6709\u4E00\u4E2A\u9700\u6C42\u95EE\u9898\u7B49\u5F85\u56DE\u7B54\u3002", { userMessage: "\u9700\u6C42\u6F84\u6E05\u8FD8\u6CA1\u6709\u5B8C\u6210\u3002", cause: "\u51B3\u7B56\u8D26\u672C\u4ECD\u6709\u5F85\u56DE\u7B54\u7684 grill \u95EE\u9898\u3002", impact: "\u5F53\u524D\u8DEF\u7EBF\u4E0D\u80FD\u8FDB\u5165\u4E0B\u4E00\u6B65\u3002", recoveryKind: "retry", recoveryInstruction: "\u5148\u56DE\u7B54\u5F53\u524D\u552F\u4E00\u95EE\u9898\uFF0C\u518D\u7EE7\u7EED\u5F53\u524D\u6B65\u9AA4\u3002", retryOriginal: true });
   const openDecision = (state.decisionLedger ?? []).find((decision) => decision.source === "grill" && decision.status === "open");
   if (openDecision) throw new DevFlowError("GRILL_INCOMPLETE", "\u9700\u6C42\u51B3\u7B56\u8D26\u672C\u4ECD\u6709\u672A\u6536\u655B\u95EE\u9898\u3002", { userMessage: "\u9700\u6C42\u6F84\u6E05\u8FD8\u6CA1\u6709\u5B8C\u6210\u3002", cause: "\u51B3\u7B56\u8D26\u672C\u4E2D\u5B58\u5728 open grill decision\u3002", impact: "\u7CFB\u7EDF\u4E0D\u4F1A\u4ECE Markdown \u5B57\u6BB5\u731C\u6D4B\u5B8C\u6210\u6001\u3002", recoveryKind: "retry", recoveryInstruction: "\u56DE\u7B54\u5F53\u524D\u95EE\u9898\u540E\u91CD\u65B0\u767B\u8BB0\u771F\u5B9E\u9700\u6C42\u5185\u5BB9\u3002", retryOriginal: true });
@@ -5584,9 +6223,9 @@ async function assertRequirementsGrillSatisfied(root2, id, state) {
 
 // plugins/dev-flow/src/core/verification.ts
 import { execFile as execFile4 } from "node:child_process";
-import { createHash as createHash12 } from "node:crypto";
-import { mkdir as mkdir5, writeFile as writeFile4 } from "node:fs/promises";
-import path11 from "node:path";
+import { createHash as createHash13 } from "node:crypto";
+import { mkdir as mkdir6, writeFile as writeFile4 } from "node:fs/promises";
+import path13 from "node:path";
 import { promisify as promisify4 } from "node:util";
 
 // plugins/dev-flow/src/core/repair-loop.ts
@@ -5622,7 +6261,7 @@ async function runVerificationCommand(root2, command2) {
   try {
     const invocation = verificationInvocation(command2);
     const result = await run3(invocation.executable, invocation.args, {
-      cwd: path11.resolve(root2, command2.cwd),
+      cwd: path13.resolve(root2, command2.cwd),
       timeout: 12e4,
       maxBuffer: 1024 * 1024
     });
@@ -5638,6 +6277,21 @@ async function runVerificationCommand(root2, command2) {
 var userSignoffPhrases = ["\u9A8C\u6536\u901A\u8FC7", "\u786E\u8BA4\u9A8C\u6536", "\u540C\u610F\u9A8C\u6536", "approved", "LGTM"];
 function normalizeReply(value) {
   return value.trim().toLocaleLowerCase("en-US");
+}
+function successfulAttempt(state) {
+  const attemptId = state.verification.satisfiedByAttemptId;
+  if (attemptId === void 0) return void 0;
+  return state.verification.attempts.find((value) => {
+    const candidate = value;
+    return candidate.id === attemptId;
+  });
+}
+function verificationCommandSliceStale(state, config) {
+  const attempt = successfulAttempt(state);
+  if (!attempt?.verificationCommandHashes) return false;
+  const refs = [...attempt.commandIds, ...attempt.preflightCommandIds ?? []];
+  const current = verificationCommandHashesForRefs(config, refs);
+  return Object.entries(attempt.verificationCommandHashes).some(([id, hash2]) => current[id] !== hash2);
 }
 function validateManualAcceptance(value) {
   if (value === void 0) return void 0;
@@ -5706,7 +6360,8 @@ async function assertOptionalManualAcceptance(root2, id, state, manualAcceptance
 }
 function minimalGuaranteeCommands(state, config) {
   const needed = new Set(state.classification.controls.verification);
-  const candidates = [...config.verification.commands].sort((left, right) => left.id.localeCompare(right.id));
+  const preflight = new Set(config.verification.preflightCommands ?? []);
+  const candidates = [...config.verification.commands].filter((command2) => !preflight.has(command2.id)).sort((left, right) => left.id.localeCompare(right.id));
   const coversAll = (commands) => {
     const provided = new Set(commands.flatMap((command2) => command2.provides));
     return [...needed].every((kind) => provided.has(kind));
@@ -5752,7 +6407,7 @@ async function runVerification(root2, id, expectedRevision, host, commandIds, ma
   const fingerprint2 = await fingerprintGovernedRoots(root2, config);
   const replacingStaleVerification = Boolean(
     initial.verification.verifiedFingerprint && initial.verification.verifiedFingerprint !== fingerprint2
-  );
+  ) || verificationCommandSliceStale(initial, config);
   const startedAt = (/* @__PURE__ */ new Date()).toISOString();
   let exitCode = 0;
   let phase = "forward";
@@ -5792,6 +6447,10 @@ async function runVerification(root2, id, expectedRevision, host, commandIds, ma
       id: state.verification.attempts.length + 1,
       commandIds: selected.map((item) => item.id),
       ...preflight.length ? { preflightCommandIds: preflight.map((item) => item.id) } : {},
+      verificationCommandHashes: verificationCommandHashesForRefs(config, [
+        ...selected.map((item) => item.id),
+        ...preflight.map((item) => item.id)
+      ]),
       kinds,
       startedAt,
       finishedAt,
@@ -5803,8 +6462,8 @@ async function runVerification(root2, id, expectedRevision, host, commandIds, ma
       phase,
       ...manualAcceptance ? { manualAcceptance } : {}
     };
-    const outputFile = path11.join(root2, ".dev-flow", "features", id, attempt.outputPath);
-    await mkdir5(path11.dirname(outputFile), { recursive: true });
+    const outputFile = path13.join(root2, ".dev-flow", "features", id, attempt.outputPath);
+    await mkdir6(path13.dirname(outputFile), { recursive: true });
     await writeFile4(outputFile, fullOutput);
     state.verification.attempts.push(attempt);
     delete state.verification.satisfiedByAttemptId;
@@ -5834,7 +6493,7 @@ async function runVerification(root2, id, expectedRevision, host, commandIds, ma
       }
       state.currentStage = "finalize";
     } else {
-      const signature = `${exitCode}:${createHash12("sha256").update(fullOutput).digest("hex").slice(0, 16)}`;
+      const signature = `${exitCode}:${createHash13("sha256").update(fullOutput).digest("hex").slice(0, 16)}`;
       state.repair = recordRepairAttempt(state.repair ?? startRepairLoop(), signature, output.slice(-3));
     }
     state.lastUpdatedBy = { host, pluginVersion: "5.0.0" };
@@ -5844,7 +6503,7 @@ async function readVerificationFreshness(root2, state) {
   if (!state.verification.verifiedFingerprint) return { status: "missing" };
   const config = await readProjectConfig(root2);
   const current = await fingerprintGovernedRoots(root2, config);
-  if (state.verification.verifiedFingerprint === current) return { status: "fresh" };
+  if (state.verification.verifiedFingerprint === current && !verificationCommandSliceStale(state, config)) return { status: "fresh" };
   return {
     status: "stale",
     reasonCode: "VERIFICATION_STALE",
@@ -5858,7 +6517,8 @@ async function invalidateStaleVerification(root2, id, expectedRevision) {
   const config = await readProjectConfig(root2);
   const current = await fingerprintGovernedRoots(root2, config);
   const state = await readState(root2, id);
-  if (!state.verification.verifiedFingerprint || state.verification.verifiedFingerprint === current) return void 0;
+  const commandSliceStale = verificationCommandSliceStale(state, config);
+  if (!state.verification.verifiedFingerprint || state.verification.verifiedFingerprint === current && !commandSliceStale) return void 0;
   if (state.revision !== expectedRevision) {
     throw new DevFlowError("STATE_REVISION_CONFLICT", "state revision changed", {
       currentRevision: state.revision
@@ -5874,9 +6534,9 @@ async function invalidateStaleVerification(root2, id, expectedRevision) {
 }
 
 // plugins/dev-flow/src/core/review-jobs.ts
-import { createHash as createHash13, randomUUID as randomUUID6 } from "node:crypto";
-import { readFile as readFile9 } from "node:fs/promises";
-import path12 from "node:path";
+import { createHash as createHash14, randomUUID as randomUUID6 } from "node:crypto";
+import { readFile as readFile11 } from "node:fs/promises";
+import path14 from "node:path";
 
 // plugins/dev-flow/src/core/quality-exceptions.ts
 function validKind(kind) {
@@ -5912,7 +6572,7 @@ async function presentQualityException(root2, featureId, expectedRevision, input
       ]
     });
     interactionId = interaction.id;
-  }, { kind });
+  }, () => ({ kind, presentationEventId: interaction?.presentationEventId }));
   if (!interaction) throw new DevFlowError("INTERACTION_NOT_CREATED", kind);
   return { state, interaction: toPublicInteraction(interaction), interactionId };
 }
@@ -5920,11 +6580,9 @@ async function resolveQualityExceptionAnswer(root2, featureId, expectedRevision,
   const initial = await readState(root2, featureId);
   const interaction = getInteraction(initial, interactionId);
   if (interaction.kind !== "quality-exception" || interaction.status !== "pending") throw new DevFlowError("INTERACTION_NOT_PENDING", "\u5F53\u524D\u98CE\u9669\u95EE\u9898\u5DF2\u7ECF\u5904\u7406\u3002", { interactionId });
-  const match = resolvePromptEvent(await readFeatureEvents(root2, featureId), {
+  const match = resolveInteractionPromptEvent(await readFeatureEvents(root2, featureId), initial, interaction, {
     host,
-    userReply,
-    presentedAt: interaction.presentedAt,
-    presentedRevision: initial.pendingDecision?.presentedRevision ?? initial.revision - 1
+    userReply
   });
   return resolveQualityExceptionResponse(root2, featureId, expectedRevision, interactionId, host, {
     source: "text",
@@ -5965,7 +6623,7 @@ async function resolveQualityExceptionResponse(root2, featureId, expectedRevisio
 }
 
 // plugins/dev-flow/src/core/review-jobs.ts
-var digest5 = (value) => createHash13("sha256").update(value).digest("hex");
+var digest5 = (value) => createHash14("sha256").update(value).digest("hex");
 var leaseMilliseconds = 60 * 60 * 1e3;
 var samplingLeaseMilliseconds = 120 * 1e3;
 var basisArtifactKinds = ["requirements", "implementation-plan", "coverage-matrix", "rollback-units"];
@@ -6003,7 +6661,7 @@ async function deriveReviewInput(root2, state) {
     if (!artifact) invalid3("REVIEW_BASIS_ARTIFACT_MISSING", `review basis artifact is missing: ${kind}`, { kind });
     let contents;
     try {
-      contents = await readFile9(path12.join(root2, ".dev-flow", "features", state.featureId, artifact.path), "utf8");
+      contents = await readFile11(path14.join(root2, ".dev-flow", "features", state.featureId, artifact.path), "utf8");
     } catch {
       invalid3("REVIEW_BASIS_ARTIFACT_MISSING", `review basis artifact cannot be read: ${kind}`, { kind });
     }
@@ -6015,7 +6673,7 @@ async function deriveReviewInput(root2, state) {
     }
     return { kind, path: artifact.path, sha256: artifact.sha256, contents };
   }));
-  const projectContents = await readFile9(path12.join(root2, ".dev-flow", "project.json"), "utf8");
+  const projectContents = await readFile11(path14.join(root2, ".dev-flow", "project.json"), "utf8");
   if (digest5(projectContents) !== projectConfigSha256) {
     invalid3("REVIEW_BASIS_UNAVAILABLE", "project configuration changed while review basis was being captured");
   }
@@ -6044,6 +6702,7 @@ async function deriveReviewInput(root2, state) {
     artifacts: frozenArtifacts.map(({ kind, path: artifactPath, sha256 }) => ({ kind, path: artifactPath, sha256 })),
     traceability: { path: state.traceability.path, sha256: state.traceability.sha256, revision: trace2.revision },
     projectConfigSha256,
+    verificationCommandHashes: verificationCommandHashes(config),
     scopeManifestSha256: digest5(canonicalReviewValueJson(scopeManifest)),
     governedRootsFingerprint
   };
@@ -6064,7 +6723,7 @@ async function deriveReviewInput(root2, state) {
   };
 }
 function basisHash(basis) {
-  return digest5(canonicalReviewValueJson(basis));
+  return semanticReviewBasisHash(basis);
 }
 function roleBasisHash(basis, frozenArtifacts, trace2, role) {
   const artifacts2 = frozenArtifacts.filter((artifact) => {
@@ -6088,16 +6747,24 @@ function roleBasisHash(basis, frozenArtifacts, trace2, role) {
       role,
       route: basis.route,
       level: basis.classification.level,
-      riskLabels: basis.classification.riskLabels.filter((label) => specialtyRisk[role].includes(label))
+      riskLabels: basis.classification.riskLabels.filter((label) => specialtyRisk[role].includes(label)),
+      // Specialty roles follow structured execution semantics. Whole-document
+      // hashes would turn unrelated wording edits into a full risk re-review.
+      traceSlice
     }));
   }
+  const referencedCommandIds = traceSlice.flatMap((node) => [
+    ...node.kind === "rollback" ? node.forwardVerification : [],
+    ...node.kind === "rollback" ? node.rollbackVerification : []
+  ]).filter((reference) => typeof reference === "string");
+  const referencedCommandHashes = Object.fromEntries([...new Set(referencedCommandIds)].sort().filter((id) => basis.verificationCommandHashes?.[id] !== void 0).map((id) => [id, basis.verificationCommandHashes[id]]));
   return digest5(canonicalReviewValueJson({
     role,
     route: basis.route,
     level: basis.classification.level,
     artifacts: artifacts2,
     traceSlice,
-    ...role === "architecture-testability" || role === "rollback-operability" ? { projectConfigSha256: basis.projectConfigSha256 } : {}
+    ...role === "architecture-testability" || role === "rollback-operability" ? { verificationCommandHashes: referencedCommandHashes } : {}
   }));
 }
 function requireClaimRequestId(value) {
@@ -6164,7 +6831,7 @@ function assertAttestationUnique(ledger, batchId, jobId, attestation) {
 }
 function safePackagePath(value) {
   const normalized = normalizeUnicode(value);
-  return normalized.length > 0 && normalized === normalized.trim() && !path12.posix.isAbsolute(normalized) && !normalized.includes("\\") && path12.posix.normalize(normalized) === normalized && !normalized.split("/").includes("..");
+  return normalized.length > 0 && normalized === normalized.trim() && !path14.posix.isAbsolute(normalized) && !normalized.includes("\\") && path14.posix.normalize(normalized) === normalized && !normalized.split("/").includes("..");
 }
 function validScopeManifest(value) {
   if (!value || typeof value !== "object" || Array.isArray(value)) return false;
@@ -6194,9 +6861,9 @@ function assertFindingScope(manifest, findings, resolutions) {
   for (const finding of findings) {
     if (finding.severity === "blocking" && !finding.evidence.length) invalid3("REVIEW_FINDING_EVIDENCE_REQUIRED", "blocking finding requires evidence");
     invalidPaths.push(...finding.targets.filter((target) => !validTarget(target)));
-    invalidPaths.push(...finding.evidence.map((evidence) => evidence.path).filter((path18) => !validEvidence(path18)));
+    invalidPaths.push(...finding.evidence.map((evidence) => evidence.path).filter((path20) => !validEvidence(path20)));
   }
-  invalidPaths.push(...resolutions.flatMap((resolution) => resolution.evidence.map((evidence) => evidence.path).filter((path18) => !validEvidence(path18))));
+  invalidPaths.push(...resolutions.flatMap((resolution) => resolution.evidence.map((evidence) => evidence.path).filter((path20) => !validEvidence(path20))));
   if (invalidPaths.length) {
     invalid3("REVIEW_FINDING_SCOPE_INVALID", "finding targets and evidence must be package-relative paths inside the scope manifest", {
       invalidPaths: [...new Set(invalidPaths)].sort(),
@@ -6230,12 +6897,16 @@ async function createReviewBatch(root2, id, expectedRevision) {
     const reviewInput = await deriveReviewInput(root2, current);
     const { basis } = reviewInput;
     const currentBasisHash = basisHash(basis);
+    const requirements = deriveReviewJobRequirements(current.route, current.classification.riskLabels, current.classification.controls.reviewRoles);
     const existing = ledger.batches.find((batch2) => batch2.validity === "current" && batch2.basisHash === currentBasisHash);
-    if (existing) {
+    const existingRolesCurrent = existing && requirements.every((requirement) => {
+      const job = existing.jobs.find((candidate) => candidate.role === requirement.role);
+      return job?.roleBasisHash === reviewInput.roleBasisHashes[requirement.role];
+    });
+    if (existing && existingRolesCurrent) {
       result = { state: void 0, batch: existing, created: false };
       return { mutate: () => void 0, unchanged: true, eventData: { batchId: existing.batchId, basisHash: currentBasisHash, idempotent: true } };
     }
-    const requirements = deriveReviewJobRequirements(current.route, current.classification.riskLabels, current.classification.controls.reviewRoles);
     if (!requirements.length) invalid3("REVIEW_ROUTE_UNSUPPORTED", "\u5F53\u524D\u52A8\u6001\u8DEF\u7EBF\u6CA1\u6709\u542F\u7528\u72EC\u7ACB plan-review \u89D2\u8272\u3002");
     const prevCurrent = ledger.batches.find((batch2) => batch2.validity === "current");
     const reusableByRole = /* @__PURE__ */ new Map();
@@ -6263,7 +6934,7 @@ async function createReviewBatch(root2, id, expectedRevision) {
         });
         continue;
       }
-      const carried = carriedFindings(ledger, requirement.role);
+      const carried = carriedFindings(ledger, requirement.role, currentRoleBasisHash);
       const packageSha256 = await writeReviewPackage(root2, current.featureId, {
         schemaVersion: 2,
         featureId: current.featureId,
@@ -6455,7 +7126,7 @@ async function submitParsedReviewJob(root2, featureId, ledger, batch, job, parse
       findingId: resolution.findingId,
       successorBatchId: batch.batchId,
       resolutionJobId: job.jobId,
-      basisHash: batch.basisHash,
+      basisHash: job.roleBasisHash,
       evidence: resolution,
       at: now.toISOString()
     } : {
@@ -6463,7 +7134,7 @@ async function submitParsedReviewJob(root2, featureId, ledger, batch, job, parse
       findingId: resolution.findingId,
       successorBatchId: batch.batchId,
       resolutionJobId: job.jobId,
-      basisHash: batch.basisHash,
+      basisHash: job.roleBasisHash,
       reason: resolution.note,
       at: now.toISOString()
     });
@@ -6476,7 +7147,7 @@ async function submitParsedReviewJob(root2, featureId, ledger, batch, job, parse
     jobId: job.jobId
   }));
   for (const finding of findings) {
-    findingEvents.push({ type: "origin", finding, batchId: batch.batchId, role: job.role, basisHash: batch.basisHash, at: now.toISOString() });
+    findingEvents.push({ type: "origin", finding, batchId: batch.batchId, role: job.role, basisHash: job.roleBasisHash, at: now.toISOString() });
   }
   const missingCarried = (job.carriedFindings ?? []).filter((finding) => !resolvedIds.has(finding.findingId));
   if (missingCarried.length) {
@@ -6746,12 +7417,23 @@ async function currentBatchWithBasis(root2, state, options = {}) {
   const batch = ledger.batches.find((candidate) => candidate.validity === "current");
   if (!batch) invalid3("REVIEW_BATCH_REQUIRED", "a current review batch is required");
   const requireLiveBasis = options.requireLiveBasis ?? !planReviewBoundToBatch(state, batch);
+  const reviewInput = await deriveReviewInput(root2, state);
   if (requireLiveBasis) {
-    const reviewInput = await deriveReviewInput(root2, state);
     if (basisHash(reviewInput.basis) !== batch.basisHash) {
       invalid3("REVIEW_BASIS_STALE", "review batch basis no longer matches current feature state", {
         batchId: batch.batchId,
         recoveryHint: "\u91CD\u5EFA\u6279\u6B21\u2192\u91CD\u4EA4 jobs\u2192re-record planning"
+      });
+    }
+  }
+  const requirements = deriveReviewJobRequirements(state.route, state.classification.riskLabels, state.classification.controls.reviewRoles);
+  for (const requirement of requirements) {
+    const job = batch.jobs.find((candidate) => candidate.role === requirement.role);
+    if (!job || job.roleBasisHash !== reviewInput.roleBasisHashes[requirement.role]) {
+      invalid3("REVIEW_BASIS_STALE", "review role basis no longer matches current feature semantics", {
+        batchId: batch.batchId,
+        role: requirement.role,
+        recoveryHint: "\u91CD\u5EFA\u6279\u6B21\u2192\u91CD\u4EA4\u53D7\u5F71\u54CD role job\u2192re-record planning"
       });
     }
   }
@@ -6762,7 +7444,8 @@ function acceptanceFindings(ledger, batch, findingIds) {
 }
 function selectCurrentBlockingFindings(ledger, batch, findingIds, unresolvedOnly) {
   if (ledger.findingEvents?.length) {
-    const unresolved = new Map(unresolvedBlockingFindings(ledger, batch.basisHash).map((finding) => [finding.findingId, finding]));
+    const roleBasis = (origin) => batch.jobs.find((job) => job.role === origin.role)?.roleBasisHash;
+    const unresolved = new Map(unresolvedBlockingFindings(ledger, roleBasis).filter((finding) => effectiveFindingState(ledger, finding.findingId, roleBasis)?.status !== "needs-revalidation").map((finding) => [finding.findingId, finding]));
     const selected2 = sortedFindingIds(findingIds).map((findingId) => unresolved.get(findingId));
     if (selected2.some((finding) => !finding)) invalid3("REVIEW_RISK_ACCEPTANCE_INVALID", "\u98CE\u9669\u63A5\u53D7\u53EA\u80FD\u8986\u76D6\u5F53\u524D\u672A\u89E3\u51B3\u7684\u963B\u65AD\u53D1\u73B0", { findingIds });
     return selected2;
@@ -6779,6 +7462,7 @@ function selectCurrentBlockingFindings(ledger, batch, findingIds, unresolvedOnly
 }
 async function presentReviewRiskAcceptance(root2, id, expectedRevision, findingIds) {
   let result;
+  let presentationEventId;
   const state = await mutatePrepared(root2, id, expectedRevision, "review-risk-acceptance-presented", async (current) => {
     const { ledger, batch } = await currentBatchWithBasis(root2, current);
     if (batch.progress !== "complete") invalid3("REVIEW_BATCH_INCOMPLETE", "all required review jobs must be submitted", { batchId: batch.batchId });
@@ -6804,9 +7488,10 @@ async function presentReviewRiskAcceptance(root2, id, expectedRevision, findingI
             { id: "decline", label: "\u4E0D\u63A5\u53D7" }
           ]
         });
+        presentationEventId = interaction.presentationEventId;
         result = { interaction: toPublicInteraction(interaction), idempotent: false };
       },
-      eventData: { batchId: batch.batchId, findingIds: ids, findingSetHash: setHash }
+      eventData: () => ({ batchId: batch.batchId, findingIds: ids, findingSetHash: setHash, presentationEventId })
     };
   });
   return { ...result, state };
@@ -6862,11 +7547,9 @@ async function resolveReviewRiskAcceptanceAnswer(root2, id, expectedRevision, in
   const initial = await readState(root2, id);
   const interaction = getInteraction(initial, interactionId);
   const events = await readFeatureEvents(root2, id);
-  const resolvedPromptEventId = resolvePromptEvent(events, {
+  const resolvedPromptEventId = resolveInteractionPromptEvent(events, initial, interaction, {
     host,
-    userReply,
-    presentedAt: interaction.presentedAt,
-    presentedRevision: initial.pendingDecision?.presentedRevision ?? initial.revision - 1
+    userReply
   }).eventId;
   const hostEvent = events.find((event) => event.type === "host-event" && event.data.eventId === resolvedPromptEventId);
   assertReviewRiskAcceptanceEvidence(hostEvent, interaction, resolvedPromptEventId, userReply, host);
@@ -6930,16 +7613,19 @@ async function resolveReviewRiskAcceptanceResponse(root2, id, expectedRevision, 
       };
     }
     const updatedBatch = { ...batch, dispositions };
-    const findingEvents = findings.map((finding) => ({
-      type: "risk-accepted",
-      findingId: finding.findingId,
-      batchId: batch.batchId,
-      interactionId,
-      basisHash: batch.basisHash,
-      findingSetHash: binding.findingSetHash,
-      userEvidence: response.comment ?? (input.source === "text" ? input.userReply : input.action),
-      at: response.respondedAt
-    }));
+    const findingEvents = findings.map((finding) => {
+      const source = submittedFindings(ledger).find((candidate) => candidate.finding.findingId === finding.findingId);
+      return {
+        type: "risk-accepted",
+        findingId: finding.findingId,
+        batchId: batch.batchId,
+        interactionId,
+        basisHash: source?.job.roleBasisHash ?? batch.jobs.find((job) => job.role === finding.category)?.roleBasisHash ?? batch.basisHash,
+        findingSetHash: binding.findingSetHash,
+        userEvidence: response.comment ?? (input.source === "text" ? input.userReply : input.action),
+        at: response.respondedAt
+      };
+    });
     const pointer = await writeReviewSnapshot(root2, cloneLedger(
       ledger,
       nextStateRevision,
@@ -6961,7 +7647,8 @@ async function assertReviewComplete(root2, state) {
   const { ledger, batch } = await currentBatchWithBasis(root2, state);
   if (batch.progress !== "complete") invalid3("REVIEW_BATCH_INCOMPLETE", "all required review jobs must be submitted", { batchId: batch.batchId });
   if (ledger.findingEvents?.length) {
-    const unresolved = unresolvedBlockingFindings(ledger, batch.basisHash);
+    const roleBasis = (origin) => batch.jobs.find((job) => job.role === origin.role)?.roleBasisHash;
+    const unresolved = unresolvedBlockingFindings(ledger, roleBasis);
     if (unresolved.length && !hasCurrentQualityException(state, "review")) invalid3("REVIEW_BLOCKING_FINDINGS", "review ledger has unresolved blocking findings", {
       batchId: batch.batchId,
       findingIds: unresolved.map((finding) => finding.findingId)
@@ -7069,9 +7756,11 @@ async function recordStep(root2, id, expectedRevision, step, evidence) {
     });
   }
   assertRecordableStep(initial, step);
+  if (step === "implementation") await assertHostHealth(root2, initial.lastUpdatedBy.host, "implementation \u63A8\u8FDB");
   if (step === "implementation") {
     const config = await readProjectConfig(root2);
     const files = await deriveImplementationFiles(root2, initial, config);
+    await assertWorkspaceOwnershipComplete(root2, initial, config, "implementation \u63A8\u8FDB");
     assertImplementationFilesInGovernedRoots(files, config.governedRoots);
     await assertImplementationFilesExist(root2, files);
     normalizedEvidence = {
@@ -7140,6 +7829,7 @@ function assertVerificationWasNotInvalidated(state) {
 }
 async function finalize(root2, id, expectedRevision) {
   const initial = await readState(root2, id);
+  await assertHostHealth(root2, initial.lastUpdatedBy.host, "finalize");
   if (initial.revision !== expectedRevision) {
     throw new DevFlowError("STATE_REVISION_CONFLICT", "state revision changed", {
       currentRevision: initial.revision
@@ -7149,7 +7839,7 @@ async function finalize(root2, id, expectedRevision) {
   await invalidateBeforeFinalClaim(root2, id, expectedRevision);
   await assertArtifactIntegrity(root2, id);
   const config = await readProjectConfig(root2);
-  const reconciledWorkspace = initial.workspace.baseHead ? await reconcileWorkspaceLineage(root2, initial.workspace, config) : initial.workspace;
+  const reconciledWorkspace = await assertWorkspaceOwnershipComplete(root2, initial, config, "finalize");
   let snapshot;
   return mutate(root2, id, expectedRevision, "finalized", async (state) => {
     await assertRequirementsGrillSatisfied(root2, id, state);
@@ -7178,36 +7868,8 @@ async function finalize(root2, id, expectedRevision) {
 }
 
 // plugins/dev-flow/src/core/approval-interactions.ts
-import { createHash as createHash14 } from "node:crypto";
-
-// plugins/dev-flow/src/core/approval.ts
-var approvalPhrases = [
-  "\u786E\u8BA4",
-  "\u786E\u8BA4\u9700\u6C42",
-  "\u9700\u6C42\u5DF2\u786E\u8BA4",
-  "\u540C\u610F\u9700\u6C42",
-  "\u786E\u8BA4\u6267\u884C",
-  "\u6279\u51C6\u5B9E\u73B0",
-  "\u540C\u610F\u5B9E\u73B0",
-  "\u5F00\u59CB\u5B9E\u73B0",
-  "\u5F00\u59CB\u6267\u884C",
-  "\u786E\u8BA4\u5F00\u59CB\u6267\u884C",
-  "\u540C\u610F\u5F00\u59CB\u6267\u884C",
-  "\u6279\u51C6\u6267\u884C",
-  "\u540C\u610F\u6267\u884C",
-  "approved",
-  "LGTM"
-];
-function approvalReplyHint() {
-  return `\u2705 \u5982\u9700\u786E\u8BA4\u5F00\u59CB\u6267\u884C\uFF0C\u76F4\u63A5\u56DE\u590D\uFF1A${approvalPhrases.join(" / ")}`;
-}
-function isExplicitApproval(userReply) {
-  const normalized = normalizeReplyText(userReply);
-  return approvalPhrases.some((phrase) => normalizeReplyText(phrase) === normalized);
-}
-
-// plugins/dev-flow/src/core/approval-interactions.ts
-var digest6 = (value) => createHash14("sha256").update(JSON.stringify(value)).digest("hex");
+import { createHash as createHash15 } from "node:crypto";
+var digest6 = (value) => createHash15("sha256").update(JSON.stringify(value)).digest("hex");
 function approvalId(value) {
   if (!/^approval:[a-f0-9]{16,}$/.test(value)) throw new DevFlowError("INVALID_APPROVAL", value);
   return value;
@@ -7266,7 +7928,8 @@ async function presentApproval(root2, id, expectedRevision) {
   }, () => ({
     approvalId: selectedApproval,
     replyHint: interaction ? decisionHint(interaction) : approvalReplyHint(),
-    interactionId: interaction?.id
+    interactionId: interaction?.id,
+    presentationEventId: interaction?.presentationEventId
   }));
   if (!interaction) throw new DevFlowError("INTERACTION_NOT_CREATED", selectedApproval);
   return { ...state, approvalId: selectedApproval, interactionId: interaction.id, approvalReplyHint: decisionHint(interaction), approvalInteraction: toPublicInteraction(interaction) };
@@ -7695,80 +8358,6 @@ function lifecycleLabel(lifecycle) {
   }
 }
 
-// plugins/dev-flow/src/core/decision-interactions.ts
-function pendingInteraction(state) {
-  return Object.values(state.interactions ?? {}).find((value) => value.status === "pending");
-}
-function pendingDecisionForState(state) {
-  if (state.pendingDecision) return state.pendingDecision;
-  const interaction = pendingInteraction(state);
-  if (!interaction) return void 0;
-  return {
-    kind: interaction.kind === "risk-acceptance" ? "review-risk" : interaction.kind,
-    question: interaction.question ?? "\u8BF7\u9009\u62E9\u4E00\u4E2A\u65B9\u6848\u3002",
-    options: interaction.options.map((option, index) => ({ ...option, recommended: index === 0 })),
-    basisHash: interaction.basisHash,
-    presentedAt: interaction.presentedAt,
-    presentedRevision: state.revision,
-    source: "core",
-    target: interaction.target
-  };
-}
-function publicPendingDecision(state) {
-  const decision = pendingDecisionForState(state);
-  if (!decision) return void 0;
-  return {
-    kind: decision.kind,
-    question: decision.question,
-    options: decision.options.map((option, index) => ({
-      label: option.label,
-      ...option.description ? { description: option.description } : {},
-      recommended: option.recommended ?? index === 0,
-      requiresComment: Boolean(option.requiresComment)
-    }))
-  };
-}
-function matchDecisionReply(decision, userReply) {
-  const normalized = normalizeReplyText(userReply);
-  if (!normalized) throw new DevFlowError("DECISION_REPLY_REQUIRED", "\u8BF7\u56DE\u7B54\u5F53\u524D\u95EE\u9898\u3002", { userMessage: "\u5F53\u524D\u95EE\u9898\u8FD8\u6CA1\u6709\u5F97\u5230\u56DE\u7B54\u3002", recoveryKind: "retry", recoveryInstruction: "\u76F4\u63A5\u56DE\u590D\u4E00\u4E2A\u5B8C\u6574\u4E2D\u6587\u9009\u9879\u3002", retryOriginal: true });
-  const options = decision.options;
-  let match;
-  if (decision.kind === "approval" && isExplicitApproval(userReply)) {
-    const option = options.find((candidate) => candidate.id === "confirm");
-    if (option) match = { option };
-  }
-  if (!match) {
-    for (const option of options) {
-      const label = normalizeReplyText(option.label);
-      if (label === normalized) {
-        match = { option };
-        break;
-      }
-      if (option.id !== "confirm" && normalized.startsWith(label) && normalized.length > label.length) {
-        match = { option, comment: userReply.trim().slice(option.label.length).trim() };
-        break;
-      }
-    }
-  }
-  if (!match) {
-    throw new DevFlowError("DECISION_REPLY_NOT_RECOGNIZED", "\u56DE\u7B54\u6CA1\u6709\u7CBE\u786E\u5339\u914D\u5F53\u524D\u95EE\u9898\u7684\u9009\u9879\u3002", {
-      userMessage: "\u6CA1\u6709\u8BC6\u522B\u51FA\u5F53\u524D\u95EE\u9898\u7684\u6709\u6548\u56DE\u7B54\u3002",
-      cause: "\u56DE\u7B54\u4E0D\u662F\u5B8C\u6574\u9009\u9879\uFF0C\u4E5F\u4E0D\u662F\u53D7\u652F\u6301\u7684\u6279\u51C6\u77ED\u8BED\u3002",
-      impact: "\u5F53\u524D\u95EE\u9898\u4ECD\u4FDD\u6301\u5F85\u56DE\u7B54\uFF0C\u6CA1\u6709\u4EFB\u4F55\u72B6\u6001\u88AB\u6539\u53D8\u3002",
-      recoveryKind: "retry",
-      recoveryInstruction: "\u8BF7\u76F4\u63A5\u590D\u5236\u4E00\u4E2A\u4E2D\u6587\u9009\u9879\u7684\u5B8C\u6574\u540D\u79F0\u518D\u56DE\u7B54\u3002",
-      retryOriginal: true
-    });
-  }
-  if (match.option.requiresComment && !match.comment?.trim()) {
-    throw new DevFlowError("DECISION_COMMENT_REQUIRED", "\u8BE5\u9009\u9879\u9700\u8981\u8865\u5145\u8BF4\u660E\u3002", { userMessage: "\u8BF7\u8865\u5145\u4E00\u53E5\u5177\u4F53\u8BF4\u660E\u540E\u518D\u63D0\u4EA4\u3002", recoveryKind: "retry", recoveryInstruction: "\u5728\u9009\u9879\u540E\u8865\u5145\u4FEE\u6539\u610F\u89C1\u6216\u98CE\u9669\u8BF4\u660E\u3002", retryOriginal: true });
-  }
-  return match;
-}
-function pendingInteractionForDecision(state, decision) {
-  return pendingInteraction(state) ?? (decision.target ? Object.values(state.interactions ?? {}).find((value) => value.target === decision.target) : void 0);
-}
-
 // plugins/dev-flow/src/core/status-projection.ts
 var STATUS_SCHEMA_VERSION = 1;
 function actionText(state, action) {
@@ -7893,10 +8482,11 @@ async function review(root2, state) {
   if (state.mode === "intake" || !reviewEnforcementRequired(state.route, state.classification.controls)) return { enforced: false };
   const ledger = await readReviewLedger(root2, state);
   const current = ledger.batches.find((batch) => batch.validity === "current");
+  const roleBasis = (origin) => current?.jobs.find((job) => job.role === origin.role)?.roleBasisHash;
   return {
     enforced: true,
     currentBatch: current ? { progress: current.progress, roles: current.jobs.map((job) => ({ role: job.role, status: job.status })) } : void 0,
-    unresolvedBlockingCount: unresolvedBlockingFindings({ findingEvents: ledger.findingEvents }, current?.basisHash).length,
+    unresolvedBlockingCount: unresolvedBlockingFindings({ findingEvents: ledger.findingEvents }, roleBasis).length,
     staleBatchCount: ledger.batches.filter((batch) => batch.validity === "stale").length
   };
 }
@@ -7936,7 +8526,7 @@ async function diagnostics(root2, state) {
     artifacts: state.artifacts,
     traceability: state.traceability,
     review: state.review,
-    pendingDecision: state.pendingDecision,
+    pendingDecision: pendingDecisionForState(state),
     recentEvents: events.slice(-20)
   };
 }
@@ -7966,14 +8556,14 @@ async function rebuildReviewProjection(root2, featureId, expectedRevision) {
 }
 
 // plugins/dev-flow/src/core/implementation-units.ts
-import { createHash as createHash16, randomUUID as randomUUID9 } from "node:crypto";
+import { createHash as createHash17, randomUUID as randomUUID9 } from "node:crypto";
 
 // plugins/dev-flow/src/core/checkpoints.ts
-import { randomUUID as randomUUID8, createHash as createHash15 } from "node:crypto";
-import { access as access2, mkdir as mkdir6, open as open5, readFile as readFile10, readlink as readlink3, readdir as readdir5, rename as rename5 } from "node:fs/promises";
-import path13 from "node:path";
-var digest7 = (value) => createHash15("sha256").update(value).digest("hex");
-var featureDirectory2 = (root2, featureId) => path13.join(root2, ".dev-flow", "features", featureId);
+import { randomUUID as randomUUID8, createHash as createHash16 } from "node:crypto";
+import { access as access2, mkdir as mkdir7, open as open6, readFile as readFile12, readlink as readlink3, readdir as readdir5, rename as rename5 } from "node:fs/promises";
+import path15 from "node:path";
+var digest7 = (value) => createHash16("sha256").update(value).digest("hex");
+var featureDirectory2 = (root2, featureId) => path15.join(root2, ".dev-flow", "features", featureId);
 function blobPath(sha256) {
   return `checkpoints/blobs/${sha256}`;
 }
@@ -7985,7 +8575,7 @@ function baselinePath(unitId) {
 }
 async function writeAtomic2(file, contents) {
   const temp = `${file}.${randomUUID8()}.tmp`;
-  const handle = await open5(temp, "w");
+  const handle = await open6(temp, "w");
   try {
     await handle.writeFile(contents);
     await handle.sync();
@@ -7993,7 +8583,7 @@ async function writeAtomic2(file, contents) {
     await handle.close();
   }
   await rename5(temp, file);
-  const directory = await open5(path13.dirname(file), "r");
+  const directory = await open6(path15.dirname(file), "r");
   try {
     await directory.sync();
   } finally {
@@ -8010,9 +8600,9 @@ async function pathExists2(file) {
 }
 async function writeBlobIfAbsent(root2, featureId, bytes) {
   const sha256 = digest7(bytes);
-  const file = path13.join(featureDirectory2(root2, featureId), blobPath(sha256));
+  const file = path15.join(featureDirectory2(root2, featureId), blobPath(sha256));
   if (await pathExists2(file)) return sha256;
-  await mkdir6(path13.dirname(file), { recursive: true });
+  await mkdir7(path15.dirname(file), { recursive: true });
   await writeAtomic2(file, bytes);
   return sha256;
 }
@@ -8026,7 +8616,7 @@ function validateBaseline(value, unitId) {
 }
 async function captureUnitBaseline(root2, featureId, unitId, snapshot) {
   for (const file2 of snapshot) {
-    const bytes = file2.kind === "symlink" ? Buffer.from(await readlink3(path13.join(root2, file2.path))) : await readFile10(path13.join(root2, file2.path));
+    const bytes = file2.kind === "symlink" ? Buffer.from(await readlink3(path15.join(root2, file2.path))) : await readFile12(path15.join(root2, file2.path));
     if (digest7(bytes) !== file2.sha256) {
       throw new DevFlowError("CHECKPOINT_HASH_MISMATCH", "\u6355\u83B7\u5355\u5143\u57FA\u7EBF\u65F6 governed \u6587\u4EF6\u53D1\u751F\u53D8\u5316\u3002", { path: file2.path });
     }
@@ -8039,16 +8629,16 @@ async function captureUnitBaseline(root2, featureId, unitId, snapshot) {
     capturedAt: (/* @__PURE__ */ new Date()).toISOString(),
     files: snapshot
   };
-  const file = path13.join(featureDirectory2(root2, featureId), baselinePath(unitId));
-  await mkdir6(path13.dirname(file), { recursive: true });
+  const file = path15.join(featureDirectory2(root2, featureId), baselinePath(unitId));
+  await mkdir7(path15.dirname(file), { recursive: true });
   await writeAtomic2(file, `${JSON.stringify(baseline, null, 2)}
 `);
 }
 async function readCheckpointBaseline(root2, featureId, unitId) {
-  const file = path13.join(featureDirectory2(root2, featureId), baselinePath(unitId));
+  const file = path15.join(featureDirectory2(root2, featureId), baselinePath(unitId));
   let raw;
   try {
-    raw = await readFile10(file, "utf8");
+    raw = await readFile12(file, "utf8");
   } catch {
     throw new DevFlowError("CHECKPOINT_BASELINE_INVALID", "implementation unit baseline is missing", { unitId });
   }
@@ -8231,7 +8821,7 @@ function resolvePreflightCommands(config) {
   });
 }
 async function nextCheckpointSequence(root2, featureId) {
-  const directory = path13.join(featureDirectory2(root2, featureId), "checkpoints", "manifests");
+  const directory = path15.join(featureDirectory2(root2, featureId), "checkpoints", "manifests");
   let entries;
   try {
     entries = await readdir5(directory);
@@ -8247,6 +8837,7 @@ async function nextCheckpointSequence(root2, featureId) {
 }
 async function checkpointImplementationUnit(root2, id, expectedRevision, unitId, options = {}) {
   const initial = await readState(root2, id);
+  await assertHostHealth(root2, initial.lastUpdatedBy.host, "checkpoint");
   if (initial.revision !== expectedRevision) {
     throw new DevFlowError("STATE_REVISION_CONFLICT", "state revision changed", { currentRevision: initial.revision });
   }
@@ -8256,6 +8847,7 @@ async function checkpointImplementationUnit(root2, id, expectedRevision, unitId,
   if (currentOpenStep(initial) !== "implementation") {
     throw new DevFlowError("STEP_OUT_OF_ORDER", "checkpoint requires the implementation step", { expected: currentOpenStep(initial) });
   }
+  await assertWorkspaceOwnershipComplete(root2, initial, await readProjectConfig(root2), "checkpoint");
   const unit = (initial.implementationUnits ?? []).find((candidate) => candidate.unitId === unitId);
   if (!unit) throw new DevFlowError("IMPLEMENTATION_UNIT_UNKNOWN", "rollback unit has no implementation state", { unitId });
   if (unit.status !== "active") {
@@ -8268,7 +8860,11 @@ async function checkpointImplementationUnit(root2, id, expectedRevision, unitId,
     unitId
   );
   const { config, sha256: projectConfigSha256 } = await readProjectConfigSnapshot(root2);
-  if (node.verificationConfigSha256 !== projectConfigSha256) {
+  const verificationRefs = [...node.forwardVerification, ...node.rollbackVerification];
+  const currentCommandHashes = verificationCommandHashesForRefs(config, verificationRefs);
+  const traceCommandHashes = ledger.verificationCommandHashes;
+  const commandSliceStale = traceCommandHashes ? verificationCommandIdsForRefs(verificationRefs).some((id2) => traceCommandHashes[id2] !== currentCommandHashes[id2]) : node.verificationConfigSha256 !== projectConfigSha256;
+  if (commandSliceStale) {
     throw new DevFlowError("TRACE_SLICE_STALE", "rollback verification configuration is stale", { unitId });
   }
   const commands = resolveVerificationCommands(config, node);
@@ -8280,7 +8876,7 @@ async function checkpointImplementationUnit(root2, id, expectedRevision, unitId,
   const checkpointId = `CP-${String(sequence).padStart(3, "0")}`;
   const rollbackUnitId = unit.unitId;
   const featureDir = featureDirectory2(root2, id);
-  const manifestsDir = path13.join(featureDir, "checkpoints", "manifests");
+  const manifestsDir = path15.join(featureDir, "checkpoints", "manifests");
   let orphan;
   let entries;
   try {
@@ -8293,7 +8889,7 @@ async function checkpointImplementationUnit(root2, id, expectedRevision, unitId,
     if (!/^CP-\d+\.json$/.test(entry)) continue;
     let candidate;
     try {
-      candidate = parseCheckpointManifest(JSON.parse(await readFile10(path13.join(manifestsDir, entry), "utf8")));
+      candidate = parseCheckpointManifest(JSON.parse(await readFile12(path15.join(manifestsDir, entry), "utf8")));
     } catch (error) {
       throw new DevFlowError("ROLLBACK_CHECKPOINT_CORRUPT", "checkpoint manifest is unreadable or invalid", {
         checkpointFile: entry,
@@ -8308,7 +8904,7 @@ async function checkpointImplementationUnit(root2, id, expectedRevision, unitId,
     }
   }
   if (orphan) {
-    const sameCheckpoint = orphan.basisHash === unit.basisHash && orphan.projectConfigSha256 === projectConfigSha256 && JSON.stringify(orphan.files) === JSON.stringify(records);
+    const sameCheckpoint = orphan.basisHash === unit.basisHash && (orphan.verificationCommandHashes ? Object.keys(orphan.verificationCommandHashes).every((id2) => orphan.verificationCommandHashes?.[id2] === currentCommandHashes[id2]) : orphan.projectConfigSha256 === projectConfigSha256) && JSON.stringify(orphan.files) === JSON.stringify(records);
     if (!sameCheckpoint) {
       throw new DevFlowError("CHECKPOINT_CONFLICT", "an existing checkpoint manifest no longer matches this unit", {
         checkpointId: orphan.checkpointId,
@@ -8325,7 +8921,7 @@ async function checkpointImplementationUnit(root2, id, expectedRevision, unitId,
     }, { unitId, checkpointId: orphan.checkpointId, sequence: orphan.sequence });
     return { state: reused, manifest: orphan };
   }
-  const manifestFile = path13.join(featureDir, manifestPath(checkpointId));
+  const manifestFile = path15.join(featureDir, manifestPath(checkpointId));
   const attempts = [];
   for (const { command: command2, phase } of [
     ...preflightCommands.map((command3) => ({ command: command3, phase: "preflight" })),
@@ -8366,7 +8962,7 @@ async function checkpointImplementationUnit(root2, id, expectedRevision, unitId,
   const completedFingerprint = await fingerprintGovernedRoots(root2, config);
   for (const record of records) {
     if (record.change === "deleted" || record.change === "renamed") continue;
-    const bytes = record.afterKind === "symlink" ? Buffer.from(await readlink3(path13.join(root2, record.path))) : await readFile10(path13.join(root2, record.path));
+    const bytes = record.afterKind === "symlink" ? Buffer.from(await readlink3(path15.join(root2, record.path))) : await readFile12(path15.join(root2, record.path));
     if (digest7(bytes) !== record.afterSha256) {
       throw new DevFlowError("CHECKPOINT_HASH_MISMATCH", "\u6355\u83B7 checkpoint blob \u65F6 governed \u6587\u4EF6\u53D1\u751F\u53D8\u5316\u3002", { path: record.path });
     }
@@ -8394,17 +8990,18 @@ async function checkpointImplementationUnit(root2, id, expectedRevision, unitId,
     approvalBasisHash: unit.basisHash,
     projectConfigSha256,
     ...unit.beginNonce ? { beginNonce: unit.beginNonce } : {},
-    verificationCommands: [...preflightCommands, ...commands].map((command2) => ({ commandId: command2.id, command: commandSummary(command2) }))
+    verificationCommands: [...preflightCommands, ...commands].map((command2) => ({ commandId: command2.id, command: commandSummary(command2) })),
+    verificationCommandHashes: Object.fromEntries([...preflightCommands, ...commands].map((command2) => [command2.id, currentCommandHashes[command2.id] ?? digest7(JSON.stringify(command2))]))
   };
   const validated = parseCheckpointManifest(JSON.parse(JSON.stringify(manifest)));
-  await mkdir6(path13.join(featureDir, "checkpoints", "patches"), { recursive: true });
-  await mkdir6(path13.dirname(manifestFile), { recursive: true });
-  await writeAtomic2(path13.join(featureDir, "checkpoints", "patches", `${manifest.forwardPatchSha256}.json`), forwardPatch);
-  await writeAtomic2(path13.join(featureDir, "checkpoints", "patches", `${manifest.reversePatchSha256}.json`), reversePatch);
+  await mkdir7(path15.join(featureDir, "checkpoints", "patches"), { recursive: true });
+  await mkdir7(path15.dirname(manifestFile), { recursive: true });
+  await writeAtomic2(path15.join(featureDir, "checkpoints", "patches", `${manifest.forwardPatchSha256}.json`), forwardPatch);
+  await writeAtomic2(path15.join(featureDir, "checkpoints", "patches", `${manifest.reversePatchSha256}.json`), reversePatch);
   const manifestContents = `${JSON.stringify(validated, null, 2)}
 `;
   const temp = `${manifestFile}.${randomUUID8()}.tmp`;
-  const handle = await open5(temp, "w");
+  const handle = await open6(temp, "w");
   try {
     await handle.writeFile(manifestContents);
     await handle.sync();
@@ -8413,7 +9010,7 @@ async function checkpointImplementationUnit(root2, id, expectedRevision, unitId,
   }
   await options.fault?.("before-manifest-rename");
   await rename5(temp, manifestFile);
-  const manifestDir = await open5(path13.dirname(manifestFile), "r");
+  const manifestDir = await open6(path15.dirname(manifestFile), "r");
   try {
     await manifestDir.sync();
   } finally {
@@ -8431,29 +9028,7 @@ async function checkpointImplementationUnit(root2, id, expectedRevision, unitId,
   return { state, manifest: validated };
 }
 async function readCheckpoint(root2, featureId, checkpointId) {
-  const file = path13.join(featureDirectory2(root2, featureId), manifestPath(checkpointId));
-  let raw;
-  try {
-    raw = await readFile10(file, "utf8");
-  } catch {
-    throw new DevFlowError("CHECKPOINT_NOT_FOUND", "checkpoint manifest does not exist", { checkpointId });
-  }
-  try {
-    const manifest = parseCheckpointManifest(JSON.parse(raw));
-    if (manifest.checkpointId !== checkpointId) {
-      throw new DevFlowError("CHECKPOINT_INTEGRITY_FAILED", "checkpoint manifest id does not match its path", { checkpointId });
-    }
-    return manifest;
-  } catch (error) {
-    if (error instanceof DevFlowError) throw error;
-    if (error instanceof RollbackProtocolError && error.code === "UNSUPPORTED_CHECKPOINT_SCHEMA") {
-      throw new DevFlowError("UNSUPPORTED_CHECKPOINT_SCHEMA", "\u68C0\u6D4B\u5230 Dev Flow 4.x checkpoint manifest schema v1\u3002", {
-        checkpointId,
-        recoveryHint: "\u56DE\u5230 4.x \u5B8C\u6210\u6216\u653E\u5F03\u8BE5 feature\uFF0C\u5907\u4EFD .dev-flow \u540E\u7528 5.0 \u91CD\u65B0\u521D\u59CB\u5316"
-      });
-    }
-    throw new DevFlowError("CHECKPOINT_INTEGRITY_FAILED", "checkpoint manifest is unreadable", { checkpointId });
-  }
+  return readCheckpointManifest(root2, featureId, checkpointId);
 }
 async function checkpointChain(root2, featureId, state) {
   const ids = (state.implementationUnits ?? []).filter((unit) => unit.checkpointId && (unit.status === "checkpointed" || unit.status === "rolled_back")).map((unit) => unit.checkpointId);
@@ -8463,7 +9038,7 @@ async function checkpointChain(root2, featureId, state) {
 }
 
 // plugins/dev-flow/src/core/implementation-units.ts
-var digest8 = (value) => createHash16("sha256").update(value).digest("hex");
+var digest8 = (value) => createHash17("sha256").update(value).digest("hex");
 function currentRollbackNodes(ledger) {
   return Object.values(ledger?.nodes ?? {}).filter((node) => node.kind === "rollback" && node.status === "current");
 }
@@ -8475,6 +9050,8 @@ function implementationUnitBasisHash(state) {
 }
 async function beginImplementationUnit(root2, id, expectedRevision, unitId) {
   return mutate(root2, id, expectedRevision, "implementation-unit-begun", async (state) => {
+    await assertHostHealth(root2, state.lastUpdatedBy.host, "implementation unit");
+    await assertWorkspaceOwnershipComplete(root2, state, await readProjectConfig(root2), "implementation unit");
     if (!checkpointsEnforcementRequired(state.route, state.classification.controls)) {
       throw new DevFlowError("IMPLEMENTATION_UNITS_NOT_ENFORCED", "\u5F53\u524D\u52A8\u6001\u8DEF\u7EBF\u672A\u542F\u7528 unit-chain checkpoint \u63A7\u5236\u3002");
     }
@@ -8538,10 +9115,10 @@ async function beginImplementationUnit(root2, id, expectedRevision, unitId) {
 }
 
 // plugins/dev-flow/src/core/rollback.ts
-import { createHash as createHash17, randomUUID as randomUUID10 } from "node:crypto";
-import { access as access3, chmod, lstat as lstat5, mkdir as mkdir7, open as open6, readFile as readFile11, readlink as readlink4, rename as rename6, rm as rm2, symlink } from "node:fs/promises";
-import path14 from "node:path";
-var digest9 = (value) => createHash17("sha256").update(value).digest("hex");
+import { createHash as createHash18, randomUUID as randomUUID10 } from "node:crypto";
+import { access as access3, chmod, lstat as lstat5, mkdir as mkdir8, open as open7, readFile as readFile13, readlink as readlink4, rename as rename6, rm as rm2, symlink } from "node:fs/promises";
+import path16 from "node:path";
+var digest9 = (value) => createHash18("sha256").update(value).digest("hex");
 function rollbackNodes(nodes) {
   return Object.values(nodes).filter((node) => node.kind === "rollback" && node.status === "current");
 }
@@ -8646,13 +9223,15 @@ async function previewContext(root2, featureId) {
   const chain = liveChain(state, await checkpointChain(root2, featureId, state));
   assertChainIntegrity(chain, nodes);
   const { config, sha256: projectConfigSha256 } = await readProjectConfigSnapshot(root2);
-  return { state, chain, nodes, config, projectConfigSha256 };
+  const verificationRefs = chain.flatMap((manifest) => manifest.verificationCommands.map((command2) => command2.commandId));
+  const verificationCommandHashes2 = Object.fromEntries(verificationRefs.filter((id) => config.verification.commands.some((command2) => command2.id === id)).map((id) => [id, verificationCommandHashesForRefs(config, [id])[id]]).filter((entry) => typeof entry[1] === "string"));
+  return { state, chain, nodes, config, projectConfigSha256, verificationCommandHashes: verificationCommandHashes2 };
 }
 function commandSummary2(command2) {
   return [command2.command, ...command2.args].join(" ");
 }
 async function previewRollback(root2, featureId, targetCheckpointId) {
-  const { state, chain, nodes, config, projectConfigSha256 } = await previewContext(root2, featureId);
+  const { state, chain, nodes, config, projectConfigSha256, verificationCommandHashes: verificationCommandHashes2 } = await previewContext(root2, featureId);
   const target = chain.find((manifest) => manifest.checkpointId === targetCheckpointId);
   if (!target) {
     throw new DevFlowError("ROLLBACK_TARGET_INVALID", "rollback target is not a confirmed checkpoint in the live chain", {
@@ -8666,7 +9245,7 @@ async function previewRollback(root2, featureId, targetCheckpointId) {
       targetCheckpointId
     });
   }
-  const stale = suffix.filter((manifest) => manifest.projectConfigSha256 !== projectConfigSha256);
+  const stale = suffix.filter((manifest) => manifest.verificationCommandHashes ? Object.entries(manifest.verificationCommandHashes).some(([id, hash2]) => verificationCommandHashes2[id] !== hash2) : manifest.projectConfigSha256 !== projectConfigSha256);
   if (stale.length) {
     throw new DevFlowError("ROLLBACK_BASIS_STALE", "project verification config changed after these checkpoints", {
       checkpointIds: stale.map((manifest) => manifest.checkpointId)
@@ -8703,8 +9282,8 @@ async function previewRollback(root2, featureId, targetCheckpointId) {
     }
   }
   const filePlan = /* @__PURE__ */ new Map();
-  const planAction = (path18, action) => {
-    filePlan.set(path18, action);
+  const planAction = (path20, action) => {
+    filePlan.set(path20, action);
   };
   for (const manifest of undoManifests) {
     for (const record of manifest.files) {
@@ -8744,6 +9323,7 @@ async function previewRollback(root2, featureId, targetCheckpointId) {
     filePlan: plan,
     verificationCommands,
     projectConfigSha256,
+    verificationCommandHashes: verificationCommandHashes2,
     traceabilitySha256: state.traceability?.sha256 ?? null
   }));
   return {
@@ -8754,6 +9334,7 @@ async function previewRollback(root2, featureId, targetCheckpointId) {
     filePlan: plan,
     verificationCommands,
     projectConfigSha256,
+    verificationCommandHashes: verificationCommandHashes2,
     previewBasisHash
   };
 }
@@ -8806,7 +9387,8 @@ async function presentRollbackGate(root2, featureId, expectedRevision, targetChe
   }, () => ({
     gate: "rollback-confirmation",
     targetCheckpointId,
-    interactionId: interaction?.id
+    interactionId: interaction?.id,
+    presentationEventId: interaction?.presentationEventId
   }));
   if (!interaction) throw new DevFlowError("INTERACTION_NOT_CREATED", targetCheckpointId);
   return { state, interaction: toPublicInteraction(interaction), interactionId: interaction.id, preview };
@@ -8856,11 +9438,9 @@ async function resolveRollbackGateResponse(root2, featureId, expectedRevision, i
   let resolvedPromptEventId;
   if (input.source === "text") {
     const events = await readFeatureEvents(root2, featureId);
-    resolvedPromptEventId = input.promptEventId ?? resolvePromptEvent(events, {
+    resolvedPromptEventId = input.promptEventId ?? resolveInteractionPromptEvent(events, initial, interaction, {
       host,
-      userReply: input.userReply,
-      presentedAt: gate.presentedAt,
-      presentedRevision: gate.stateRevision
+      userReply: input.userReply
     }).eventId;
     const eventRecord = events.find(
       (item) => item.type === "host-event" && item.data.eventId === resolvedPromptEventId
@@ -8934,7 +9514,7 @@ async function resolveRollbackGateAnswer(root2, featureId, expectedRevision, int
     source: "text"
   });
 }
-var featureDirectory3 = (root2, featureId) => path14.join(root2, ".dev-flow", "features", featureId);
+var featureDirectory3 = (root2, featureId) => path16.join(root2, ".dev-flow", "features", featureId);
 async function pathExists3(file) {
   try {
     await access3(file);
@@ -8944,7 +9524,7 @@ async function pathExists3(file) {
   }
 }
 async function fsyncDirectory4(directory) {
-  const handle = await open6(directory, "r");
+  const handle = await open7(directory, "r");
   try {
     await handle.sync();
   } finally {
@@ -8952,9 +9532,9 @@ async function fsyncDirectory4(directory) {
   }
 }
 async function writeFileAtomicMode(file, bytes, mode) {
-  await mkdir7(path14.dirname(file), { recursive: true });
+  await mkdir8(path16.dirname(file), { recursive: true });
   const temp = `${file}.${randomUUID10()}.tmp`;
-  const handle = await open6(temp, "w");
+  const handle = await open7(temp, "w");
   try {
     await handle.writeFile(bytes);
     await handle.sync();
@@ -8963,19 +9543,19 @@ async function writeFileAtomicMode(file, bytes, mode) {
   }
   await chmod(temp, Number.parseInt(mode, 8));
   await rename6(temp, file);
-  await fsyncDirectory4(path14.dirname(file));
+  await fsyncDirectory4(path16.dirname(file));
 }
 async function writeSymlinkAtomic(file, target) {
-  await mkdir7(path14.dirname(file), { recursive: true });
+  await mkdir8(path16.dirname(file), { recursive: true });
   const temp = `${file}.${randomUUID10()}.tmp`;
   await symlink(target, temp);
   await rename6(temp, file);
-  await fsyncDirectory4(path14.dirname(file));
+  await fsyncDirectory4(path16.dirname(file));
 }
 async function writeAtomicBuffer(file, contents) {
-  await mkdir7(path14.dirname(file), { recursive: true });
+  await mkdir8(path16.dirname(file), { recursive: true });
   const temp = `${file}.${randomUUID10()}.tmp`;
-  const handle = await open6(temp, "w");
+  const handle = await open7(temp, "w");
   try {
     await handle.writeFile(contents);
     await handle.sync();
@@ -8983,7 +9563,7 @@ async function writeAtomicBuffer(file, contents) {
     await handle.close();
   }
   await rename6(temp, file);
-  await fsyncDirectory4(path14.dirname(file));
+  await fsyncDirectory4(path16.dirname(file));
 }
 function validateBackupManifest(value, transactionId) {
   const manifest = value;
@@ -8995,7 +9575,7 @@ function validateBackupManifest(value, transactionId) {
 async function readBackupManifest(manifestFile, transactionId) {
   let raw;
   try {
-    raw = await readFile11(manifestFile, "utf8");
+    raw = await readFile13(manifestFile, "utf8");
   } catch {
     throw new DevFlowError("ROLLBACK_BACKUP_CORRUPT", "rollback backup manifest is missing", { transactionId });
   }
@@ -9043,8 +9623,8 @@ async function assertWorkspaceMatchesChainTip(root2, featureId, config) {
   }
 }
 async function captureBackup(root2, featureId, journal, config, options) {
-  const dir = path14.join(featureDirectory3(root2, featureId), journal.backupDirectory);
-  const manifestFile = path14.join(dir, "backup-manifest.json");
+  const dir = path16.join(featureDirectory3(root2, featureId), journal.backupDirectory);
+  const manifestFile = path16.join(dir, "backup-manifest.json");
   if (await pathExists3(manifestFile)) {
     const manifest2 = await readBackupManifest(manifestFile, journal.transactionId);
     const current = await snapshotGovernedRoots(root2, config);
@@ -9055,16 +9635,16 @@ async function captureBackup(root2, featureId, journal, config, options) {
     return;
   }
   await assertWorkspaceMatchesChainTip(root2, featureId, config);
-  await mkdir7(path14.join(dir, "files"), { recursive: true });
-  await mkdir7(path14.join(dir, "trash"), { recursive: true });
+  await mkdir8(path16.join(dir, "files"), { recursive: true });
+  await mkdir8(path16.join(dir, "trash"), { recursive: true });
   const snapshot = await snapshotGovernedRoots(root2, config);
   let first = true;
   for (const file of snapshot) {
-    const bytes = file.kind === "symlink" ? Buffer.from(await readlink4(path14.join(root2, file.path))) : await readFile11(path14.join(root2, file.path));
+    const bytes = file.kind === "symlink" ? Buffer.from(await readlink4(path16.join(root2, file.path))) : await readFile13(path16.join(root2, file.path));
     if (digest9(bytes) !== file.sha256) {
       throw new DevFlowError("ROLLBACK_HASH_MISMATCH", "protected files changed while capturing the rollback backup", { path: file.path });
     }
-    const blobFile = path14.join(dir, "files", file.sha256);
+    const blobFile = path16.join(dir, "files", file.sha256);
     if (!await pathExists3(blobFile)) await writeAtomicBuffer(blobFile, bytes);
     if (first) {
       first = false;
@@ -9086,13 +9666,13 @@ async function captureBackup(root2, featureId, journal, config, options) {
   }
 }
 async function assertPathMatchesBackupExpectation(root2, filePath, expected) {
-  const absolute = path14.join(root2, filePath);
+  const absolute = path16.join(root2, filePath);
   if (expected) {
     let metadata;
     let bytes;
     try {
       metadata = await lstat5(absolute);
-      bytes = expected.kind === "symlink" ? Buffer.from(await readlink4(absolute)) : await readFile11(absolute);
+      bytes = expected.kind === "symlink" ? Buffer.from(await readlink4(absolute)) : await readFile13(absolute);
     } catch {
       throw new DevFlowError("ROLLBACK_HASH_MISMATCH", "workspace drifted from the pre-rollback backup before a file action", {
         path: filePath,
@@ -9123,20 +9703,20 @@ async function assertPathMatchesBackupExpectation(root2, filePath, expected) {
   }
 }
 async function applyFilePlan(root2, featureId, journal, options) {
-  const dir = path14.join(featureDirectory3(root2, featureId), journal.backupDirectory);
-  const trash = path14.join(dir, "trash");
-  const backup = await readBackupManifest(path14.join(dir, "backup-manifest.json"), journal.transactionId);
+  const dir = path16.join(featureDirectory3(root2, featureId), journal.backupDirectory);
+  const trash = path16.join(dir, "trash");
+  const backup = await readBackupManifest(path16.join(dir, "backup-manifest.json"), journal.transactionId);
   const expectedByPath = new Map(backup.files.map((file) => [file.path, file]));
   for (let index = journal.nextFileIndex; index < journal.filePlan.length; index += 1) {
     const action = journal.filePlan[index];
     if (index === 0) await options.fault?.("before-first-rename");
     await assertPathMatchesBackupExpectation(root2, action.path, expectedByPath.get(action.path));
-    const target = path14.join(root2, action.path);
+    const target = path16.join(root2, action.path);
     if (action.action === "restore") {
-      const blobFile = path14.join(featureDirectory3(root2, featureId), blobPath(action.blobSha256));
+      const blobFile = path16.join(featureDirectory3(root2, featureId), blobPath(action.blobSha256));
       let bytes;
       try {
-        bytes = await readFile11(blobFile);
+        bytes = await readFile13(blobFile);
       } catch {
         throw new DevFlowError("ROLLBACK_CHECKPOINT_CORRUPT", "checkpoint blob is missing", {
           blobSha256: action.blobSha256,
@@ -9152,11 +9732,11 @@ async function applyFilePlan(root2, featureId, journal, options) {
       if (action.kind === "symlink") await writeSymlinkAtomic(target, bytes.toString("utf8"));
       else await writeFileAtomicMode(target, bytes, action.mode);
     } else {
-      const trashFile = path14.join(trash, `${String(index).padStart(4, "0")}-${path14.basename(action.path)}`);
+      const trashFile = path16.join(trash, `${String(index).padStart(4, "0")}-${path16.basename(action.path)}`);
       if (await pathExists3(target)) {
-        await mkdir7(trash, { recursive: true });
+        await mkdir8(trash, { recursive: true });
         await rename6(target, trashFile);
-        await fsyncDirectory4(path14.dirname(target));
+        await fsyncDirectory4(path16.dirname(target));
         await fsyncDirectory4(trash);
       } else if (!await pathExists3(trashFile)) {
         throw new DevFlowError("ROLLBACK_HASH_MISMATCH", "file planned for deletion vanished outside the transaction", { path: action.path });
@@ -9168,7 +9748,7 @@ async function applyFilePlan(root2, featureId, journal, options) {
     for (const action2 of journal.filePlan.slice(0, journal.nextFileIndex)) {
       const expected = progressive.find((file) => file.path === action2.path);
       if (action2.action === "delete") {
-        if (await pathExists3(path14.join(root2, action2.path))) {
+        if (await pathExists3(path16.join(root2, action2.path))) {
           throw new DevFlowError("ROLLBACK_HASH_MISMATCH", "workspace drifted after a rollback file action", {
             path: action2.path,
             source: "post-plan",
@@ -9181,8 +9761,8 @@ async function applyFilePlan(root2, featureId, journal, options) {
         let metadata;
         let bytes;
         try {
-          metadata = await lstat5(path14.join(root2, action2.path));
-          bytes = expected.kind === "symlink" ? Buffer.from(await readlink4(path14.join(root2, action2.path))) : await readFile11(path14.join(root2, action2.path));
+          metadata = await lstat5(path16.join(root2, action2.path));
+          bytes = expected.kind === "symlink" ? Buffer.from(await readlink4(path16.join(root2, action2.path))) : await readFile13(path16.join(root2, action2.path));
         } catch {
           throw new DevFlowError("ROLLBACK_HASH_MISMATCH", "workspace drifted after a rollback file action", {
             path: action2.path,
@@ -9239,7 +9819,7 @@ async function transactionVerificationCommands(root2, featureId, journal, config
 }
 async function expectedPlanStateAfter(root2, featureId, journal, appliedCount) {
   const manifest = await readBackupManifest(
-    path14.join(featureDirectory3(root2, featureId), journal.backupDirectory, "backup-manifest.json"),
+    path16.join(featureDirectory3(root2, featureId), journal.backupDirectory, "backup-manifest.json"),
     journal.transactionId
   );
   const expected = new Map(manifest.files.map((file) => [file.path, { ...file }]));
@@ -9369,36 +9949,36 @@ async function compensateRollback(root2, featureId, journal, config, options) {
     journal.phase = "compensating";
     await writeRollbackTransaction(root2, featureId, journal);
   }
-  const dir = path14.join(featureDirectory3(root2, featureId), journal.backupDirectory);
+  const dir = path16.join(featureDirectory3(root2, featureId), journal.backupDirectory);
   const startedAt = (/* @__PURE__ */ new Date()).toISOString();
   try {
-    const manifest = await readBackupManifest(path14.join(dir, "backup-manifest.json"), journal.transactionId);
+    const manifest = await readBackupManifest(path16.join(dir, "backup-manifest.json"), journal.transactionId);
     let restored = 0;
     for (const file of manifest.files) {
-      const blobFile = path14.join(dir, "files", file.sha256);
+      const blobFile = path16.join(dir, "files", file.sha256);
       let bytes;
       try {
-        bytes = await readFile11(blobFile);
+        bytes = await readFile13(blobFile);
       } catch {
         throw new DevFlowError("ROLLBACK_BACKUP_CORRUPT", "rollback backup bytes are missing", { path: file.path, sha256: file.sha256 });
       }
       if (digest9(bytes) !== file.sha256) {
         throw new DevFlowError("ROLLBACK_BACKUP_CORRUPT", "rollback backup bytes failed their digest check", { path: file.path, sha256: file.sha256 });
       }
-      if (file.kind === "symlink") await writeSymlinkAtomic(path14.join(root2, file.path), bytes.toString("utf8"));
-      else await writeFileAtomicMode(path14.join(root2, file.path), bytes, file.mode);
+      if (file.kind === "symlink") await writeSymlinkAtomic(path16.join(root2, file.path), bytes.toString("utf8"));
+      else await writeFileAtomicMode(path16.join(root2, file.path), bytes, file.mode);
       restored += 1;
       if (restored === 1) await options.fault?.("during-compensation");
     }
     const current = await snapshotGovernedRoots(root2, config);
     const expectedPaths = new Set(manifest.files.map((file) => file.path));
-    const trash = path14.join(dir, "trash");
+    const trash = path16.join(dir, "trash");
     for (const file of current) {
       if (expectedPaths.has(file.path)) continue;
-      const trashFile = path14.join(trash, `extra-${digest9(file.path).slice(0, 16)}-${path14.basename(file.path)}`);
-      await mkdir7(trash, { recursive: true });
-      await rename6(path14.join(root2, file.path), trashFile);
-      await fsyncDirectory4(path14.dirname(path14.join(root2, file.path)));
+      const trashFile = path16.join(trash, `extra-${digest9(file.path).slice(0, 16)}-${path16.basename(file.path)}`);
+      await mkdir8(trash, { recursive: true });
+      await rename6(path16.join(root2, file.path), trashFile);
+      await fsyncDirectory4(path16.dirname(path16.join(root2, file.path)));
     }
     const after = await snapshotGovernedRoots(root2, config);
     const mismatches = snapshotMismatches(manifest.files, after);
@@ -9475,10 +10055,10 @@ async function commitRollbackState(root2, featureId, journal) {
   }, { allowRollbackTransaction: journal.transactionId });
 }
 async function cleanupRollbackBackup(root2, featureId, journal) {
-  const directory = path14.join(featureDirectory3(root2, featureId), journal.backupDirectory);
-  await rm2(path14.join(directory, "files"), { recursive: true, force: true });
-  await rm2(path14.join(directory, "trash"), { recursive: true, force: true });
-  await rm2(path14.join(directory, "backup-manifest.json"), { force: true });
+  const directory = path16.join(featureDirectory3(root2, featureId), journal.backupDirectory);
+  await rm2(path16.join(directory, "files"), { recursive: true, force: true });
+  await rm2(path16.join(directory, "trash"), { recursive: true, force: true });
+  await rm2(path16.join(directory, "backup-manifest.json"), { force: true });
 }
 async function finishCommitted(root2, featureId, journal, options) {
   await options.fault?.("before-state-cas");
@@ -9531,7 +10111,9 @@ async function driveRollbackTransaction(root2, featureId, journal, options) {
     journal = current;
     const { config, sha256: projectConfigSha256 } = await readProjectConfigSnapshot(root2);
     try {
-      if ((journal.phase === "prepared" || journal.phase === "backing-up" || journal.phase === "rolling-back" || journal.phase === "verifying") && projectConfigSha256 !== journal.projectConfigSha256) {
+      const commandHashes = journal.verificationCommandHashes ? verificationCommandHashesForRefs(config, Object.keys(journal.verificationCommandHashes)) : void 0;
+      const commandSliceStale = journal.verificationCommandHashes ? Object.entries(journal.verificationCommandHashes).some(([id, hash2]) => commandHashes?.[id] !== hash2) : projectConfigSha256 !== journal.projectConfigSha256;
+      if ((journal.phase === "prepared" || journal.phase === "backing-up" || journal.phase === "rolling-back" || journal.phase === "verifying") && commandSliceStale) {
         throw new DevFlowError("ROLLBACK_BASIS_STALE", "project verification config changed during the rollback transaction", {
           transactionId: journal.transactionId
         });
@@ -9594,17 +10176,17 @@ async function executeRollback(root2, featureId, expectedRevision, targetCheckpo
   if (initial.revision !== expectedRevision) {
     throw new DevFlowError("STATE_REVISION_CONFLICT", "state revision changed", { currentRevision: initial.revision });
   }
-  const open7 = await readRollbackTransaction(root2, featureId);
-  if (open7 && !rollbackTransactionFinished(open7)) {
-    if (open7.targetCheckpointId !== targetCheckpointId) {
+  const open8 = await readRollbackTransaction(root2, featureId);
+  if (open8 && !rollbackTransactionFinished(open8)) {
+    if (open8.targetCheckpointId !== targetCheckpointId) {
       throw new DevFlowError("ROLLBACK_TRANSACTION_MISMATCH", "an open rollback transaction targets a different checkpoint", {
-        transactionId: open7.transactionId,
-        openTargetCheckpointId: open7.targetCheckpointId,
+        transactionId: open8.transactionId,
+        openTargetCheckpointId: open8.targetCheckpointId,
         targetCheckpointId,
         recoveryHint: "Resume the open transaction with its original target checkpoint"
       });
     }
-    return driveRollbackTransaction(root2, featureId, open7, options);
+    return driveRollbackTransaction(root2, featureId, open8, options);
   }
   if (!rollbackExecutionAllowed(initial.route, initial.classification.controls)) {
     throw new DevFlowError("ROLLBACK_EXECUTION_NOT_ALLOWED", "\u5F53\u524D\u52A8\u6001\u8DEF\u7EBF\u6CA1\u6709\u542F\u7528 executable-rollback \u4E0E unit-chain \u63A7\u5236\u3002");
@@ -9658,6 +10240,7 @@ async function executeRollback(root2, featureId, expectedRevision, targetCheckpo
     filePlan: preview.filePlan.map((action) => ({ ...action })),
     verificationAttemptIds: [],
     projectConfigSha256: preview.projectConfigSha256,
+    ...preview.verificationCommandHashes ? { verificationCommandHashes: preview.verificationCommandHashes } : {},
     startedAt: (/* @__PURE__ */ new Date()).toISOString()
   };
   await options.fault?.("before-journal-write");
@@ -9667,9 +10250,9 @@ async function executeRollback(root2, featureId, expectedRevision, targetCheckpo
 }
 
 // plugins/dev-flow/src/mcp/doctor.ts
-import { lstat as lstat6, readdir as readdir6, readFile as readFile12 } from "node:fs/promises";
-import path15 from "node:path";
-import { createHash as createHash18 } from "node:crypto";
+import { lstat as lstat6, readdir as readdir6, readFile as readFile14 } from "node:fs/promises";
+import path17 from "node:path";
+import { createHash as createHash19 } from "node:crypto";
 async function readable(file) {
   try {
     await lstat6(file);
@@ -9680,7 +10263,7 @@ async function readable(file) {
 }
 async function validJson(file) {
   try {
-    JSON.parse(await readFile12(file, "utf8"));
+    JSON.parse(await readFile14(file, "utf8"));
     return true;
   } catch {
     return false;
@@ -9688,7 +10271,7 @@ async function validJson(file) {
 }
 async function pointerRecoveryCandidates(root2) {
   try {
-    const directory = path15.join(root2, ".dev-flow", "features");
+    const directory = path17.join(root2, ".dev-flow", "features");
     const entries = await readdir6(directory, { withFileTypes: true });
     return await Promise.all(entries.filter((entry) => entry.isDirectory()).map(async (entry) => {
       let stateSha256;
@@ -9705,7 +10288,33 @@ async function pointerRecoveryCandidates(root2) {
 async function collectDoctorReport(root2, pluginRoot2, version, tools2) {
   const diagnostics2 = [];
   const add2 = (code, status, message, recoveryHint) => diagnostics2.push({ code, status, message, ...recoveryHint ? { recoveryHint } : {} });
-  const projectFile = path15.join(root2, ".dev-flow", "project.json");
+  const healthSignals = await readHostHealth(root2);
+  const now = Date.now();
+  const hookHealth = ["claude", "codex"].map((host) => {
+    const latest = [...healthSignals].reverse().find((signal) => signal.host === host);
+    const ageMs = latest ? Math.max(0, now - Date.parse(latest.at)) : void 0;
+    const capability = (kinds) => {
+      const signal = [...healthSignals].reverse().find((candidate) => candidate.host === host && kinds.includes(candidate.kind));
+      const capabilityAgeMs = signal ? Math.max(0, now - Date.parse(signal.at)) : void 0;
+      const status2 = !signal ? "missing" : capabilityAgeMs <= 15 * 60 * 1e3 ? "healthy" : "stale";
+      return { status: status2, ...signal ? { latest: signal } : {}, ...capabilityAgeMs !== void 0 ? { ageMs: capabilityAgeMs } : {} };
+    };
+    const capabilities = {
+      session: capability(["session-start"]),
+      prompt: capability(["user-prompt-submit"]),
+      tool: capability(["tool", "turn-boundary"])
+    };
+    const capabilityStatuses = Object.values(capabilities).map((entry) => entry.status);
+    const status = !latest ? "missing" : capabilityStatuses.every((entry) => entry === "healthy") ? "healthy" : capabilityStatuses.some((entry) => entry === "healthy") ? "partial" : "stale";
+    if (status === "missing") add2("HOOK_HEALTH_MISSING", "warning", `${host} hook \u5C1A\u672A\u8BB0\u5F55 SessionStart/UserPromptSubmit \u5065\u5EB7\u4FE1\u53F7`, "\u786E\u8BA4\u5BF9\u5E94\u5BBF\u4E3B\u5DF2\u5B89\u88C5\u5E76\u63A5\u7EBF Dev Flow hook\uFF0C\u7136\u540E\u91CD\u65B0\u5F00\u542F\u4F1A\u8BDD");
+    else if (status === "stale") add2("HOOK_HEALTH_STALE", "warning", `${host} hook \u6700\u8FD1\u4FE1\u53F7\u5DF2\u8FC7\u671F`, "\u6062\u590D\u5BBF\u4E3B hook \u540E\u91CD\u65B0\u5F00\u542F\u4F1A\u8BDD\u5E76\u91CD\u8BD5\u539F\u64CD\u4F5C\uFF1B\u82E5\u6709\u672A\u77E5\u8DEF\u5F84\uFF0C\u518D\u8C03\u7528 dev_flow_reconcile_workspace");
+    else if (status === "partial") add2("HOOK_HEALTH_PARTIAL", "warning", `${host} hook \u53EA\u6709\u90E8\u5206\u80FD\u529B\u5B58\u5728\u8FD1\u671F\u4FE1\u53F7`, "\u89E6\u53D1\u4E00\u6B21\u7528\u6237\u6D88\u606F\u548C\u4E00\u6B21\u5B89\u5168\u5DE5\u5177\u8C03\u7528\uFF0C\u786E\u8BA4\u5404 hook \u901A\u9053\u5747\u5DF2\u63A5\u7EBF");
+    else add2("HOOK_HEALTH_HEALTHY", "ok", `${host} hook \u5F53\u524D\u5065\u5EB7`);
+    if (capabilities.prompt.status === "missing") add2("HOOK_PROMPT_HEALTH_MISSING", "warning", `${host} UserPromptSubmit \u901A\u9053\u5C1A\u65E0\u53EF\u4FE1\u4FE1\u53F7`, "\u786E\u8BA4 UserPromptSubmit hook \u5DF2\u5B89\u88C5\uFF0C\u53D1\u9001\u4E00\u6761\u7528\u6237\u6D88\u606F\u540E\u91CD\u65B0\u8FD0\u884C doctor");
+    else if (capabilities.prompt.status === "stale") add2("HOOK_PROMPT_HEALTH_STALE", "warning", `${host} UserPromptSubmit \u901A\u9053\u6700\u8FD1\u4FE1\u53F7\u5DF2\u8FC7\u671F`, "\u6062\u590D UserPromptSubmit hook\uFF0C\u53D1\u9001\u4E00\u6761\u7528\u6237\u6D88\u606F\u540E\u91CD\u8BD5\u6587\u672C\u56DE\u7B54");
+    return { host, status, capabilities, ...latest ? { latest } : {}, ...ageMs !== void 0 ? { ageMs } : {} };
+  });
+  const projectFile = path17.join(root2, ".dev-flow", "project.json");
   let project = { initialized: await readable(projectFile), valid: false };
   if (!project.initialized) add2("PROJECT_NOT_INITIALIZED", "warning", "run dev_flow_init_project before starting a feature");
   else {
@@ -9717,7 +10326,7 @@ async function collectDoctorReport(root2, pluginRoot2, version, tools2) {
       add2("PROJECT_CONFIG_INVALID", "error", error instanceof Error ? error.message : String(error));
     }
   }
-  const activeFile = path15.join(root2, ".dev-flow", "active.json");
+  const activeFile = path17.join(root2, ".dev-flow", "active.json");
   let activeFeature = { present: await readable(activeFile), valid: false };
   let corruptFeature;
   let corruptActivePointer;
@@ -9744,8 +10353,8 @@ async function collectDoctorReport(root2, pluginRoot2, version, tools2) {
         }
         if (!digest10) {
           try {
-            const raw = await readFile12(path15.join(root2, ".dev-flow", "features", active.featureId, "state.json"));
-            digest10 = createHash18("sha256").update(raw).digest("hex");
+            const raw = await readFile14(path17.join(root2, ".dev-flow", "features", active.featureId, "state.json"));
+            digest10 = createHash19("sha256").update(raw).digest("hex");
           } catch {
             digest10 = void 0;
           }
@@ -9774,7 +10383,7 @@ async function collectDoctorReport(root2, pluginRoot2, version, tools2) {
       if (error.code === "ACTIVE_POINTER_UNREADABLE") {
         let activeSha256;
         try {
-          activeSha256 = createHash18("sha256").update(await readFile12(activeFile)).digest("hex");
+          activeSha256 = createHash19("sha256").update(await readFile14(activeFile)).digest("hex");
         } catch {
         }
         activeFeature = { present: true, valid: false, corrupt: true, recoveryAction: "abandon" };
@@ -9803,7 +10412,7 @@ async function collectDoctorReport(root2, pluginRoot2, version, tools2) {
   );
   const rollbackTransactions = [];
   try {
-    const featuresDirectory = path15.join(root2, ".dev-flow", "features");
+    const featuresDirectory = path17.join(root2, ".dev-flow", "features");
     const entries = await readdir6(featuresDirectory, { withFileTypes: true });
     for (const entry of entries.filter((candidate) => candidate.isDirectory())) {
       let journal;
@@ -9946,14 +10555,14 @@ async function collectDoctorReport(root2, pluginRoot2, version, tools2) {
     }
   }
   const paths = {
-    claudeManifest: path15.join(pluginRoot2, ".claude-plugin", "plugin.json"),
-    codexManifest: path15.join(pluginRoot2, ".codex-plugin", "plugin.json"),
-    mcp: path15.join(pluginRoot2, ".mcp.json"),
-    claudeHooks: path15.join(pluginRoot2, "hosts", "claude", "hooks.json"),
-    codexHooks: path15.join(pluginRoot2, "hosts", "codex", "hooks.json"),
-    mcpBundle: path15.join(pluginRoot2, "dist", "mcp-server.mjs"),
-    claudeBundle: path15.join(pluginRoot2, "dist", "claude-hook.mjs"),
-    codexBundle: path15.join(pluginRoot2, "dist", "codex-hook.mjs")
+    claudeManifest: path17.join(pluginRoot2, ".claude-plugin", "plugin.json"),
+    codexManifest: path17.join(pluginRoot2, ".codex-plugin", "plugin.json"),
+    mcp: path17.join(pluginRoot2, ".mcp.json"),
+    claudeHooks: path17.join(pluginRoot2, "hosts", "claude", "hooks.json"),
+    codexHooks: path17.join(pluginRoot2, "hosts", "codex", "hooks.json"),
+    mcpBundle: path17.join(pluginRoot2, "dist", "mcp-server.mjs"),
+    claudeBundle: path17.join(pluginRoot2, "dist", "claude-hook.mjs"),
+    codexBundle: path17.join(pluginRoot2, "dist", "codex-hook.mjs")
   };
   const files = await Promise.all(Object.entries(paths).map(async ([name, file]) => [name, await readable(file)]));
   const missing = files.filter(([, exists]) => !exists).map(([name]) => name);
@@ -9963,11 +10572,11 @@ async function collectDoctorReport(root2, pluginRoot2, version, tools2) {
   add2(invalidJson ? "PLUGIN_WIRING_INVALID" : "PLUGIN_WIRING_VALID", invalidJson ? "error" : "ok", invalidJson ? "a manifest, MCP file, or hook file is not valid JSON" : "plugin manifest, MCP and hook wiring parse successfully");
   const legacyFeatures = [];
   try {
-    const directory = path15.join(root2, ".dev-flow", "features");
+    const directory = path17.join(root2, ".dev-flow", "features");
     const entries = await readdir6(directory, { withFileTypes: true });
     for (const entry of entries.filter((candidate) => candidate.isDirectory())) {
       try {
-        const raw = JSON.parse(await readFile12(path15.join(directory, entry.name, "state.json"), "utf8"));
+        const raw = JSON.parse(await readFile14(path17.join(directory, entry.name, "state.json"), "utf8"));
         if ([1, 2, 3].includes(Number(raw.schemaVersion)) && raw.lifecycle !== "finalized" && raw.lifecycle !== "abandoned") legacyFeatures.push(entry.name);
       } catch {
       }
@@ -9985,6 +10594,7 @@ async function collectDoctorReport(root2, pluginRoot2, version, tools2) {
     activeFeature,
     corruptFeature,
     corruptActivePointer,
+    hookHealth,
     recoveryTransaction: recoveryTxn ?? null,
     rollbackTransactions,
     trace: trace2 ?? null,
@@ -10003,7 +10613,7 @@ import { promisify as promisify6 } from "node:util";
 // plugins/dev-flow/src/mcp/windows-notifications.ts
 import { execFile as execFile5 } from "node:child_process";
 import { access as access4 } from "node:fs/promises";
-import path16 from "node:path";
+import path18 from "node:path";
 import { promisify as promisify5 } from "node:util";
 var run4 = promisify5(execFile5);
 var WINDOWS_NOTIFICATION_APP_ID = "io.github.wxy_hh.dev_flow";
@@ -10016,7 +10626,7 @@ function environmentOf(options) {
 }
 function shortcutPathOf(environment) {
   const appData = environment.APPDATA;
-  return appData ? path16.win32.join(appData, "Microsoft", "Windows", "Start Menu", "Programs", shortcutName) : void 0;
+  return appData ? path18.win32.join(appData, "Microsoft", "Windows", "Start Menu", "Programs", shortcutName) : void 0;
 }
 async function command(file, args) {
   return run4(file, args);
@@ -10044,7 +10654,7 @@ $ErrorActionPreference = 'Stop'
 $shortcutPath = ${powerShellLiteral(shortcutPath)}
 $nodeExecutable = ${powerShellLiteral(nodeExecutable)}
 $nodeArguments = '-e "process.exit(0)"'
-$workingDirectory = ${powerShellLiteral(path16.win32.dirname(shortcutPath))}
+$workingDirectory = ${powerShellLiteral(path18.win32.dirname(shortcutPath))}
 $appId = ${powerShellLiteral(WINDOWS_NOTIFICATION_APP_ID)}
 $source = @'
 using System;
@@ -10205,7 +10815,7 @@ function messageFor(event) {
   if (event.kind === "workflow-finalized") {
     return { title: "Dev Flow \u5DF2\u5B8C\u6210", body: "\u5F53\u524D\u529F\u80FD\u5DF2\u5B8C\u6210\u5E76\u751F\u6210\u4EA4\u4ED8\u5FEB\u7167\u3002" };
   }
-  const decision = event.decision === "approval" ? "\u786E\u8BA4\u5F00\u59CB\u6267\u884C" : event.decision === "rollback-confirmation" ? "\u56DE\u64A4\u786E\u8BA4" : event.decision === "quality-exception" ? "\u8D28\u91CF\u98CE\u9669\u786E\u8BA4" : event.decision === "review-risk" ? "\u5BA1\u67E5\u98CE\u9669\u786E\u8BA4" : "\u9700\u6C42\u9009\u62E9";
+  const decision = event.decision === "approval" ? "\u786E\u8BA4\u5F00\u59CB\u6267\u884C" : event.decision === "rollback-confirmation" ? "\u56DE\u64A4\u786E\u8BA4" : event.decision === "quality-exception" ? "\u8D28\u91CF\u98CE\u9669\u786E\u8BA4" : event.decision === "review-risk" ? "\u5BA1\u67E5\u98CE\u9669\u786E\u8BA4" : event.decision === "route-confirmation" ? "\u8DEF\u7EBF\u786E\u8BA4" : "\u9700\u6C42\u9009\u62E9";
   return { title: "Dev Flow \u9700\u8981\u51B3\u7B56", body: `\u5F53\u524D\u529F\u80FD\u6B63\u5728\u7B49\u5F85\u4F60\u7684${decision}\u3002` };
 }
 function appleScriptString(value) {
@@ -10249,11 +10859,11 @@ function stable2(value) {
   if (Array.isArray(value)) return `[${value.map(stable2).join(",")}]`;
   return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${stable2(value[key])}`).join(",")}}`;
 }
-function childPath(path18, key) {
-  return typeof key === "number" ? `${path18}[${key}]` : `${path18}.${key}`;
+function childPath(path20, key) {
+  return typeof key === "number" ? `${path20}[${key}]` : `${path20}.${key}`;
 }
-function issue2(path18, keyword, message, extra = {}) {
-  return { path: path18, keyword, message, ...extra };
+function issue2(path20, keyword, message, extra = {}) {
+  return { path: path20, keyword, message, ...extra };
 }
 function matchesType(value, expected) {
   if (expected === "integer") return typeof value === "number" && Number.isInteger(value);
@@ -10277,24 +10887,24 @@ function discriminatorMatches(value, schema) {
   }
   return constrained;
 }
-function validate(value, schema, path18) {
+function validate(value, schema, path20) {
   if (Object.keys(schema).length === 0) return [];
   const issues = [];
   const expectedType = schema.type;
   if (typeof expectedType === "string" && !matchesType(value, expectedType)) {
-    return [issue2(path18, "type", `expected ${expectedType}, got ${typeOf(value)}`)];
+    return [issue2(path20, "type", `expected ${expectedType}, got ${typeOf(value)}`)];
   }
   if (Array.isArray(expectedType) && !expectedType.some((candidate) => typeof candidate === "string" && matchesType(value, candidate))) {
-    return [issue2(path18, "type", `expected one of ${expectedType.join(", ")}, got ${typeOf(value)}`)];
+    return [issue2(path20, "type", `expected one of ${expectedType.join(", ")}, got ${typeOf(value)}`)];
   }
   if (schema.const !== void 0 && stable2(value) !== stable2(schema.const)) {
-    issues.push(issue2(path18, "const", `must equal ${stable2(schema.const)}`));
+    issues.push(issue2(path20, "const", `must equal ${stable2(schema.const)}`));
   }
   if (Array.isArray(schema.enum) && !schema.enum.some((candidate) => stable2(value) === stable2(candidate))) {
-    issues.push(issue2(path18, "enum", "must be one of the allowed values"));
+    issues.push(issue2(path20, "enum", "must be one of the allowed values"));
   }
   if (typeof value === "string") {
-    if (typeof schema.minLength === "number" && value.length < schema.minLength) issues.push(issue2(path18, "minLength", `must have length >= ${schema.minLength}`));
+    if (typeof schema.minLength === "number" && value.length < schema.minLength) issues.push(issue2(path20, "minLength", `must have length >= ${schema.minLength}`));
     if (typeof schema.pattern === "string") {
       let matches = false;
       try {
@@ -10302,21 +10912,21 @@ function validate(value, schema, path18) {
       } catch {
         matches = false;
       }
-      if (!matches) issues.push(issue2(path18, "pattern", "does not match the required pattern"));
+      if (!matches) issues.push(issue2(path20, "pattern", "does not match the required pattern"));
     }
   }
   if (typeof value === "number" && typeof schema.minimum === "number" && value < schema.minimum) {
-    issues.push(issue2(path18, "minimum", `must be >= ${schema.minimum}`));
+    issues.push(issue2(path20, "minimum", `must be >= ${schema.minimum}`));
   }
   if (Array.isArray(value)) {
-    if (typeof schema.minItems === "number" && value.length < schema.minItems) issues.push(issue2(path18, "minItems", `must contain at least ${schema.minItems} items`));
-    if (typeof schema.maxItems === "number" && value.length > schema.maxItems) issues.push(issue2(path18, "maxItems", `must contain at most ${schema.maxItems} items`));
+    if (typeof schema.minItems === "number" && value.length < schema.minItems) issues.push(issue2(path20, "minItems", `must contain at least ${schema.minItems} items`));
+    if (typeof schema.maxItems === "number" && value.length > schema.maxItems) issues.push(issue2(path20, "maxItems", `must contain at most ${schema.maxItems} items`));
     if (schema.uniqueItems === true) {
       const seen = new Set(value.map(stable2));
-      if (seen.size !== value.length) issues.push(issue2(path18, "uniqueItems", "items must be unique"));
+      if (seen.size !== value.length) issues.push(issue2(path20, "uniqueItems", "items must be unique"));
     }
     if (schema.items && typeof schema.items === "object" && !Array.isArray(schema.items)) {
-      value.forEach((item, index) => issues.push(...validate(item, schema.items, childPath(path18, index))));
+      value.forEach((item, index) => issues.push(...validate(item, schema.items, childPath(path20, index))));
     }
   }
   if (typeof value === "object" && value !== null && !Array.isArray(value)) {
@@ -10324,36 +10934,36 @@ function validate(value, schema, path18) {
     const properties = schema.properties && typeof schema.properties === "object" && !Array.isArray(schema.properties) ? schema.properties : {};
     const required = Array.isArray(schema.required) ? schema.required.filter((key) => typeof key === "string") : [];
     for (const key of required) {
-      if (!(key in record)) issues.push(issue2(childPath(path18, key), "required", "is required"));
+      if (!(key in record)) issues.push(issue2(childPath(path20, key), "required", "is required"));
     }
     const additional = schema.additionalProperties;
     for (const [key, item] of Object.entries(record)) {
       if (properties[key]) {
-        issues.push(...validate(item, properties[key], childPath(path18, key)));
+        issues.push(...validate(item, properties[key], childPath(path20, key)));
       } else if (additional === false) {
-        issues.push(issue2(childPath(path18, key), "additionalProperties", "unknown field", {
+        issues.push(issue2(childPath(path20, key), "additionalProperties", "unknown field", {
           unknownField: key,
           allowedFields: Object.keys(properties).sort()
         }));
       } else if (additional && typeof additional === "object" && !Array.isArray(additional)) {
-        issues.push(...validate(item, additional, childPath(path18, key)));
+        issues.push(...validate(item, additional, childPath(path20, key)));
       }
     }
     const propertyNames = schema.propertyNames && typeof schema.propertyNames === "object" && !Array.isArray(schema.propertyNames) ? schema.propertyNames : void 0;
     if (propertyNames) {
-      for (const key of Object.keys(record)) issues.push(...validate(key, propertyNames, childPath(path18, key)));
+      for (const key of Object.keys(record)) issues.push(...validate(key, propertyNames, childPath(path20, key)));
     }
   }
   if (Array.isArray(schema.oneOf)) {
     const candidates = schema.oneOf.filter((candidate) => typeof candidate === "object" && candidate !== null && !Array.isArray(candidate));
-    const results = candidates.map((candidate) => validate(value, candidate, path18));
+    const results = candidates.map((candidate) => validate(value, candidate, path20));
     const valid = results.filter((result) => result.length === 0);
     if (valid.length !== 1) {
       const discriminatorResults = results.filter((_, index) => discriminatorMatches(value, candidates[index]));
       const bestPool = discriminatorResults.length ? discriminatorResults : results;
       const best = bestPool.sort((left, right) => left.length - right.length)[0] ?? [];
       issues.push(...best);
-      issues.push(issue2(path18, "oneOf", "must match exactly one schema"));
+      issues.push(issue2(path20, "oneOf", "must match exactly one schema"));
     }
   }
   return issues;
@@ -10377,10 +10987,11 @@ function validateToolInput(toolName, args, schemas) {
 
 // plugins/dev-flow/src/mcp/server.ts
 var root = process.cwd();
-var moduleDirectory = path17.dirname(fileURLToPath(import.meta.url));
-var pluginRoot = path17.basename(moduleDirectory) === "dist" ? path17.resolve(moduleDirectory, "..") : path17.resolve(moduleDirectory, "../..");
+var moduleDirectory = path19.dirname(fileURLToPath(import.meta.url));
+var pluginRoot = path19.basename(moduleDirectory) === "dist" ? path19.resolve(moduleDirectory, "..") : path19.resolve(moduleDirectory, "../..");
 var tools = [
   "dev_flow_init_project",
+  "dev_flow_update_project",
   "dev_flow_classify",
   "dev_flow_start",
   "dev_flow_lock_classification",
@@ -10598,6 +11209,7 @@ var boundaryAuditSchema = object(["scanned", "items"], {
 });
 var toolSchemas = {
   dev_flow_init_project: { description: "Create strict project configuration.", inputSchema: object(["config"], { config: { type: "object" } }) },
+  dev_flow_update_project: { description: "Update strict project configuration using sha256 compare-and-swap.", inputSchema: object(["config", "expectedSha256"], { config: { type: "object" }, expectedSha256: string }) },
   dev_flow_classify: {
     description: "Pure route classification (read-only preview).",
     inputSchema: object([], {
@@ -11140,7 +11752,11 @@ async function call(name, a, connection2) {
   switch (name) {
     case "dev_flow_init_project": {
       await initProject(root, a.config);
-      return { \u72B6\u6001: "\u5DF2\u521D\u59CB\u5316", \u914D\u7F6E\u8DEF\u5F84: path17.join(root, ".dev-flow", "project.json"), \u4E0B\u4E00\u6B65: "\u8C03\u7528 dev_flow_start \u5F00\u59CB\u4E00\u4E2A\u9700\u6C42\u3002" };
+      return { \u72B6\u6001: "\u5DF2\u521D\u59CB\u5316", \u914D\u7F6E\u8DEF\u5F84: path19.join(root, ".dev-flow", "project.json"), \u4E0B\u4E00\u6B65: "\u8C03\u7528 dev_flow_start \u5F00\u59CB\u4E00\u4E2A\u9700\u6C42\u3002" };
+    }
+    case "dev_flow_update_project": {
+      const result = await updateProjectConfig(root, a.config, a.expectedSha256);
+      return { \u72B6\u6001: "\u5DF2\u66F4\u65B0", \u914D\u7F6E\u8DEF\u5F84: path19.join(root, ".dev-flow", "project.json"), previousSha256: result.previousSha256, sha256: result.sha256, \u53D8\u5316: result.impact, \u53D7\u5F71\u54CD\u8BC1\u636E: result.affectedEvidence, \u4E0B\u4E00\u6B65: "\u65B0\u589E\u6216\u6269\u5145\u9A8C\u8BC1\u80FD\u529B\u53EF\u7EE7\u7EED\u5F53\u524D\u4EFB\u52A1\uFF1B\u88AB\u5F15\u7528\u547D\u4EE4\u53D8\u5316\u7684 Trace/RU \u9700\u8981\u6309\u9519\u8BEF\u63D0\u793A\u91CD\u65B0\u767B\u8BB0\u3002" };
     }
     case "dev_flow_classify": {
       if (!a.classificationBasis && (a.level === void 0 || a.topology === void 0)) {
@@ -11169,7 +11785,7 @@ async function call(name, a, connection2) {
     case "dev_flow_lock_classification": {
       const classification2 = normalizeLockClassification(a.classification);
       const { level, topology, requirements, riskLabels, acceptanceAssistSuggested, scopeFacts, topologyFacts, uncertaintyFacts, riskFacts, decisionRefs, controlEnhancements } = classification2;
-      return lockClassification(root, a.featureId, a.expectedRevision, {
+      const state = await lockClassification(root, a.featureId, a.expectedRevision, {
         level,
         topology,
         ...requirements ? { requirements } : {},
@@ -11184,6 +11800,23 @@ async function call(name, a, connection2) {
         classificationBasis: classification2.classificationBasis,
         signals: classification2.classificationBasis?.signals
       }, a.boundaryAudit);
+      const decision = pendingDecisionForState(state);
+      const interaction = decision ? pendingInteractionForDecision(state, decision) : void 0;
+      if (decision?.kind !== "route-confirmation" || !interaction) return state;
+      emitAttentionNotification({ kind: "decision-required", featureId: a.featureId, decision: "route-confirmation" });
+      const selection = await connection2.elicit(toPublicInteraction(interaction), interaction.question ?? decision.question);
+      if (!selection) return interactionEnvelope(state, toPublicInteraction(interaction), "pending");
+      const next = await resolveRouteClassificationElicitation(
+        root,
+        a.featureId,
+        state.revision,
+        interaction.id,
+        selection.action,
+        selection.comment,
+        state.lastUpdatedBy.host
+      );
+      const response = interactionResponse(next, interaction.id);
+      return interactionEnvelope(next, toPublicInteraction(getInteraction(next, interaction.id)), selection.action, response);
     }
     case "dev_flow_status":
       return readCompactStatus(root, a.featureId);
@@ -11418,18 +12051,43 @@ async function call(name, a, connection2) {
         };
       }
       const interaction = pendingInteractionForDecision(state, decision);
+      if (decision.kind === "task-switch" && interaction) {
+        const result = await resolveTaskSwitchAnswer(root, a.featureId, a.expectedRevision, a.userReply, a.host);
+        return {
+          state: result.state,
+          message: result.action === "pause-old" ? "\u65E7\u4EFB\u52A1\u5DF2\u6682\u505C\uFF0C\u53EF\u4EE5\u91CD\u8BD5\u5F00\u59CB\u65B0\u4EFB\u52A1\u3002" : result.action === "return-old" ? "\u7EE7\u7EED\u5F53\u524D\u4EFB\u52A1\uFF1B\u65B0\u4EFB\u52A1\u5C1A\u672A\u521B\u5EFA\u3002" : "\u8BF7\u5148\u5B8C\u6210\u5F53\u524D\u4EFB\u52A1\uFF1B\u65B0\u4EFB\u52A1\u5C1A\u672A\u521B\u5EFA\u3002",
+          \u9700\u8981\u7528\u6237\u51B3\u5B9A: false
+        };
+      }
       if (decision.kind === "route-confirmation") {
         const next = await confirmRouteClassification(root, a.featureId, a.expectedRevision, a.userReply, a.host);
         return { state: next, message: "\u8DEF\u7EBF\u5DF2\u6309\u53EF\u4FE1\u7528\u6237\u786E\u8BA4\u539F\u5B50\u9501\u5B9A\u3002", \u9700\u8981\u7528\u6237\u51B3\u5B9A: false };
+      }
+      if (decision.kind === "workspace-ownership" && interaction) {
+        const result = await resolveWorkspaceOwnershipText(
+          root,
+          a.featureId,
+          a.expectedRevision,
+          interaction.id,
+          a.userReply,
+          a.host
+        );
+        return {
+          state: result.state,
+          message: result.action === "adopt-all" || result.action === "adopt" || result.action === "include" ? "\u5DF2\u5C06\u8DEF\u5F84\u7EB3\u5165\u5F53\u524D\u4EFB\u52A1\u3002" : result.action === "exclude-all" || result.action === "exclude" ? "\u5DF2\u5C06\u8DEF\u5F84\u6392\u9664\uFF1B\u7CFB\u7EDF\u4E0D\u4F1A\u81EA\u52A8\u8FD8\u539F\u6216\u6682\u5B58\u5B83\u4EEC\u3002" : "\u5DF2\u5207\u6362\u4E3A\u9010\u4E2A\u786E\u8BA4\u8DEF\u5F84\u3002",
+          ...pendingDecisionForState(result.state) ? { attention: "\u8BF7\u53EA\u56DE\u7B54\u5F53\u524D\u8FD9\u4E00\u9053\u95EE\u9898\u3002", \u9700\u8981\u7528\u6237\u51B3\u5B9A: true } : { \u9700\u8981\u7528\u6237\u51B3\u5B9A: false }
+        };
       }
       if (!interaction) {
         const prompt = resolvePromptEvent(await readFeatureEvents(root, a.featureId), {
           host: a.host,
           userReply: a.userReply,
           presentedAt: decision.presentedAt,
-          presentedRevision: decision.presentedRevision
+          presentedRevision: decision.presentedRevision,
+          ...decision.presentationEventId ? { presentationEventId: decision.presentationEventId } : {}
         });
         const matched = matchDecisionReply(decision, a.userReply);
+        let nextPresentationEventId;
         const next = await mutate(root, a.featureId, a.expectedRevision, "decision-answered", async (draft) => {
           const current = draft.pendingDecision;
           if (!current) throw new DevFlowError("DECISION_ALREADY_RESOLVED", "\u5F53\u524D\u95EE\u9898\u5DF2\u7ECF\u5904\u7406\u3002", { userMessage: "\u5F53\u524D\u95EE\u9898\u5DF2\u7ECF\u5904\u7406\uFF0C\u8BF7\u5237\u65B0\u72B6\u6001\u3002", recoveryKind: "refresh", recoveryInstruction: "\u5237\u65B0\u5F53\u524D\u72B6\u6001\u540E\u7EE7\u7EED\u3002", retryOriginal: false });
@@ -11474,29 +12132,29 @@ async function call(name, a, connection2) {
             if (owner === "feature") draft.workspace.ownershipSource[file] = "user-adopted";
             const nextFile = Object.keys(draft.workspace.startedDirty).find((candidate) => draft.workspace.ownership[candidate] === void 0);
             if (nextFile) {
-              draft.pendingDecision = {
+              const nextInteraction = createInteraction(draft, {
                 kind: "workspace-ownership",
+                target: `workspace:${nextFile}`,
+                basisHash: current.basisHash,
                 question: `\u542F\u52A8\u524D\u5DF2\u53D1\u73B0\u8DEF\u5F84\u201C${nextFile}\u201D\u5B58\u5728\u6539\u52A8\u3002\u5B83\u662F\u5426\u5C5E\u4E8E\u5F53\u524D\u4EFB\u52A1\uFF1F`,
                 options: [
-                  { id: "adopt", label: "\u7EB3\u5165\u5F53\u524D\u4EFB\u52A1", recommended: true },
+                  { id: "adopt", label: "\u7EB3\u5165\u5F53\u524D\u4EFB\u52A1" },
                   { id: "exclude", label: "\u5148\u5904\u7406\u540E\u7EE7\u7EED" }
                 ],
-                basisHash: current.basisHash,
-                presentedAt: (/* @__PURE__ */ new Date()).toISOString(),
-                presentedRevision: draft.revision,
-                source: "core",
-                target: `workspace:${nextFile}`
-              };
+                workspacePaths: [nextFile],
+                workspaceBatchPaths: [nextFile]
+              });
+              nextPresentationEventId = nextInteraction.presentationEventId;
             }
           } else if (current.kind === "task-switch" && matched.option.id === "pause-old") {
             draft.lifecycle = "paused";
             draft.resumeSummary = "\u65E7\u4EFB\u52A1\u5DF2\u6682\u505C\uFF1B\u6062\u590D\u65F6\u4F1A\u81EA\u52A8\u5BF9\u8D26\u5DE5\u4F5C\u533A\u3002";
           }
-        }, { eventId: prompt.eventId, action: matched.option.id });
+        }, () => ({ eventId: prompt.eventId, action: matched.option.id, ...nextPresentationEventId ? { presentationEventId: nextPresentationEventId } : {} }));
         return {
           state: next,
           message: matched.option.id === "adopt" ? "\u5DF2\u5C06\u8BE5\u8DEF\u5F84\u7EB3\u5165\u5F53\u524D\u4EFB\u52A1\u3002" : matched.option.id === "exclude" ? "\u5DF2\u5C06\u8BE5\u8DEF\u5F84\u6392\u9664\uFF1B\u7CFB\u7EDF\u4E0D\u4F1A\u81EA\u52A8\u8FD8\u539F\u6216\u6682\u5B58\u5B83\u3002" : "\u5DF2\u8BB0\u5F55\u4F60\u7684\u9009\u62E9\uFF0C\u6D41\u7A0B\u5C06\u6309\u5F53\u524D\u4EFB\u52A1\u72B6\u6001\u7EE7\u7EED\u3002",
-          ...next.pendingDecision ? { attention: "\u8BF7\u53EA\u56DE\u7B54\u5F53\u524D\u8FD9\u4E00\u9053\u95EE\u9898\u3002", \u9700\u8981\u7528\u6237\u51B3\u5B9A: true } : { \u9700\u8981\u7528\u6237\u51B3\u5B9A: false }
+          ...pendingDecisionForState(next) ? { attention: "\u8BF7\u53EA\u56DE\u7B54\u5F53\u524D\u8FD9\u4E00\u9053\u95EE\u9898\u3002", \u9700\u8981\u7528\u6237\u51B3\u5B9A: true } : { \u9700\u8981\u7528\u6237\u51B3\u5B9A: false }
         };
       }
       if (decision.kind === "approval") {

@@ -1,4 +1,4 @@
-import { resolvePromptEvent } from "./interaction-provenance.js";
+import { resolveInteractionPromptEvent } from "./interaction-provenance.js";
 import { DevFlowError } from "./errors.js";
 import { mutate, readFeatureEvents, readState, type FeatureState } from "./state-store.js";
 import {
@@ -58,7 +58,7 @@ export async function presentQualityException(
       ],
     });
     interactionId = interaction.id;
-  }, { kind });
+  }, () => ({ kind, presentationEventId: interaction?.presentationEventId }));
   if (!interaction) throw new DevFlowError("INTERACTION_NOT_CREATED", kind);
   return { state, interaction: toPublicInteraction(interaction), interactionId };
 }
@@ -74,11 +74,9 @@ export async function resolveQualityExceptionAnswer(
   const initial = await readState(root, featureId);
   const interaction = getInteraction(initial, interactionId);
   if (interaction.kind !== "quality-exception" || interaction.status !== "pending") throw new DevFlowError("INTERACTION_NOT_PENDING", "当前风险问题已经处理。", { interactionId });
-  const match = resolvePromptEvent(await readFeatureEvents(root, featureId), {
+  const match = resolveInteractionPromptEvent(await readFeatureEvents(root, featureId), initial, interaction, {
     host,
     userReply,
-    presentedAt: interaction.presentedAt,
-    presentedRevision: initial.pendingDecision?.presentedRevision ?? initial.revision - 1,
   });
   return resolveQualityExceptionResponse(root, featureId, expectedRevision, interactionId, host, {
     source: "text",

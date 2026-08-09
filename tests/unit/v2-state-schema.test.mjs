@@ -6,6 +6,7 @@ import { mkdtemp, mkdir, readFile, writeFile } from "node:fs/promises";
 import { loadSource } from "../helpers/load-source.mjs";
 
 const state = await loadSource("plugins/dev-flow/src/core/state-store.ts");
+const decisions = await loadSource("plugins/dev-flow/src/core/decision-interactions.ts");
 const steps = await loadSource("plugins/dev-flow/src/core/feature-check.ts");
 const config = {
   schemaVersion: 2,
@@ -37,7 +38,7 @@ test("start creates intake and route confirmation atomically creates routed v4 s
   assert.equal(intake.route, undefined);
   assert.deepEqual(intake.scope.inScope, ["src/需求á"]);
   const pending = await state.lockClassification(root, "f", intake.revision, facts, boundaryAudit);
-  assert.equal(pending.pendingDecision.kind, "route-confirmation");
+  assert.equal(decisions.pendingDecisionForState(pending).kind, "route-confirmation");
   await state.recordHostEvent(root, { eventId: "route-confirm", type: "user-prompt", host: "codex", text: "确认这条路线" });
   const routed = await state.confirmRouteClassification(root, "f", pending.revision, "确认这条路线", "codex");
   assert.equal(routed.mode, "routed");
@@ -104,7 +105,7 @@ test("pre-write reclassification can correct facts downward and re-presents mate
     classificationBasis: basis("multi-component", "new-capability"),
   }, "发现跨组件新能力");
   assert.equal(pending.route, "xs");
-  assert.equal(pending.pendingDecision.kind, "route-confirmation");
+  assert.equal(decisions.pendingDecisionForState(pending).kind, "route-confirmation");
   assert.equal(pending.routeConfirmation.facts.level, "M");
 });
 

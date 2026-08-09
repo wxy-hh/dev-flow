@@ -3,7 +3,8 @@ import { DevFlowError } from "./errors.js";
 import { mutate, readFeatureEvents, readState, type FeatureState } from "./state-store.js";
 import { resolveDecision } from "./decision-ledger.js";
 import { decisionBasisHash } from "../policy/obligations.js";
-import { resolvePromptEvent } from "./interaction-provenance.js";
+import { resolveInteractionPromptEvent } from "./interaction-provenance.js";
+import { pendingDecisionForState } from "./decision-interactions.js";
 import {
   createInteraction,
   findInteractionForTarget,
@@ -64,7 +65,7 @@ export async function requestGrillDecision(
     else ledger.push({ id: input.questionId, question: input.question, status: "open", source: "grill" });
     draft.decisionLedger = ledger;
     draft.lastUpdatedBy = { host: input.host, pluginVersion: __DEV_FLOW_VERSION__ };
-  }, () => ({ questionId: input.questionId, mode: "decision" }));
+  }, () => ({ questionId: input.questionId, mode: "decision", presentationEventId: interaction?.presentationEventId }));
   if (!interaction) throw new DevFlowError("INTERACTION_NOT_CREATED", target);
   return { state, interaction: toPublicInteraction(interaction), interactionId: interaction.id };
 }
@@ -84,11 +85,9 @@ async function resolveGrillDecision(
   let promptEventId: string | undefined;
   if (input.source === "text") {
     const events = await readFeatureEvents(root, id);
-    const match = resolvePromptEvent(events, {
+    const match = resolveInteractionPromptEvent(events, initial, interaction, {
       host,
       userReply: input.userReply,
-      presentedAt: interaction.presentedAt,
-      presentedRevision: initial.pendingDecision?.presentedRevision ?? initial.revision - 1,
     });
     promptEventId = match.eventId;
   }
@@ -125,7 +124,7 @@ export async function assertRequirementsGrillSatisfied(root: string, id: string,
   const pending = Object.values(state.interactions ?? {}).some((value) => {
     const interaction = value as { kind?: string; status?: string };
     return interaction.kind === "grill" && interaction.status === "pending";
-  }) || state.pendingDecision?.kind === "grill";
+  }) || pendingDecisionForState(state)?.kind === "grill";
   if (pending) throw new DevFlowError("GRILL_INCOMPLETE", "还有一个需求问题等待回答。", { userMessage: "需求澄清还没有完成。", cause: "决策账本仍有待回答的 grill 问题。", impact: "当前路线不能进入下一步。", recoveryKind: "retry", recoveryInstruction: "先回答当前唯一问题，再继续当前步骤。", retryOriginal: true });
   const openDecision = (state.decisionLedger ?? []).find((decision) => decision.source === "grill" && decision.status === "open");
   if (openDecision) throw new DevFlowError("GRILL_INCOMPLETE", "需求决策账本仍有未收敛问题。", { userMessage: "需求澄清还没有完成。", cause: "决策账本中存在 open grill decision。", impact: "系统不会从 Markdown 字段猜测完成态。", recoveryKind: "retry", recoveryInstruction: "回答当前问题后重新登记真实需求内容。", retryOriginal: true });

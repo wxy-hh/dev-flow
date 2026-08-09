@@ -43,6 +43,8 @@ export interface ReviewBasis {
   artifacts: ReviewBasisArtifact[];
   traceability: { path: string; sha256: string; revision: number };
   projectConfigSha256: string;
+  /** Hashes of configured verification commands; role slices select only referenced IDs. */
+  verificationCommandHashes?: Record<string, string>;
   scopeManifestSha256: string;
   governedRootsFingerprint: string;
 }

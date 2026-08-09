@@ -34,10 +34,14 @@ const safeDetailKeys = new Set([
 ]);
 
 export function safeFailureDetails(details: Record<string, unknown>): Record<string, unknown> {
-  return Object.fromEntries(Object.entries(details).filter(([key, value]) =>
-    safeDetailKeys.has(key)
-    && !/(?:capability|token|secret|hash|sha|fingerprint)/iu.test(key)
-    && (typeof value !== "string" || value.length <= 2000)));
+  return Object.fromEntries(Object.entries(details).filter(([key, value]) => {
+    // A project-config CAS digest is an opaque public revision token, not a
+    // content secret. Clients need the current value to perform a safe retry.
+    if (key === "currentSha256") return typeof value === "string" && /^[a-f0-9]{64}$/.test(value);
+    return safeDetailKeys.has(key)
+      && !/(?:capability|token|secret|hash|sha|fingerprint)/iu.test(key)
+      && (typeof value !== "string" || value.length <= 2000);
+  }));
 }
 
 export class DevFlowError extends Error {

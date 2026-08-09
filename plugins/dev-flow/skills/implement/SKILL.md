@@ -7,4 +7,4 @@ description: 在 Dev Flow 5.0 可信写入归属和自动 checkpoint 保护下�
 
 所有任务都有自动 baseline。`controls.checkpoints=unit-chain` 且存在 Trace RU 时按 Core 的 begin/checkpoint 动作推进；每个 RU 只跑计划声明的 targeted forward verification。code-review 修复产生的新可信写入也自动进入交付。
 
-IDE、人工或无法归因的变更必须 reconcile 并逐个回答唯一 ownership decision；绝不因文件位于 scope/governedRoots 内而静默接纳。不要自动 stash/reset、删除缓存或手改 checkpoint。缓存清理只运行项目显式配置的 preflight。
+IDE、人工或无法归因的变更必须 reconcile 并回答唯一 ownership interaction；多路径先确认完整清单，可选择全部纳入、全部排除或逐个确认，绝不因文件位于 scope/governedRoots 内而静默接纳。开始实现、每个 checkpoint 前确认同宿主 hook 健康仍在 15 分钟窗口内。不要自动 stash/reset、删除缓存或手改 checkpoint。缓存清理只运行项目显式配置的 preflight。

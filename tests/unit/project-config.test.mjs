@@ -21,10 +21,24 @@ test("canonicalizes decomposed Unicode in protected roots", () => {
 
 test("validates preflight command references and governed-root excludes", () => {
   const config = structuredClone(valid);
-  config.verification.preflightCommands = ["unit", "unit"];
+  config.verification.commands.push({ id: "preflight", command: "node", args: ["-e", "process.exit(0)"], cwd: ".", provides: ["targeted"] });
+  config.verification.preflightCommands = ["preflight", "preflight"];
   config.governedRootsExclude = ["src/generated/**"];
   assert.doesNotThrow(() => validateProjectConfig(config));
-  assert.deepEqual(config.verification.preflightCommands, ["unit"]);
+  assert.deepEqual(config.verification.preflightCommands, ["preflight"]);
   assert.throws(() => validateProjectConfig({ ...valid, verification: { ...valid.verification, preflightCommands: ["missing"] } }), /INVALID_PROJECT_CONFIG/);
   assert.throws(() => validateProjectConfig({ ...valid, governedRootsExclude: ["../generated"] }), /INVALID_PROJECT_CONFIG/);
+});
+
+test("preflight-only configurations cannot satisfy the targeted guarantee", () => {
+  const config = structuredClone(valid);
+  config.verification.preflightCommands = ["unit"];
+  assert.throws(() => validateProjectConfig(config), (error) => error.code === "VERIFICATION_GUARANTEE_UNCONFIGURED");
+});
+
+test("allows the repository root as a governed root while keeping control paths excluded", () => {
+  const config = structuredClone(valid);
+  config.governedRoots = ["."];
+  assert.doesNotThrow(() => validateProjectConfig(config));
+  assert.deepEqual(config.governedRoots, ["."]);
 });

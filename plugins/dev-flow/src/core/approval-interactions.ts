@@ -96,6 +96,7 @@ export async function presentApproval(
     approvalId: selectedApproval,
     replyHint: interaction ? decisionHint(interaction) : approvalReplyHint(),
     interactionId: interaction?.id,
+    presentationEventId: interaction?.presentationEventId,
   }));
   if (!interaction) throw new DevFlowError("INTERACTION_NOT_CREATED", selectedApproval);
   return { ...state, approvalId: selectedApproval, interactionId: interaction.id, approvalReplyHint: decisionHint(interaction), approvalInteraction: toPublicInteraction(interaction) };

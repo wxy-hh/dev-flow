@@ -161,7 +161,6 @@ test("批准增强信息的事件账本损坏时保持 state unreadable，不 fa
 test("高风险 XS 的确认义务在 implementation 写入前生效", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "dev-flow-v2-adapter-"));
   await mkdir(path.join(root, "src"));
-  await writeFile(path.join(root, "src", "feature.txt"), "baseline\n");
   await state.initProject(root, config);
   let current = await state.startFeature(root, {
     featureId: "security-xs",

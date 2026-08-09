@@ -5,7 +5,7 @@ import { emitWindowsToast, type NotificationCommandExecutor, type NotificationPa
 const run = promisify(execFile);
 
 export type AttentionEvent =
-  | { kind: "decision-required"; featureId: string; decision: "approval" | "grill" | "rollback-confirmation" | "quality-exception" | "review-risk"; approvalId?: string }
+  | { kind: "decision-required"; featureId: string; decision: "approval" | "grill" | "rollback-confirmation" | "quality-exception" | "review-risk" | "route-confirmation"; approvalId?: string }
   | { kind: "workflow-finalized"; featureId: string };
 
 export interface AttentionOptions {
@@ -27,8 +27,10 @@ function messageFor(event: AttentionEvent): { title: string; body: string } {
       ? "回撤确认"
       : event.decision === "quality-exception"
         ? "质量风险确认"
-        : event.decision === "review-risk"
+      : event.decision === "review-risk"
           ? "审查风险确认"
+      : event.decision === "route-confirmation"
+          ? "路线确认"
       : "需求选择";
   return { title: "Dev Flow 需要决策", body: `当前功能正在等待你的${decision}。` };
 }

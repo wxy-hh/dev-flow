@@ -1,10 +1,10 @@
 /* dev-flow 5.0.0; built from source, deterministic build */
 
 // plugins/dev-flow/src/core/state-store.ts
-import { randomUUID as randomUUID4, createHash as createHash5 } from "node:crypto";
-import { access, lstat as lstat2, mkdir as mkdir4, open as open4, readdir as readdir4, readFile as readFile5, readlink as readlink2, rename as rename4, rm, rmdir, writeFile } from "node:fs/promises";
+import { randomUUID as randomUUID5, createHash as createHash7 } from "node:crypto";
+import { access, lstat as lstat3, mkdir as mkdir5, open as open5, readdir as readdir4, readFile as readFile7, readlink as readlink2, rename as rename4, rm, rmdir, writeFile } from "node:fs/promises";
 import { hostname } from "node:os";
-import path7 from "node:path";
+import path9 from "node:path";
 
 // plugins/dev-flow/policy/contract.json
 var contract_default = {
@@ -168,6 +168,13 @@ function checkpointsEnforcementRequired(route, controlsOrCapabilities) {
   return controlsOrCapabilities && "plan" in controlsOrCapabilities ? controlsOrCapabilities.checkpoints === "unit-chain" && controlsOrCapabilities.trace : normalizeWorkflowCapabilities(controlsOrCapabilities).checkpoints === 1 && traceEnforcementRequired(route, controlsOrCapabilities);
 }
 
+// plugins/dev-flow/src/policy/obligations.ts
+function reopenObligations(obligations, kinds) {
+  if (!obligations) return void 0;
+  const selected = new Set(kinds);
+  return obligations.map((obligation) => selected.has(obligation.kind) && obligation.status !== "pending" ? { ...obligation, status: "pending" } : obligation);
+}
+
 // plugins/dev-flow/src/policy/rollback.ts
 var IMPLEMENTATION_UNIT_TRANSITIONS = Object.freeze({
   pending: Object.freeze(["active"]),
@@ -178,8 +185,8 @@ var IMPLEMENTATION_UNIT_TRANSITIONS = Object.freeze({
 });
 var ROLLBACK_ID = /^RU-[0-9]{3,}$/;
 var SHA256 = /^[0-9a-f]{64}$/;
-function pathWithinFileScope(path13, fileScope) {
-  return fileScope.some((pattern) => scopePatternMatches(pattern.normalize("NFC"), path13.normalize("NFC")));
+function pathWithinFileScope(path15, fileScope) {
+  return fileScope.some((pattern) => scopePatternMatches(pattern.normalize("NFC"), path15.normalize("NFC")));
 }
 function isSafeFileScopePattern(value) {
   if (typeof value !== "string" || !value || value.trim() !== value) return false;
@@ -199,28 +206,28 @@ function scopePatternMatches(pattern, target) {
 }
 function globSegmentsMatch(pattern, target) {
   if (pattern.length === 0) return target.length === 0;
-  const [head, ...rest] = pattern;
-  if (head === "**") {
+  const [head2, ...rest] = pattern;
+  if (head2 === "**") {
     if (rest.length === 0) return true;
     for (let skip = 0; skip <= target.length; skip += 1) {
       if (globSegmentsMatch(rest, target.slice(skip))) return true;
     }
     return false;
   }
-  if (target.length === 0 || !globSegmentMatches(head, target[0])) return false;
+  if (target.length === 0 || !globSegmentMatches(head2, target[0])) return false;
   return globSegmentsMatch(rest, target.slice(1));
 }
 function globSegmentMatches(pattern, segment) {
   if (pattern === "") return segment === "";
-  const [head, ...rest] = pattern;
-  if (head === "*") {
+  const [head2, ...rest] = pattern;
+  if (head2 === "*") {
     for (let take = 0; take <= segment.length; take += 1) {
       if (globSegmentMatches(rest.join(""), segment.slice(take))) return true;
     }
     return false;
   }
-  if (head === "?") return segment.length > 0 && globSegmentMatches(rest.join(""), segment.slice(1));
-  return segment.startsWith(head) && globSegmentMatches(rest.join(""), segment.slice(head.length));
+  if (head2 === "?") return segment.length > 0 && globSegmentMatches(rest.join(""), segment.slice(1));
+  return segment.startsWith(head2) && globSegmentMatches(rest.join(""), segment.slice(head2.length));
 }
 var RollbackProtocolError = class extends Error {
   constructor(code, message) {
@@ -297,7 +304,10 @@ var safeDetailKeys = /* @__PURE__ */ new Set([
   "recoveryHint"
 ]);
 function safeFailureDetails(details) {
-  return Object.fromEntries(Object.entries(details).filter(([key, value]) => safeDetailKeys.has(key) && !/(?:capability|token|secret|hash|sha|fingerprint)/iu.test(key) && (typeof value !== "string" || value.length <= 2e3)));
+  return Object.fromEntries(Object.entries(details).filter(([key, value]) => {
+    if (key === "currentSha256") return typeof value === "string" && /^[a-f0-9]{64}$/.test(value);
+    return safeDetailKeys.has(key) && !/(?:capability|token|secret|hash|sha|fingerprint)/iu.test(key) && (typeof value !== "string" || value.length <= 2e3);
+  }));
 }
 var DevFlowError = class extends Error {
   constructor(code, message, details = {}) {
@@ -356,6 +366,9 @@ function normalizeProjectPath(value) {
 // plugins/dev-flow/src/core/fingerprint.ts
 var runFile = promisify(execFile);
 var ignored = /* @__PURE__ */ new Set([".git", ".dev-flow", "node_modules"]);
+function controlPath(relative) {
+  return relative === ".git" || relative.startsWith(".git/") || relative === ".dev-flow" || relative.startsWith(".dev-flow/") || relative === "node_modules" || relative.startsWith("node_modules/");
+}
 function configFor(input) {
   return Array.isArray(input) ? { governedRoots: input } : input;
 }
@@ -451,7 +464,7 @@ async function enumerateProtectedFiles(root, input) {
     return Promise.all(governedRoots.map((item) => collect(root, item, collected, config.governedRootsExclude))).then(() => collected);
   })();
   const resolved = await files;
-  const unique = applyExcludes([...new Set(resolved.map(normalizeProjectPath).filter((file) => withinConfiguredRoot(file, governedRoots)))].sort(), config.governedRootsExclude);
+  const unique = applyExcludes([...new Set(resolved.map(normalizeProjectPath).filter((file) => !controlPath(file)).filter((file) => withinConfiguredRoot(file, governedRoots)))].sort(), config.governedRootsExclude);
   const tracked = fromGit ? await gitTrackedFiles(root, governedRoots) : /* @__PURE__ */ new Set();
   for (const relative of unique) {
     let metadata;
@@ -522,13 +535,31 @@ async function snapshotGovernedRoots(root, input) {
 
 // plugins/dev-flow/src/core/project-config.ts
 import path3 from "node:path";
+import { createHash as createHash2 } from "node:crypto";
+function verificationCommandHashes(config) {
+  return Object.fromEntries(config.verification.commands.map((command) => [
+    command.id,
+    // `provides` is a governance declaration, not executable command
+    // identity. Expanding guarantees must not invalidate evidence that ran
+    // the same command bytes with the same cwd/args.
+    createHash2("sha256").update(JSON.stringify({ id: command.id, command: command.command, args: command.args, cwd: command.cwd })).digest("hex")
+  ]));
+}
+function verificationGuarantees(config) {
+  const preflight = new Set(config.verification.preflightCommands ?? []);
+  return new Set(config.verification.commands.filter((command) => !preflight.has(command.id)).flatMap((command) => command.provides));
+}
+function missingVerificationGuarantees(config, required) {
+  const available = verificationGuarantees(config);
+  return [...new Set(required)].filter((kind) => !available.has(kind));
+}
 function relativeDirectory(value) {
   return value.length > 0 && !path3.isAbsolute(value) && !value.split(/[\\/]+/).includes("..");
 }
 function normalizedRelativeDirectory(value) {
   if (!relativeDirectory(value)) return void 0;
   const normalized = normalizeProjectPath(value).replace(/\/+$/u, "");
-  return normalized || void 0;
+  return normalized || ".";
 }
 function validateProjectConfig(value) {
   const config = value;
@@ -569,6 +600,18 @@ function validateProjectConfig(value) {
     throw new DevFlowError("INVALID_PROJECT_CONFIG", "preflightCommands must reference configured command ids");
   }
   if (preflightCommands && config.verification) config.verification.preflightCommands = [...new Set(preflightCommands)];
+  const missing = missingVerificationGuarantees(config, ["targeted"]);
+  if (missing.length) {
+    throw new DevFlowError("VERIFICATION_GUARANTEE_UNCONFIGURED", "\u9879\u76EE\u5FC5\u987B\u914D\u7F6E\u81F3\u5C11\u4E00\u4E2A\u975E preflight \u547D\u4EE4\u63D0\u4F9B targeted guarantee\u3002", {
+      missingGuarantees: missing,
+      userMessage: "\u9879\u76EE\u9A8C\u8BC1\u914D\u7F6E\u7F3A\u5C11\u6700\u7EC8\u9A8C\u8BC1\u6240\u9700\u7684 targeted guarantee\u3002",
+      cause: "preflight \u547D\u4EE4\u53EA\u7528\u4E8E\u73AF\u5883\u51C6\u5907\u548C\u8BCA\u65AD\uFF0C\u4E0D\u80FD\u4F5C\u4E3A\u4E1A\u52A1\u9A8C\u8BC1\u8BC1\u636E\u3002",
+      impact: "\u9879\u76EE\u65E0\u6CD5\u5B89\u5168\u521B\u5EFA\u4F1A\u8BDD\u6216\u9501\u5B9A\u8DEF\u7EBF\u3002",
+      recoveryKind: "repair",
+      recoveryInstruction: "\u8865\u5145\u4E00\u4E2A\u975E preflight \u9A8C\u8BC1\u547D\u4EE4\u5E76\u91CD\u65B0\u521D\u59CB\u5316\u9879\u76EE\u3002",
+      retryOriginal: false
+    });
+  }
 }
 
 // plugins/dev-flow/src/core/traceability.ts
@@ -735,6 +778,9 @@ function assertPersistedLedgerShape(ledger, options) {
   if (typeof ledger.projectConfigSha256 !== "string" || !hex64.test(ledger.projectConfigSha256)) {
     invalid2("ledger projectConfigSha256 is invalid");
   }
+  if (ledger.verificationCommandHashes !== void 0 && (!isRecord2(ledger.verificationCommandHashes) || Object.values(ledger.verificationCommandHashes).some((value) => typeof value !== "string" || !hex64.test(value)))) {
+    invalid2("ledger verification command hashes are invalid");
+  }
   for (const [id, node] of Object.entries(ledger.nodes)) assertPersistedNode(id, node, options);
 }
 function validateTraceGraph(ledger, route, mode, options = {}) {
@@ -778,10 +824,21 @@ function validateTraceGraph(ledger, route, mode, options = {}) {
     }
   }
 }
-function assertConfigCurrent(ledger, currentProjectConfigSha256) {
-  if (ledger.projectConfigSha256 !== currentProjectConfigSha256) sliceError("TRACE_SLICE_STALE", "project configuration changed since Trace registration");
+function assertConfigCurrent(ledger, currentProjectConfigSha256, currentCommandHashes) {
+  if (ledger.verificationCommandHashes && currentCommandHashes) {
+    const referenced = /* @__PURE__ */ new Set();
+    for (const node of currentNodes(ledger.nodes)) {
+      if (node.kind !== "rollback") continue;
+      for (const ref of [...node.forwardVerification, ...node.rollbackVerification]) if (typeof ref === "string") referenced.add(ref);
+    }
+    for (const id of referenced) {
+      if (ledger.verificationCommandHashes[id] !== currentCommandHashes[id]) sliceError("TRACE_SLICE_STALE", "referenced verification command changed", { commandId: id });
+    }
+  } else if (ledger.projectConfigSha256 !== currentProjectConfigSha256) {
+    sliceError("TRACE_SLICE_STALE", "project configuration changed since Trace registration");
+  }
   for (const node of currentNodes(ledger.nodes)) {
-    if (node.kind === "rollback" && node.verificationConfigSha256 !== currentProjectConfigSha256) {
+    if (node.kind === "rollback" && !ledger.verificationCommandHashes && node.verificationConfigSha256 !== currentProjectConfigSha256) {
       sliceError("TRACE_SLICE_STALE", "rollback verification configuration is stale", { id: node.id });
     }
   }
@@ -793,8 +850,8 @@ function requireCurrentKinds(ledger, kinds) {
     if (nodes.some((node) => node.status === "stale")) sliceError("TRACE_SLICE_STALE", "Trace slice contains stale nodes", { kind });
   }
 }
-function assertTraceabilityComplete(ledger, route, currentProjectConfigSha256) {
-  assertConfigCurrent(ledger, currentProjectConfigSha256);
+function assertTraceabilityComplete(ledger, route, currentProjectConfigSha256, currentCommandHashes) {
+  assertConfigCurrent(ledger, currentProjectConfigSha256, currentCommandHashes);
   if (Object.values(ledger.nodes).some((node) => node.status === "stale")) {
     sliceError("TRACE_SLICE_STALE", "complete Trace graph contains stale nodes");
   }
@@ -805,10 +862,10 @@ function assertTraceabilityComplete(ledger, route, currentProjectConfigSha256) {
     throw error;
   }
 }
-function assertTraceSliceCurrent(ledger, route, step, currentProjectConfigSha256) {
-  assertConfigCurrent(ledger, currentProjectConfigSha256);
+function assertTraceSliceCurrent(ledger, route, step, currentProjectConfigSha256, currentCommandHashes) {
+  assertConfigCurrent(ledger, currentProjectConfigSha256, currentCommandHashes);
   const completeSteps = /* @__PURE__ */ new Set(["planning", "implementation", "finalize"]);
-  if (completeSteps.has(step)) return assertTraceabilityComplete(ledger, route, currentProjectConfigSha256);
+  if (completeSteps.has(step)) return assertTraceabilityComplete(ledger, route, currentProjectConfigSha256, currentCommandHashes);
   const requirements = ["requirement", "acceptance-criterion"];
   if (["requirements"].includes(step)) {
     requireCurrentKinds(ledger, [...requirements]);
@@ -842,11 +899,11 @@ function currentOpenStep(state) {
 }
 
 // plugins/dev-flow/src/core/traceability-store.ts
-import { createHash as createHash2, randomUUID } from "node:crypto";
+import { createHash as createHash3, randomUUID } from "node:crypto";
 import { mkdir, open, readFile as readFile2, readdir as readdir2, rename } from "node:fs/promises";
 import path4 from "node:path";
 function digest(contents) {
-  return createHash2("sha256").update(contents).digest("hex");
+  return createHash3("sha256").update(contents).digest("hex");
 }
 function integrity(message, details = {}) {
   throw new DevFlowError("TRACEABILITY_INTEGRITY_FAILED", message, details);
@@ -957,8 +1014,8 @@ async function inspectTraceGate(root, state, step) {
   let ledger;
   try {
     ledger = await readTraceability(root, state);
-    const { sha256 } = await readProjectConfigSnapshot(root);
-    assertTraceSliceCurrent(ledger, state.route, traceStep, sha256);
+    const { config, sha256 } = await readProjectConfigSnapshot(root);
+    assertTraceSliceCurrent(ledger, state.route, traceStep, sha256, verificationCommandHashes(config));
     return { enforced: true, ledger, effectiveSummary: ledger.summary };
   } catch (error) {
     return {
@@ -984,7 +1041,7 @@ async function assertTraceGateCurrent(root, state, step) {
 }
 
 // plugins/dev-flow/src/core/review-store.ts
-import { createHash as createHash3, randomUUID as randomUUID2 } from "node:crypto";
+import { createHash as createHash4, randomUUID as randomUUID2 } from "node:crypto";
 import { mkdir as mkdir2, open as open2, readFile as readFile3, readdir as readdir3, rename as rename2 } from "node:fs/promises";
 import path5 from "node:path";
 
@@ -1044,10 +1101,17 @@ function sortValue(value) {
   }
   return value;
 }
-var digest2 = (contents) => createHash3("sha256").update(contents).digest("hex");
+var digest2 = (contents) => createHash4("sha256").update(contents).digest("hex");
 function canonicalReviewValueJson(value) {
   return `${JSON.stringify(sortValue(value), null, 2)}
 `;
+}
+function semanticReviewBasisHash(basis) {
+  const { projectConfigSha256: _projectConfigSha256, verificationCommandHashes: _verificationCommandHashes, ...semanticBasis } = basis;
+  return digest2(canonicalReviewValueJson(semanticBasis));
+}
+function validBasisHash(basis, basisHash2) {
+  return basisHash2 === digest2(canonicalReviewValueJson(basis)) || basisHash2 === semanticReviewBasisHash(basis);
 }
 function integrity2(message, details = {}) {
   throw new DevFlowError("REVIEW_INTEGRITY_FAILED", message, details);
@@ -1136,7 +1200,7 @@ function validateLedger(value) {
   }
   const batchIds = /* @__PURE__ */ new Set();
   for (const batch of ledger.batches) {
-    if (batchIds.has(batch.batchId) || batch.basis.featureId !== ledger.featureId || digest2(canonicalReviewValueJson(batch.basis)) !== batch.basisHash || batch.progress === "complete" !== batch.jobs.every((job) => job.status === "submitted" || job.status === "reused")) {
+    if (batchIds.has(batch.batchId) || batch.basis.featureId !== ledger.featureId || !validBasisHash(batch.basis, batch.basisHash) || batch.progress === "complete" !== batch.jobs.every((job) => job.status === "submitted" || job.status === "reused")) {
       integrity2("review snapshot batch is inconsistent");
     }
     if (batch.assuranceLevel !== assuranceForReviewBatch(batch)) {
@@ -1214,7 +1278,7 @@ async function readReviewLedger(root, state) {
 }
 
 // plugins/dev-flow/src/core/review-projection.ts
-import { createHash as createHash4, randomUUID as randomUUID3 } from "node:crypto";
+import { createHash as createHash5, randomUUID as randomUUID3 } from "node:crypto";
 import { mkdir as mkdir3, open as open3, readFile as readFile4, rename as rename3 } from "node:fs/promises";
 import path6 from "node:path";
 
@@ -1232,8 +1296,9 @@ function effectiveFindingState(ledger, findingId, currentBasisHash) {
   const origin = originFor(ledger, findingId);
   if (!origin) return void 0;
   const latest = latestEvent(eventsFor(ledger, findingId));
-  const basisCurrent = !currentBasisHash || !latest || latest.basisHash === currentBasisHash;
-  const status = !basisCurrent ? "unresolved" : latest?.type === "resolved" ? "resolved" : latest?.type === "still-blocking" ? "still-blocking" : latest?.type === "risk-accepted" ? "risk-accepted" : "unresolved";
+  const expectedBasis = typeof currentBasisHash === "function" ? currentBasisHash(origin) : currentBasisHash;
+  const basisCurrent = !expectedBasis || !latest || latest.basisHash === expectedBasis;
+  const status = !basisCurrent ? "needs-revalidation" : latest?.type === "resolved" ? "resolved" : latest?.type === "still-blocking" ? "still-blocking" : latest?.type === "risk-accepted" ? "risk-accepted" : "unresolved";
   return {
     findingId,
     status,
@@ -1248,7 +1313,7 @@ function unresolvedBlockingFindings(ledger, currentBasisHash) {
 }
 
 // plugins/dev-flow/src/core/review-projection.ts
-var digest3 = (contents) => createHash4("sha256").update(contents).digest("hex");
+var digest3 = (contents) => createHash5("sha256").update(contents).digest("hex");
 function projectionError(message, details = {}) {
   throw new DevFlowError("REVIEW_PROJECTION_INVALID", message, details);
 }
@@ -1275,7 +1340,8 @@ function publicFinding(finding) {
 function unresolvedBlockingFindingIds(ledger) {
   if (ledger.findingEvents?.length) {
     const current = ledger.batches.find((batch) => batch.validity === "current");
-    return unresolvedBlockingFindings(ledger, current?.basisHash).map((finding) => finding.findingId).sort();
+    const roleBasis = (origin) => current?.jobs.find((job) => job.role === origin.role)?.roleBasisHash;
+    return unresolvedBlockingFindings(ledger, roleBasis).map((finding) => finding.findingId).sort();
   }
   const dispositions = Object.fromEntries(ledger.batches.flatMap((batch) => Object.entries(batch.dispositions ?? {})));
   return ledger.batches.flatMap((batch) => batch.jobs.flatMap((job) => job.submission?.findings ?? [])).filter((finding) => finding.severity === "blocking" && !dispositions[finding.findingId]).map((finding) => finding.findingId).sort();
@@ -1462,8 +1528,346 @@ async function assertCurrentReviewProjection(root, state) {
 
 // plugins/dev-flow/src/core/git-reconciliation.ts
 import { execFile as execFile2 } from "node:child_process";
+import { createHash as createHash6 } from "node:crypto";
+import { lstat as lstat2, readFile as readFile5 } from "node:fs/promises";
+import path7 from "node:path";
 import { promisify as promisify2 } from "node:util";
 var run = promisify2(execFile2);
+async function git(root, args, allowExitOne = false) {
+  try {
+    const result = await run("git", args, { cwd: root, encoding: "buffer", maxBuffer: 8 * 1024 * 1024 });
+    return Buffer.from(result.stdout).toString("utf8");
+  } catch (error) {
+    const failure = error;
+    if (allowExitOne && failure.code === 1) return Buffer.from(failure.stdout ?? "").toString("utf8");
+    throw new DevFlowError("GIT_LINEAGE_UNAVAILABLE", "\u65E0\u6CD5\u8BFB\u53D6\u5F53\u524D Git \u5DE5\u4F5C\u533A\u3002", {
+      cause: Buffer.from(failure.stderr ?? failure.message ?? "").toString("utf8").trim() || "Git \u547D\u4EE4\u5931\u8D25\u3002",
+      impact: "\u65E0\u6CD5\u786E\u5B9A feature \u7684\u57FA\u7EBF\u3001\u63D0\u4EA4\u5F52\u5C5E\u548C\u6700\u7EC8\u4EA4\u4ED8\u5185\u5BB9\u3002",
+      recoveryKind: "repair",
+      recoveryInstruction: "\u68C0\u67E5 Git \u4ED3\u5E93\u548C\u5F53\u524D\u5206\u652F\u540E\uFF0C\u5237\u65B0\u72B6\u6001\uFF1B\u4E0D\u8981\u7EE7\u7EED finalize\u3002",
+      retryOriginal: false,
+      command: ["git", ...args].join(" ")
+    });
+  }
+}
+function normalizePath(value) {
+  return normalizeProjectPath(normalizeUnicode(value).replaceAll("\\", "/"));
+}
+function builtInControlPath(value) {
+  return value === ".git" || value.startsWith(".git/") || value === ".dev-flow" || value.startsWith(".dev-flow/") || value === "node_modules" || value.startsWith("node_modules/");
+}
+function statusKind(code) {
+  if (code.includes("?") || code.includes("A")) return "untracked";
+  if (code.includes("D")) return "deleted";
+  if (code.includes("R")) return "renamed";
+  if (code[0] !== " " && code[1] === " ") return "staged";
+  return "unstaged";
+}
+async function contentHash(root, relative) {
+  try {
+    const metadata = await lstat2(path7.join(root, relative));
+    if (!metadata.isFile()) return void 0;
+    return createHash6("sha256").update(await readFile5(path7.join(root, relative))).digest("hex");
+  } catch {
+    return void 0;
+  }
+}
+async function dirtyPaths(root, config) {
+  const output = await git(root, ["status", "--porcelain=v1", "-z", "--untracked-files=all", "--", ...config.governedRoots]);
+  const items = output.split("\0").filter(Boolean);
+  const result = {};
+  for (let index = 0; index < items.length; index += 1) {
+    const item = items[index];
+    if (item.length < 4) continue;
+    const code = item.slice(0, 2);
+    const current = normalizePath(item.slice(3));
+    if (builtInControlPath(current)) {
+      if (code.includes("R")) index += 1;
+      continue;
+    }
+    if (config.governedRootsExclude?.some((pattern) => current === pattern || current.startsWith(`${pattern}/`))) {
+      if (code.includes("R")) index += 1;
+      continue;
+    }
+    const entry = {
+      status: statusKind(code),
+      ...await contentHash(root, current) ? { sha256: await contentHash(root, current) } : {}
+    };
+    if (code.includes("R") && items[index + 1]) {
+      entry.renamedFrom = normalizePath(items[index + 1]);
+      index += 1;
+    }
+    result[current] = entry;
+  }
+  return result;
+}
+async function branchName(root) {
+  return (await git(root, ["branch", "--show-current"])).trim();
+}
+async function head(root) {
+  return (await git(root, ["rev-parse", "HEAD"])).trim();
+}
+async function fingerprint(root, config) {
+  return fingerprintGovernedRoots(root, config);
+}
+async function pathFingerprints(root, config) {
+  return Object.fromEntries((await snapshotGovernedRoots(root, config)).map((file) => [
+    file.path,
+    `${file.kind ?? "file"}:${file.sha256}:${file.mode}`
+  ]));
+}
+async function captureObservedCommits(root, baseHead, observedHead) {
+  if (!baseHead || !observedHead || baseHead === observedHead) return [];
+  const output = await git(root, ["log", "--format=%H%x00%P", `${baseHead}..${observedHead}`]);
+  const commits = [];
+  for (const line of output.split("\n").filter(Boolean)) {
+    const [hash2, parents = ""] = line.split("\0");
+    if (!hash2) continue;
+    const paths = await git(root, ["show", "--format=", "--name-only", "--pretty=", hash2]);
+    commits.push({
+      hash: hash2,
+      parentHashes: parents.split(" ").filter(Boolean),
+      changedPaths: paths.split("\n").map((value) => value.trim()).filter(Boolean).map(normalizePath).filter((file) => !builtInControlPath(file)),
+      source: "unknown",
+      observedAt: (/* @__PURE__ */ new Date()).toISOString()
+    });
+  }
+  return commits;
+}
+async function changedPathsBetween(root, baseHead, observedHead) {
+  if (!baseHead || !observedHead || baseHead === observedHead) return [];
+  const output = await git(root, ["diff", "--name-only", "-z", baseHead, observedHead]);
+  return output.split("\0").filter(Boolean).map(normalizePath).filter((file) => !builtInControlPath(file)).sort();
+}
+async function gitBranchAndHead(root) {
+  return { branch: await branchName(root), head: await head(root) };
+}
+async function reconcileWorkspaceLineage(root, lineage, config) {
+  const current = await gitBranchAndHead(root);
+  if (lineage.baseBranch && current.branch !== lineage.baseBranch) {
+    throw new DevFlowError("GIT_BRANCH_CHANGED", "\u5F53\u524D\u5206\u652F\u5DF2\u5207\u6362\uFF0C\u4E0D\u80FD\u81EA\u52A8\u5047\u5B9A\u63D0\u4EA4\u5F52\u5C5E\u3002", {
+      userMessage: "\u68C0\u6D4B\u5230\u5F53\u524D\u5206\u652F\u53D1\u751F\u53D8\u5316\uFF0C\u6D41\u7A0B\u5DF2\u5B89\u5168\u505C\u6B62\u3002",
+      cause: `\u542F\u52A8\u5206\u652F\u4E3A ${lineage.baseBranch}\uFF0C\u5F53\u524D\u5206\u652F\u4E3A ${current.branch || "\u672A\u547D\u540D\u5206\u652F"}\u3002`,
+      impact: "\u65E0\u6CD5\u8BC1\u660E\u5F53\u524D\u63D0\u4EA4\u5C5E\u4E8E\u539F feature\uFF0C\u5BA1\u67E5\u548C\u4EA4\u4ED8\u8BC1\u636E\u4FDD\u6301\u539F\u72B6\u3002",
+      recoveryKind: "ask-user",
+      recoveryInstruction: "\u5207\u56DE\u539F\u5206\u652F\u540E\u5237\u65B0\u72B6\u6001\uFF0C\u6216\u6682\u505C/\u7EC8\u6B62\u5F53\u524D feature\u3002",
+      requiresUserDecision: true,
+      retryOriginal: false,
+      baseBranch: lineage.baseBranch,
+      currentBranch: current.branch
+    });
+  }
+  if (lineage.baseHead && !await isAncestor(root, lineage.baseHead, current.head)) {
+    throw new DevFlowError("GIT_HISTORY_REWRITE", "\u5F53\u524D HEAD \u4E0D\u662F\u542F\u52A8\u57FA\u7EBF\u7684\u540E\u4EE3\u3002", {
+      userMessage: "\u68C0\u6D4B\u5230 Git \u5386\u53F2\u65E0\u6CD5\u8BC1\u660E\u8FDE\u7EED\uFF0C\u6D41\u7A0B\u5DF2\u5B89\u5168\u505C\u6B62\u3002",
+      cause: "\u542F\u52A8\u57FA\u7EBF\u4E0D\u662F\u5F53\u524D HEAD \u7684\u7956\u5148\u3002",
+      impact: "\u4EA4\u4ED8\u5185\u5BB9\u548C\u5BA1\u67E5\u8BC1\u636E\u7684\u63D0\u4EA4\u5F52\u5C5E\u4E0D\u786E\u5B9A\uFF0C\u4E0D\u80FD\u4F2A\u88C5\u6210\u529F\u3002",
+      recoveryKind: "repair",
+      recoveryInstruction: "\u6062\u590D\u53EF\u8BC1\u660E\u7684\u63D0\u4EA4\u94FE\u540E\u5237\u65B0\u72B6\u6001\uFF0C\u6216\u6682\u505C/\u7EC8\u6B62\u5F53\u524D feature\u3002",
+      retryOriginal: false,
+      baseHead: lineage.baseHead,
+      currentHead: current.head
+    });
+  }
+  const observedCommits = await captureObservedCommits(root, lineage.baseHead, current.head);
+  const knownCommits = new Set(lineage.observedCommits.map((commit) => commit.hash));
+  return {
+    ...lineage,
+    observedHead: current.head,
+    observedCommits: [...lineage.observedCommits, ...observedCommits.filter((commit) => !knownCommits.has(commit.hash))],
+    observedPathFingerprints: await pathFingerprints(root, config),
+    lastWorkspaceFingerprint: await fingerprint(root, config),
+    reconciliationStatus: "current"
+  };
+}
+async function isAncestor(root, ancestor, descendant) {
+  if (!ancestor || !descendant) return false;
+  try {
+    await git(root, ["merge-base", "--is-ancestor", ancestor, descendant]);
+    return true;
+  } catch (error) {
+    const failure = error;
+    if (failure.code === 1) return false;
+    throw error;
+  }
+}
+async function reconcileWorkspaceForFeature(root, state, config) {
+  const previouslyObservedHead = state.workspace.observedHead;
+  let workspace = await reconcileWorkspaceLineage(root, state.workspace, config);
+  const committedPaths = await changedPathsBetween(root, previouslyObservedHead, workspace.observedHead);
+  const ownership = { ...workspace.ownership };
+  const ownershipSource = { ...workspace.ownershipSource };
+  for (const file of committedPaths) {
+    if (state.scope.outOfScope.some((entry) => entry === "." || file === entry || file.startsWith(`${entry}/`))) {
+      ownership[file] = "excluded";
+    }
+  }
+  workspace = { ...workspace, ownership, ownershipSource };
+  const dirty = Object.keys(await dirtyPaths(root, config));
+  const previousPaths = state.workspace.observedPathFingerprints ?? {};
+  const currentPaths = workspace.observedPathFingerprints;
+  const candidates = /* @__PURE__ */ new Set([...Object.keys(previousPaths), ...Object.keys(currentPaths), ...committedPaths, ...dirty]);
+  const knownUnowned = /* @__PURE__ */ new Set([
+    ...state.workspace.unownedPaths ?? [],
+    ...Object.keys(state.workspace.startedDirty).filter((file) => state.workspace.ownership[file] === void 0)
+  ]);
+  const changedPaths = [...candidates].filter(
+    (file) => previousPaths[file] !== currentPaths[file] || knownUnowned.has(file)
+  ).sort();
+  const unownedPaths = [.../* @__PURE__ */ new Set([...state.workspace.unownedPaths ?? [], ...changedPaths])].filter((file) => workspace.ownership[file] === void 0).sort();
+  return {
+    workspace: { ...workspace, unownedPaths },
+    contentChanged: changedPaths.length > 0,
+    changedPaths
+  };
+}
+
+// plugins/dev-flow/src/core/user-interactions.ts
+import { randomUUID as randomUUID4 } from "node:crypto";
+function interactions(state) {
+  if (!state.interactions) state.interactions = {};
+  return state.interactions;
+}
+function validateOptions(options) {
+  if (!Array.isArray(options) || options.length < 2 || options.length > 3) {
+    throw new DevFlowError("INTERACTION_OPTIONS_INVALID", "\u6BCF\u4E2A\u7528\u6237\u95EE\u9898\u5FC5\u987B\u53EA\u6709 2-3 \u4E2A\u9009\u9879\u3002", { userMessage: "\u5F53\u524D\u95EE\u9898\u7684\u9009\u9879\u6570\u91CF\u4E0D\u7B26\u5408\u4EA4\u4E92\u5408\u540C\u3002", recoveryKind: "repair", recoveryInstruction: "\u5C06\u9009\u9879\u6536\u655B\u4E3A 2-3 \u4E2A\u7B80\u660E\u9009\u62E9\uFF0C\u5E76\u4FDD\u7559\u4E00\u4E2A\u63A8\u8350\u7B54\u6848\u3002", retryOriginal: false });
+  }
+  const seen = /* @__PURE__ */ new Set();
+  for (const option of options) {
+    if (!option || !/^[a-z][a-z0-9-]{0,63}$/.test(option.id) || !option.label.trim() || seen.has(option.id)) {
+      throw new DevFlowError("INTERACTION_OPTIONS_INVALID", "option ids must be unique lowercase action ids with labels");
+    }
+    seen.add(option.id);
+  }
+}
+function createInteraction(state, input) {
+  validateOptions(input.options);
+  const pending = Object.values(state.interactions ?? {}).filter((value) => value.status === "pending");
+  if (pending.length) throw new DevFlowError("MULTIPLE_PENDING_DECISIONS", "\u540C\u4E00 feature \u53EA\u80FD\u5B58\u5728\u4E00\u4E2A\u5F85\u51B3\u95EE\u9898\u3002", { userMessage: "\u5F53\u524D\u5DF2\u6709\u4E00\u4E2A\u95EE\u9898\u7B49\u5F85\u56DE\u7B54\u3002", cause: "\u7CFB\u7EDF\u62D2\u7EDD\u5E76\u884C\u521B\u5EFA\u7B2C\u4E8C\u4E2A pending decision\u3002", impact: "\u65B0\u95EE\u9898\u6CA1\u6709\u88AB\u521B\u5EFA\uFF0C\u539F\u95EE\u9898\u4ECD\u7B49\u5F85\u56DE\u7B54\u3002", recoveryKind: "refresh", recoveryInstruction: "\u5148\u56DE\u7B54\u5F53\u524D\u95EE\u9898\uFF0C\u4E0B\u4E00\u56DE\u5408\u518D\u5904\u7406\u65B0\u95EE\u9898\u3002", retryOriginal: false });
+  const current = findInteractionForTarget(state, input.target);
+  if (current?.status === "pending") {
+    throw new DevFlowError("INTERACTION_ALREADY_PENDING", input.target, { interactionId: current.id });
+  }
+  const interaction = {
+    id: randomUUID4(),
+    kind: input.kind,
+    target: input.target,
+    basisHash: input.basisHash,
+    ...input.binding ? {
+      binding: {
+        batchId: input.binding.batchId,
+        findingIds: [...input.binding.findingIds],
+        findingSetHash: input.binding.findingSetHash
+      }
+    } : {},
+    question: input.question,
+    options: input.options.map((option) => ({ ...option })),
+    presentedAt: (/* @__PURE__ */ new Date()).toISOString(),
+    presentedRevision: state.revision,
+    presentationEventId: input.presentationEventId ?? randomUUID4(),
+    ...input.workspacePaths ? { workspacePaths: [...input.workspacePaths] } : {},
+    ...input.workspaceBatchPaths ? { workspaceBatchPaths: [...input.workspaceBatchPaths] } : {},
+    ...input.workspaceRemainingPaths ? { workspaceRemainingPaths: [...input.workspaceRemainingPaths] } : {},
+    status: "pending"
+  };
+  interactions(state)[interaction.id] = interaction;
+  return interaction;
+}
+function findInteractionForTarget(state, target) {
+  return Object.values(state.interactions ?? {}).find((value) => {
+    const interaction = value;
+    return interaction.target === target && interaction.status === "pending";
+  });
+}
+
+// plugins/dev-flow/src/core/decision-interactions.ts
+function pendingInteraction(state) {
+  return Object.values(state.interactions ?? {}).find((value) => value.status === "pending");
+}
+function pendingDecisionForState(state) {
+  const interaction = pendingInteraction(state);
+  if (interaction) {
+    return {
+      kind: interaction.kind === "risk-acceptance" ? "review-risk" : interaction.kind,
+      question: interaction.question ?? "\u8BF7\u9009\u62E9\u4E00\u4E2A\u65B9\u6848\u3002",
+      options: interaction.options.map((option, index) => ({ ...option, recommended: index === 0 })),
+      basisHash: interaction.basisHash,
+      presentedAt: interaction.presentedAt,
+      presentedRevision: interaction.presentedRevision ?? state.pendingDecision?.presentedRevision ?? state.revision,
+      source: "core",
+      target: interaction.target,
+      ...interaction.presentationEventId ? { presentationEventId: interaction.presentationEventId } : {}
+    };
+  }
+  return state.pendingDecision;
+}
+
+// plugins/dev-flow/src/core/host-health.ts
+import { mkdir as mkdir4, open as open4, readFile as readFile6 } from "node:fs/promises";
+import path8 from "node:path";
+var healthWindowMs = 15 * 60 * 1e3;
+var hostHealthPath = (root) => path8.join(root, ".dev-flow", "host-health.jsonl");
+async function readHostHealth(root) {
+  try {
+    const raw = await readFile6(hostHealthPath(root), "utf8");
+    return raw.split("\n").filter(Boolean).flatMap((line) => {
+      try {
+        const signal = JSON.parse(line);
+        return (signal.host === "claude" || signal.host === "codex") && typeof signal.kind === "string" && typeof signal.eventId === "string" && typeof signal.at === "string" ? [signal] : [];
+      } catch {
+        return [];
+      }
+    });
+  } catch (error) {
+    if (error.code === "ENOENT") return [];
+    throw error;
+  }
+}
+async function recordHostHealth(root, signal) {
+  const before = await readHostHealth(root);
+  const latest = [...before].reverse().find((entry) => entry.host === signal.host);
+  const now = signal.at ?? (/* @__PURE__ */ new Date()).toISOString();
+  await mkdir4(path8.dirname(hostHealthPath(root)), { recursive: true });
+  const handle = await open4(hostHealthPath(root), "a");
+  try {
+    await handle.writeFile(`${JSON.stringify({ ...signal, at: now })}
+`);
+    await handle.sync();
+  } finally {
+    await handle.close();
+  }
+  return { recovered: Boolean(latest && Date.parse(now) - Date.parse(latest.at) > healthWindowMs), latest };
+}
+async function assertHostHealth(root, host, operation) {
+  const latest = [...await readHostHealth(root)].reverse().find((signal) => signal.host === host);
+  const ageMs = latest ? Date.now() - Date.parse(latest.at) : Number.POSITIVE_INFINITY;
+  if (!latest) {
+    throw new DevFlowError("HOOK_HEALTH_REQUIRED", `${host} hook health is required before ${operation}`, {
+      userMessage: `\u5F00\u59CB${operation}\u524D\u6CA1\u6709\u53D1\u73B0 ${host} \u5BBF\u4E3B\u7684\u53EF\u4FE1 hook \u5065\u5EB7\u4FE1\u53F7\u3002`,
+      cause: "\u5BBF\u4E3B\u63A5\u7EBF\u5C1A\u672A\u8BC1\u660E\u5F53\u524D\u4F1A\u8BDD\u80FD\u591F\u6355\u83B7\u7528\u6237\u56DE\u5408\u548C\u5199\u5165\u5F52\u5C5E\u3002",
+      impact: "\u64CD\u4F5C\u6CA1\u6709\u6539\u53D8 feature\u3001ownership \u6216\u8BC1\u636E\u72B6\u6001\u3002",
+      recoveryKind: "refresh",
+      recoveryInstruction: `\u786E\u8BA4 ${host} manifest\u3001MCP \u4E0E hook \u5DF2\u5171\u540C\u5B89\u88C5\uFF0C\u91CD\u65B0\u5F00\u542F\u5BBF\u4E3B\u4F1A\u8BDD\u540E\u91CD\u8BD5\u3002`,
+      retryOriginal: true,
+      host,
+      operation
+    });
+  }
+  if (!Number.isFinite(ageMs) || ageMs > healthWindowMs) {
+    throw new DevFlowError("HOOK_HEALTH_STALE", `${host} hook health is stale before ${operation}`, {
+      userMessage: `${host} \u5BBF\u4E3B hook \u7684\u6700\u8FD1\u53EF\u4FE1\u4FE1\u53F7\u5DF2\u8FC7\u671F\uFF0C\u5DF2\u5B89\u5168\u6682\u505C\u5F53\u524D\u64CD\u4F5C\u3002`,
+      cause: `\u6700\u8FD1\u4FE1\u53F7\u8DDD\u73B0\u5728\u7EA6 ${Math.round(ageMs / 6e4)} \u5206\u949F\uFF0C\u8D85\u8FC7 15 \u5206\u949F\u5065\u5EB7\u7A97\u53E3\u3002`,
+      impact: "\u64CD\u4F5C\u6CA1\u6709\u6539\u53D8 feature\u3001ownership \u6216\u8BC1\u636E\u72B6\u6001\u3002",
+      recoveryKind: "refresh",
+      recoveryInstruction: `\u6062\u590D ${host} hook \u5E76\u91CD\u65B0\u5F00\u542F\u4F1A\u8BDD\u540E\u91CD\u8BD5\u539F\u64CD\u4F5C\uFF1B\u82E5\u53D1\u73B0\u672A\u77E5\u8DEF\u5F84\uFF0C\u518D\u8C03\u7528 dev_flow_reconcile_workspace\u3002`,
+      retryOriginal: true,
+      host,
+      operation,
+      latestAt: latest.at
+    });
+  }
+  return latest;
+}
 
 // plugins/dev-flow/src/core/state-store.ts
 var lifecycles = /* @__PURE__ */ new Set(["active", "paused", "finalized", "abandoned"]);
@@ -1501,12 +1905,12 @@ function validateFeatureState(value) {
   if (pendingInteractions.length > 1) throw new DevFlowError("MULTIPLE_PENDING_DECISIONS", "schema v4 \u72B6\u6001\u5305\u542B\u591A\u4E2A\u5F85\u51B3\u95EE\u9898\u3002", { userMessage: "\u5F53\u524D\u72B6\u6001\u540C\u65F6\u5B58\u5728\u591A\u4E2A\u5F85\u51B3\u95EE\u9898\uFF0C\u6D41\u7A0B\u5DF2\u5B89\u5168\u505C\u6B62\u3002", cause: "\u51B3\u7B56\u8D26\u672C\u4E0D\u662F\u5355\u4E00\u5F85\u51B3\u95EE\u9898\u3002", impact: "\u7CFB\u7EDF\u4E0D\u4F1A\u4EFB\u9009\u4E00\u4E2A\u95EE\u9898\u6D88\u8D39\u3002", recoveryKind: "repair", recoveryInstruction: "\u8FD0\u884C doctor \u68C0\u67E5\u51B3\u7B56\u8D26\u672C\uFF0C\u7136\u540E\u901A\u8FC7\u516C\u5F00\u56DE\u7B54\u63A5\u53E3\u6062\u590D\u3002", retryOriginal: false });
   if (state.pendingDecision !== void 0) {
     const decision = state.pendingDecision;
-    if (!decision || decision.source !== "core" || typeof decision.question !== "string" || !decision.question.trim() || !/^[a-f0-9]{64}$/.test(decision.basisHash) || !Number.isInteger(decision.presentedRevision) || !Array.isArray(decision.options) || decision.options.length < 2 || decision.options.length > 3 || decision.options.some((option) => !option || typeof option.id !== "string" || typeof option.label !== "string" || !option.label.trim())) {
+    if (!decision || decision.source !== "core" || typeof decision.question !== "string" || !decision.question.trim() || !/^[a-f0-9]{64}$/.test(decision.basisHash) || !Number.isInteger(decision.presentedRevision) || decision.presentationEventId !== void 0 && typeof decision.presentationEventId !== "string" || !Array.isArray(decision.options) || decision.options.length < 2 || decision.options.length > 3 || decision.options.some((option) => !option || typeof option.id !== "string" || typeof option.label !== "string" || !option.label.trim())) {
       throw new DevFlowError("INVALID_STATE_SCHEMA", "pendingDecision is invalid");
     }
   }
   const workspace = state.workspace;
-  if (!workspace || typeof workspace.baseHead !== "string" || typeof workspace.baseBranch !== "string" || typeof workspace.observedHead !== "string" || typeof workspace.lastWorkspaceFingerprint !== "string" || !["current", "required", "blocked"].includes(workspace.reconciliationStatus) || typeof workspace.startedDirty !== "object" || workspace.startedDirty === null || Array.isArray(workspace.startedDirty) || typeof workspace.ownership !== "object" || workspace.ownership === null || Array.isArray(workspace.ownership) || typeof workspace.ownershipSource !== "object" || workspace.ownershipSource === null || Array.isArray(workspace.ownershipSource) || typeof workspace.observedPathFingerprints !== "object" || workspace.observedPathFingerprints === null || Array.isArray(workspace.observedPathFingerprints) || !Array.isArray(workspace.observedCommits)) {
+  if (!workspace || typeof workspace.baseHead !== "string" || typeof workspace.baseBranch !== "string" || typeof workspace.observedHead !== "string" || typeof workspace.lastWorkspaceFingerprint !== "string" || !["current", "required", "blocked"].includes(workspace.reconciliationStatus) || typeof workspace.startedDirty !== "object" || workspace.startedDirty === null || Array.isArray(workspace.startedDirty) || typeof workspace.ownership !== "object" || workspace.ownership === null || Array.isArray(workspace.ownership) || typeof workspace.ownershipSource !== "object" || workspace.ownershipSource === null || Array.isArray(workspace.ownershipSource) || typeof workspace.observedPathFingerprints !== "object" || workspace.observedPathFingerprints === null || Array.isArray(workspace.observedPathFingerprints) || workspace.unownedPaths !== void 0 && (!Array.isArray(workspace.unownedPaths) || workspace.unownedPaths.some((file) => typeof file !== "string")) || !Array.isArray(workspace.observedCommits)) {
     throw new DevFlowError("INVALID_STATE_SCHEMA", "workspace lineage is invalid");
   }
   if (state.lifecycle === "finalized" && !state.deliverySnapshot) throw new DevFlowError("INVALID_STATE_SCHEMA", "schema v4 \u7684 finalized \u72B6\u6001\u5FC5\u987B\u5305\u542B\u4EA4\u4ED8\u5FEB\u7167\u3002");
@@ -1566,16 +1970,16 @@ function validateFeatureState(value) {
   }
 }
 var delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-var devFlow = (root) => path7.join(root, ".dev-flow");
-var features = (root) => path7.join(devFlow(root), "features");
-var statePath = (root, id) => path7.join(features(root), id, "state.json");
-var eventPath = (root, id) => path7.join(features(root), id, "events.jsonl");
-var activePath = (root) => path7.join(devFlow(root), "active.json");
-var recoveryTxnPath = (root) => path7.join(devFlow(root), "recovery-transaction.json");
-var rollbackTxnPath = (root, featureId) => path7.join(features(root), featureId, "rollback-transaction.json");
+var devFlow = (root) => path9.join(root, ".dev-flow");
+var features = (root) => path9.join(devFlow(root), "features");
+var statePath = (root, id) => path9.join(features(root), id, "state.json");
+var eventPath = (root, id) => path9.join(features(root), id, "events.jsonl");
+var activePath = (root) => path9.join(devFlow(root), "active.json");
+var recoveryTxnPath = (root) => path9.join(devFlow(root), "recovery-transaction.json");
+var rollbackTxnPath = (root, featureId) => path9.join(features(root), featureId, "rollback-transaction.json");
 async function readProjectConfig(root) {
   try {
-    const raw = await readFile5(path7.join(devFlow(root), "project.json"), "utf8");
+    const raw = await readFile7(path9.join(devFlow(root), "project.json"), "utf8");
     const value = JSON.parse(raw);
     validateProjectConfig(value);
     return value;
@@ -1604,8 +2008,8 @@ async function readProjectConfig(root) {
   }
 }
 async function writeAtomic(file, value) {
-  const temp = `${file}.${randomUUID4()}.tmp`;
-  const handle = await open4(temp, "w");
+  const temp = `${file}.${randomUUID5()}.tmp`;
+  const handle = await open5(temp, "w");
   try {
     await handle.writeFile(`${JSON.stringify(value, null, 2)}
 `);
@@ -1614,7 +2018,7 @@ async function writeAtomic(file, value) {
     await handle.close();
   }
   await rename4(temp, file);
-  const directory = await open4(path7.dirname(file), "r");
+  const directory = await open5(path9.dirname(file), "r");
   try {
     await directory.sync();
   } finally {
@@ -1625,6 +2029,7 @@ async function prepareStatusProjection(root, state, revision) {
   const status = state.artifacts.status;
   if (!status) return;
   if (state.mode !== "routed" || !state.route || !state.classification) {
+    const pending = pendingDecisionForState(state);
     const contents2 = [
       "---",
       "dev_flow:",
@@ -1640,10 +2045,10 @@ async function prepareStatusProjection(root, state, revision) {
       `- Lifecycle: ${state.lifecycle}`,
       "- Mode: intake",
       "",
-      ...state.pendingDecision?.kind === "route-confirmation" ? ["## Pending", "", `- ${state.pendingDecision.question}`, ""] : []
+      ...pending?.kind === "route-confirmation" ? ["## Pending", "", `- ${pending.question}`, ""] : []
     ].join("\n");
-    const file2 = path7.join(features(root), state.featureId, status.path);
-    state.artifacts.status = { ...status, sha256: createHash5("sha256").update(contents2).digest("hex") };
+    const file2 = path9.join(features(root), state.featureId, status.path);
+    state.artifacts.status = { ...status, sha256: createHash7("sha256").update(contents2).digest("hex") };
     return async () => {
       await writeFile(file2, contents2);
     };
@@ -1684,27 +2089,27 @@ async function prepareStatusProjection(root, state, revision) {
   ].join("\n");
   const contents = `${projection}
 `;
-  const file = path7.join(features(root), state.featureId, status.path);
-  state.artifacts.status = { ...status, sha256: createHash5("sha256").update(contents).digest("hex") };
+  const file = path9.join(features(root), state.featureId, status.path);
+  state.artifacts.status = { ...status, sha256: createHash7("sha256").update(contents).digest("hex") };
   return async () => {
     await writeFile(file, contents);
   };
 }
 async function lock(root, featureId, operation) {
-  const directory = path7.join(devFlow(root), ".lock");
+  const directory = path9.join(devFlow(root), ".lock");
   const started = Date.now();
-  await mkdir4(devFlow(root), { recursive: true });
+  await mkdir5(devFlow(root), { recursive: true });
   while (true) {
     try {
-      await mkdir4(directory);
-      await writeFile(path7.join(directory, "owner.json"), JSON.stringify({ pid: process.pid, hostname: hostname(), acquiredAt: (/* @__PURE__ */ new Date()).toISOString(), featureId, operation }));
+      await mkdir5(directory);
+      await writeFile(path9.join(directory, "owner.json"), JSON.stringify({ pid: process.pid, hostname: hostname(), acquiredAt: (/* @__PURE__ */ new Date()).toISOString(), featureId, operation }));
       return async () => {
         await rm(directory, { recursive: true, force: true });
       };
     } catch (error) {
       if (error.code !== "EEXIST") throw error;
       try {
-        const owner = JSON.parse(await readFile5(path7.join(directory, "owner.json"), "utf8"));
+        const owner = JSON.parse(await readFile7(path9.join(directory, "owner.json"), "utf8"));
         const age = Date.now() - Date.parse(owner.acquiredAt);
         let live = owner.hostname === hostname();
         if (live) {
@@ -1727,7 +2132,7 @@ async function lock(root, featureId, operation) {
 }
 async function readState(root, featureId) {
   try {
-    const state = JSON.parse(await readFile5(statePath(root, featureId), "utf8"));
+    const state = JSON.parse(await readFile7(statePath(root, featureId), "utf8"));
     validateFeatureState(state);
     if (state.featureId !== featureId) throw new DevFlowError("INVALID_STATE_SCHEMA", "state feature id does not match its path");
     return state;
@@ -1750,7 +2155,7 @@ async function readState(root, featureId) {
 async function readActive(root) {
   let raw;
   try {
-    raw = await readFile5(activePath(root), "utf8");
+    raw = await readFile7(activePath(root), "utf8");
   } catch (error) {
     if (error.code === "ENOENT") return void 0;
     throw new DevFlowError("ACTIVE_POINTER_UNREADABLE", "active.json cannot be read", { recoveryHint: "Run dev_flow_doctor and use recovery; do not start a new feature" });
@@ -1766,7 +2171,7 @@ async function readActive(root) {
   }
 }
 async function appendEvent(root, id, revision, type, data) {
-  const handle = await open4(eventPath(root, id), "a");
+  const handle = await open5(eventPath(root, id), "a");
   try {
     await handle.writeFile(`${JSON.stringify({ revision, type, at: (/* @__PURE__ */ new Date()).toISOString(), data })}
 `);
@@ -1774,6 +2179,23 @@ async function appendEvent(root, id, revision, type, data) {
   } finally {
     await handle.close();
   }
+}
+async function assertWorkspaceOwnershipComplete(root, state, config, operation) {
+  const reconciled = await reconcileWorkspaceForFeature(root, state, config);
+  const unownedPaths = reconciled.workspace.unownedPaths ?? [];
+  if (unownedPaths.length) {
+    throw new DevFlowError("WORKSPACE_OWNERSHIP_REQUIRED", `unknown workspace ownership before ${operation}`, {
+      userMessage: `${operation} \u524D\u53D1\u73B0\u5C1A\u672A\u786E\u8BA4\u5F52\u5C5E\u7684\u5DE5\u4F5C\u533A\u8DEF\u5F84\u3002`,
+      cause: `\u4EE5\u4E0B\u8DEF\u5F84\u5DF2\u88AB\u89C2\u5BDF\u5230\uFF0C\u4F46\u6CA1\u6709\u53EF\u4FE1\u7684 ownership \u7ED3\u8BBA\uFF1A${unownedPaths.join("\u3001")}`,
+      impact: "\u64CD\u4F5C\u6CA1\u6709\u63A8\u8FDB feature\u3001checkpoint\u3001verification \u6216\u4EA4\u4ED8\u72B6\u6001\u3002",
+      recoveryKind: "refresh",
+      recoveryInstruction: "\u5148\u8C03\u7528 dev_flow_reconcile_workspace\uFF0C\u6309\u5F53\u524D\u6E05\u5355\u5B8C\u6210\u5168\u90E8\u7EB3\u5165\u3001\u5168\u90E8\u6392\u9664\u6216\u9010\u4E2A\u786E\u8BA4\uFF0C\u518D\u91CD\u8BD5\u539F\u64CD\u4F5C\u3002",
+      retryOriginal: true,
+      operation,
+      unownedPaths
+    });
+  }
+  return reconciled.workspace;
 }
 async function recordHostEvent(root, hostEvent) {
   const active = await readActive(root);
@@ -1793,9 +2215,9 @@ async function recordHostEvent(root, hostEvent) {
 }
 async function trustedWriteSummary(root, file) {
   try {
-    const metadata = await lstat2(path7.join(root, file));
-    const bytes = metadata.isSymbolicLink() ? Buffer.from(await readlink2(path7.join(root, file))) : await readFile5(path7.join(root, file));
-    return `${metadata.isSymbolicLink() ? "symlink" : "file"}:${createHash5("sha256").update(bytes).digest("hex")}`;
+    const metadata = await lstat3(path9.join(root, file));
+    const bytes = metadata.isSymbolicLink() ? Buffer.from(await readlink2(path9.join(root, file))) : await readFile7(path9.join(root, file));
+    return `${metadata.isSymbolicLink() ? "symlink" : "file"}:${createHash7("sha256").update(bytes).digest("hex")}`;
   } catch (error) {
     if (error.code === "ENOENT") return "missing";
     throw error;
@@ -1826,6 +2248,7 @@ async function recordTrustedWriteOwnership(root, paths, host, eventId2) {
       draft.workspace.ownership[file] = "feature";
       draft.workspace.ownershipSource[file] = "trusted-hook";
     }
+    draft.workspace.unownedPaths = (draft.workspace.unownedPaths ?? []).filter((file) => !governed.includes(file));
     draft.lastUpdatedBy = { host, pluginVersion: "5.0.0" };
   }, { eventId: eventId2, host, paths: governed, after });
 }
@@ -1858,11 +2281,47 @@ async function readHostAuthorizationEvents(root, featureId) {
 }
 async function readFeatureEvents(root, id) {
   try {
-    return (await readFile5(eventPath(root, id), "utf8")).split("\n").filter(Boolean).map((line) => JSON.parse(line));
+    return (await readFile7(eventPath(root, id), "utf8")).split("\n").filter(Boolean).map((line) => JSON.parse(line));
   } catch (error) {
     if (error.code === "ENOENT") return [];
     throw error;
   }
+}
+function unknownOwnershipPaths(state) {
+  const candidates = new Set(state.workspace.unownedPaths ?? Object.keys(state.workspace.startedDirty));
+  return [...candidates].filter((file) => state.workspace.ownership[file] === void 0).sort();
+}
+function workspaceOwnershipQuestion(paths, single) {
+  if (single) return `\u8DEF\u5F84\u201C${paths[0]}\u201D\u662F\u5426\u5C5E\u4E8E\u5F53\u524D\u4EFB\u52A1\uFF1F`;
+  return `\u53D1\u73B0 ${paths.length} \u4E2A\u65E0\u6CD5\u5F52\u5C5E\u7684\u5DE5\u4F5C\u533A\u8DEF\u5F84\uFF1A
+${paths.map((file) => `- ${file}`).join("\n")}
+\u8BF7\u9009\u62E9\u5904\u7406\u65B9\u5F0F\u3002`;
+}
+function presentWorkspaceOwnership(state, paths, options = {}) {
+  const currentPaths = [...new Set(paths)].sort();
+  const batchPaths = [...new Set(options.batchPaths ?? currentPaths)].sort();
+  const single = options.single ?? currentPaths.length === 1;
+  const presentationEventId = options.presentationEventId ?? randomUUID5();
+  const basisHash2 = createHash7("sha256").update(JSON.stringify({ kind: "workspace-ownership", paths: batchPaths, fingerprint: state.workspace.lastWorkspaceFingerprint })).digest("hex");
+  const interaction = createInteraction(state, {
+    kind: "workspace-ownership",
+    target: `workspace:${createHash7("sha256").update(batchPaths.join("\n")).digest("hex").slice(0, 16)}:${currentPaths[0] ?? "batch"}`,
+    basisHash: basisHash2,
+    question: workspaceOwnershipQuestion(currentPaths, single),
+    options: single ? [
+      { id: "adopt", label: "\u7EB3\u5165\u5F53\u524D\u4EFB\u52A1" },
+      { id: "exclude", label: "\u6392\u9664\u5E76\u5148\u5904\u7406" }
+    ] : [
+      { id: "adopt-all", label: "\u5168\u90E8\u7EB3\u5165\u5F53\u524D\u4EFB\u52A1" },
+      { id: "exclude-all", label: "\u5168\u90E8\u6392\u9664\u5E76\u5148\u5904\u7406" },
+      { id: "one-by-one", label: "\u9010\u4E2A\u786E\u8BA4" }
+    ],
+    presentationEventId,
+    workspacePaths: currentPaths,
+    workspaceBatchPaths: batchPaths,
+    ...options.remainingPaths ? { workspaceRemainingPaths: [...options.remainingPaths] } : {}
+  });
+  return { interaction, presentationEventId };
 }
 async function mutate(root, id, expectedRevision, operation, mutator, eventData = {}) {
   return mutatePrepared(root, id, expectedRevision, operation, async () => ({ mutate: mutator, eventData }));
@@ -1921,24 +2380,123 @@ async function mutatePreparedLocked(root, id, expectedRevision, operation, prepa
   }
   return state;
 }
+async function reconcileWorkspace(root, id, expectedRevision, host) {
+  const state = await readState(root, id);
+  const config = await readProjectConfig(root);
+  const { workspace, contentChanged, changedPaths } = await reconcileWorkspaceForFeature(root, state, config);
+  const legalCheckpointPaths = contentChanged ? await legalActiveUnitChanges(root, state, changedPaths) : /* @__PURE__ */ new Set();
+  const active = state.lifecycle === "finalized" && contentChanged ? await readActive(root) : void 0;
+  const reopenedLifecycle = state.lifecycle === "finalized" && contentChanged ? !active || active.featureId === id ? "active" : "paused" : void 0;
+  const checkpointAffected = contentChanged ? checkpointAffectedByPaths(state, changedPaths, legalCheckpointPaths) : false;
+  let presentationEventId;
+  return mutate(root, id, expectedRevision, "workspace-reconciled", (draft) => {
+    draft.workspace = workspace;
+    if (contentChanged) {
+      markAffectedEvidenceStale(draft, changedPaths, reopenedLifecycle, legalCheckpointPaths);
+    }
+    presentationEventId = queueNextOwnershipDecision(draft);
+    draft.lastUpdatedBy = { host, pluginVersion: "5.0.0" };
+  }, () => ({
+    observedHead: workspace.observedHead,
+    commitCount: workspace.observedCommits.length,
+    contentChanged,
+    checkpointAffected,
+    reopenedLifecycle,
+    unresolvedOwnership: changedPaths.filter((file) => workspace.ownership[file] === void 0),
+    ...presentationEventId ? { presentationEventId } : {}
+  }));
+}
+function queueNextOwnershipDecision(draft) {
+  if (pendingDecisionForState(draft)) return void 0;
+  const paths = unknownOwnershipPaths(draft);
+  if (!paths.length) return void 0;
+  return presentWorkspaceOwnership(draft, paths).presentationEventId;
+}
+function markAffectedEvidenceStale(draft, changedPaths, reopenedLifecycle, legalCheckpointPaths = /* @__PURE__ */ new Set()) {
+  const checkpointAffected = checkpointAffectedByPaths(draft, changedPaths, legalCheckpointPaths);
+  draft.evidenceFreshness = {
+    ...draft.evidenceFreshness,
+    verification: draft.verification.satisfiedByAttemptId !== void 0 ? "stale" : draft.evidenceFreshness.verification,
+    checkpoint: checkpointAffected ? "stale" : draft.evidenceFreshness.checkpoint,
+    implementation: "current"
+  };
+  if (checkpointAffected) {
+    delete draft.steps.implementation;
+    delete draft.steps.code_review;
+    delete draft.steps.verification;
+    delete draft.steps.finalize;
+    draft.currentStage = "implementation";
+  } else if (draft.steps.verification?.status === "satisfied" || draft.steps.finalize?.status === "satisfied") {
+    delete draft.steps.verification;
+    delete draft.steps.finalize;
+    draft.currentStage = "verification";
+  }
+  draft.logicComplete = false;
+  if (reopenedLifecycle) {
+    draft.lifecycle = reopenedLifecycle;
+    delete draft.deliverySnapshot;
+    draft.resumeSummary = reopenedLifecycle === "active" ? `\u5DF2\u64A4\u9500\u8FC7\u671F\u7684\u5B8C\u6210\u58F0\u660E\uFF0C\u4ECE\u201C${draft.currentStage ?? "\u5F53\u524D\u9636\u6BB5"}\u201D\u7EE7\u7EED\u3002` : `\u5B8C\u6210\u540E\u68C0\u6D4B\u5230\u771F\u5B9E\u5185\u5BB9\u6F02\u79FB\uFF1B\u53E6\u4E00\u4E2A feature \u6B63\u5728\u8FDB\u884C\uFF0C\u672C\u4EFB\u52A1\u5DF2\u6062\u590D\u4E3A\u6682\u505C\u72B6\u6001\u5E76\u56DE\u9000\u5230\u201C${draft.currentStage ?? "\u5F53\u524D\u9636\u6BB5"}\u201D\u3002`;
+  }
+  draft.obligations = reopenObligations(draft.obligations, [
+    ...checkpointAffected ? ["checkpoint"] : [],
+    "verification"
+  ]);
+  draft.qualityExceptions = draft.qualityExceptions.map((exception) => ({ ...exception, status: "stale" }));
+}
+function checkpointAffectedByPaths(state, changedPaths, legalCheckpointPaths) {
+  const externallyChangedPaths = changedPaths.filter((file) => !legalCheckpointPaths.has(file));
+  return state.checkpoints?.some((checkpoint) => checkpoint.files.some((file) => externallyChangedPaths.includes(file))) ?? false;
+}
+async function legalActiveUnitChanges(root, state, changedPaths) {
+  const activeUnit = state.implementationUnits?.find((unit) => unit.status === "active" || unit.status === "verified");
+  if (!activeUnit || !state.traceability || !state.checkpoints?.length) return /* @__PURE__ */ new Set();
+  const trace = await readTraceability(root, state);
+  const node = trace.nodes[activeUnit.unitId];
+  if (!node || node.kind !== "rollback" || node.status !== "current") return /* @__PURE__ */ new Set();
+  const events = await readFeatureEvents(root, state.featureId);
+  let lastCheckpointEventIndex = -1;
+  for (let index = events.length - 1; index >= 0; index -= 1) {
+    if (events[index].type === "automatic-checkpoint-captured") {
+      lastCheckpointEventIndex = index;
+      break;
+    }
+  }
+  const legal = /* @__PURE__ */ new Set();
+  for (const file of changedPaths) {
+    if (!pathWithinFileScope(file, node.fileScope)) continue;
+    let event2;
+    for (let index = events.length - 1; index > lastCheckpointEventIndex; index -= 1) {
+      const candidate = events[index];
+      const after = candidate.type === "trusted-write-owned" ? candidate.data.after : void 0;
+      if (typeof after?.[file] === "string") {
+        event2 = candidate;
+        break;
+      }
+    }
+    if (!event2) continue;
+    const expected = event2.data.after[file];
+    if (expected === await trustedWriteSummary(root, file)) legal.add(file);
+  }
+  return legal;
+}
 function isRecoveryPhase(value) {
   return value === "prepared" || value === "directory-moved" || value === "active-cleared" || value === "completed";
 }
 function validateRecoveryTransaction(value) {
   const transaction = value;
-  if (transaction?.schemaVersion !== 1 || typeof transaction.transactionId !== "string" || !transaction.transactionId || !isRecoveryPhase(transaction.phase) || typeof transaction.featureId !== "string" || !transaction.featureId || typeof transaction.stateSha256 !== "string" || !transaction.stateSha256 || typeof transaction.recoveredTo !== "string" || !path7.isAbsolute(transaction.recoveredTo) || typeof transaction.reason !== "string" || typeof transaction.userEvidence !== "string" || transaction.host !== "claude" && transaction.host !== "codex" || typeof transaction.at !== "string" || transaction.activeSha256 !== void 0 && typeof transaction.activeSha256 !== "string") {
+  if (transaction?.schemaVersion !== 1 || typeof transaction.transactionId !== "string" || !transaction.transactionId || !isRecoveryPhase(transaction.phase) || typeof transaction.featureId !== "string" || !transaction.featureId || typeof transaction.stateSha256 !== "string" || !transaction.stateSha256 || typeof transaction.recoveredTo !== "string" || !path9.isAbsolute(transaction.recoveredTo) || typeof transaction.reason !== "string" || typeof transaction.userEvidence !== "string" || transaction.host !== "claude" && transaction.host !== "codex" || typeof transaction.at !== "string" || transaction.activeSha256 !== void 0 && typeof transaction.activeSha256 !== "string") {
     throw new DevFlowError("RECOVERY_TRANSACTION_UNREADABLE", "recovery journal is invalid", {
       recoveryHint: "Run dev_flow_doctor; do not start a new feature or hand-edit .dev-flow"
     });
   }
-  if (path7.basename(transaction.featureId) !== transaction.featureId || transaction.featureId === "." || transaction.featureId === "..") {
+  if (path9.basename(transaction.featureId) !== transaction.featureId || transaction.featureId === "." || transaction.featureId === "..") {
     throw new DevFlowError("RECOVERY_TRANSACTION_UNREADABLE", "recovery journal has an unsafe feature id", { recoveryHint: "Run dev_flow_doctor; recovery remains fail-closed" });
   }
 }
 function validateRecoveryLocation(root, transaction) {
-  const recoveredRoot = path7.join(devFlow(root), "recovered");
-  const relative = path7.relative(recoveredRoot, transaction.recoveredTo);
-  if (!relative || relative.startsWith("..") || path7.isAbsolute(relative) || path7.basename(relative) !== relative) {
+  const recoveredRoot = path9.join(devFlow(root), "recovered");
+  const relative = path9.relative(recoveredRoot, transaction.recoveredTo);
+  if (!relative || relative.startsWith("..") || path9.isAbsolute(relative) || path9.basename(relative) !== relative) {
     throw new DevFlowError("RECOVERY_TRANSACTION_UNREADABLE", "recovery journal points outside the recovered directory", {
       recoveryHint: "Run dev_flow_doctor; do not start a new feature or hand-edit .dev-flow"
     });
@@ -1947,7 +2505,7 @@ function validateRecoveryLocation(root, transaction) {
 async function readRecoveryTransaction(root) {
   let raw;
   try {
-    raw = await readFile5(recoveryTxnPath(root), "utf8");
+    raw = await readFile7(recoveryTxnPath(root), "utf8");
   } catch (error) {
     if (error.code === "ENOENT") return void 0;
     throw new DevFlowError("RECOVERY_TRANSACTION_UNREADABLE", "recovery journal cannot be read", { recoveryHint: "Run dev_flow_doctor; do not start a new feature" });
@@ -1977,7 +2535,7 @@ function validateRollbackTransaction(value) {
     if (candidate.kind !== void 0 && candidate.kind !== "file" && candidate.kind !== "symlink") return false;
     return true;
   });
-  if (transaction?.schemaVersion !== 1 || typeof transaction.transactionId !== "string" || !transaction.transactionId || typeof transaction.featureId !== "string" || !transaction.featureId || !rollbackTransactionPhases.has(transaction.phase) || typeof transaction.targetCheckpointId !== "string" || !/^CP-[0-9]{3,}$/.test(transaction.targetCheckpointId) || typeof transaction.targetUnitId !== "string" || !/^RU-[0-9]{3,}$/.test(transaction.targetUnitId) || !Array.isArray(transaction.undoOrder) || transaction.undoOrder.length === 0 || !transaction.undoOrder.every((unitId) => typeof unitId === "string" && /^RU-[0-9]{3,}$/.test(unitId)) || transaction.undoCheckpoints !== void 0 && (!Array.isArray(transaction.undoCheckpoints) || !transaction.undoCheckpoints.every((id) => typeof id === "string" && /^CP-[0-9]{3,}$/.test(id))) || !isSha2562(transaction.previewBasisHash) || !isSha2562(transaction.projectConfigSha256) || !Number.isInteger(transaction.stateRevision) || (transaction.stateRevision ?? -1) < 0 || typeof transaction.backupDirectory !== "string" || !/^checkpoints\/recovery\/[^/]+$/.test(transaction.backupDirectory) || !Number.isInteger(transaction.nextFileIndex) || (transaction.nextFileIndex ?? -1) < 0 || !validPlan || !Array.isArray(transaction.verificationAttemptIds) || !transaction.verificationAttemptIds.every((id) => typeof id === "string" && id.length > 0) || typeof transaction.startedAt !== "string" || transaction.completedAt !== void 0 && typeof transaction.completedAt !== "string" || transaction.error !== void 0 && typeof transaction.error !== "string") {
+  if (transaction?.schemaVersion !== 1 || typeof transaction.transactionId !== "string" || !transaction.transactionId || typeof transaction.featureId !== "string" || !transaction.featureId || !rollbackTransactionPhases.has(transaction.phase) || typeof transaction.targetCheckpointId !== "string" || !/^CP-[0-9]{3,}$/.test(transaction.targetCheckpointId) || typeof transaction.targetUnitId !== "string" || !/^RU-[0-9]{3,}$/.test(transaction.targetUnitId) || !Array.isArray(transaction.undoOrder) || transaction.undoOrder.length === 0 || !transaction.undoOrder.every((unitId) => typeof unitId === "string" && /^RU-[0-9]{3,}$/.test(unitId)) || transaction.undoCheckpoints !== void 0 && (!Array.isArray(transaction.undoCheckpoints) || !transaction.undoCheckpoints.every((id) => typeof id === "string" && /^CP-[0-9]{3,}$/.test(id))) || !isSha2562(transaction.previewBasisHash) || !isSha2562(transaction.projectConfigSha256) || transaction.verificationCommandHashes !== void 0 && (typeof transaction.verificationCommandHashes !== "object" || transaction.verificationCommandHashes === null || Array.isArray(transaction.verificationCommandHashes) || Object.values(transaction.verificationCommandHashes).some((hash2) => !isSha2562(hash2))) || !Number.isInteger(transaction.stateRevision) || (transaction.stateRevision ?? -1) < 0 || typeof transaction.backupDirectory !== "string" || !/^checkpoints\/recovery\/[^/]+$/.test(transaction.backupDirectory) || !Number.isInteger(transaction.nextFileIndex) || (transaction.nextFileIndex ?? -1) < 0 || !validPlan || !Array.isArray(transaction.verificationAttemptIds) || !transaction.verificationAttemptIds.every((id) => typeof id === "string" && id.length > 0) || typeof transaction.startedAt !== "string" || transaction.completedAt !== void 0 && typeof transaction.completedAt !== "string" || transaction.error !== void 0 && typeof transaction.error !== "string") {
     throw new DevFlowError("ROLLBACK_TRANSACTION_UNREADABLE", "rollback transaction journal is invalid", {
       recoveryHint: "Run dev_flow_doctor; the workspace may be mid-rollback \u2014 do not hand-edit .dev-flow"
     });
@@ -1989,7 +2547,7 @@ function rollbackTransactionFinished(transaction) {
 async function readRollbackTransaction(root, featureId) {
   let raw;
   try {
-    raw = await readFile5(rollbackTxnPath(root, featureId), "utf8");
+    raw = await readFile7(rollbackTxnPath(root, featureId), "utf8");
   } catch (error) {
     if (error.code === "ENOENT") return void 0;
     throw new DevFlowError("ROLLBACK_TRANSACTION_UNREADABLE", "rollback transaction journal cannot be read", {
@@ -2038,7 +2596,7 @@ async function appendFeatureEvent(root, id, revision, type, data) {
 }
 
 // plugins/dev-flow/src/hosts/adapter-policy.ts
-import path11 from "node:path";
+import path13 from "node:path";
 import { execFile as execFile4 } from "node:child_process";
 import { promisify as promisify4 } from "node:util";
 
@@ -2099,26 +2657,26 @@ function classifyGitCommandKind(command) {
 var gitReadOnlyCommands = [...readOnly].sort();
 
 // plugins/dev-flow/src/core/implementation-units.ts
-import { createHash as createHash9, randomUUID as randomUUID7 } from "node:crypto";
+import { createHash as createHash11, randomUUID as randomUUID8 } from "node:crypto";
 
 // plugins/dev-flow/src/core/artifacts.ts
-import { createHash as createHash6 } from "node:crypto";
-import { readFile as readFile6, writeFile as writeFile2 } from "node:fs/promises";
-import path8 from "node:path";
-var hash = (value) => createHash6("sha256").update(value).digest("hex");
-var featureDirectory = (root, id) => path8.join(root, ".dev-flow", "features", id);
+import { createHash as createHash8 } from "node:crypto";
+import { readFile as readFile8, writeFile as writeFile2 } from "node:fs/promises";
+import path10 from "node:path";
+var hash = (value) => createHash8("sha256").update(value).digest("hex");
+var featureDirectory = (root, id) => path10.join(root, ".dev-flow", "features", id);
 async function assertArtifactCurrent(root, id, state, kind) {
   const artifact = state.artifacts[kind];
   if (!artifact) throw new DevFlowError("MISSING_REQUIRED_ARTIFACT", kind);
-  const contents = await readFile6(path8.join(featureDirectory(root, id), normalizeUnicode(artifact.path)), "utf8");
+  const contents = await readFile8(path10.join(featureDirectory(root, id), normalizeUnicode(artifact.path)), "utf8");
   if (hash(contents) !== artifact.sha256) throw new DevFlowError("ARTIFACT_INTEGRITY_FAILED", kind);
   return contents;
 }
 
 // plugins/dev-flow/src/core/checkpoints.ts
-import { randomUUID as randomUUID5, createHash as createHash7 } from "node:crypto";
-import { access as access2, mkdir as mkdir5, open as open5, readFile as readFile7, readlink as readlink3, readdir as readdir5, rename as rename5 } from "node:fs/promises";
-import path9 from "node:path";
+import { randomUUID as randomUUID6, createHash as createHash9 } from "node:crypto";
+import { access as access2, mkdir as mkdir6, open as open6, readFile as readFile9, readlink as readlink3, readdir as readdir5, rename as rename5 } from "node:fs/promises";
+import path11 from "node:path";
 
 // plugins/dev-flow/src/core/verification.ts
 import { execFile as execFile3 } from "node:child_process";
@@ -2126,8 +2684,8 @@ import { promisify as promisify3 } from "node:util";
 var run2 = promisify3(execFile3);
 
 // plugins/dev-flow/src/core/checkpoints.ts
-var digest4 = (value) => createHash7("sha256").update(value).digest("hex");
-var featureDirectory2 = (root, featureId) => path9.join(root, ".dev-flow", "features", featureId);
+var digest4 = (value) => createHash9("sha256").update(value).digest("hex");
+var featureDirectory2 = (root, featureId) => path11.join(root, ".dev-flow", "features", featureId);
 function blobPath(sha256) {
   return `checkpoints/blobs/${sha256}`;
 }
@@ -2135,8 +2693,8 @@ function baselinePath(unitId) {
   return `checkpoints/baselines/${unitId}.json`;
 }
 async function writeAtomic2(file, contents) {
-  const temp = `${file}.${randomUUID5()}.tmp`;
-  const handle = await open5(temp, "w");
+  const temp = `${file}.${randomUUID6()}.tmp`;
+  const handle = await open6(temp, "w");
   try {
     await handle.writeFile(contents);
     await handle.sync();
@@ -2144,7 +2702,7 @@ async function writeAtomic2(file, contents) {
     await handle.close();
   }
   await rename5(temp, file);
-  const directory = await open5(path9.dirname(file), "r");
+  const directory = await open6(path11.dirname(file), "r");
   try {
     await directory.sync();
   } finally {
@@ -2161,15 +2719,15 @@ async function pathExists(file) {
 }
 async function writeBlobIfAbsent(root, featureId, bytes) {
   const sha256 = digest4(bytes);
-  const file = path9.join(featureDirectory2(root, featureId), blobPath(sha256));
+  const file = path11.join(featureDirectory2(root, featureId), blobPath(sha256));
   if (await pathExists(file)) return sha256;
-  await mkdir5(path9.dirname(file), { recursive: true });
+  await mkdir6(path11.dirname(file), { recursive: true });
   await writeAtomic2(file, bytes);
   return sha256;
 }
 async function captureUnitBaseline(root, featureId, unitId, snapshot) {
   for (const file2 of snapshot) {
-    const bytes = file2.kind === "symlink" ? Buffer.from(await readlink3(path9.join(root, file2.path))) : await readFile7(path9.join(root, file2.path));
+    const bytes = file2.kind === "symlink" ? Buffer.from(await readlink3(path11.join(root, file2.path))) : await readFile9(path11.join(root, file2.path));
     if (digest4(bytes) !== file2.sha256) {
       throw new DevFlowError("CHECKPOINT_HASH_MISMATCH", "\u6355\u83B7\u5355\u5143\u57FA\u7EBF\u65F6 governed \u6587\u4EF6\u53D1\u751F\u53D8\u5316\u3002", { path: file2.path });
     }
@@ -2182,16 +2740,16 @@ async function captureUnitBaseline(root, featureId, unitId, snapshot) {
     capturedAt: (/* @__PURE__ */ new Date()).toISOString(),
     files: snapshot
   };
-  const file = path9.join(featureDirectory2(root, featureId), baselinePath(unitId));
-  await mkdir5(path9.dirname(file), { recursive: true });
+  const file = path11.join(featureDirectory2(root, featureId), baselinePath(unitId));
+  await mkdir6(path11.dirname(file), { recursive: true });
   await writeAtomic2(file, `${JSON.stringify(baseline, null, 2)}
 `);
 }
 
 // plugins/dev-flow/src/core/review-jobs.ts
-import { createHash as createHash8, randomUUID as randomUUID6 } from "node:crypto";
-import { readFile as readFile8 } from "node:fs/promises";
-import path10 from "node:path";
+import { createHash as createHash10, randomUUID as randomUUID7 } from "node:crypto";
+import { readFile as readFile10 } from "node:fs/promises";
+import path12 from "node:path";
 
 // plugins/dev-flow/src/core/quality-exceptions.ts
 function hasCurrentQualityException(state, kind) {
@@ -2199,7 +2757,7 @@ function hasCurrentQualityException(state, kind) {
 }
 
 // plugins/dev-flow/src/core/review-jobs.ts
-var digest5 = (value) => createHash8("sha256").update(value).digest("hex");
+var digest5 = (value) => createHash10("sha256").update(value).digest("hex");
 var leaseMilliseconds = 60 * 60 * 1e3;
 var samplingLeaseMilliseconds = 120 * 1e3;
 var basisArtifactKinds = ["requirements", "implementation-plan", "coverage-matrix", "rollback-units"];
@@ -2218,7 +2776,7 @@ async function deriveReviewInput(root, state) {
     if (!artifact) invalid3("REVIEW_BASIS_ARTIFACT_MISSING", `review basis artifact is missing: ${kind}`, { kind });
     let contents;
     try {
-      contents = await readFile8(path10.join(root, ".dev-flow", "features", state.featureId, artifact.path), "utf8");
+      contents = await readFile10(path12.join(root, ".dev-flow", "features", state.featureId, artifact.path), "utf8");
     } catch {
       invalid3("REVIEW_BASIS_ARTIFACT_MISSING", `review basis artifact cannot be read: ${kind}`, { kind });
     }
@@ -2230,7 +2788,7 @@ async function deriveReviewInput(root, state) {
     }
     return { kind, path: artifact.path, sha256: artifact.sha256, contents };
   }));
-  const projectContents = await readFile8(path10.join(root, ".dev-flow", "project.json"), "utf8");
+  const projectContents = await readFile10(path12.join(root, ".dev-flow", "project.json"), "utf8");
   if (digest5(projectContents) !== projectConfigSha256) {
     invalid3("REVIEW_BASIS_UNAVAILABLE", "project configuration changed while review basis was being captured");
   }
@@ -2259,6 +2817,7 @@ async function deriveReviewInput(root, state) {
     artifacts: frozenArtifacts.map(({ kind, path: artifactPath, sha256 }) => ({ kind, path: artifactPath, sha256 })),
     traceability: { path: state.traceability.path, sha256: state.traceability.sha256, revision: trace.revision },
     projectConfigSha256,
+    verificationCommandHashes: verificationCommandHashes(config),
     scopeManifestSha256: digest5(canonicalReviewValueJson(scopeManifest)),
     governedRootsFingerprint
   };
@@ -2279,7 +2838,7 @@ async function deriveReviewInput(root, state) {
   };
 }
 function basisHash(basis) {
-  return digest5(canonicalReviewValueJson(basis));
+  return semanticReviewBasisHash(basis);
 }
 function roleBasisHash(basis, frozenArtifacts, trace, role) {
   const artifacts = frozenArtifacts.filter((artifact) => {
@@ -2303,16 +2862,24 @@ function roleBasisHash(basis, frozenArtifacts, trace, role) {
       role,
       route: basis.route,
       level: basis.classification.level,
-      riskLabels: basis.classification.riskLabels.filter((label) => specialtyRisk[role].includes(label))
+      riskLabels: basis.classification.riskLabels.filter((label) => specialtyRisk[role].includes(label)),
+      // Specialty roles follow structured execution semantics. Whole-document
+      // hashes would turn unrelated wording edits into a full risk re-review.
+      traceSlice
     }));
   }
+  const referencedCommandIds = traceSlice.flatMap((node) => [
+    ...node.kind === "rollback" ? node.forwardVerification : [],
+    ...node.kind === "rollback" ? node.rollbackVerification : []
+  ]).filter((reference) => typeof reference === "string");
+  const referencedCommandHashes = Object.fromEntries([...new Set(referencedCommandIds)].sort().filter((id) => basis.verificationCommandHashes?.[id] !== void 0).map((id) => [id, basis.verificationCommandHashes[id]]));
   return digest5(canonicalReviewValueJson({
     role,
     route: basis.route,
     level: basis.classification.level,
     artifacts,
     traceSlice,
-    ...role === "architecture-testability" || role === "rollback-operability" ? { projectConfigSha256: basis.projectConfigSha256 } : {}
+    ...role === "architecture-testability" || role === "rollback-operability" ? { verificationCommandHashes: referencedCommandHashes } : {}
   }));
 }
 function submittedFindings(ledger) {
@@ -2348,12 +2915,23 @@ async function currentBatchWithBasis(root, state, options = {}) {
   const batch = ledger.batches.find((candidate) => candidate.validity === "current");
   if (!batch) invalid3("REVIEW_BATCH_REQUIRED", "a current review batch is required");
   const requireLiveBasis = options.requireLiveBasis ?? !planReviewBoundToBatch(state, batch);
+  const reviewInput = await deriveReviewInput(root, state);
   if (requireLiveBasis) {
-    const reviewInput = await deriveReviewInput(root, state);
     if (basisHash(reviewInput.basis) !== batch.basisHash) {
       invalid3("REVIEW_BASIS_STALE", "review batch basis no longer matches current feature state", {
         batchId: batch.batchId,
         recoveryHint: "\u91CD\u5EFA\u6279\u6B21\u2192\u91CD\u4EA4 jobs\u2192re-record planning"
+      });
+    }
+  }
+  const requirements = deriveReviewJobRequirements(state.route, state.classification.riskLabels, state.classification.controls.reviewRoles);
+  for (const requirement of requirements) {
+    const job = batch.jobs.find((candidate) => candidate.role === requirement.role);
+    if (!job || job.roleBasisHash !== reviewInput.roleBasisHashes[requirement.role]) {
+      invalid3("REVIEW_BASIS_STALE", "review role basis no longer matches current feature semantics", {
+        batchId: batch.batchId,
+        role: requirement.role,
+        recoveryHint: "\u91CD\u5EFA\u6279\u6B21\u2192\u91CD\u4EA4\u53D7\u5F71\u54CD role job\u2192re-record planning"
       });
     }
   }
@@ -2363,7 +2941,8 @@ async function assertReviewComplete(root, state) {
   const { ledger, batch } = await currentBatchWithBasis(root, state);
   if (batch.progress !== "complete") invalid3("REVIEW_BATCH_INCOMPLETE", "all required review jobs must be submitted", { batchId: batch.batchId });
   if (ledger.findingEvents?.length) {
-    const unresolved = unresolvedBlockingFindings(ledger, batch.basisHash);
+    const roleBasis = (origin) => batch.jobs.find((job) => job.role === origin.role)?.roleBasisHash;
+    const unresolved = unresolvedBlockingFindings(ledger, roleBasis);
     if (unresolved.length && !hasCurrentQualityException(state, "review")) invalid3("REVIEW_BLOCKING_FINDINGS", "review ledger has unresolved blocking findings", {
       batchId: batch.batchId,
       findingIds: unresolved.map((finding) => finding.findingId)
@@ -2406,7 +2985,7 @@ async function assertReviewComplete(root, state) {
 }
 
 // plugins/dev-flow/src/core/implementation-units.ts
-var digest6 = (value) => createHash9("sha256").update(value).digest("hex");
+var digest6 = (value) => createHash11("sha256").update(value).digest("hex");
 function currentRollbackNodes(ledger) {
   return Object.values(ledger?.nodes ?? {}).filter((node) => node.kind === "rollback" && node.status === "current");
 }
@@ -2447,6 +3026,8 @@ function implementationUnitWriteBlock(state, ledger, _relativePath) {
 }
 async function beginImplementationUnit(root, id, expectedRevision, unitId) {
   return mutate(root, id, expectedRevision, "implementation-unit-begun", async (state) => {
+    await assertHostHealth(root, state.lastUpdatedBy.host, "implementation unit");
+    await assertWorkspaceOwnershipComplete(root, state, await readProjectConfig(root), "implementation unit");
     if (!checkpointsEnforcementRequired(state.route, state.classification.controls)) {
       throw new DevFlowError("IMPLEMENTATION_UNITS_NOT_ENFORCED", "\u5F53\u524D\u52A8\u6001\u8DEF\u7EBF\u672A\u542F\u7528 unit-chain checkpoint \u63A7\u5236\u3002");
     }
@@ -2502,7 +3083,7 @@ async function beginImplementationUnit(root, id, expectedRevision, unitId) {
     await captureUnitBaseline(root, id, unitId, snapshot);
     delete target.checkpointId;
     target.basisHash = basisHash2;
-    target.beginNonce = randomUUID7();
+    target.beginNonce = randomUUID8();
     target.status = "active";
     target.startedFingerprint = await fingerprintGovernedRoots(root, project);
     state.implementationUnits = merged;
@@ -2565,10 +3146,10 @@ function isRelevantPreToolUse(event2) {
   return name === "bash" || directWriteTools.has(name);
 }
 function projectRelative(root, target) {
-  const absolute = path11.resolve(root, target);
-  const relative = path11.relative(root, absolute);
-  if (relative === "" || relative.startsWith("..") || path11.isAbsolute(relative)) return void 0;
-  return relative.split(path11.sep).join("/").normalize("NFC");
+  const absolute = path13.resolve(root, target);
+  const relative = path13.relative(root, absolute);
+  if (relative === "" || relative.startsWith("..") || path13.isAbsolute(relative)) return void 0;
+  return relative.split(path13.sep).join("/").normalize("NFC");
 }
 function isGoverned(root, target, governedRoots) {
   const relative = projectRelative(root, target);
@@ -2582,7 +3163,7 @@ function isControlPath(relative) {
   if (!isDevFlowPath(relative)) return false;
   if (/^\.dev-flow\/features\/[^/]+\/traceability(?:\/|$)/.test(relative)) return true;
   if (/^\.dev-flow\/features\/[^/]+\/review\/(?:snapshots|packages|projections)(?:\/|$)/.test(relative)) return true;
-  const base = path11.posix.basename(relative);
+  const base = path13.posix.basename(relative);
   if (controlFileNames.has(base)) return true;
   if (relative.includes("/.lock/") || relative.endsWith("/.lock")) return true;
   if (relative === ".dev-flow/active.json" || relative === ".dev-flow/project.json") return true;
@@ -2784,7 +3365,7 @@ function heredocConsumer(line, openerIndex) {
   const lastSegment = line.slice(0, openerIndex).split(/[;&|]\s*/).at(-1) ?? "";
   const withoutEnv = lastSegment.replace(/^(?:\w+=\S+\s+)+/, "");
   const command = withoutEnv.match(/^\s*(?:command\s+)?([A-Za-z0-9_./-]+)/)?.[1];
-  return command ? path11.posix.basename(command) : void 0;
+  return command ? path13.posix.basename(command) : void 0;
 }
 function maskHeredocBodies(command) {
   const lines = command.split("\n");
@@ -2852,21 +3433,21 @@ function analyzeBashWriteTargets(command) {
       const words = commandWords(withoutEnv.slice(teeIndex), "tee");
       const paths = words && collectPathOperands(words, 0);
       if (!paths) return { kind: "unresolved", syntax: "tee-args" };
-      for (const path13 of paths) collect2(path13);
+      for (const path15 of paths) collect2(path15);
     }
     const simple = withoutEnv.match(/^(touch|mkdir|rm)\b/);
     if (simple) {
       const words = commandWords(withoutEnv, simple[1]);
       const paths = words && collectPathOperands(words, 0);
       if (!paths) return { kind: "unresolved", syntax: "simple-args" };
-      for (const path13 of paths) collect2(path13);
+      for (const path15 of paths) collect2(path15);
     }
     const moveCopy = withoutEnv.match(/^(mv|cp)\b/);
     if (moveCopy) {
       const words = commandWords(withoutEnv, moveCopy[1]);
       const paths = words && collectPathOperands(words, 0);
       if (!paths || paths.length < 2) return { kind: "unresolved", syntax: "mv-cp-args" };
-      if (moveCopy[1] === "mv") for (const path13 of paths) collect2(path13);
+      if (moveCopy[1] === "mv") for (const path15 of paths) collect2(path15);
       else collect2(paths.at(-1));
     }
     const sed = withoutEnv.match(/^sed\s+(-i\S*)\s+([\s\S]*)$/);
@@ -2874,7 +3455,7 @@ function analyzeBashWriteTargets(command) {
       const words = shellWords(sed[2]);
       const paths = words && collectPathOperands(words, 1);
       if (!paths) return { kind: "unresolved", syntax: "sed-args" };
-      for (const path13 of paths) collect2(path13);
+      for (const path15 of paths) collect2(path15);
     }
     const perl = withoutEnv.match(/^perl\s+(-pi\S*)\s+([\s\S]*)$/);
     if (perl) {
@@ -2882,7 +3463,7 @@ function analyzeBashWriteTargets(command) {
       const firstPath = words?.[0] === "-e" ? 2 : 0;
       const paths = words && collectPathOperands(words, firstPath);
       if (!paths) return { kind: "unresolved", syntax: "perl-args" };
-      for (const path13 of paths) collect2(path13);
+      for (const path15 of paths) collect2(path15);
     }
   }
   if (targets.length === 0) {
@@ -2949,10 +3530,10 @@ async function loadActiveWorkflow(root) {
   for (const [kind, artifact] of Object.entries(state.artifacts ?? {})) {
     if (kind === "status" || !artifact?.path) continue;
     if (isGeneratedReviewProjectionPath(kind, artifact.path)) continue;
-    if (typeof artifact.path !== "string" || path11.posix.dirname(artifact.path) !== "." || !artifact.path.endsWith(".md")) {
+    if (typeof artifact.path !== "string" || path13.posix.dirname(artifact.path) !== "." || !artifact.path.endsWith(".md")) {
       return { kind: "unreadable", reason: "artifact path invalid", governedRoots: project.governedRoots, blockAllWrites: false };
     }
-    const relative = `.dev-flow/features/${active.featureId}/${artifact.path}`.split(path11.sep).join("/");
+    const relative = `.dev-flow/features/${active.featureId}/${artifact.path}`.split(path13.sep).join("/");
     allowedArtifacts.add(relative);
   }
   const approvalConfirmed = Boolean(confirmedApproval(state));
@@ -2977,7 +3558,7 @@ function classifyTarget(root, target, workflow) {
   if (isDevFlowPath(relative)) {
     if (workflow.allowedArtifacts.has(relative)) return void 0;
     if (relative.startsWith(`.dev-flow/features/${workflow.featureId}/`) && relative.endsWith(".md")) {
-      const displayName = path11.posix.basename(relative, ".md");
+      const displayName = path13.posix.basename(relative, ".md");
       const kind = displayName === "\u9700\u6C42\u6587\u6863" ? "requirements" : displayName === "\u5B9E\u65BD\u8BA1\u5212" ? "implementation-plan" : displayName;
       return createPreToolBlock(
         "DEV_FLOW_ARTIFACT_NOT_REGISTERED",
@@ -3303,8 +3884,8 @@ async function evaluatePreToolUseInternal(root, event2) {
 }
 
 // plugins/dev-flow/src/hosts/risk-policy.ts
-import { createHash as createHash10 } from "node:crypto";
-import path12 from "node:path";
+import { createHash as createHash12 } from "node:crypto";
+import path14 from "node:path";
 function canonical(value) {
   if (value === null || typeof value !== "object") return JSON.stringify(value);
   if (Array.isArray(value)) return `[${value.map(canonical).join(",")}]`;
@@ -3319,14 +3900,14 @@ function targetScope(command, root) {
   if (/[$`*?{]/.test(command) || /(?:^|\s)~(?:\/|\s|$)/.test(command)) return "unknown";
   const candidates = [...command.matchAll(/(?:^|[\s"'=])((?:\/|(?:\.\.\/)+)[^\s'"`;|&]*)/g)].map((match) => match[1]);
   for (const target of candidates) {
-    const absolute = path12.resolve(root, target);
-    const relative = path12.relative(root, absolute);
-    if (relative.startsWith("..") || path12.isAbsolute(relative)) return "outside";
+    const absolute = path14.resolve(root, target);
+    const relative = path14.relative(root, absolute);
+    if (relative.startsWith("..") || path14.isAbsolute(relative)) return "outside";
   }
   return "inside";
 }
-function fingerprint(input, riskClass, category, command) {
-  return createHash10("sha256").update(canonical({ riskClass, category, toolName: String(input.toolName ?? ""), command })).digest("hex");
+function fingerprint2(input, riskClass, category, command) {
+  return createHash12("sha256").update(canonical({ riskClass, category, toolName: String(input.toolName ?? ""), command })).digest("hex");
 }
 function classifyRisk(input, root) {
   const toolName2 = String(input.toolName ?? "").toLowerCase();
@@ -3337,7 +3918,7 @@ function classifyRisk(input, root) {
     return {
       riskClass: "always-confirm",
       category: "external-action",
-      commandFingerprint: fingerprint(input, "always-confirm", "external-action", command)
+      commandFingerprint: fingerprint2(input, "always-confirm", "external-action", command)
     };
   }
   const destructive = /\brm\s+(?:-[^\s]*r[^\s]*|--recursive)\b/i.test(command) || /\bgit\s+(?:reset\s+--hard|clean\s+[^\n]*-[^\n]*f|(?:checkout|restore)\s+--|rebase)\b/i.test(command) || /\b(?:delete|remove)\b/i.test(toolName2);
@@ -3347,13 +3928,13 @@ function classifyRisk(input, root) {
     return {
       riskClass: "always-confirm",
       category: "external-action",
-      commandFingerprint: fingerprint(input, "always-confirm", "external-action", command)
+      commandFingerprint: fingerprint2(input, "always-confirm", "external-action", command)
     };
   }
   return {
     riskClass: "task-reusable",
     category: "destructive-worktree",
-    commandFingerprint: fingerprint(input, "task-reusable", "destructive-worktree", command)
+    commandFingerprint: fingerprint2(input, "task-reusable", "destructive-worktree", command)
   };
 }
 
@@ -3427,11 +4008,37 @@ async function recordPermissionPostToolUse(root, event2, host) {
   });
 }
 
+// plugins/dev-flow/src/core/host-recovery.ts
+async function observeHostRecovery(root, signal) {
+  const health = await recordHostHealth(root, signal);
+  if (!health.recovered) return;
+  const active = await readActive(root);
+  if (!active) return;
+  const state = await readState(root, active.featureId);
+  if (state.lifecycle !== "active" && state.lifecycle !== "finalized") return;
+  await reconcileWorkspace(root, active.featureId, state.revision, signal.host);
+}
+
+// plugins/dev-flow/src/hosts/host-health-adapter.ts
+async function recordAdapterHealth(root, event2, host) {
+  const kind = event2.hook_event_name === "SessionStart" ? "session-start" : event2.hook_event_name === "UserPromptSubmit" ? "user-prompt-submit" : event2.hook_event_name === "Stop" ? "turn-boundary" : event2.hook_event_name === "PreToolUse" || event2.hook_event_name === "PostToolUse" ? "tool" : void 0;
+  if (!kind) return;
+  try {
+    await observeHostRecovery(root, {
+      host,
+      kind,
+      eventId: event2.event_id ?? `${event2.hook_event_name}-${Date.now()}`
+    });
+  } catch {
+  }
+}
+
 // plugins/dev-flow/src/hosts/claude-adapter.ts
 var chunks = [];
 for await (const chunk of process.stdin) chunks.push(Buffer.from(chunk));
 var event = JSON.parse(Buffer.concat(chunks).toString("utf8") || "{}");
 var cwd = event.cwd ?? process.cwd();
+await recordAdapterHealth(cwd, event, "claude");
 if (event.hook_event_name === "PermissionRequest") {
   try {
     const outcome = await evaluatePermissionRequest(cwd, event, "claude");

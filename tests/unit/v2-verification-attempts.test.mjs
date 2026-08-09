@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -111,6 +112,50 @@ test("successful verification separates preflight audit from guarantee evidence"
     assert.deepEqual(attempt.preflightCommandIds, ["preflight"]);
     assert.deepEqual(attempt.kinds, ["targeted", "integration"]);
     assert.deepEqual(state.steps.verification.evidence.commandIds, ["forward"]);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("verification freshness follows the commands executed by the attempt", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "dev-flow-verification-command-slice-"));
+  try {
+    await mkdir(path.join(root, "src"));
+    const config = {
+      schemaVersion: 2,
+      verification: { commands: [
+        { id: "forward", command: process.execPath, args: ["-e", "process.exit(0)"], cwd: ".", provides: ["targeted"] },
+      ] },
+      enforcement: { mode: "strict", gitWriteRequiresLogicComplete: true, oneActiveFeature: true, requireExplicitHumanReply: true },
+      governedRoots: ["src"],
+    };
+    await store.initProject(root, config);
+    let state = await store.startFeature(root, { featureId: "f", host: "codex", level: "XS", topology: "local" });
+    state = await checks.recordStep(root, "f", state.revision, "locate", {});
+    state = await checks.recordStep(root, "f", state.revision, "implementation", {});
+    state = await verification.runVerification(root, "f", state.revision, "codex", ["forward"]);
+    assert.equal((await verification.readVerificationFreshness(root, state)).status, "fresh");
+
+    const addRaw = await readFile(path.join(root, ".dev-flow", "project.json"));
+    const additive = structuredClone(config);
+    additive.verification.commands.push({ id: "unrelated", command: process.execPath, args: ["-e", "process.exit(0)"], cwd: ".", provides: ["targeted"] });
+    await store.updateProjectConfig(root, additive, createHash("sha256").update(addRaw).digest("hex"));
+    state = await store.readState(root, "f");
+    assert.equal((await verification.readVerificationFreshness(root, state)).status, "fresh");
+
+    const capabilityRaw = await readFile(path.join(root, ".dev-flow", "project.json"));
+    const capabilityOnly = structuredClone(additive);
+    capabilityOnly.verification.commands[0].provides = ["targeted", "behavior"];
+    await store.updateProjectConfig(root, capabilityOnly, createHash("sha256").update(capabilityRaw).digest("hex"));
+    state = await store.readState(root, "f");
+    assert.equal((await verification.readVerificationFreshness(root, state)).status, "fresh");
+
+    const changedRaw = await readFile(path.join(root, ".dev-flow", "project.json"));
+    const changed = structuredClone(additive);
+    changed.verification.commands[0].args = ["-e", "process.stdout.write('changed')"];
+    await store.updateProjectConfig(root, changed, createHash("sha256").update(changedRaw).digest("hex"));
+    state = await store.readState(root, "f");
+    assert.equal((await verification.readVerificationFreshness(root, state)).status, "stale");
   } finally {
     await rm(root, { recursive: true, force: true });
   }

@@ -8,7 +8,7 @@ import { blobPath, checkpointChain, readCheckpoint, readCheckpointBaseline } fro
 import type { CheckpointManifest } from "../policy/rollback.js";
 import { DevFlowError } from "./errors.js";
 import { snapshotGovernedRoots, type ProtectedFileSnapshot } from "./fingerprint.js";
-import type { ProjectConfig, VerificationCommand } from "./project-config.js";
+import { verificationCommandHashesForRefs, type ProjectConfig, type VerificationCommand } from "./project-config.js";
 import { implementationUnitForRollbackNode, pathWithinFileScope } from "../policy/rollback.js";
 import { implementationUnitBasisHash } from "./implementation-units.js";
 import {
@@ -40,7 +40,7 @@ import {
   type InteractionResponse,
   type PublicInteraction,
 } from "./user-interactions.js";
-import { resolvePromptEvent } from "./interaction-provenance.js";
+import { resolveInteractionPromptEvent } from "./interaction-provenance.js";
 
 const digest = (value: string | Buffer) => createHash("sha256").update(value).digest("hex");
 
@@ -71,6 +71,7 @@ export interface RollbackPreview {
   filePlan: RollbackFileAction[];
   verificationCommands: RollbackVerificationCommand[];
   projectConfigSha256: string;
+  verificationCommandHashes?: Record<string, string>;
   previewBasisHash: string;
 }
 
@@ -212,6 +213,7 @@ interface PreviewContext {
   nodes: RollbackNode[];
   config: ProjectConfig;
   projectConfigSha256: string;
+  verificationCommandHashes: Record<string, string>;
 }
 
 /**
@@ -238,7 +240,12 @@ async function previewContext(root: string, featureId: string): Promise<PreviewC
   const chain = liveChain(state, await checkpointChain(root, featureId, state));
   assertChainIntegrity(chain, nodes);
   const { config, sha256: projectConfigSha256 } = await readProjectConfigSnapshot(root);
-  return { state, chain, nodes, config, projectConfigSha256 };
+  const verificationRefs = chain.flatMap((manifest) => manifest.verificationCommands.map((command) => command.commandId));
+  const verificationCommandHashes = Object.fromEntries(verificationRefs
+    .filter((id) => config.verification.commands.some((command) => command.id === id))
+    .map((id) => [id, verificationCommandHashesForRefs(config, [id])[id]])
+    .filter((entry): entry is [string, string] => typeof entry[1] === "string"));
+  return { state, chain, nodes, config, projectConfigSha256, verificationCommandHashes };
 }
 
 function commandSummary(command: { command: string; args: string[] }): string {
@@ -251,7 +258,7 @@ function commandSummary(command: { command: string; args: string[] }): string {
  * order; any conflict or stale basis fails the whole preview.
  */
 export async function previewRollback(root: string, featureId: string, targetCheckpointId: string): Promise<RollbackPreview> {
-  const { state, chain, nodes, config, projectConfigSha256 } = await previewContext(root, featureId);
+  const { state, chain, nodes, config, projectConfigSha256, verificationCommandHashes } = await previewContext(root, featureId);
   const target = chain.find((manifest) => manifest.checkpointId === targetCheckpointId);
   if (!target) {
     throw new DevFlowError("ROLLBACK_TARGET_INVALID", "rollback target is not a confirmed checkpoint in the live chain", {
@@ -267,7 +274,9 @@ export async function previewRollback(root: string, featureId: string, targetChe
     });
   }
 
-  const stale = suffix.filter((manifest) => manifest.projectConfigSha256 !== projectConfigSha256);
+  const stale = suffix.filter((manifest) => manifest.verificationCommandHashes
+    ? Object.entries(manifest.verificationCommandHashes).some(([id, hash]) => verificationCommandHashes[id] !== hash)
+    : manifest.projectConfigSha256 !== projectConfigSha256);
   if (stale.length) {
     throw new DevFlowError("ROLLBACK_BASIS_STALE", "project verification config changed after these checkpoints", {
       checkpointIds: stale.map((manifest) => manifest.checkpointId),
@@ -354,6 +363,7 @@ export async function previewRollback(root: string, featureId: string, targetChe
     filePlan: plan,
     verificationCommands,
     projectConfigSha256,
+    verificationCommandHashes,
     traceabilitySha256: state.traceability?.sha256 ?? null,
   }));
 
@@ -365,6 +375,7 @@ export async function previewRollback(root: string, featureId: string, targetChe
     filePlan: plan,
     verificationCommands,
     projectConfigSha256,
+    verificationCommandHashes,
     previewBasisHash,
   };
 }
@@ -527,6 +538,7 @@ export async function presentRollbackGate(
     gate: "rollback-confirmation",
     targetCheckpointId,
     interactionId: interaction?.id,
+    presentationEventId: interaction?.presentationEventId,
   }));
 
   if (!interaction) throw new DevFlowError("INTERACTION_NOT_CREATED", targetCheckpointId);
@@ -602,11 +614,9 @@ async function resolveRollbackGateResponse(
   let resolvedPromptEventId: string | undefined;
   if (input.source === "text") {
     const events = await readFeatureEvents(root, featureId);
-    resolvedPromptEventId = input.promptEventId ?? resolvePromptEvent(events, {
+    resolvedPromptEventId = input.promptEventId ?? resolveInteractionPromptEvent(events, initial, interaction, {
       host,
       userReply: input.userReply,
-      presentedAt: gate.presentedAt,
-      presentedRevision: gate.stateRevision,
     }).eventId;
     const eventRecord = events.find(
       (item) =>
@@ -1542,8 +1552,14 @@ async function driveRollbackTransaction(
     journal = current;
     const { config, sha256: projectConfigSha256 } = await readProjectConfigSnapshot(root);
     try {
+      const commandHashes = journal.verificationCommandHashes
+        ? verificationCommandHashesForRefs(config, Object.keys(journal.verificationCommandHashes))
+        : undefined;
+      const commandSliceStale = journal.verificationCommandHashes
+        ? Object.entries(journal.verificationCommandHashes).some(([id, hash]) => commandHashes?.[id] !== hash)
+        : projectConfigSha256 !== journal.projectConfigSha256;
       if ((journal.phase === "prepared" || journal.phase === "backing-up" || journal.phase === "rolling-back" || journal.phase === "verifying")
-        && projectConfigSha256 !== journal.projectConfigSha256) {
+        && commandSliceStale) {
         throw new DevFlowError("ROLLBACK_BASIS_STALE", "project verification config changed during the rollback transaction", {
           transactionId: journal.transactionId,
         });
@@ -1697,6 +1713,7 @@ export async function executeRollback(
     filePlan: preview.filePlan.map((action) => ({ ...action })),
     verificationAttemptIds: [],
     projectConfigSha256: preview.projectConfigSha256,
+    ...(preview.verificationCommandHashes ? { verificationCommandHashes: preview.verificationCommandHashes } : {}),
     startedAt: new Date().toISOString(),
   };
   await options.fault?.("before-journal-write");

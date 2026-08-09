@@ -1,7 +1,7 @@
 import type { ReviewFinding, } from "../policy/types.js";
 import type { ReviewFindingEvent, ReviewLedger } from "../policy/review.js";
 
-export type EffectiveFindingStatus = "unresolved" | "resolved" | "still-blocking" | "risk-accepted";
+export type EffectiveFindingStatus = "unresolved" | "resolved" | "needs-revalidation" | "still-blocking" | "risk-accepted";
 
 export interface EffectiveFindingState {
   findingId: string;
@@ -10,6 +10,8 @@ export interface EffectiveFindingState {
   origin: ReviewFindingEvent & { type: "origin" };
   latestEvent?: ReviewFindingEvent;
 }
+
+export type FindingBasisResolver = string | ((origin: ReviewFindingEvent & { type: "origin" }) => string | undefined);
 
 function eventsFor(ledger: Pick<ReviewLedger, "findingEvents">, findingId: string): ReviewFindingEvent[] {
   return (ledger.findingEvents ?? []).filter((event) => event.type === "origin"
@@ -28,14 +30,15 @@ function latestEvent(events: ReviewFindingEvent[]): ReviewFindingEvent | undefin
 export function effectiveFindingState(
   ledger: Pick<ReviewLedger, "findingEvents">,
   findingId: string,
-  currentBasisHash?: string,
+  currentBasisHash?: FindingBasisResolver,
 ): EffectiveFindingState | undefined {
   const origin = originFor(ledger, findingId);
   if (!origin) return undefined;
   const latest = latestEvent(eventsFor(ledger, findingId));
-  const basisCurrent = !currentBasisHash || !latest || latest.basisHash === currentBasisHash;
+  const expectedBasis = typeof currentBasisHash === "function" ? currentBasisHash(origin) : currentBasisHash;
+  const basisCurrent = !expectedBasis || !latest || latest.basisHash === expectedBasis;
   const status: EffectiveFindingStatus = !basisCurrent
-    ? "unresolved"
+    ? "needs-revalidation"
     : latest?.type === "resolved"
     ? "resolved"
     : latest?.type === "still-blocking"
@@ -52,7 +55,7 @@ export function effectiveFindingState(
   };
 }
 
-export function unresolvedBlockingFindings(ledger: Pick<ReviewLedger, "findingEvents">, currentBasisHash?: string): ReviewFinding[] {
+export function unresolvedBlockingFindings(ledger: Pick<ReviewLedger, "findingEvents">, currentBasisHash?: FindingBasisResolver): ReviewFinding[] {
   const ids = new Set((ledger.findingEvents ?? [])
     .filter((event): event is ReviewFindingEvent & { type: "origin" } => event.type === "origin" && event.finding.severity === "blocking")
     .map((event) => event.finding.findingId));
@@ -72,8 +75,9 @@ export function appendFindingEvents(
 export function carriedFindings(
   ledger: Pick<ReviewLedger, "findingEvents">,
   role: string,
+  currentBasisHash?: FindingBasisResolver,
 ): Array<{ finding: ReviewFinding; originBatchId: string; basisHash: string }> {
-  return unresolvedBlockingFindings(ledger)
+  return unresolvedBlockingFindings(ledger, currentBasisHash)
     .map((finding) => {
       const origin = originFor(ledger, finding.findingId);
       return origin && origin.role === role ? { finding, originBatchId: origin.batchId, basisHash: origin.basisHash } : undefined;

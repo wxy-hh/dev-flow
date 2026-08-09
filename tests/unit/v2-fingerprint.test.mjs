@@ -28,6 +28,20 @@ test("non-Git governed-root enumeration applies explicit excludes", async () => 
   assert.deepEqual(files, ["src/keep.ts"]);
 });
 
+test("repository-root enumeration excludes untracked workflow control paths", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "dev-flow-fingerprint-root-"));
+  try {
+    await mkdir(path.join(root, ".dev-flow", "features", "x"), { recursive: true });
+    await mkdir(path.join(root, "node_modules", "pkg"), { recursive: true });
+    await writeFile(path.join(root, "business.ts"), "business");
+    await writeFile(path.join(root, ".dev-flow", "features", "x", "state.json"), "state");
+    await writeFile(path.join(root, "node_modules", "pkg", "index.js"), "module");
+    assert.deepEqual(await fingerprint.enumerateProtectedFiles(root, { governedRoots: ["."] }), ["business.ts"]);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("governed-root enumeration rejects symbolic links", async () => {
   const root = await fixture();
   await symlink(path.join(root, "src", "keep.ts"), path.join(root, "src", "link.ts"));

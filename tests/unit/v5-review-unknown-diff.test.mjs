@@ -1,13 +1,15 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import test from "node:test";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { loadSource } from "../helpers/load-source.mjs";
-import { registerTraceFixture } from "../helpers/trace-fixtures.mjs";
+import { registerTraceFixture, traceDeltaFor } from "../helpers/trace-fixtures.mjs";
 import { completeReviewJobs, prepareReviewReadyFeature } from "../helpers/route-flow.mjs";
 
 const jobs = await loadSource("plugins/dev-flow/src/core/review-jobs.ts");
+const store = await loadSource("plugins/dev-flow/src/core/state-store.ts");
 
 test("unknown diff outside all role slices forces a full conservative re-review", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "dev-flow-review-unknown-diff-"));
@@ -63,7 +65,46 @@ test("unchanged basis returns the same current batch idempotently", async () => 
   }
 });
 
-test("specialty roles reuse unless their risk label slice changes", async () => {
+test("a referenced verification command change rebuilds only affected review roles", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "dev-flow-review-command-change-"));
+  try {
+    let state = await prepareReviewReadyFeature(root, {
+      level: "M",
+      topology: "shared-contract",
+      requirements: "provided-confirmed",
+      scopeFacts: ["scope"],
+      topologyFacts: ["topology"],
+      uncertaintyFacts: [],
+      riskFacts: {},
+      decisionRefs: [],
+    }, { featureId: "command-change" });
+    const first = await jobs.createReviewBatch(root, state.featureId, state.revision);
+    state = (await completeReviewJobs(root, state.featureId, first.state, first.batch)).state;
+
+    const raw = await readFile(path.join(root, ".dev-flow", "project.json"));
+    const config = JSON.parse(raw);
+    config.verification.commands[0].args = ["--test", "--changed"];
+    const updated = await store.updateProjectConfig(root, config, createHash("sha256").update(raw).digest("hex"));
+    assert.deepEqual(updated.affectedEvidence.traceNodeIds, ["RU-001"]);
+    assert.deepEqual(updated.affectedEvidence.reviewRoles, ["rollback-operability"]);
+
+    await assert.rejects(
+      () => jobs.assertReviewComplete(root, state),
+      (error) => error.code === "REVIEW_BASIS_STALE",
+    );
+    const rebuilt = await jobs.createReviewBatch(root, state.featureId, state.revision);
+    assert.equal(rebuilt.created, true);
+    assert.notEqual(rebuilt.batch.batchId, first.batch.batchId);
+    const byRole = Object.fromEntries(rebuilt.batch.jobs.map((job) => [job.role, job]));
+    assert.equal(byRole["requirements-coverage"].status, "reused");
+    assert.equal(byRole["architecture-testability"].status, "reused");
+    assert.equal(byRole["rollback-operability"].status, "pending");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("specialty roles reuse a requirements-only documentation change", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "dev-flow-review-specialty-"));
   try {
     let state = await prepareReviewReadyFeature(root, {
@@ -81,7 +122,7 @@ test("specialty roles reuse unless their risk label slice changes", async () => 
     assert.ok(firstRoles.includes("security"), `expected security role in ${firstRoles.join(",")}`);
     state = (await completeReviewJobs(root, state.featureId, first.state, first.batch)).state;
 
-    // 与安全无关的 requirements 语义变化：coverage 重审，security 复用
+    // 与专项角色无关的纯文档变化不能退化为全量专项重审。
     state = await registerTraceFixture({
       root,
       featureId: state.featureId,
@@ -93,7 +134,41 @@ test("specialty roles reuse unless their risk label slice changes", async () => 
     const byRole = Object.fromEntries(second.batch.jobs.map((job) => [job.role, job]));
     assert.equal(byRole["requirements-coverage"].status, "pending");
     assert.equal(byRole["security"].status, "reused");
-    assert.ok(byRole["security"].reusedFrom);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("specialty roles re-review a related structured execution change", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "dev-flow-review-specialty-related-"));
+  try {
+    let state = await prepareReviewReadyFeature(root, {
+      level: "M",
+      topology: "shared-contract",
+      requirements: "provided-confirmed",
+      scopeFacts: ["共享契约需求"],
+      topologyFacts: ["共享契约"],
+      uncertaintyFacts: [],
+      riskLabels: ["security"],
+      decisionRefs: [],
+    }, { featureId: "specialty-related" });
+    const first = await jobs.createReviewBatch(root, state.featureId, state.revision);
+    state = (await completeReviewJobs(root, state.featureId, first.state, first.batch)).state;
+
+    const traceDelta = traceDeltaFor("implementation-plan", "m");
+    const rollback = traceDelta.nodes.find((node) => node.kind === "rollback");
+    rollback.fileScope = ["src/security"];
+    state = await registerTraceFixture({
+      root,
+      featureId: state.featureId,
+      state,
+      kind: "implementation-plan",
+      delta: traceDelta,
+      edit: (markdown) => `${markdown}\n补充安全边界：实现限制为 src/security。\n`,
+    });
+    const second = await jobs.createReviewBatch(root, state.featureId, state.revision);
+    const byRole = Object.fromEntries(second.batch.jobs.map((job) => [job.role, job]));
+    assert.equal(byRole.security.status, "pending");
   } finally {
     await rm(root, { recursive: true, force: true });
   }

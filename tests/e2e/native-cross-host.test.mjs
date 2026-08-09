@@ -5,6 +5,7 @@ import test from "node:test";
 import { createTinyApp, strictProjectConfig } from "../helpers/fixture-repo.mjs";
 import { hostE2EEnabled, invokeHook, mcpCall } from "../helpers/host-runner.mjs";
 import { installNativeHosts } from "../helpers/native-hosts.mjs";
+import { buildTestBundles } from "../helpers/test-bundle.mjs";
 
 const boundaryAudit = {
   scanned: ["assumption", "free-space", "tbd", "fallback", "scope", "acceptance"],
@@ -18,14 +19,15 @@ async function trustedEdit(hook, root, file, transform, eventId) {
   assert.equal(await invokeHook(hook, root, { ...event, hook_event_name: "PostToolUse", tool_response: { success: true } }), undefined);
 }
 
-async function finishS(startServer, finishServer, finishHook, starter, finisher) {
+async function finishS(startServer, startHook, finishServer, finishHook, starter, finisher) {
   const fixture = await createTinyApp();
   try {
     await mcpCall(startServer, fixture.root, "dev_flow_init_project", { config: strictProjectConfig });
+    await invokeHook(startHook, fixture.root, { hook_event_name: "SessionStart", event_id: `${starter}-session-start` });
     let state = await mcpCall(startServer, fixture.root, "dev_flow_start", {
       featureId: "handoff", objective: "调整本地计数规则", host: starter,
       scope: { inScope: ["src/counter.js", "test/counter.test.js"], outOfScope: [] },
-    });
+    }, { requireRealHostHealth: true });
     state = await mcpCall(finishServer, fixture.root, "dev_flow_lock_classification", {
       featureId: "handoff",
       expectedRevision: state.revision,
@@ -61,6 +63,7 @@ async function finishS(startServer, finishServer, finishHook, starter, finisher)
       featureId: "handoff", expectedRevision: state.revision, step: "boundary", evidence: {},
     });
 
+    await invokeHook(finishHook, fixture.root, { hook_event_name: "SessionStart", event_id: `${finisher}-session-start` });
     await trustedEdit(finishHook, fixture.root, path.join(fixture.root, "src", "counter.js"), (source) => source.replace("value + 1", "value + 2"), `${finisher}-source`);
     await trustedEdit(finishHook, fixture.root, path.join(fixture.root, "test", "counter.test.js"), (source) => source.replace("increment(1), 2", "increment(1), 3"), `${finisher}-test`);
     const afterWrites = await mcpCall(finishServer, fixture.root, "dev_flow_status", { featureId: "handoff" });
@@ -84,13 +87,40 @@ async function finishS(startServer, finishServer, finishHook, starter, finisher)
   }
 }
 
+test("source bundles replay two complete public cross-host journeys with real hook health", { timeout: 240_000 }, async () => {
+  const bundles = await buildTestBundles();
+  try {
+    const mcp = bundles.pathFor("mcp-server");
+    const claudeHook = bundles.pathFor("claude-hook");
+    const codexHook = bundles.pathFor("codex-hook");
+    await finishS(mcp, claudeHook, mcp, codexHook, "claude", "codex");
+    await finishS(mcp, codexHook, mcp, claudeHook, "codex", "claude");
+  } finally {
+    await bundles.dispose();
+  }
+});
+
 test("marketplace-installed Claude and Codex exchange one v5 feature state in both directions", { skip: !hostE2EEnabled, timeout: 240_000 }, async () => {
   const hosts = await installNativeHosts();
   try {
     const claudeMcp = path.join(hosts.claudeRoot, "dist", "mcp-server.mjs");
     const codexMcp = path.join(hosts.codexRoot, "dist", "mcp-server.mjs");
-    await finishS(claudeMcp, codexMcp, path.join(hosts.codexRoot, "dist", "codex-hook.mjs"), "claude", "codex");
-    await finishS(codexMcp, claudeMcp, path.join(hosts.claudeRoot, "dist", "claude-hook.mjs"), "codex", "claude");
+    await finishS(
+      claudeMcp,
+      path.join(hosts.claudeRoot, "dist", "claude-hook.mjs"),
+      codexMcp,
+      path.join(hosts.codexRoot, "dist", "codex-hook.mjs"),
+      "claude",
+      "codex",
+    );
+    await finishS(
+      codexMcp,
+      path.join(hosts.codexRoot, "dist", "codex-hook.mjs"),
+      claudeMcp,
+      path.join(hosts.claudeRoot, "dist", "claude-hook.mjs"),
+      "codex",
+      "claude",
+    );
   } finally {
     await hosts.cleanup();
   }

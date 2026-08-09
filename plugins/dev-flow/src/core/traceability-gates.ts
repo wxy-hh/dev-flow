@@ -5,6 +5,7 @@ import type { FeatureState } from "./state-store.js";
 import { currentOpenStep } from "./step-order.js";
 import { readProjectConfigSnapshot, readTraceability } from "./traceability-store.js";
 import { assertTraceSliceCurrent } from "./traceability.js";
+import { verificationCommandHashes } from "./project-config.js";
 
 export interface TraceBlocker {
   code: "TRACE_SLICE_INCOMPLETE" | "TRACE_SLICE_STALE";
@@ -58,8 +59,8 @@ export async function inspectTraceGate(root: string, state: FeatureState, step: 
   let ledger: TraceabilityLedger | undefined;
   try {
     ledger = await readTraceability(root, state);
-    const { sha256 } = await readProjectConfigSnapshot(root);
-    assertTraceSliceCurrent(ledger, state.route, traceStep, sha256);
+    const { config, sha256 } = await readProjectConfigSnapshot(root);
+    assertTraceSliceCurrent(ledger, state.route, traceStep, sha256, verificationCommandHashes(config));
     return { enforced: true, ledger, effectiveSummary: ledger.summary };
   } catch (error) {
     return {

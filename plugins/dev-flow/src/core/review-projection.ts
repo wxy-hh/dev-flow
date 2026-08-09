@@ -94,7 +94,8 @@ function publicFinding(finding: ReviewFinding): ReviewProjectionFinding {
 function unresolvedBlockingFindingIds(ledger: ReviewLedger): string[] {
   if (ledger.findingEvents?.length) {
     const current = ledger.batches.find((batch) => batch.validity === "current");
-    return unresolvedBlockingFindings(ledger, current?.basisHash).map((finding) => finding.findingId).sort();
+    const roleBasis = (origin: import("../policy/review.js").ReviewFindingEvent & { type: "origin" }) => current?.jobs.find((job) => job.role === origin.role)?.roleBasisHash;
+    return unresolvedBlockingFindings(ledger, roleBasis).map((finding) => finding.findingId).sort();
   }
   const dispositions = Object.fromEntries(ledger.batches.flatMap((batch) => Object.entries(batch.dispositions ?? {})));
   return ledger.batches.flatMap((batch) => batch.jobs.flatMap((job) => job.submission?.findings ?? []))

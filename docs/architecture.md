@@ -32,7 +32,7 @@ BoundaryAudit 是锁定硬门禁。M/L 或风险任务先持久化 route-confirm
 
 ## Freshness 与恢复
 
-Review 以 role basis，approval 以执行语义，checkpoint 以 unit scope/dependencies/content，verification 以 governed-root fingerprint 保存 basis。Reconcile 只更新 lineage、ownership 与受影响证据；字节未变不 stale，真实变化撤销最早受影响步骤和下游 finalize claim。
+Review 以 role basis，approval 以执行授权语义，checkpoint 以 unit scope/dependencies/content，verification 以 governed-root fingerprint 保存 basis。验证命令同时保留稳定 command id 与 hash：只比较 Trace/RU 实际引用的命令，未引用命令变化不会扩大失效范围。Reconcile 只更新 lineage、ownership 与受影响证据；字节未变不 stale，真实变化撤销最早受影响步骤和下游 finalize claim。
 
 所有任务有自动 baseline 与 delivery reverse。Operational strategy 和 executable rollback 独立派生；不可逆变化只声明备份/预览/中止/补偿/full verification。
 
@@ -44,4 +44,6 @@ RU checkpoint 只运行 targeted forward verification。Final verification 用�
 
 ## MCP 交互
 
-原生 form elicitation 使用 `oneOf + const + title`。等待上限 60 秒，超时发送 cancellation 并熔断当前会话到文本；decline/cancel/协议错误保留 pending。错误统一包含稳定 code、中文原因、影响、恢复动作和白名单安全细节。
+原生 form elicitation 使用 `oneOf + const + title`。所有路线、ownership、grill、approval、risk、quality exception、rollback 和 task-switch 问题都落在同一个 interaction 账本；等待上限 60 秒，超时发送 cancellation 并熔断当前会话到文本；decline/cancel/协议错误保留 pending。普通决策的表单与文本回答经过同一语义匹配器，只接受唯一可判定的标签、简称或登记同义表达；approval 保留严格整句策略。回答由 append-only presentation cursor、同宿主和一次性消费共同证明，不能重建事件或手改状态。错误统一包含稳定 code、中文原因、影响、恢复动作和白名单安全细节。
+
+开始任务、implementation 推进、checkpoint 和 finalize 前，Core 校验同宿主 15 分钟内的 hook 健康信号。doctor 按 session、prompt、tool 能力分别诊断 missing、stale、healthy，避免 SessionStart 掩盖 prompt/tool 局部断线。Host adapter 只归一化信号；失联后的首个恢复信号由 Core 触发活动工作区对账，未知路径自动进入正式 ownership interaction。

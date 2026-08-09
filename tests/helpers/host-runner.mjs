@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { access, mkdir, readdir } from "node:fs/promises";
+import { access, appendFile, mkdir, readdir } from "node:fs/promises";
 import path from "node:path";
 
 export const hostE2EEnabled = process.env.HOST_E2E === "1";
@@ -24,6 +24,10 @@ export function run(command, args, { cwd, env, input, timeout = 90_000 } = {}) {
 }
 
 export async function mcpCall(serverPath, cwd, name, arguments_ = {}, options = {}) {
+  if (!options.requireRealHostHealth && name === "dev_flow_start" && (arguments_.host === "claude" || arguments_.host === "codex")) {
+    await mkdir(path.join(cwd, ".dev-flow"), { recursive: true });
+    await appendFile(path.join(cwd, ".dev-flow", "host-health.jsonl"), `${JSON.stringify({ host: arguments_.host, kind: "session-start", eventId: `fixture-${arguments_.host}-${Date.now()}`, at: new Date().toISOString() })}\n`);
+  }
   const response = await run(process.execPath, [serverPath], {
     cwd,
     input: `${JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name, arguments: arguments_ } })}\n`,

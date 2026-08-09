@@ -40,6 +40,7 @@ export interface ApplyTraceDeltaInput {
   delta: TraceDelta;
   projectConfigSha256: string;
   verificationCommandIds: string[];
+  verificationCommandHashes?: Record<string, string>;
   nextStateRevision: number;
 }
 
@@ -412,6 +413,10 @@ function assertPersistedLedgerShape(ledger: TraceabilityLedger, options: TraceGr
   if (typeof ledger.projectConfigSha256 !== "string" || !hex64.test(ledger.projectConfigSha256)) {
     invalid("ledger projectConfigSha256 is invalid");
   }
+  if (ledger.verificationCommandHashes !== undefined && (!isRecord(ledger.verificationCommandHashes)
+    || Object.values(ledger.verificationCommandHashes).some((value) => typeof value !== "string" || !hex64.test(value)))) {
+    invalid("ledger verification command hashes are invalid");
+  }
   for (const [id, node] of Object.entries(ledger.nodes)) assertPersistedNode(id, node, options);
 }
 
@@ -519,6 +524,7 @@ export function applyTraceDelta(input: ApplyTraceDeltaInput): TraceabilityLedger
     revision: effectiveInput.current.revision + 1,
     stateRevision: effectiveInput.nextStateRevision,
     projectConfigSha256: effectiveInput.projectConfigSha256,
+    ...(effectiveInput.verificationCommandHashes ? { verificationCommandHashes: { ...effectiveInput.verificationCommandHashes } } : {}),
     nodes,
     edges: deriveTraceEdges(nodes),
     summary: traceSummary(nodes),
@@ -527,10 +533,21 @@ export function applyTraceDelta(input: ApplyTraceDeltaInput): TraceabilityLedger
   return ledger;
 }
 
-function assertConfigCurrent(ledger: TraceabilityLedger, currentProjectConfigSha256: string): void {
-  if (ledger.projectConfigSha256 !== currentProjectConfigSha256) sliceError("TRACE_SLICE_STALE", "project configuration changed since Trace registration");
+function assertConfigCurrent(ledger: TraceabilityLedger, currentProjectConfigSha256: string, currentCommandHashes?: Record<string, string>): void {
+  if (ledger.verificationCommandHashes && currentCommandHashes) {
+    const referenced = new Set<string>();
+    for (const node of currentNodes(ledger.nodes)) {
+      if (node.kind !== "rollback") continue;
+      for (const ref of [...node.forwardVerification, ...node.rollbackVerification]) if (typeof ref === "string") referenced.add(ref);
+    }
+    for (const id of referenced) {
+      if (ledger.verificationCommandHashes[id] !== currentCommandHashes[id]) sliceError("TRACE_SLICE_STALE", "referenced verification command changed", { commandId: id });
+    }
+  } else if (ledger.projectConfigSha256 !== currentProjectConfigSha256) {
+    sliceError("TRACE_SLICE_STALE", "project configuration changed since Trace registration");
+  }
   for (const node of currentNodes(ledger.nodes)) {
-    if (node.kind === "rollback" && node.verificationConfigSha256 !== currentProjectConfigSha256) {
+    if (node.kind === "rollback" && !ledger.verificationCommandHashes && node.verificationConfigSha256 !== currentProjectConfigSha256) {
       sliceError("TRACE_SLICE_STALE", "rollback verification configuration is stale", { id: node.id });
     }
   }
@@ -544,8 +561,8 @@ function requireCurrentKinds(ledger: TraceabilityLedger, kinds: TraceNode["kind"
   }
 }
 
-export function assertTraceabilityComplete(ledger: TraceabilityLedger, route: RouteId, currentProjectConfigSha256: string): void {
-  assertConfigCurrent(ledger, currentProjectConfigSha256);
+export function assertTraceabilityComplete(ledger: TraceabilityLedger, route: RouteId, currentProjectConfigSha256: string, currentCommandHashes?: Record<string, string>): void {
+  assertConfigCurrent(ledger, currentProjectConfigSha256, currentCommandHashes);
   if (Object.values(ledger.nodes).some((node) => node.status === "stale")) {
     sliceError("TRACE_SLICE_STALE", "complete Trace graph contains stale nodes");
   }
@@ -553,10 +570,10 @@ export function assertTraceabilityComplete(ledger: TraceabilityLedger, route: Ro
   catch (error) { if (error instanceof DevFlowError) sliceError("TRACE_SLICE_INCOMPLETE", error.message, error.details); throw error; }
 }
 
-export function assertTraceSliceCurrent(ledger: TraceabilityLedger, route: RouteId, step: string, currentProjectConfigSha256: string): void {
-  assertConfigCurrent(ledger, currentProjectConfigSha256);
+export function assertTraceSliceCurrent(ledger: TraceabilityLedger, route: RouteId, step: string, currentProjectConfigSha256: string, currentCommandHashes?: Record<string, string>): void {
+  assertConfigCurrent(ledger, currentProjectConfigSha256, currentCommandHashes);
   const completeSteps = new Set(["planning", "implementation", "finalize"]);
-  if (completeSteps.has(step)) return assertTraceabilityComplete(ledger, route, currentProjectConfigSha256);
+  if (completeSteps.has(step)) return assertTraceabilityComplete(ledger, route, currentProjectConfigSha256, currentCommandHashes);
   const requirements: TraceNode["kind"][] = ["requirement", "acceptance-criterion"];
   if (["requirements"].includes(step)) {
     requireCurrentKinds(ledger, [...requirements]);

@@ -8,7 +8,8 @@ import { assertArtifactCurrent } from "./artifacts.js";
 import { captureUnitBaseline } from "./checkpoints.js";
 import { fingerprintGovernedRoots, snapshotGovernedRoots } from "./fingerprint.js";
 import { assertReviewComplete } from "./review-jobs.js";
-import { mutate, readProjectConfig, type FeatureState } from "./state-store.js";
+import { assertHostHealth } from "./host-health.js";
+import { assertWorkspaceOwnershipComplete, mutate, readProjectConfig, type FeatureState } from "./state-store.js";
 import { currentOpenStep } from "./step-order.js";
 import { assertTraceGateCurrent } from "./traceability-gates.js";
 import { confirmedApproval } from "./approval-basis.js";
@@ -108,6 +109,8 @@ export async function beginImplementationUnit(
   unitId: string,
 ): Promise<FeatureState> {
   return mutate(root, id, expectedRevision, "implementation-unit-begun", async (state) => {
+    await assertHostHealth(root, state.lastUpdatedBy.host, "implementation unit");
+    await assertWorkspaceOwnershipComplete(root, state, await readProjectConfig(root), "implementation unit");
     if (!checkpointsEnforcementRequired(state.route, state.classification.controls)) {
       throw new DevFlowError("IMPLEMENTATION_UNITS_NOT_ENFORCED", "当前动态路线未启用 unit-chain checkpoint 控制。");
     }

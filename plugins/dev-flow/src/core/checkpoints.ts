@@ -13,12 +13,14 @@ import type { RollbackNode } from "../policy/traceability.js";
 import type { VerificationCommandRef } from "../policy/traceability.js";
 import { DevFlowError } from "./errors.js";
 import { fingerprintGovernedRoots, snapshotGovernedRoots, type ProtectedFileSnapshot } from "./fingerprint.js";
-import type { ProjectConfig, VerificationCommand } from "./project-config.js";
+import { verificationCommandHashesForRefs, verificationCommandIdsForRefs, type ProjectConfig, type VerificationCommand } from "./project-config.js";
 import { canonicalReviewValueJson } from "./review-store.js";
-import { mutate, readState, type FeatureState } from "./state-store.js";
+import { assertHostHealth } from "./host-health.js";
+import { assertWorkspaceOwnershipComplete, mutate, readProjectConfig, readState, type FeatureState } from "./state-store.js";
 import { currentOpenStep } from "./step-order.js";
 import { readProjectConfigSnapshot, readTraceability } from "./traceability-store.js";
 import { runVerificationCommand } from "./verification.js";
+import { readCheckpointManifest } from "./checkpoint-store.js";
 
 const digest = (value: string | Buffer) => createHash("sha256").update(value).digest("hex");
 const featureDirectory = (root: string, featureId: string) => path.join(root, ".dev-flow", "features", featureId);
@@ -318,6 +320,7 @@ export async function checkpointImplementationUnit(
   options: CheckpointOptions = {},
 ): Promise<{ state: FeatureState; manifest: CheckpointManifest }> {
   const initial = await readState(root, id);
+  await assertHostHealth(root, initial.lastUpdatedBy.host, "checkpoint");
   if (initial.revision !== expectedRevision) {
     throw new DevFlowError("STATE_REVISION_CONFLICT", "state revision changed", { currentRevision: initial.revision });
   }
@@ -327,6 +330,7 @@ export async function checkpointImplementationUnit(
   if (currentOpenStep(initial) !== "implementation") {
     throw new DevFlowError("STEP_OUT_OF_ORDER", "checkpoint requires the implementation step", { expected: currentOpenStep(initial) });
   }
+  await assertWorkspaceOwnershipComplete(root, initial, await readProjectConfig(root), "checkpoint");
   const unit = (initial.implementationUnits ?? []).find((candidate) => candidate.unitId === unitId);
   if (!unit) throw new DevFlowError("IMPLEMENTATION_UNIT_UNKNOWN", "rollback unit has no implementation state", { unitId });
   if (unit.status !== "active") {
@@ -340,7 +344,13 @@ export async function checkpointImplementationUnit(
     unitId,
   );
   const { config, sha256: projectConfigSha256 } = await readProjectConfigSnapshot(root);
-  if (node.verificationConfigSha256 !== projectConfigSha256) {
+  const verificationRefs = [...node.forwardVerification, ...node.rollbackVerification];
+  const currentCommandHashes = verificationCommandHashesForRefs(config, verificationRefs);
+  const traceCommandHashes = ledger.verificationCommandHashes;
+  const commandSliceStale = traceCommandHashes
+    ? verificationCommandIdsForRefs(verificationRefs).some((id) => traceCommandHashes[id] !== currentCommandHashes[id])
+    : node.verificationConfigSha256 !== projectConfigSha256;
+  if (commandSliceStale) {
     throw new DevFlowError("TRACE_SLICE_STALE", "rollback verification configuration is stale", { unitId });
   }
   const commands = resolveVerificationCommands(config, node);
@@ -402,7 +412,9 @@ export async function checkpointImplementationUnit(
   }
   if (orphan) {
     const sameCheckpoint = orphan.basisHash === unit.basisHash
-      && orphan.projectConfigSha256 === projectConfigSha256
+      && (orphan.verificationCommandHashes
+        ? Object.keys(orphan.verificationCommandHashes).every((id) => orphan.verificationCommandHashes?.[id] === currentCommandHashes[id])
+        : orphan.projectConfigSha256 === projectConfigSha256)
       && JSON.stringify(orphan.files) === JSON.stringify(records);
     if (!sameCheckpoint) {
       throw new DevFlowError("CHECKPOINT_CONFLICT", "an existing checkpoint manifest no longer matches this unit", {
@@ -499,6 +511,7 @@ export async function checkpointImplementationUnit(
     projectConfigSha256,
     ...(unit.beginNonce ? { beginNonce: unit.beginNonce } : {}),
     verificationCommands: [...preflightCommands, ...commands].map((command) => ({ commandId: command.id, command: commandSummary(command) })),
+    verificationCommandHashes: Object.fromEntries([...preflightCommands, ...commands].map((command) => [command.id, currentCommandHashes[command.id] ?? digest(JSON.stringify(command))])),
   };
   const validated = parseCheckpointManifest(JSON.parse(JSON.stringify(manifest)));
 
@@ -534,26 +547,7 @@ export async function checkpointImplementationUnit(
 }
 
 export async function readCheckpoint(root: string, featureId: string, checkpointId: string): Promise<CheckpointManifest> {
-  const file = path.join(featureDirectory(root, featureId), manifestPath(checkpointId));
-  let raw: string;
-  try { raw = await readFile(file, "utf8"); }
-  catch { throw new DevFlowError("CHECKPOINT_NOT_FOUND", "checkpoint manifest does not exist", { checkpointId }); }
-  try {
-    const manifest = parseCheckpointManifest(JSON.parse(raw));
-    if (manifest.checkpointId !== checkpointId) {
-      throw new DevFlowError("CHECKPOINT_INTEGRITY_FAILED", "checkpoint manifest id does not match its path", { checkpointId });
-    }
-    return manifest;
-  } catch (error) {
-    if (error instanceof DevFlowError) throw error;
-    if (error instanceof RollbackProtocolError && error.code === "UNSUPPORTED_CHECKPOINT_SCHEMA") {
-      throw new DevFlowError("UNSUPPORTED_CHECKPOINT_SCHEMA", "检测到 Dev Flow 4.x checkpoint manifest schema v1。", {
-        checkpointId,
-        recoveryHint: "回到 4.x 完成或放弃该 feature，备份 .dev-flow 后用 5.0 重新初始化",
-      });
-    }
-    throw new DevFlowError("CHECKPOINT_INTEGRITY_FAILED", "checkpoint manifest is unreadable", { checkpointId });
-  }
+  return readCheckpointManifest(root, featureId, checkpointId);
 }
 
 /** Confirmed checkpoints in chain order, derived from unit state only. */

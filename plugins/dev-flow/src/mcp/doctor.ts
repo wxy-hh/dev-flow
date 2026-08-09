@@ -4,6 +4,7 @@ import { createHash } from "node:crypto";
 import { reviewEnforcementRequired, traceEnforcementRequired } from "../policy/contract.js";
 import { listOrphanTraceSnapshots, readTraceability } from "../core/traceability-store.js";
 import { listOrphanReviewSnapshots, readReviewLedger } from "../core/review-store.js";
+import { readHostHealth } from "../core/host-health.js";
 import { assertActivePointerConsistent, readProjectConfig, readState, readActive, readRecoveryTransaction, readRollbackTransaction, readFeatureEvents, rollbackTransactionFinished, stateFileSha256, type FeatureState, type RollbackTransaction } from "../core/state-store.js";
 import { gitBranchAndHead, isAncestor } from "../core/git-reconciliation.js";
 
@@ -34,6 +35,35 @@ export async function collectDoctorReport(root: string, pluginRoot: string, vers
   const diagnostics: Diagnostic[] = [];
   const add = (code: string, status: Status, message: string, recoveryHint?: string) =>
     diagnostics.push({ code, status, message, ...(recoveryHint ? { recoveryHint } : {}) });
+
+  const healthSignals = await readHostHealth(root);
+  const now = Date.now();
+  const hookHealth = (["claude", "codex"] as const).map((host) => {
+    const latest = [...healthSignals].reverse().find((signal) => signal.host === host);
+    const ageMs = latest ? Math.max(0, now - Date.parse(latest.at)) : undefined;
+    const capability = (kinds: Array<(typeof healthSignals)[number]["kind"]>) => {
+      const signal = [...healthSignals].reverse().find((candidate) => candidate.host === host && kinds.includes(candidate.kind));
+      const capabilityAgeMs = signal ? Math.max(0, now - Date.parse(signal.at)) : undefined;
+      const status = !signal ? "missing" : capabilityAgeMs! <= 15 * 60 * 1000 ? "healthy" : "stale";
+      return { status, ...(signal ? { latest: signal } : {}), ...(capabilityAgeMs !== undefined ? { ageMs: capabilityAgeMs } : {}) };
+    };
+    const capabilities = {
+      session: capability(["session-start"]),
+      prompt: capability(["user-prompt-submit"]),
+      tool: capability(["tool", "turn-boundary"]),
+    };
+    const capabilityStatuses = Object.values(capabilities).map((entry) => entry.status);
+    const status = !latest ? "missing"
+      : capabilityStatuses.every((entry) => entry === "healthy") ? "healthy"
+        : capabilityStatuses.some((entry) => entry === "healthy") ? "partial" : "stale";
+    if (status === "missing") add("HOOK_HEALTH_MISSING", "warning", `${host} hook 尚未记录 SessionStart/UserPromptSubmit 健康信号`, "确认对应宿主已安装并接线 Dev Flow hook，然后重新开启会话");
+    else if (status === "stale") add("HOOK_HEALTH_STALE", "warning", `${host} hook 最近信号已过期`, "恢复宿主 hook 后重新开启会话并重试原操作；若有未知路径，再调用 dev_flow_reconcile_workspace");
+    else if (status === "partial") add("HOOK_HEALTH_PARTIAL", "warning", `${host} hook 只有部分能力存在近期信号`, "触发一次用户消息和一次安全工具调用，确认各 hook 通道均已接线");
+    else add("HOOK_HEALTH_HEALTHY", "ok", `${host} hook 当前健康`);
+    if (capabilities.prompt.status === "missing") add("HOOK_PROMPT_HEALTH_MISSING", "warning", `${host} UserPromptSubmit 通道尚无可信信号`, "确认 UserPromptSubmit hook 已安装，发送一条用户消息后重新运行 doctor");
+    else if (capabilities.prompt.status === "stale") add("HOOK_PROMPT_HEALTH_STALE", "warning", `${host} UserPromptSubmit 通道最近信号已过期`, "恢复 UserPromptSubmit hook，发送一条用户消息后重试文本回答");
+    return { host, status, capabilities, ...(latest ? { latest } : {}), ...(ageMs !== undefined ? { ageMs } : {}) };
+  });
 
   const projectFile = path.join(root, ".dev-flow", "project.json");
   let project: { initialized: boolean; valid: boolean } = { initialized: await readable(projectFile), valid: false };
@@ -341,7 +371,7 @@ export async function collectDoctorReport(root: string, pluginRoot: string, vers
   add(v4Ready ? "V4_READY" : "V4_NOT_READY", v4Ready ? "ok" : "warning", v4Ready ? "没有未完成的旧版 feature，可以使用 schema v4" : `仍有未完成的旧版 feature: ${legacyFeatures.join(", ")}`, v4Ready ? undefined : "先使用 4.x 完成或放弃旧 feature，备份 .dev-flow，再使用 5.0 重新初始化；doctor 不自动迁移或终止");
 
   return {
-    version, root, pluginRoot, tools, project, activeFeature, corruptFeature, corruptActivePointer,
+    version, root, pluginRoot, tools, project, activeFeature, corruptFeature, corruptActivePointer, hookHealth,
     recoveryTransaction: recoveryTxn ?? null,
     rollbackTransactions,
     trace: trace ?? null,

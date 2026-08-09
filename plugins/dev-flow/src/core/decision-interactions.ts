@@ -1,4 +1,5 @@
 import { isExplicitApproval } from "./approval.js";
+import { matchNaturalDecision } from "./decision-language.js";
 import { DevFlowError } from "./errors.js";
 import { normalizeReplyText, type InteractionOption, type UserInteraction } from "./user-interactions.js";
 import type { FeatureState } from "./state-store.js";
@@ -20,19 +21,22 @@ function pendingInteraction(state: FeatureState): UserInteraction | undefined {
 }
 
 export function pendingDecisionForState(state: FeatureState): PendingDecision | undefined {
-  if (state.pendingDecision) return state.pendingDecision;
   const interaction = pendingInteraction(state);
-  if (!interaction) return undefined;
-  return {
-    kind: interaction.kind === "risk-acceptance" ? "review-risk" : interaction.kind,
-    question: interaction.question ?? "请选择一个方案。",
-    options: interaction.options.map((option, index) => ({ ...option, recommended: index === 0 })),
-    basisHash: interaction.basisHash,
-    presentedAt: interaction.presentedAt,
-    presentedRevision: state.revision,
-    source: "core",
-    target: interaction.target,
-  };
+  if (interaction) {
+    return {
+      kind: interaction.kind === "risk-acceptance" ? "review-risk" : interaction.kind,
+      question: interaction.question ?? "请选择一个方案。",
+      options: interaction.options.map((option, index) => ({ ...option, recommended: index === 0 })),
+      basisHash: interaction.basisHash,
+      presentedAt: interaction.presentedAt,
+      presentedRevision: interaction.presentedRevision ?? state.pendingDecision?.presentedRevision ?? state.revision,
+      source: "core",
+      target: interaction.target,
+      ...(interaction.presentationEventId ? { presentationEventId: interaction.presentationEventId } : {}),
+    };
+  }
+  // Compatibility for early 5.0 states that persisted only pendingDecision.
+  return state.pendingDecision;
 }
 
 export function publicPendingDecision(state: FeatureState): PublicPendingDecision | undefined {
@@ -55,33 +59,21 @@ export function matchDecisionReply(
   userReply: string,
 ): MatchedDecision {
   const normalized = normalizeReplyText(userReply);
-  if (!normalized) throw new DevFlowError("DECISION_REPLY_REQUIRED", "请回答当前问题。", { userMessage: "当前问题还没有得到回答。", recoveryKind: "retry", recoveryInstruction: "直接回复一个完整中文选项。", retryOriginal: true });
+  if (!normalized) throw new DevFlowError("DECISION_REPLY_REQUIRED", "请回答当前问题。", { userMessage: "当前问题还没有得到回答。", recoveryKind: "retry", recoveryInstruction: "请回复一个选项、能唯一指向它的简称或同义说法。", retryOriginal: true });
   const options = decision.options;
   let match: MatchedDecision | undefined;
   if (decision.kind === "approval" && isExplicitApproval(userReply)) {
     const option = options.find((candidate) => candidate.id === "confirm");
     if (option) match = { option };
   }
-  if (!match) {
-    for (const option of options) {
-      const label = normalizeReplyText(option.label);
-      if (label === normalized) {
-        match = { option };
-        break;
-      }
-      if (option.id !== "confirm" && normalized.startsWith(label) && normalized.length > label.length) {
-        match = { option, comment: userReply.trim().slice(option.label.length).trim() };
-        break;
-      }
-    }
-  }
+  if (!match) match = matchNaturalDecision(decision.kind === "review-risk" ? "risk-acceptance" : decision.kind, options, userReply);
   if (!match) {
     throw new DevFlowError("DECISION_REPLY_NOT_RECOGNIZED", "回答没有精确匹配当前问题的选项。", {
       userMessage: "没有识别出当前问题的有效回答。",
-      cause: "回答不是完整选项，也不是受支持的批准短语。",
+      cause: "回答无法唯一对应当前选项，也不是受支持的批准短语。",
       impact: "当前问题仍保持待回答，没有任何状态被改变。",
       recoveryKind: "retry",
-      recoveryInstruction: "请直接复制一个中文选项的完整名称再回答。",
+      recoveryInstruction: "请换一种能唯一指向某个选项的简短说法，或直接回复完整选项。",
       retryOriginal: true,
     });
   }

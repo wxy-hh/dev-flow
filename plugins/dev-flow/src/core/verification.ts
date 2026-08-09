@@ -9,7 +9,7 @@ import { fingerprintGovernedRoots } from "./fingerprint.js";
 import { assertRequirementsGrillSatisfied } from "./requirements-grill.js";
 import { mutate, readFeatureEvents, readProjectConfig, readState, type FeatureState } from "./state-store.js";
 import { resolvePromptEvent } from "./interaction-provenance.js";
-import type { ProjectConfig, VerificationCommand } from "./project-config.js";
+import { verificationCommandHashesForRefs, type ProjectConfig, type VerificationCommand } from "./project-config.js";
 import { assertCurrentStep, currentOpenStep } from "./step-order.js";
 import { recordRepairAttempt, startRepairLoop, markRepairCompleted } from "./repair-loop.js";
 import { satisfyObligations } from "../policy/obligations.js";
@@ -90,6 +90,8 @@ type Attempt = {
   commandIds: string[];
   /** Environment preparation is audited separately and never provides a guarantee. */
   preflightCommandIds?: string[];
+  /** Hashes of every configured command executed by this attempt, scoped to this attempt. */
+  verificationCommandHashes?: Record<string, string>;
   kinds: VerificationKind[];
   startedAt: string;
   finishedAt: string;
@@ -103,6 +105,26 @@ type Attempt = {
   manualAcceptance?: ManualAcceptance;
   phase?: "preflight" | "forward";
 };
+
+function successfulAttempt(state: FeatureState): Attempt | undefined {
+  const attemptId = state.verification.satisfiedByAttemptId;
+  if (attemptId === undefined) return undefined;
+  return state.verification.attempts.find((value) => {
+    const candidate = value as { id?: unknown };
+    return candidate.id === attemptId;
+  }) as Attempt | undefined;
+}
+
+function verificationCommandSliceStale(
+  state: FeatureState,
+  config: Pick<ProjectConfig, "verification">,
+): boolean {
+  const attempt = successfulAttempt(state);
+  if (!attempt?.verificationCommandHashes) return false;
+  const refs = [...attempt.commandIds, ...(attempt.preflightCommandIds ?? [])];
+  const current = verificationCommandHashesForRefs(config, refs);
+  return Object.entries(attempt.verificationCommandHashes).some(([id, hash]) => current[id] !== hash);
+}
 
 function validateManualAcceptance(value: unknown): ManualAcceptance | undefined {
   if (value === undefined) return undefined;
@@ -185,7 +207,8 @@ async function assertOptionalManualAcceptance(
 
 export function minimalGuaranteeCommands(state: FeatureState, config: ProjectConfig): ProjectConfig["verification"]["commands"] {
   const needed = new Set(state.classification.controls.verification);
-  const candidates = [...config.verification.commands].sort((left, right) => left.id.localeCompare(right.id));
+  const preflight = new Set(config.verification.preflightCommands ?? []);
+  const candidates = [...config.verification.commands].filter((command) => !preflight.has(command.id)).sort((left, right) => left.id.localeCompare(right.id));
   const coversAll = (commands: ProjectConfig["verification"]["commands"]): boolean => {
     const provided = new Set(commands.flatMap((command) => command.provides));
     return [...needed].every((kind) => provided.has(kind));
@@ -247,7 +270,7 @@ export async function runVerification(
   const replacingStaleVerification = Boolean(
     initial.verification.verifiedFingerprint
     && initial.verification.verifiedFingerprint !== fingerprint,
-  );
+  ) || verificationCommandSliceStale(initial, config);
   const startedAt = new Date().toISOString();
   let exitCode = 0;
   let phase: Attempt["phase"] = "forward";
@@ -289,6 +312,10 @@ export async function runVerification(
       id: state.verification.attempts.length + 1,
       commandIds: selected.map((item) => item.id),
       ...(preflight.length ? { preflightCommandIds: preflight.map((item) => item.id) } : {}),
+      verificationCommandHashes: verificationCommandHashesForRefs(config, [
+        ...selected.map((item) => item.id),
+        ...preflight.map((item) => item.id),
+      ]),
       kinds,
       startedAt,
       finishedAt,
@@ -347,7 +374,7 @@ export async function readVerificationFreshness(
   if (!state.verification.verifiedFingerprint) return { status: "missing" };
   const config = await readProjectConfig(root);
   const current = await fingerprintGovernedRoots(root, config);
-  if (state.verification.verifiedFingerprint === current) return { status: "fresh" };
+  if (state.verification.verifiedFingerprint === current && !verificationCommandSliceStale(state, config)) return { status: "fresh" };
   return {
     status: "stale",
     reasonCode: "VERIFICATION_STALE",
@@ -369,7 +396,8 @@ export async function invalidateStaleVerification(
   const config = await readProjectConfig(root);
   const current = await fingerprintGovernedRoots(root, config);
   const state = await readState(root, id);
-  if (!state.verification.verifiedFingerprint || state.verification.verifiedFingerprint === current) return undefined;
+  const commandSliceStale = verificationCommandSliceStale(state, config);
+  if (!state.verification.verifiedFingerprint || (state.verification.verifiedFingerprint === current && !commandSliceStale)) return undefined;
   if (state.revision !== expectedRevision) {
     throw new DevFlowError("STATE_REVISION_CONFLICT", "state revision changed", {
       currentRevision: state.revision,

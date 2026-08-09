@@ -10,6 +10,12 @@ import { normalizeProjectPath } from "./path-normalization.js";
 const runFile = promisify(execFile);
 const ignored = new Set([".git", ".dev-flow", "node_modules"]);
 
+function controlPath(relative: string): boolean {
+  return relative === ".git" || relative.startsWith(".git/")
+    || relative === ".dev-flow" || relative.startsWith(".dev-flow/")
+    || relative === "node_modules" || relative.startsWith("node_modules/");
+}
+
 export interface GovernedRootsConfig {
   governedRoots: string[];
   governedRootsExclude?: string[];
@@ -125,6 +131,7 @@ export async function enumerateProtectedFiles(root: string, input: GovernedRoots
   const resolved = await files;
   const unique = applyExcludes([...new Set(resolved
     .map(normalizeProjectPath)
+    .filter((file) => !controlPath(file))
     .filter((file) => withinConfiguredRoot(file, governedRoots)))].sort(), config.governedRootsExclude);
   const tracked = fromGit ? await gitTrackedFiles(root, governedRoots) : new Set<string>();
   for (const relative of unique) {

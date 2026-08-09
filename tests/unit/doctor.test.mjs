@@ -23,6 +23,72 @@ test("doctor reports project, active state, bundles and wiring without mutating 
   } finally { await fixture.dispose(); }
 });
 
+test("doctor reports host hook health independently of active features", async () => {
+  const fixture = await createTinyApp();
+  try {
+    await store.initProject(fixture.root, strictProjectConfig);
+    await store.recordHostHealth(fixture.root, {
+      host: "codex", kind: "session-start", eventId: "codex-session", at: new Date().toISOString(),
+    });
+    const report = await collectDoctorReport(fixture.root, pluginRoot, "5.0.0", ["dev_flow_doctor"]);
+    assert.equal(report.hookHealth.find((item) => item.host === "codex").status, "partial");
+    assert.equal(report.hookHealth.find((item) => item.host === "codex").capabilities.session.status, "healthy");
+    assert.equal(report.hookHealth.find((item) => item.host === "codex").capabilities.prompt.status, "missing");
+    assert.equal(report.hookHealth.find((item) => item.host === "claude").status, "missing");
+    assert.ok(report.diagnostics.some((item) => item.code === "HOOK_HEALTH_PARTIAL"));
+    assert.ok(report.diagnostics.some((item) => item.code === "HOOK_HEALTH_MISSING"));
+
+    await store.recordHostHealth(fixture.root, {
+      host: "claude", kind: "session-start", eventId: "claude-old", at: new Date(Date.now() - 16 * 60 * 1000).toISOString(),
+    });
+    const stale = await collectDoctorReport(fixture.root, pluginRoot, "5.0.0", ["dev_flow_doctor"]);
+    assert.equal(stale.hookHealth.find((item) => item.host === "claude").status, "stale");
+    assert.ok(stale.diagnostics.some((item) => item.code === "HOOK_HEALTH_STALE"));
+  } finally { await fixture.dispose(); }
+});
+
+test("doctor does not let a recent SessionStart mask a stale prompt channel", async () => {
+  const fixture = await createTinyApp();
+  try {
+    await store.initProject(fixture.root, strictProjectConfig);
+    await store.recordHostHealth(fixture.root, {
+      host: "codex", kind: "user-prompt-submit", eventId: "old-prompt", at: new Date(Date.now() - 16 * 60 * 1000).toISOString(),
+    });
+    await store.recordHostHealth(fixture.root, {
+      host: "codex", kind: "session-start", eventId: "fresh-session", at: new Date().toISOString(),
+    });
+    const report = await collectDoctorReport(fixture.root, pluginRoot, "5.0.0", ["dev_flow_doctor"]);
+    const codex = report.hookHealth.find((item) => item.host === "codex");
+    assert.equal(codex.status, "partial");
+    assert.equal(codex.capabilities.session.status, "healthy");
+    assert.equal(codex.capabilities.prompt.status, "stale");
+    assert.ok(report.diagnostics.some((item) => item.code === "HOOK_PROMPT_HEALTH_STALE"));
+    assert.equal(report.diagnostics.some((item) => item.code === "HOOK_HEALTH_HEALTHY" && /codex/.test(item.message)), false);
+  } finally { await fixture.dispose(); }
+});
+
+test("critical progression gates fail closed when host hook health is missing or stale", async () => {
+  const fixture = await createTinyApp();
+  try {
+    await store.initProject(fixture.root, strictProjectConfig);
+    await assert.rejects(
+      () => store.assertHostHealth(fixture.root, "codex", "checkpoint"),
+      (error) => error.code === "HOOK_HEALTH_REQUIRED",
+    );
+    await store.recordHostHealth(fixture.root, {
+      host: "codex", kind: "session-start", eventId: "codex-stale", at: new Date(Date.now() - 16 * 60 * 1000).toISOString(),
+    });
+    await assert.rejects(
+      () => store.assertHostHealth(fixture.root, "codex", "checkpoint"),
+      (error) => error.code === "HOOK_HEALTH_STALE",
+    );
+    await store.recordHostHealth(fixture.root, {
+      host: "codex", kind: "user-prompt-submit", eventId: "codex-fresh", at: new Date().toISOString(),
+    });
+    await assert.doesNotReject(() => store.assertHostHealth(fixture.root, "codex", "checkpoint"));
+  } finally { await fixture.dispose(); }
+});
+
 test("doctor reports schema v3 active features as not ready for schema v4", async () => {
   const fixture = await createTinyApp();
   try {

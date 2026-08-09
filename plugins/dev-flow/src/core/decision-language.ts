@@ -1,0 +1,82 @@
+import type { InteractionKind, InteractionOption } from "./user-interactions.js";
+
+export interface NaturalOptionMatch {
+  option: InteractionOption;
+  comment?: string;
+}
+
+function normalize(value: string): string {
+  return value
+    .trim()
+    .replace(/[\s\u00A0\uFEFF]+/g, " ")
+    .replace(/[，。！？、；：,.!?;:()（）【】\[\]“”"']/g, "")
+    .toLowerCase();
+}
+
+function unique(matches: NaturalOptionMatch[]): NaturalOptionMatch | undefined {
+  const byOption = new Map(matches.map((match) => [match.option.id, match]));
+  return byOption.size === 1 ? [...byOption.values()][0] : undefined;
+}
+
+const optionAliases: Readonly<Record<string, readonly string[]>> = {
+  "adopt-all": ["全部纳入", "都纳入", "全都纳入", "全部算当前任务", "都算当前任务", "这些都算当前任务的"],
+  "exclude-all": ["全部排除", "都排除", "全都排除", "这些都不算当前任务", "都先排除"],
+  "one-by-one": ["逐个确认", "一个个确认", "一个个来", "逐个来"],
+  adopt: ["纳入当前任务", "纳入", "算当前任务"],
+  include: ["纳入当前任务", "这个算当前任务", "算当前任务"],
+  exclude: ["排除并先处理", "排除", "不算当前任务"],
+  "request-changes": ["修改", "要修改", "提出修改意见", "调整", "需要调整"],
+  accept: ["接受", "接受风险", "仍然继续"],
+  decline: ["不接受", "拒绝", "暂不继续"],
+};
+
+const interactionAliases: Partial<Record<InteractionKind, Readonly<Record<string, readonly string[]>>>> = {
+  "route-confirmation": {
+    confirm: ["确认路线", "路线没问题", "就按这条路线", "按这条路线"],
+  },
+};
+
+/**
+ * Match user-facing language to exactly one option. This intentionally does
+ * not interpret approval confirmations: approval.ts owns that stricter policy.
+ */
+export function matchNaturalDecision(
+  kind: InteractionKind,
+  options: InteractionOption[],
+  userReply: string,
+): NaturalOptionMatch | undefined {
+  const raw = userReply.trim();
+  const normalized = normalize(raw);
+  if (!normalized) return undefined;
+
+  const editMatch = raw.match(/^修改(?:需求|意见|计划|方案|)?[:：]?\s*([\s\S]*)$/u);
+  if (editMatch) {
+    const option = options.find((candidate) => candidate.id === "request-changes");
+    if (option) return { option, comment: editMatch[1]?.trim() || undefined };
+  }
+
+  const matches: NaturalOptionMatch[] = [];
+  for (const option of options) {
+    const label = normalize(option.label);
+    if (!label) continue;
+    if (label === normalized) matches.push({ option });
+
+    // A meaningful fragment of a single label is a safe abbreviation. Keep
+    // confirmation outside this generic rule so conditional text cannot pass.
+    if (kind !== "approval" && normalized.length >= 4 && label.includes(normalized)) {
+      matches.push({ option });
+    }
+
+    if (option.id !== "confirm" && normalized.startsWith(label) && normalized.length > label.length) {
+      matches.push({ option, comment: raw.slice(option.label.length).trim() });
+    }
+
+    if (kind !== "approval" && (optionAliases[option.id] ?? []).some((alias) => normalize(alias) === normalized)) {
+      matches.push({ option });
+    }
+    if (kind !== "approval" && (interactionAliases[kind]?.[option.id] ?? []).some((alias) => normalize(alias) === normalized)) {
+      matches.push({ option });
+    }
+  }
+  return unique(matches);
+}

@@ -1,4 +1,5 @@
 import path from "node:path";
+import { createHash } from "node:crypto";
 import { DevFlowError } from "./errors.js";
 import { normalizeProjectPath } from "./path-normalization.js";
 
@@ -22,6 +23,94 @@ export interface ProjectConfig {
   governedRootsExclude?: string[];
 }
 
+export interface ProjectConfigImpact {
+  changedCommandIds: string[];
+  addedCommandIds: string[];
+  removedCommandIds: string[];
+  modifiedCommandIds: string[];
+  capabilityOnlyCommandIds: string[];
+  verificationCapabilityChanged: boolean;
+  governanceChanged: boolean;
+  preflightChanged: boolean;
+}
+
+export function projectConfigImpact(previous: ProjectConfig, next: ProjectConfig): ProjectConfigImpact {
+  const previousCommands = new Map(previous.verification.commands.map((command) => [command.id, command]));
+  const nextCommands = new Map(next.verification.commands.map((command) => [command.id, command]));
+  const addedCommandIds = [...nextCommands.keys()].filter((id) => !previousCommands.has(id)).sort();
+  const removedCommandIds = [...previousCommands.keys()].filter((id) => !nextCommands.has(id)).sort();
+  const modifiedCommandIds = [...nextCommands.keys()].filter((id) => previousCommands.has(id)
+    && JSON.stringify({ ...previousCommands.get(id), provides: undefined }) !== JSON.stringify({ ...nextCommands.get(id), provides: undefined })).sort();
+  const capabilityOnlyIds = [...nextCommands.keys()].filter((id) => previousCommands.has(id)
+    && JSON.stringify({ ...previousCommands.get(id), provides: undefined }) === JSON.stringify({ ...nextCommands.get(id), provides: undefined })
+    && JSON.stringify(previousCommands.get(id)?.provides) !== JSON.stringify(nextCommands.get(id)?.provides));
+  const changedCommandIds = [...new Set([...addedCommandIds, ...removedCommandIds, ...modifiedCommandIds, ...capabilityOnlyIds])].sort();
+  const governanceChanged = JSON.stringify({
+    enforcement: previous.enforcement,
+    governedRoots: previous.governedRoots,
+    governedRootsExclude: previous.governedRootsExclude,
+  }) !== JSON.stringify({
+    enforcement: next.enforcement,
+    governedRoots: next.governedRoots,
+    governedRootsExclude: next.governedRootsExclude,
+  });
+  const preflightChanged = JSON.stringify(previous.verification.preflightCommands ?? []) !== JSON.stringify(next.verification.preflightCommands ?? []);
+  return {
+    changedCommandIds,
+    addedCommandIds,
+    removedCommandIds,
+    modifiedCommandIds,
+    capabilityOnlyCommandIds: capabilityOnlyIds.sort(),
+    verificationCapabilityChanged: capabilityOnlyIds.length > 0 || addedCommandIds.length > 0 || removedCommandIds.length > 0,
+    governanceChanged,
+    preflightChanged,
+  };
+}
+
+export function verificationCommandHashes(config: Pick<ProjectConfig, "verification">): Record<string, string> {
+  return Object.fromEntries(config.verification.commands.map((command) => [
+    command.id,
+    // `provides` is a governance declaration, not executable command
+    // identity. Expanding guarantees must not invalidate evidence that ran
+    // the same command bytes with the same cwd/args.
+    createHash("sha256").update(JSON.stringify({ id: command.id, command: command.command, args: command.args, cwd: command.cwd })).digest("hex"),
+  ]));
+}
+
+/** Return the configured command identities referenced by a trace/checkpoint slice. */
+export function verificationCommandIdsForRefs(
+  refs: readonly (string | { command: string; args?: string[]; cwd?: string })[],
+): string[] {
+  return [...new Set(refs.filter((ref): ref is string => typeof ref === "string"))].sort();
+}
+
+/** Scope command hashes to the string command references actually consumed by a slice. */
+export function verificationCommandHashesForRefs(
+  config: Pick<ProjectConfig, "verification">,
+  refs: readonly (string | { command: string; args?: string[]; cwd?: string })[],
+): Record<string, string> {
+  const all = verificationCommandHashes(config);
+  return Object.fromEntries(verificationCommandIdsForRefs(refs)
+    .filter((id) => all[id] !== undefined)
+    .map((id) => [id, all[id]]));
+}
+
+/** Guarantees supplied by forward verification commands; preflight is audit-only. */
+export function verificationGuarantees(config: Pick<ProjectConfig, "verification">): Set<VerificationGuarantee> {
+  const preflight = new Set(config.verification.preflightCommands ?? []);
+  return new Set(config.verification.commands
+    .filter((command) => !preflight.has(command.id))
+    .flatMap((command) => command.provides));
+}
+
+export function missingVerificationGuarantees(
+  config: Pick<ProjectConfig, "verification">,
+  required: readonly VerificationGuarantee[],
+): VerificationGuarantee[] {
+  const available = verificationGuarantees(config);
+  return [...new Set(required)].filter((kind) => !available.has(kind));
+}
+
 function relativeDirectory(value: string): boolean {
   return value.length > 0 && !path.isAbsolute(value) && !value.split(/[\\/]+/).includes("..");
 }
@@ -29,7 +118,7 @@ function relativeDirectory(value: string): boolean {
 function normalizedRelativeDirectory(value: string): string | undefined {
   if (!relativeDirectory(value)) return undefined;
   const normalized = normalizeProjectPath(value).replace(/\/+$/u, "");
-  return normalized || undefined;
+  return normalized || ".";
 }
 
 export function validateProjectConfig(value: unknown): asserts value is ProjectConfig {
@@ -74,4 +163,16 @@ export function validateProjectConfig(value: unknown): asserts value is ProjectC
     throw new DevFlowError("INVALID_PROJECT_CONFIG", "preflightCommands must reference configured command ids");
   }
   if (preflightCommands && config.verification) config.verification.preflightCommands = [...new Set(preflightCommands)];
+  const missing = missingVerificationGuarantees(config as ProjectConfig, ["targeted"]);
+  if (missing.length) {
+    throw new DevFlowError("VERIFICATION_GUARANTEE_UNCONFIGURED", "项目必须配置至少一个非 preflight 命令提供 targeted guarantee。", {
+      missingGuarantees: missing,
+      userMessage: "项目验证配置缺少最终验证所需的 targeted guarantee。",
+      cause: "preflight 命令只用于环境准备和诊断，不能作为业务验证证据。",
+      impact: "项目无法安全创建会话或锁定路线。",
+      recoveryKind: "repair",
+      recoveryInstruction: "补充一个非 preflight 验证命令并重新初始化项目。",
+      retryOriginal: false,
+    });
+  }
 }

@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import readline from "node:readline";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
@@ -6,7 +7,7 @@ import { DevFlowError, failureFrom } from "../core/errors.js";
 import { finalize, recordStep } from "../core/feature-check.js";
 import { presentApproval, resolveApprovalAnswer, resolveApprovalElicitation } from "../core/approval-interactions.js";
 import {
-  initProject, startFeature, lockClassification, confirmRouteClassification, recordDecision, abandonFeature, reclassifyFeature, recoverCorruptFeature, repairFeature, readState, readFeatureEvents, mutate, pauseFeature, resumeFeature, reconcileWorkspace,
+  initProject, updateProjectConfig, startFeature, lockClassification, confirmRouteClassification, resolveRouteClassificationElicitation, resolveWorkspaceOwnershipText, resolveTaskSwitchAnswer, recordDecision, abandonFeature, reclassifyFeature, recoverCorruptFeature, repairFeature, readState, readFeatureEvents, mutate, pauseFeature, resumeFeature, reconcileWorkspace,
 } from "../core/state-store.js";
 import type { FeatureState } from "../core/state-store.js";
 import { buildFeatureMutationSummary } from "../core/execution-brief.js";
@@ -46,8 +47,10 @@ import {
 } from "../core/review-jobs.js";
 import { parseHostAttestation, parseReviewJobCompletion, toPublicReviewJob } from "../policy/review.js";
 import {
+  createInteraction,
   getInteraction,
   interactionResponse,
+  resolveTextInteraction,
   toPublicInteraction,
   type InteractionResponse,
   type PublicInteraction,
@@ -60,7 +63,7 @@ const root = process.cwd();
 const moduleDirectory = path.dirname(fileURLToPath(import.meta.url));
 const pluginRoot = path.basename(moduleDirectory) === "dist" ? path.resolve(moduleDirectory, "..") : path.resolve(moduleDirectory, "../..");
 const tools = [
-  "dev_flow_init_project", "dev_flow_classify", "dev_flow_start", "dev_flow_lock_classification", "dev_flow_record_decision", "dev_flow_status", "dev_flow_inspect",
+  "dev_flow_init_project", "dev_flow_update_project", "dev_flow_classify", "dev_flow_start", "dev_flow_lock_classification", "dev_flow_record_decision", "dev_flow_status", "dev_flow_inspect",
   "dev_flow_scaffold_artifact", "dev_flow_record_artifact", "dev_flow_record_step", "dev_flow_pause", "dev_flow_resume", "dev_flow_reconcile_workspace",
   "dev_flow_record_artifact_with_trace", "dev_flow_get_traceability", "dev_flow_rebuild_review_projection",
   "dev_flow_create_review_batch", "dev_flow_get_review_job", "dev_flow_claim_review_job", "dev_flow_submit_review_job", "dev_flow_sample_review_job", "dev_flow_release_review_job",
@@ -240,6 +243,7 @@ const boundaryAuditSchema = object(["scanned", "items"], {
 
 const toolSchemas: Record<string, { description: string; inputSchema: Record<string, unknown>; annotations?: Record<string, boolean> }> = {
   dev_flow_init_project: { description: "Create strict project configuration.", inputSchema: object(["config"], { config: { type: "object" } }) },
+  dev_flow_update_project: { description: "Update strict project configuration using sha256 compare-and-swap.", inputSchema: object(["config", "expectedSha256"], { config: { type: "object" }, expectedSha256: string }) },
   dev_flow_classify: {
     description: "Pure route classification (read-only preview).",
     inputSchema: object([], {
@@ -866,6 +870,10 @@ async function call(name: string, a: any, connection: McpConnection) {
       await initProject(root, a.config);
       return { 状态: "已初始化", 配置路径: path.join(root, ".dev-flow", "project.json"), 下一步: "调用 dev_flow_start 开始一个需求。" };
     }
+    case "dev_flow_update_project": {
+      const result = await updateProjectConfig(root, a.config, a.expectedSha256);
+      return { 状态: "已更新", 配置路径: path.join(root, ".dev-flow", "project.json"), previousSha256: result.previousSha256, sha256: result.sha256, 变化: result.impact, 受影响证据: result.affectedEvidence, 下一步: "新增或扩充验证能力可继续当前任务；被引用命令变化的 Trace/RU 需要按错误提示重新登记。" };
+    }
     case "dev_flow_classify": {
       if (!a.classificationBasis && (a.level === undefined || a.topology === undefined)) {
         throw new DevFlowError("CLASSIFICATION_ARGS_INVALID", "classify requires classificationBasis or level+topology", {
@@ -894,7 +902,7 @@ async function call(name: string, a: any, connection: McpConnection) {
     case "dev_flow_lock_classification": {
       const classification = normalizeLockClassification(a.classification as Record<string, unknown>);
       const { level, topology, requirements, riskLabels, acceptanceAssistSuggested, scopeFacts, topologyFacts, uncertaintyFacts, riskFacts, decisionRefs, controlEnhancements } = classification;
-      return lockClassification(root, a.featureId, a.expectedRevision, {
+      const state = await lockClassification(root, a.featureId, a.expectedRevision, {
         level, topology, ...(requirements ? { requirements } : {}),
         ...(riskLabels ? { riskLabels } : {}), ...(acceptanceAssistSuggested !== undefined ? { acceptanceAssistSuggested } : {}),
         scopeFacts, topologyFacts, uncertaintyFacts, riskFacts, decisionRefs,
@@ -902,6 +910,18 @@ async function call(name: string, a: any, connection: McpConnection) {
         classificationBasis: classification.classificationBasis,
         signals: (classification.classificationBasis as { signals?: any } | undefined)?.signals,
       } as any, a.boundaryAudit);
+      const decision = pendingDecisionForState(state);
+      const interaction = decision ? pendingInteractionForDecision(state, decision) : undefined;
+      if (decision?.kind !== "route-confirmation" || !interaction) return state;
+      emitAttentionNotification({ kind: "decision-required", featureId: a.featureId, decision: "route-confirmation" });
+      const selection = await connection.elicit(toPublicInteraction(interaction), interaction.question ?? decision.question);
+      if (!selection) return interactionEnvelope(state, toPublicInteraction(interaction), "pending");
+      const next = await resolveRouteClassificationElicitation(
+        root, a.featureId, state.revision, interaction.id,
+        selection.action, selection.comment, state.lastUpdatedBy.host,
+      );
+      const response = interactionResponse(next, interaction.id);
+      return interactionEnvelope(next, toPublicInteraction(getInteraction(next, interaction.id)), selection.action, response);
     }
     case "dev_flow_status": return readCompactStatus(root, a.featureId);
     case "dev_flow_inspect": return inspectFeature(root, a.featureId, a.topic);
@@ -1096,9 +1116,37 @@ async function call(name: string, a: any, connection: McpConnection) {
          };
        }
        const interaction = pendingInteractionForDecision(state, decision);
+       if (decision.kind === "task-switch" && interaction) {
+         const result = await resolveTaskSwitchAnswer(root, a.featureId, a.expectedRevision, a.userReply, a.host);
+         return {
+           state: result.state,
+           message: result.action === "pause-old"
+             ? "旧任务已暂停，可以重试开始新任务。"
+             : result.action === "return-old"
+               ? "继续当前任务；新任务尚未创建。"
+               : "请先完成当前任务；新任务尚未创建。",
+           需要用户决定: false,
+         };
+       }
        if (decision.kind === "route-confirmation") {
          const next = await confirmRouteClassification(root, a.featureId, a.expectedRevision, a.userReply, a.host);
          return { state: next, message: "路线已按可信用户确认原子锁定。", 需要用户决定: false };
+       }
+       if (decision.kind === "workspace-ownership" && interaction) {
+         const result = await resolveWorkspaceOwnershipText(
+           root, a.featureId, a.expectedRevision, interaction.id, a.userReply, a.host,
+         );
+         return {
+           state: result.state,
+           message: result.action === "adopt-all" || result.action === "adopt" || result.action === "include"
+             ? "已将路径纳入当前任务。"
+             : result.action === "exclude-all" || result.action === "exclude"
+               ? "已将路径排除；系统不会自动还原或暂存它们。"
+               : "已切换为逐个确认路径。",
+           ...(pendingDecisionForState(result.state)
+             ? { attention: "请只回答当前这一道问题。", 需要用户决定: true }
+             : { 需要用户决定: false }),
+         };
        }
        if (!interaction) {
          const prompt = resolvePromptEvent(await readFeatureEvents(root, a.featureId), {
@@ -1106,8 +1154,10 @@ async function call(name: string, a: any, connection: McpConnection) {
            userReply: a.userReply,
            presentedAt: decision.presentedAt,
            presentedRevision: decision.presentedRevision,
+           ...(decision.presentationEventId ? { presentationEventId: decision.presentationEventId } : {}),
          });
          const matched = matchDecisionReply(decision, a.userReply);
+         let nextPresentationEventId: string | undefined;
          const next = await mutate(root, a.featureId, a.expectedRevision, "decision-answered", async (draft) => {
            const current = draft.pendingDecision;
            if (!current) throw new DevFlowError("DECISION_ALREADY_RESOLVED", "当前问题已经处理。", { userMessage: "当前问题已经处理，请刷新状态。", recoveryKind: "refresh", recoveryInstruction: "刷新当前状态后继续。", retryOriginal: false });
@@ -1152,29 +1202,29 @@ async function call(name: string, a: any, connection: McpConnection) {
              if (owner === "feature") draft.workspace.ownershipSource[file] = "user-adopted";
              const nextFile = Object.keys(draft.workspace.startedDirty).find((candidate) => draft.workspace.ownership[candidate] === undefined);
              if (nextFile) {
-               draft.pendingDecision = {
+               const nextInteraction = createInteraction(draft, {
                  kind: "workspace-ownership",
+                 target: `workspace:${nextFile}`,
+                 basisHash: current.basisHash,
                  question: `启动前已发现路径“${nextFile}”存在改动。它是否属于当前任务？`,
                  options: [
-                   { id: "adopt", label: "纳入当前任务", recommended: true },
+                   { id: "adopt", label: "纳入当前任务" },
                    { id: "exclude", label: "先处理后继续" },
                  ],
-                 basisHash: current.basisHash,
-                 presentedAt: new Date().toISOString(),
-                 presentedRevision: draft.revision,
-                 source: "core",
-                 target: `workspace:${nextFile}`,
-               };
+                 workspacePaths: [nextFile],
+                 workspaceBatchPaths: [nextFile],
+               });
+               nextPresentationEventId = nextInteraction.presentationEventId;
              }
            } else if (current.kind === "task-switch" && matched.option.id === "pause-old") {
              draft.lifecycle = "paused";
              draft.resumeSummary = "旧任务已暂停；恢复时会自动对账工作区。";
            }
-         }, { eventId: prompt.eventId, action: matched.option.id });
+         }, () => ({ eventId: prompt.eventId, action: matched.option.id, ...(nextPresentationEventId ? { presentationEventId: nextPresentationEventId } : {}) }));
           return {
             state: next,
            message: matched.option.id === "adopt" ? "已将该路径纳入当前任务。" : matched.option.id === "exclude" ? "已将该路径排除；系统不会自动还原或暂存它。" : "已记录你的选择，流程将按当前任务状态继续。",
-           ...(next.pendingDecision ? { attention: "请只回答当前这一道问题。", 需要用户决定: true } : { 需要用户决定: false }),
+           ...(pendingDecisionForState(next) ? { attention: "请只回答当前这一道问题。", 需要用户决定: true } : { 需要用户决定: false }),
          };
        }
        if (decision.kind === "approval") {
