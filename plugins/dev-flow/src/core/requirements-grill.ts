@@ -16,11 +16,13 @@ import {
   type InteractionResponse,
   type PublicInteraction,
 } from "./user-interactions.js";
+import type { GrillRecommendation } from "./grill-interaction.js";
 
 export interface GrillDecisionInput {
   questionId: string;
   question: string;
   options: InteractionOption[];
+  recommendation: GrillRecommendation;
   host: "claude" | "codex";
 }
 
@@ -58,6 +60,7 @@ export async function requestGrillDecision(
       basisHash: decisionBasisHash({ objective: draft.objective, questionId: input.questionId, requirements: draft.artifacts.requirements?.sha256 }),
       question: input.question,
       options: input.options,
+      recommendation: input.recommendation,
     });
     const ledger = draft.decisionLedger ?? [];
     const index = ledger.findIndex((decision) => decision.id === input.questionId);

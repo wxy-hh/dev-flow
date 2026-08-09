@@ -31,3 +31,20 @@ export async function recordAdapterHealth(
     // when no trustworthy signal can be read.
   }
 }
+
+/** A completed native question is also proof that the host captured user input. */
+export async function recordNativePromptHealth(
+  root: string,
+  event: HostHealthEvent,
+  host: "claude" | "codex",
+): Promise<void> {
+  try {
+    await observeHostRecovery(root, {
+      host,
+      kind: "user-prompt-submit",
+      eventId: `${event.event_id ?? "native-question"}:answer`,
+    });
+  } catch {
+    // Health diagnostics must not block the host.
+  }
+}

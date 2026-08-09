@@ -1,6 +1,6 @@
 ---
 name: plan-review
-description: 执行 Dev Flow 5.0 动态角色、parallel-first 且可按 role basis 复用的计划审查。
+description: 执行 Dev Flow 动态角色、parallel-first 且可按 role basis 复用的计划审查。
 ---
 
 角色由 Core 从事实派生；不要在 Skill 复制风险映射。coverage 只看需求/AC/TASK/TEST，architecture 只看组件、任务、测试与契约，rollback 只看 RU/scope/dependency/recovery commands，专项角色只看对应风险切片。

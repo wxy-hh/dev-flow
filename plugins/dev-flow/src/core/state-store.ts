@@ -936,7 +936,7 @@ export async function lockClassification(
           kind: "route-confirmation",
           target: "route-confirmation",
           basisHash,
-          question: `请确认 Dev Flow 5.0 路线：${selected.classification.orderedRoute.join(" → ")}`,
+          question: `请确认 Dev Flow 路线：${selected.classification.orderedRoute.join(" → ")}`,
           options: [
             { id: "confirm", label: "确认这条路线" },
             { id: "correct", label: "修正分类事实", requiresComment: true },

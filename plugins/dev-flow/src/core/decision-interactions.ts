@@ -1,6 +1,7 @@
 import { isExplicitApproval } from "./approval.js";
 import { matchNaturalDecision } from "./decision-language.js";
 import { DevFlowError } from "./errors.js";
+import { buildGrillPresentation } from "./grill-interaction.js";
 import { normalizeReplyText, type InteractionOption, type UserInteraction } from "./user-interactions.js";
 import type { FeatureState } from "./state-store.js";
 import type { PendingDecision, PendingDecisionKind } from "../policy/types.js";
@@ -8,7 +9,9 @@ import type { PendingDecision, PendingDecisionKind } from "../policy/types.js";
 export interface PublicPendingDecision {
   kind: PendingDecisionKind;
   question: string;
-  options: Array<{ label: string; description?: string; recommended: boolean; requiresComment: boolean }>;
+  options: Array<{ label: string; description?: string; answerCode?: "A" | "B" | "C"; recommended: boolean; requiresComment: boolean }>;
+  recommendation?: { optionId: string; reason: string };
+  presentation?: string;
 }
 
 export interface MatchedDecision {
@@ -20,13 +23,32 @@ function pendingInteraction(state: FeatureState): UserInteraction | undefined {
   return Object.values(state.interactions ?? {}).find((value) => (value as UserInteraction).status === "pending") as UserInteraction | undefined;
 }
 
+function rejectLegacyGrill(): never {
+  throw new DevFlowError("GRILL_INTERACTION_RESTART_REQUIRED", "legacy grill state has no explicit recommendation", {
+    userMessage: "这个 grill 问题来自旧版交互合同，不能可靠继续。",
+    recoveryKind: "repair",
+    recoveryInstruction: "放弃受影响的 feature，再用当前版本重新提出该 grill 问题。",
+    retryOriginal: false,
+  });
+}
+
 export function pendingDecisionForState(state: FeatureState): PendingDecision | undefined {
   const interaction = pendingInteraction(state);
   if (interaction) {
+    if (interaction.kind === "grill" && !interaction.recommendation) rejectLegacyGrill();
+    const grillPresentation = interaction.kind === "grill" && interaction.recommendation
+      ? buildGrillPresentation({ question: interaction.question ?? "", options: interaction.options, recommendation: interaction.recommendation })
+      : undefined;
     return {
       kind: interaction.kind === "risk-acceptance" ? "review-risk" : interaction.kind,
       question: interaction.question ?? "请选择一个方案。",
-      options: interaction.options.map((option, index) => ({ ...option, recommended: index === 0 })),
+      options: grillPresentation
+        ? grillPresentation.options.map((option) => ({ ...option }))
+        : interaction.options.map((option, index) => ({ ...option, recommended: index === 0 })),
+      ...(grillPresentation ? {
+        recommendation: { ...grillPresentation.recommendation },
+        presentation: grillPresentation.text,
+      } : {}),
       basisHash: interaction.basisHash,
       presentedAt: interaction.presentedAt,
       presentedRevision: interaction.presentedRevision ?? state.pendingDecision?.presentedRevision ?? state.revision,
@@ -35,7 +57,7 @@ export function pendingDecisionForState(state: FeatureState): PendingDecision | 
       ...(interaction.presentationEventId ? { presentationEventId: interaction.presentationEventId } : {}),
     };
   }
-  // Compatibility for early 5.0 states that persisted only pendingDecision.
+  if (state.pendingDecision?.kind === "grill") rejectLegacyGrill();
   return state.pendingDecision;
 }
 
@@ -48,9 +70,12 @@ export function publicPendingDecision(state: FeatureState): PublicPendingDecisio
     options: decision.options.map((option, index) => ({
       label: option.label,
       ...(option.description ? { description: option.description } : {}),
+      ...(option.answerCode ? { answerCode: option.answerCode } : {}),
       recommended: option.recommended ?? index === 0,
       requiresComment: Boolean(option.requiresComment),
     })),
+    ...(decision.recommendation ? { recommendation: { ...decision.recommendation } } : {}),
+    ...(decision.presentation ? { presentation: decision.presentation } : {}),
   };
 }
 

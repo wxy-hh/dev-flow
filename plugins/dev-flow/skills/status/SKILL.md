@@ -1,6 +1,6 @@
 ---
 name: status
-description: 查看 Dev Flow 5.0 的动态路线、控制原因、新鲜度与恢复动作。
+description: 查看 Dev Flow 的动态路线、控制原因、新鲜度与恢复动作。
 ---
 
 先调用 `dev_flow_status`。向用户展示 level、逐项控制理由、完整 `orderedRoute`、当前阶段、待办义务和最早恢复阶段；不要只显示当前一步。需要细节时一次读取一个 `dev_flow_inspect` topic：classification、artifacts、trace、review、implementation、verification、delivery、history 或 diagnostics。

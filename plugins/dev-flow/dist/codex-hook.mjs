@@ -1,4 +1,4 @@
-/* dev-flow 5.0.1; built from source, deterministic build */
+/* dev-flow 5.0.2; built from source, deterministic build */
 
 // plugins/dev-flow/src/core/state-store.ts
 import { randomUUID as randomUUID5, createHash as createHash7 } from "node:crypto";
@@ -1724,6 +1724,54 @@ async function reconcileWorkspaceForFeature(root, state, config) {
 
 // plugins/dev-flow/src/core/user-interactions.ts
 import { randomUUID as randomUUID4 } from "node:crypto";
+
+// plugins/dev-flow/src/core/grill-interaction.ts
+var answerCodes = ["A", "B", "C"];
+function invalid3(message) {
+  throw new DevFlowError("GRILL_PRESENTATION_INVALID", message, {
+    userMessage: "\u5F53\u524D grill \u95EE\u9898\u4E0D\u7B26\u5408\u4EA4\u4E92\u5408\u540C\u3002",
+    recoveryKind: "repair",
+    recoveryInstruction: "\u63D0\u4F9B 2-3 \u4E2A\u5E26\u8BF4\u660E\u7684\u9009\u9879\uFF0C\u5E76\u660E\u786E\u4E00\u4E2A\u63A8\u8350\u9879\u53CA\u63A8\u8350\u7406\u7531\u3002",
+    retryOriginal: false
+  });
+}
+function buildGrillPresentation(input) {
+  const question = input.question.trim();
+  if (!question) invalid3("question must not be empty");
+  if (!Array.isArray(input.options) || input.options.length < 2 || input.options.length > 3) {
+    invalid3("grill must contain 2-3 options");
+  }
+  if (input.options.some((option) => option.id === "other" || !option.description?.trim())) {
+    invalid3("grill options require descriptions and cannot use the reserved other id");
+  }
+  const reason = input.recommendation.reason.trim();
+  if (!reason) invalid3("recommendation reason must not be empty");
+  const recommendedIndex = input.options.findIndex((option) => option.id === input.recommendation.optionId);
+  if (recommendedIndex < 0) invalid3("recommendation must reference one current option");
+  const options = input.options.map((option, index) => ({
+    ...option,
+    answerCode: answerCodes[index],
+    recommended: index === recommendedIndex
+  }));
+  const lines = [question];
+  for (const option of options) {
+    lines.push("");
+    lines.push(`${option.answerCode}. ${option.label}${option.recommended ? "\uFF08\u63A8\u8350\uFF09" : ""}`);
+    lines.push(`   ${option.recommended ? reason : option.description.trim()}`);
+  }
+  lines.push("");
+  const codes = options.map((option) => option.answerCode);
+  lines.push(`\u8BF7\u56DE\u590D ${codes.slice(0, -1).join("\u3001")} \u6216 ${codes.at(-1)}\u3002`);
+  lines.push("\u5982\u679C\u90FD\u4E0D\u5408\u9002\uFF0C\u8BF7\u56DE\u590D\u201C\u5176\u4ED6\uFF1A<\u4F60\u7684\u65B9\u6848\u548C\u7406\u7531>\u201D\u3002");
+  return {
+    question,
+    options,
+    recommendation: { optionId: input.recommendation.optionId, reason },
+    text: lines.join("\n")
+  };
+}
+
+// plugins/dev-flow/src/core/user-interactions.ts
 function interactions(state) {
   if (!state.interactions) state.interactions = {};
   return state.interactions;
@@ -1742,6 +1790,10 @@ function validateOptions(options) {
 }
 function createInteraction(state, input) {
   validateOptions(input.options);
+  if (input.kind === "grill") {
+    if (!input.recommendation) throw new DevFlowError("GRILL_RECOMMENDATION_REQUIRED", "grill requires one explicit recommendation");
+    buildGrillPresentation({ question: input.question ?? "", options: input.options, recommendation: input.recommendation });
+  }
   const pending = Object.values(state.interactions ?? {}).filter((value) => value.status === "pending");
   if (pending.length) throw new DevFlowError("MULTIPLE_PENDING_DECISIONS", "\u540C\u4E00 feature \u53EA\u80FD\u5B58\u5728\u4E00\u4E2A\u5F85\u51B3\u95EE\u9898\u3002", { userMessage: "\u5F53\u524D\u5DF2\u6709\u4E00\u4E2A\u95EE\u9898\u7B49\u5F85\u56DE\u7B54\u3002", cause: "\u7CFB\u7EDF\u62D2\u7EDD\u5E76\u884C\u521B\u5EFA\u7B2C\u4E8C\u4E2A pending decision\u3002", impact: "\u65B0\u95EE\u9898\u6CA1\u6709\u88AB\u521B\u5EFA\uFF0C\u539F\u95EE\u9898\u4ECD\u7B49\u5F85\u56DE\u7B54\u3002", recoveryKind: "refresh", recoveryInstruction: "\u5148\u56DE\u7B54\u5F53\u524D\u95EE\u9898\uFF0C\u4E0B\u4E00\u56DE\u5408\u518D\u5904\u7406\u65B0\u95EE\u9898\u3002", retryOriginal: false });
   const current = findInteractionForTarget(state, input.target);
@@ -1762,6 +1814,7 @@ function createInteraction(state, input) {
     } : {},
     question: input.question,
     options: input.options.map((option) => ({ ...option })),
+    ...input.recommendation ? { recommendation: { ...input.recommendation } } : {},
     presentedAt: (/* @__PURE__ */ new Date()).toISOString(),
     presentedRevision: state.revision,
     presentationEventId: input.presentationEventId ?? randomUUID4(),
@@ -1784,13 +1837,27 @@ function findInteractionForTarget(state, target) {
 function pendingInteraction(state) {
   return Object.values(state.interactions ?? {}).find((value) => value.status === "pending");
 }
+function rejectLegacyGrill() {
+  throw new DevFlowError("GRILL_INTERACTION_RESTART_REQUIRED", "legacy grill state has no explicit recommendation", {
+    userMessage: "\u8FD9\u4E2A grill \u95EE\u9898\u6765\u81EA\u65E7\u7248\u4EA4\u4E92\u5408\u540C\uFF0C\u4E0D\u80FD\u53EF\u9760\u7EE7\u7EED\u3002",
+    recoveryKind: "repair",
+    recoveryInstruction: "\u653E\u5F03\u53D7\u5F71\u54CD\u7684 feature\uFF0C\u518D\u7528\u5F53\u524D\u7248\u672C\u91CD\u65B0\u63D0\u51FA\u8BE5 grill \u95EE\u9898\u3002",
+    retryOriginal: false
+  });
+}
 function pendingDecisionForState(state) {
   const interaction = pendingInteraction(state);
   if (interaction) {
+    if (interaction.kind === "grill" && !interaction.recommendation) rejectLegacyGrill();
+    const grillPresentation = interaction.kind === "grill" && interaction.recommendation ? buildGrillPresentation({ question: interaction.question ?? "", options: interaction.options, recommendation: interaction.recommendation }) : void 0;
     return {
       kind: interaction.kind === "risk-acceptance" ? "review-risk" : interaction.kind,
       question: interaction.question ?? "\u8BF7\u9009\u62E9\u4E00\u4E2A\u65B9\u6848\u3002",
-      options: interaction.options.map((option, index) => ({ ...option, recommended: index === 0 })),
+      options: grillPresentation ? grillPresentation.options.map((option) => ({ ...option })) : interaction.options.map((option, index) => ({ ...option, recommended: index === 0 })),
+      ...grillPresentation ? {
+        recommendation: { ...grillPresentation.recommendation },
+        presentation: grillPresentation.text
+      } : {},
       basisHash: interaction.basisHash,
       presentedAt: interaction.presentedAt,
       presentedRevision: interaction.presentedRevision ?? state.pendingDecision?.presentedRevision ?? state.revision,
@@ -1799,6 +1866,7 @@ function pendingDecisionForState(state) {
       ...interaction.presentationEventId ? { presentationEventId: interaction.presentationEventId } : {}
     };
   }
+  if (state.pendingDecision?.kind === "grill") rejectLegacyGrill();
   return state.pendingDecision;
 }
 
@@ -2249,7 +2317,7 @@ async function recordTrustedWriteOwnership(root, paths, host, eventId2) {
       draft.workspace.ownershipSource[file] = "trusted-hook";
     }
     draft.workspace.unownedPaths = (draft.workspace.unownedPaths ?? []).filter((file) => !governed.includes(file));
-    draft.lastUpdatedBy = { host, pluginVersion: "5.0.1" };
+    draft.lastUpdatedBy = { host, pluginVersion: "5.0.2" };
   }, { eventId: eventId2, host, paths: governed, after });
 }
 async function recordHostAuthorizationEvent(root, type, record) {
@@ -2395,7 +2463,7 @@ async function reconcileWorkspace(root, id, expectedRevision, host) {
       markAffectedEvidenceStale(draft, changedPaths, reopenedLifecycle, legalCheckpointPaths);
     }
     presentationEventId = queueNextOwnershipDecision(draft);
-    draft.lastUpdatedBy = { host, pluginVersion: "5.0.1" };
+    draft.lastUpdatedBy = { host, pluginVersion: "5.0.2" };
   }, () => ({
     observedHead: workspace.observedHead,
     commitCount: workspace.observedCommits.length,
@@ -2761,27 +2829,27 @@ var digest5 = (value) => createHash10("sha256").update(value).digest("hex");
 var leaseMilliseconds = 60 * 60 * 1e3;
 var samplingLeaseMilliseconds = 120 * 1e3;
 var basisArtifactKinds = ["requirements", "implementation-plan", "coverage-matrix", "rollback-units"];
-function invalid3(code, message, details = {}) {
+function invalid4(code, message, details = {}) {
   throw new DevFlowError(code, message, details);
 }
 function reviewArtifactKinds(state) {
   return basisArtifactKinds.filter((kind) => Boolean(state.artifacts[kind]));
 }
 async function deriveReviewInput(root, state) {
-  if (!state.traceability) invalid3("REVIEW_BASIS_UNAVAILABLE", "review basis requires a current Trace pointer");
+  if (!state.traceability) invalid4("REVIEW_BASIS_UNAVAILABLE", "review basis requires a current Trace pointer");
   const trace = await readTraceability(root, state);
   const { config, sha256: projectConfigSha256 } = await readProjectConfigSnapshot(root);
   const frozenArtifacts = await Promise.all(reviewArtifactKinds(state).map(async (kind) => {
     const artifact = state.artifacts[kind];
-    if (!artifact) invalid3("REVIEW_BASIS_ARTIFACT_MISSING", `review basis artifact is missing: ${kind}`, { kind });
+    if (!artifact) invalid4("REVIEW_BASIS_ARTIFACT_MISSING", `review basis artifact is missing: ${kind}`, { kind });
     let contents;
     try {
       contents = await readFile10(path12.join(root, ".dev-flow", "features", state.featureId, artifact.path), "utf8");
     } catch {
-      invalid3("REVIEW_BASIS_ARTIFACT_MISSING", `review basis artifact cannot be read: ${kind}`, { kind });
+      invalid4("REVIEW_BASIS_ARTIFACT_MISSING", `review basis artifact cannot be read: ${kind}`, { kind });
     }
     if (digest5(contents) !== artifact.sha256) {
-      invalid3("ARTIFACT_INTEGRITY_FAILED", `review basis artifact was edited without registration: ${kind}`, {
+      invalid4("ARTIFACT_INTEGRITY_FAILED", `review basis artifact was edited without registration: ${kind}`, {
         kind,
         recoveryHint: `Re-register the edited ${kind} artifact with the latest feature revision known before the edit.`
       });
@@ -2790,7 +2858,7 @@ async function deriveReviewInput(root, state) {
   }));
   const projectContents = await readFile10(path12.join(root, ".dev-flow", "project.json"), "utf8");
   if (digest5(projectContents) !== projectConfigSha256) {
-    invalid3("REVIEW_BASIS_UNAVAILABLE", "project configuration changed while review basis was being captured");
+    invalid4("REVIEW_BASIS_UNAVAILABLE", "project configuration changed while review basis was being captured");
   }
   const scopeManifest = {
     inScope: [...state.scope.inScope].sort(),
@@ -2887,11 +2955,11 @@ function submittedFindings(ledger) {
 }
 function sortedFindingIds(findingIds) {
   if (!Array.isArray(findingIds) || !findingIds.length || findingIds.some((id) => typeof id !== "string" || !id)) {
-    invalid3("REVIEW_RISK_ACCEPTANCE_INVALID", "risk acceptance requires one or more finding ids");
+    invalid4("REVIEW_RISK_ACCEPTANCE_INVALID", "risk acceptance requires one or more finding ids");
   }
   const sorted = [...findingIds].sort();
   if (new Set(sorted).size !== sorted.length) {
-    invalid3("REVIEW_RISK_ACCEPTANCE_INVALID", "risk acceptance finding ids must be unique");
+    invalid4("REVIEW_RISK_ACCEPTANCE_INVALID", "risk acceptance finding ids must be unique");
   }
   return sorted;
 }
@@ -2902,7 +2970,7 @@ function findingSetHash(batch, findings) {
 function riskBinding(interaction) {
   const binding = interaction.binding;
   if (interaction.kind !== "risk-acceptance" || !binding || typeof binding.batchId !== "string" || typeof binding.findingSetHash !== "string" || !Array.isArray(binding.findingIds)) {
-    invalid3("REVIEW_RISK_ACCEPTANCE_INVALID", "interaction is not a valid review risk-acceptance decision", { interactionId: interaction.id });
+    invalid4("REVIEW_RISK_ACCEPTANCE_INVALID", "interaction is not a valid review risk-acceptance decision", { interactionId: interaction.id });
   }
   return { batchId: binding.batchId, findingIds: sortedFindingIds(binding.findingIds), findingSetHash: binding.findingSetHash };
 }
@@ -2913,12 +2981,12 @@ function planReviewBoundToBatch(state, batch) {
 async function currentBatchWithBasis(root, state, options = {}) {
   const ledger = await readReviewLedger(root, state);
   const batch = ledger.batches.find((candidate) => candidate.validity === "current");
-  if (!batch) invalid3("REVIEW_BATCH_REQUIRED", "a current review batch is required");
+  if (!batch) invalid4("REVIEW_BATCH_REQUIRED", "a current review batch is required");
   const requireLiveBasis = options.requireLiveBasis ?? !planReviewBoundToBatch(state, batch);
   const reviewInput = await deriveReviewInput(root, state);
   if (requireLiveBasis) {
     if (basisHash(reviewInput.basis) !== batch.basisHash) {
-      invalid3("REVIEW_BASIS_STALE", "review batch basis no longer matches current feature state", {
+      invalid4("REVIEW_BASIS_STALE", "review batch basis no longer matches current feature state", {
         batchId: batch.batchId,
         recoveryHint: "\u91CD\u5EFA\u6279\u6B21\u2192\u91CD\u4EA4 jobs\u2192re-record planning"
       });
@@ -2928,7 +2996,7 @@ async function currentBatchWithBasis(root, state, options = {}) {
   for (const requirement of requirements) {
     const job = batch.jobs.find((candidate) => candidate.role === requirement.role);
     if (!job || job.roleBasisHash !== reviewInput.roleBasisHashes[requirement.role]) {
-      invalid3("REVIEW_BASIS_STALE", "review role basis no longer matches current feature semantics", {
+      invalid4("REVIEW_BASIS_STALE", "review role basis no longer matches current feature semantics", {
         batchId: batch.batchId,
         role: requirement.role,
         recoveryHint: "\u91CD\u5EFA\u6279\u6B21\u2192\u91CD\u4EA4\u53D7\u5F71\u54CD role job\u2192re-record planning"
@@ -2939,11 +3007,11 @@ async function currentBatchWithBasis(root, state, options = {}) {
 }
 async function assertReviewComplete(root, state) {
   const { ledger, batch } = await currentBatchWithBasis(root, state);
-  if (batch.progress !== "complete") invalid3("REVIEW_BATCH_INCOMPLETE", "all required review jobs must be submitted", { batchId: batch.batchId });
+  if (batch.progress !== "complete") invalid4("REVIEW_BATCH_INCOMPLETE", "all required review jobs must be submitted", { batchId: batch.batchId });
   if (ledger.findingEvents?.length) {
     const roleBasis = (origin) => batch.jobs.find((job) => job.role === origin.role)?.roleBasisHash;
     const unresolved = unresolvedBlockingFindings(ledger, roleBasis);
-    if (unresolved.length && !hasCurrentQualityException(state, "review")) invalid3("REVIEW_BLOCKING_FINDINGS", "review ledger has unresolved blocking findings", {
+    if (unresolved.length && !hasCurrentQualityException(state, "review")) invalid4("REVIEW_BLOCKING_FINDINGS", "review ledger has unresolved blocking findings", {
       batchId: batch.batchId,
       findingIds: unresolved.map((finding) => finding.findingId)
     });
@@ -2976,7 +3044,7 @@ async function assertReviewComplete(root, state) {
     const sourceJob = jobs.find((candidate) => candidate.jobId === finding.jobId);
     return !successor || !resolutionJob || !sourceJob || resolutionJob.role !== sourceJob.role || !resolutionJob.submission?.resolutions.some((resolution) => resolution.findingId === finding.findingId);
   });
-  if (blocking.length) invalid3("REVIEW_BLOCKING_FINDINGS", "review batch has unresolved blocking findings", {
+  if (blocking.length) invalid4("REVIEW_BLOCKING_FINDINGS", "review batch has unresolved blocking findings", {
     batchId: batch.batchId,
     findingIds: blocking.map((finding) => finding.findingId)
   });

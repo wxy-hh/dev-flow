@@ -1,6 +1,6 @@
 ---
 name: finish
-description: 在 Dev Flow 5.0 finalize 中完成完整性检查、精确恢复与交付快照。
+description: 在 Dev Flow finalize 中完成完整性检查、精确恢复与交付快照。
 ---
 
 只在 status 显示 finalize 时调用 `dev_flow_finalize`。不存在公开 feature-check；finalize 内部统一校验需求/计划/Trace、review、approval、checkpoint、verification freshness、ownership 与 delivery snapshot，并要求当前宿主 hook 健康信号仍在 15 分钟窗口内。

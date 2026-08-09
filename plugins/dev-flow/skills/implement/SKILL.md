@@ -1,6 +1,6 @@
 ---
 name: implement
-description: 在 Dev Flow 5.0 可信写入归属和自动 checkpoint 保护下实现变更。
+description: 在 Dev Flow 可信写入归属和自动 checkpoint 保护下实现变更。
 ---
 
 只在 status 显示 implementation 且审批义务已满足时写 governed 文件。Hook 会为每次允许的智能体写入记录规范化路径、宿主、事件及前后摘要，并自动标为 feature-owned；调用 implementation record-step 时不要提供 `evidence.files`，先用 inspect implementation 查看 Core 派生文件预览。

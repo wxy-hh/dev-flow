@@ -1,7 +1,8 @@
 import { recordHostEvent, recordTrustedWriteIntent, recordTrustedWriteOwnership } from "../core/state-store.js";
 import { evaluatePreToolUse, formatPreToolBlock, trustedWriteTargets } from "./adapter-policy.js";
 import { evaluatePermissionRequest, postToolSucceeded, recordPermissionPostToolUse } from "./host-authorization.js";
-import { recordAdapterHealth } from "./host-health-adapter.js";
+import { recordAdapterHealth, recordNativePromptHealth } from "./host-health-adapter.js";
+import { claudeNativeQuestionAnswers } from "./claude-native-question.js";
 
 const chunks: Buffer[] = [];
 for await (const chunk of process.stdin) chunks.push(Buffer.from(chunk));
@@ -61,6 +62,19 @@ if (event.hook_event_name === "UserPromptSubmit" || event.hook_event_name === "S
     if (postToolSucceeded(event)) {
       try { await recordTrustedWriteOwnership(cwd, trustedWriteTargets(cwd, event), "claude", event.event_id ?? event.tool_use_id ?? `post-${Date.now()}`); }
       catch { /* ownership can be recovered by reconcile */ }
+      const sourceEventId = event.event_id ?? event.tool_use_id ?? `native-question-${Date.now()}`;
+      const nativeAnswers = claudeNativeQuestionAnswers(event);
+      if (nativeAnswers.length) await recordNativePromptHealth(cwd, { ...event, event_id: sourceEventId }, "claude");
+      for (const [index, answer] of nativeAnswers.entries()) {
+        try {
+          await recordHostEvent(cwd, {
+            eventId: `${sourceEventId}:answer:${index}`,
+            type: "user-prompt",
+            host: "claude",
+            text: answer.answer,
+          });
+        } catch { /* native user answers must not fail normal host operation */ }
+      }
     }
   }
   try {

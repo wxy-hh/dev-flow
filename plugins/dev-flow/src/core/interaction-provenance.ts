@@ -89,7 +89,7 @@ export function resolvePromptEvent(
       cause: "当前宿主没有捕获到匹配的后续用户消息，或该消息已被消费。",
       impact: "当前问题仍保持待回答，系统不会猜测用户意图。",
       recoveryKind: "retry",
-      recoveryInstruction: "请在问题呈现后的下一回合直接重复完整回答。",
+      recoveryInstruction: "当前宿主没有捕获这条用户消息。不要让用户改写或重复同一答案；先运行 dev_flow_doctor 恢复 UserPromptSubmit/AskUserQuestion hook，再只呈现当前问题一次。",
       retryOriginal: true,
     });
   }

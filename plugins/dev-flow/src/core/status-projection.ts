@@ -21,7 +21,9 @@ export interface CompactStatus {
   attention?: string;
   pendingDecision?: {
     question: string;
-    options: Array<{ label: string; description?: string; recommended: boolean; requiresComment: boolean }>;
+    options: Array<{ label: string; description?: string; answerCode?: "A" | "B" | "C"; recommended: boolean; requiresComment: boolean }>;
+    recommendation?: { optionId: string; reason: string };
+    presentation?: string;
   };
 }
 
@@ -81,6 +83,7 @@ export async function readCompactStatus(root: string, featureId: string): Promis
   const total = definition?.orderedSteps.length ?? 1;
   const completed = definition?.orderedSteps.filter((step) => state.steps[step]?.status === "satisfied").length ?? 0;
   const decision = pendingDecisionForState(state);
+  const publicDecision = decision ? publicPendingDecision(state)! : undefined;
   const content: CompactStatus = {
     statusSchemaVersion: STATUS_SCHEMA_VERSION,
     状态: state.lifecycle === "finalized" && state.qualityExceptions.some((exception) => exception.status === "current")
@@ -96,8 +99,10 @@ export async function readCompactStatus(root: string, featureId: string): Promis
     ...(decision ? {
       attention: "请只回答当前这一道问题。",
       pendingDecision: {
-        question: publicPendingDecision(state)!.question,
-        options: publicPendingDecision(state)!.options,
+        question: publicDecision!.question,
+        options: publicDecision!.options,
+        ...(publicDecision!.recommendation ? { recommendation: publicDecision!.recommendation } : {}),
+        ...(publicDecision!.presentation ? { presentation: publicDecision!.presentation } : {}),
       },
     } : {}),
   };

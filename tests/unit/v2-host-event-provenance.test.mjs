@@ -43,6 +43,7 @@ test("a legacy interaction without a presentation id derives same-revision order
 });
 
 test("a consumed prompt remains unavailable even when its ledger position is valid", () => {
+  let captured;
   assert.throws(
     () => provenance.resolvePromptEvent([
       { revision: 0, type: "started", at: "2026-01-01T00:00:00.000Z", data: { presentationEventId: "present-1" } },
@@ -50,8 +51,13 @@ test("a consumed prompt remains unavailable even when its ledger position is val
     ], {
       host: "codex", userReply: "确认", presentedAt: "2026-01-01T00:00:00.500Z", presentedRevision: 0, presentationEventId: "present-1", consumedEventIds: ["answer"],
     }),
-    (error) => error.code === "INTERACTION_PROVENANCE_UNAVAILABLE",
+    (error) => {
+      captured = error;
+      return error.code === "INTERACTION_PROVENANCE_UNAVAILABLE";
+    },
   );
+  assert.match(captured.details.recoveryInstruction, /不要让用户改写或重复同一答案/);
+  assert.match(captured.details.recoveryInstruction, /dev_flow_doctor/);
 });
 
 test("two later matching prompts remain ambiguous instead of guessing", () => {

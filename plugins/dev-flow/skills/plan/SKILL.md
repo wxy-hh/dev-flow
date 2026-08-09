@@ -1,6 +1,6 @@
 ---
 name: plan
-description: 按 Dev Flow 5.0 动态计划控制生成定位、简报或正式计划。
+description: 按 Dev Flow 动态计划控制生成定位、简报或正式计划。
 ---
 
 读取 `classification.controls.plan`：`locate` 只记录定位，`brief` 给出边界简报，`formal` 才 scaffold/编辑/登记 `实施计划.md`。plan-review、unit-chain 或 operational recovery 会使计划采用正式结构；不要依据 level 名称复制另一套判断。

@@ -137,10 +137,12 @@ test("ambiguous fragments do not choose an option for the user", () => {
     kind: "grill",
     target: "grill:ambiguous",
     basisHash: "a".repeat(64),
+    question: "接受哪个方案？",
     options: [
-      { id: "first", label: "接受第一项方案" },
-      { id: "second", label: "接受第二项方案" },
+      { id: "first", label: "接受第一项方案", description: "使用第一项方案。" },
+      { id: "second", label: "接受第二项方案", description: "使用第二项方案。" },
     ],
+    recommendation: { optionId: "first", reason: "第一项方案的改动面更小。" },
   });
   assert.throws(
     () => interactions.resolveTextInteraction(state, created.id, "接受", "codex", {}),

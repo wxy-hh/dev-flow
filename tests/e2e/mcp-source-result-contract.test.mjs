@@ -91,6 +91,8 @@ test("a real early-5.0 interaction continues through the public answer tool", as
         eventId: "legacy-public-answer", type: "user-prompt", host: "codex", text: "这个算当前任务", at: "2026-08-01T00:00:01.000Z",
       } }),
     ].join("\n") + "\n");
+    // 真实会话必然带有宿主健康信号；fixture 直接落盘状态，需要显式补齐。
+    await store.recordHostHealth(fixture.root, { host: "codex", kind: "session-start", eventId: "legacy-session-start" });
 
     const answered = await mcpCall(server, fixture.root, "dev_flow_answer", {
       featureId, expectedRevision: 0, userReply: "这个算当前任务", host: "codex",

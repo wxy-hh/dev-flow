@@ -1,8 +1,8 @@
 # Dev Flow
 
-Dev Flow 5.0 是面向 **Claude Code** 与 **Codex CLI** 的动态治理插件。Claude 与 Codex 共用 `.dev-flow/` 状态，可以跨宿主接力；Skills 只调用 MCP，不能手改控制文件。
+Dev Flow 是面向 **Claude Code** 与 **Codex CLI** 的动态治理插件。Claude 与 Codex 共用 `.dev-flow/` 状态，可以跨宿主接力；Skills 只调用 MCP，不能手改控制文件。
 
-模型负责读取代码、文档、测试和 Git 完成调查。Core 根据变更表面、行为复杂度与拓扑计算 `XS / S / M / L` 最低级别，再独立派生需求、计划、Trace、计划审查、执行确认、checkpoint、恢复、代码审查与验证控制，编译确定的完整路线。风险只增加控制，不抬高 level；5.0 不再有 `light/standard` 轴。
+模型负责读取代码、文档、测试和 Git 完成调查。Core 根据变更表面、行为复杂度与拓扑计算 `XS / S / M / L` 最低级别，再独立派生需求、计划、Trace、计划审查、执行确认、checkpoint、恢复、代码审查与验证控制，编译确定的完整路线。风险只增加控制，不抬高 level；当前版本没有 `light/standard` 轴。
 
 详细合同见 [路线说明](docs/routes.md)、[架构](docs/architecture.md)。
 
@@ -53,7 +53,15 @@ codex plugin add dev-flow@dev-flow-marketplace
 
 Codex 的安装与升级参数以 `codex plugin --help` 为准。
 
-## 5.0 升级硬切换
+## Grill 交互合同
+
+Core 用一个模块统一生成 grill 的文本、表单和状态展示：2–3 个正式选项按顺序获得 A/B/C，调用方必须显式提交唯一推荐项及理由，每个选项必须带说明。`other` 是保留的自定义回答出口，不再是正式 option id。
+
+文本回答允许 `A`、`a`、全角字母、`我选择 A`、`按方案 A 来`、唯一完整标签，以及 `其他：<方案和理由>`；Core 将其分别归一为 option 或 other 响应。`A 或 B`、`A/B 都行`、`不要 A` 和没有说明的 `其他` 不会替用户猜测。执行批准仍使用严格整句合同。
+
+这是公开 MCP 和 grill state 的破坏性变更。当前合同不提供旧 grill 兼容层；升级前应完成或放弃仍有 pending grill 的旧 feature。FeatureState 主 schema 仍为 v4，不含旧 grill 的其他状态不需要迁移。
+
+## 5.0 schema 历史硬切换
 
 5.0 不兼容 4.x active state、project config、review/checkpoint schema 或旧 MCP 调用合同，也不提供迁移器。升级前：
 
@@ -101,16 +109,16 @@ Core 使用三个下限的最高值：
 - 只允许 Git tracked、目标仍在仓内且不进入 `.git/.dev-flow` 的 symlink。checkpoint 保存链接类型与 link target，rollback 重建链接本身。
 - Hook 为可信智能体写入记录规范化路径、宿主、事件和前后摘要，并自动归属。implementation 不接受手填 files。
 - IDE、人工与无法归因的变化创建唯一 ownership decision；多个路径先展示完整清单，可一次选择“全部纳入当前任务”“全部排除并先处理”或“逐个确认”。位于 scope 内不代表自动接纳；已观察但未归属的路径会持续待决。
-- 普通决策的表单与文本入口共享同一语义匹配器：完整标签、唯一可判定的简称和已登记同义表达效果相同；含糊简称继续待决。执行批准仍使用严格整句白名单，带附加条件的文本不会被误认成无条件授权。
+- grill 的文本、表单和状态读取共享同一 presentation：A/B/C、唯一推荐项、推荐理由和“其他”出口不会因宿主切换而变化。其他普通决策继续接受唯一可判定的标签、简称和登记同义表达；执行批准仍使用严格整句白名单。
 - `.git`、`.dev-flow` 和 `node_modules` 是业务指纹的内建排除项，即使 governed root 是仓库根目录、且这些路径未写入 `.gitignore` 也不会污染证据。
 - 所有任务都有自动 baseline 和 delivery reverse。只有真实可逆且有 unit-chain 时才声明 executable rollback；不可逆变更使用 backup/preview/abort/compensation/full verification。
 
 ## 决策、审查与验证
 
-- 现场取舍：`dev_flow_request_grill_decision` → 原生 elicitation / `dev_flow_answer`。
+- 现场取舍：`dev_flow_request_grill_decision` 提交 2–3 个带说明的选项和 `recommendation: { optionId, reason }`，再走原生 elicitation / `dev_flow_answer`。
 - 已有用户结论：`dev_flow_record_decision` 一次性记录 evidence/conclusion，并绑定 feature 启动后的可信用户事件。
 - 不存在公开 `dev_flow_resolve_decision`、`dev_flow_feature_check`；finalize 内建完整性检查。
-- Elicitation 使用 `oneOf + const + title`。最长等待 60 秒；超时取消并对当前 MCP 会话降级为文本，迟到响应忽略。
+- 能稳定消费表单的 MCP 客户端使用带 A/B/C 标题和“其他”出口的 `oneOf + const + title` elicitation。Claude Code 当前多步键盘表单直接降级为同一份可信文本 presentation，不再等待超时；其他客户端的表单最长等待 60 秒，超时取消并熔断当前 MCP 会话到文本，迟到响应忽略。
 - Review v2 按角色保存 `roleBasisHash`；语义 diff 未影响的角色显示 `reused`，未知 diff 才全量重审。parallel-safe 在宿主支持时并行，否则顺序回退。
 - `dev_flow_update_project` 通过 `expectedSha256` 做 CAS 更新；新增未引用命令或扩充 `provides` 只更新验证能力，被 Trace/RU 引用的命令变化只使对应切片 stale，治理范围、enforcement 和 preflight 变化拒绝走普通增量入口。
 - 执行批准保存稳定的执行授权依据（范围、执行语义、REQ/AC/TASK/RU、文件范围、恢复语义和当前阻断风险），不因阶段重进、review batch 重建或无关配置变化重复询问。

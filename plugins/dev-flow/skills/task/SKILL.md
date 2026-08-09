@@ -1,6 +1,6 @@
 ---
 name: task
-description: 启动 Dev Flow 5.0 任务、调查仓库并锁定动态治理路线。
+description: 启动 Dev Flow 任务、调查仓库并锁定动态治理路线。
 ---
 
 只使用 Dev Flow MCP 改变流程状态，禁止手改 `.dev-flow`。先 `dev_flow_start` 创建 intake，再读取代码、文档、测试、Git 与项目配置完成取证。

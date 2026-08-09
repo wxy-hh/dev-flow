@@ -163,6 +163,54 @@ test("Claude PermissionRequest 首次放行原生确认，成功后只在同 fea
   }
 });
 
+test("Claude AskUserQuestion 的真实用户选择可直接消解已呈现的 workspace ownership", async () => {
+  const fixture = await createTinyApp();
+  try {
+    await state.initProject(fixture.root, strictProjectConfig);
+    await writeFile(`${fixture.root}/src/started-a.js`, "export const startedA = true;\n");
+    await writeFile(`${fixture.root}/src/started-b.js`, "export const startedB = true;\n");
+    const started = await state.startFeature(fixture.root, {
+      featureId: "native-question",
+      objective: "验证原生问题回答只需一次",
+      host: "claude",
+    });
+    const interaction = Object.values(started.interactions ?? {}).find((item) => item.kind === "workspace-ownership" && item.status === "pending");
+    assert.ok(interaction);
+
+    const answer = "全部纳入当前任务";
+    const result = await invokeRaw(bundles.pathFor("claude-hook"), fixture.root, {
+      hook_event_name: "PostToolUse",
+      tool_name: "AskUserQuestion",
+      tool_use_id: "ask-ownership",
+      tool_input: {
+        questions: [{
+          question: interaction.question,
+          header: "工作区归属",
+          multiSelect: false,
+          options: interaction.options.map((option) => ({ label: option.label, description: option.label })),
+        }],
+      },
+      tool_response: `Your questions have been answered: "${interaction.question}"="${answer}". You can now continue with these answers in mind.`,
+    });
+    assert.equal(result.stderr, "");
+    const promptHealth = [...await state.readHostHealth(fixture.root)].reverse().find((signal) => signal.host === "claude" && signal.kind === "user-prompt-submit");
+    assert.equal(promptHealth?.eventId, "ask-ownership:answer");
+
+    const resolved = await state.resolveWorkspaceOwnershipText(
+      fixture.root,
+      started.featureId,
+      started.revision,
+      interaction.id,
+      answer,
+      "claude",
+    );
+    assert.equal(resolved.action, "adopt-all");
+    assert.equal(Object.values(resolved.state.interactions ?? {}).some((item) => item.status === "pending"), false);
+  } finally {
+    await fixture.dispose();
+  }
+});
+
 test("Codex PermissionRequest 首次不代决，成功后使用 Codex allow 形状", async () => {
   const fixture = await startIntake();
   try {

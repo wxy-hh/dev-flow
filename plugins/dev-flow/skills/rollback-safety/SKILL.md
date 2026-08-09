@@ -1,6 +1,6 @@
 ---
 name: rollback-safety
-description: 落实 Dev Flow 5.0 的 delivery reverse、operational strategy 与 executable rollback 三层恢复保证。
+description: 落实 Dev Flow 的 delivery reverse、operational strategy 与 executable rollback 三层恢复保证。
 ---
 
 所有任务必须生成 delivery reverse。L、数据/金额/可用性或多单元耦合还要 operational strategy。只有变更真实可逆、存在 unit-chain 且计划命令可执行时，才能声明 executable rollback。

@@ -1,4 +1,4 @@
-/* dev-flow 5.0.1; built from source, deterministic build */
+/* dev-flow 5.0.2; built from source, deterministic build */
 
 // plugins/dev-flow/src/mcp/server.ts
 import readline from "node:readline";
@@ -3099,6 +3099,108 @@ function matchNaturalDecision(kind, options, userReply) {
   return unique(matches);
 }
 
+// plugins/dev-flow/src/core/grill-interaction.ts
+var answerCodes = ["A", "B", "C"];
+function invalid3(message) {
+  throw new DevFlowError("GRILL_PRESENTATION_INVALID", message, {
+    userMessage: "\u5F53\u524D grill \u95EE\u9898\u4E0D\u7B26\u5408\u4EA4\u4E92\u5408\u540C\u3002",
+    recoveryKind: "repair",
+    recoveryInstruction: "\u63D0\u4F9B 2-3 \u4E2A\u5E26\u8BF4\u660E\u7684\u9009\u9879\uFF0C\u5E76\u660E\u786E\u4E00\u4E2A\u63A8\u8350\u9879\u53CA\u63A8\u8350\u7406\u7531\u3002",
+    retryOriginal: false
+  });
+}
+function buildGrillPresentation(input) {
+  const question = input.question.trim();
+  if (!question) invalid3("question must not be empty");
+  if (!Array.isArray(input.options) || input.options.length < 2 || input.options.length > 3) {
+    invalid3("grill must contain 2-3 options");
+  }
+  if (input.options.some((option) => option.id === "other" || !option.description?.trim())) {
+    invalid3("grill options require descriptions and cannot use the reserved other id");
+  }
+  const reason = input.recommendation.reason.trim();
+  if (!reason) invalid3("recommendation reason must not be empty");
+  const recommendedIndex = input.options.findIndex((option) => option.id === input.recommendation.optionId);
+  if (recommendedIndex < 0) invalid3("recommendation must reference one current option");
+  const options = input.options.map((option, index) => ({
+    ...option,
+    answerCode: answerCodes[index],
+    recommended: index === recommendedIndex
+  }));
+  const lines = [question];
+  for (const option of options) {
+    lines.push("");
+    lines.push(`${option.answerCode}. ${option.label}${option.recommended ? "\uFF08\u63A8\u8350\uFF09" : ""}`);
+    lines.push(`   ${option.recommended ? reason : option.description.trim()}`);
+  }
+  lines.push("");
+  const codes = options.map((option) => option.answerCode);
+  lines.push(`\u8BF7\u56DE\u590D ${codes.slice(0, -1).join("\u3001")} \u6216 ${codes.at(-1)}\u3002`);
+  lines.push("\u5982\u679C\u90FD\u4E0D\u5408\u9002\uFF0C\u8BF7\u56DE\u590D\u201C\u5176\u4ED6\uFF1A<\u4F60\u7684\u65B9\u6848\u548C\u7406\u7531>\u201D\u3002");
+  return {
+    question,
+    options,
+    recommendation: { optionId: input.recommendation.optionId, reason },
+    text: lines.join("\n")
+  };
+}
+function answerCodeFromReply(userReply) {
+  const normalized = userReply.normalize("NFKC").trim().toUpperCase();
+  if (/^[ABC]$/u.test(normalized)) return normalized;
+  const positiveCodes = /* @__PURE__ */ new Set();
+  const negativeCodes = /* @__PURE__ */ new Set();
+  for (const match of normalized.matchAll(/(?<![A-Z])([ABC])(?![A-Z])/gu)) {
+    const code = match[1];
+    const before = normalized.slice(0, match.index);
+    const after = normalized.slice((match.index ?? 0) + match[0].length);
+    const negated = /(?:不选(?:择)?|不要|别选|排除|拒绝)\s*(?:方案|选项)?\s*$/u.test(before);
+    if (negated) {
+      negativeCodes.add(code);
+      continue;
+    }
+    const selected2 = /(?:我?选(?:择)?|采用|使用|就用|按)\s*(?:方案|选项)?\s*$/u.test(before) || /(?:方案|选项)\s*$/u.test(before) || /^\s*(?:吧|来|更合适|就行|即可)(?:[。！!])?\s*$/u.test(after);
+    if (selected2) positiveCodes.add(code);
+  }
+  if (positiveCodes.size !== 1) return void 0;
+  const selected = [...positiveCodes][0];
+  return negativeCodes.has(selected) ? void 0 : selected;
+}
+function normalizeMeaning(value) {
+  return value.normalize("NFKC").trim().replace(/[\s\u00A0\uFEFF]+/g, "").replace(/[，。！？、；：,.!?;:()（）【】\[\]“”"']/g, "").toLowerCase();
+}
+function escapeRegExp(value) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+function matchGrillReply(input) {
+  const rawReply = input.userReply.trim();
+  if (!rawReply || input.options.length < 2 || input.options.length > 3) return void 0;
+  const otherMatch = rawReply.match(/^其他\s*[:：+＋]\s*([\s\S]+)$/u) ?? rawReply.match(/^(?:这些|这几个|以上)?(?:都|全都)?不(?:合适|适合|接受|选(?:择)?)[了]?\s*[，,:：]?\s*([\s\S]+)$/u);
+  const otherComment = otherMatch?.[1]?.trim();
+  if (otherComment && otherComment.length >= 2) {
+    return { kind: "other", rawReply, comment: otherComment };
+  }
+  const answerCode = answerCodeFromReply(rawReply);
+  let optionIndex = answerCode ? answerCodes.indexOf(answerCode) : -1;
+  if (optionIndex < 0) {
+    const normalizedReply = normalizeMeaning(rawReply);
+    const labelMatches = input.options.flatMap((option2, index) => {
+      const label = normalizeMeaning(option2.label);
+      const selectedLabel = normalizedReply === label || new RegExp(`^(?:\u6211)?(?:\u9009|\u9009\u62E9|\u91C7\u7528|\u4F7F\u7528|\u5C31\u7528|\u6309(?:\u65B9\u6848|\u9009\u9879)?)${escapeRegExp(label)}(?:\u5427|\u6765)?$`, "u").test(normalizedReply);
+      return selectedLabel ? [index] : [];
+    });
+    if (labelMatches.length !== 1) return void 0;
+    [optionIndex] = labelMatches;
+  }
+  const option = input.options[optionIndex];
+  if (!option) return void 0;
+  return {
+    kind: "option",
+    answerCode: answerCodes[optionIndex],
+    selectedOptionId: option.id,
+    rawReply
+  };
+}
+
 // plugins/dev-flow/src/core/user-interactions.ts
 function normalizeReplyText(value) {
   return value.trim().replace(/[\s\u00A0\uFEFF]+/g, " ").toLowerCase();
@@ -3121,6 +3223,10 @@ function validateOptions(options) {
 }
 function createInteraction(state, input) {
   validateOptions(input.options);
+  if (input.kind === "grill") {
+    if (!input.recommendation) throw new DevFlowError("GRILL_RECOMMENDATION_REQUIRED", "grill requires one explicit recommendation");
+    buildGrillPresentation({ question: input.question ?? "", options: input.options, recommendation: input.recommendation });
+  }
   const pending = Object.values(state.interactions ?? {}).filter((value) => value.status === "pending");
   if (pending.length) throw new DevFlowError("MULTIPLE_PENDING_DECISIONS", "\u540C\u4E00 feature \u53EA\u80FD\u5B58\u5728\u4E00\u4E2A\u5F85\u51B3\u95EE\u9898\u3002", { userMessage: "\u5F53\u524D\u5DF2\u6709\u4E00\u4E2A\u95EE\u9898\u7B49\u5F85\u56DE\u7B54\u3002", cause: "\u7CFB\u7EDF\u62D2\u7EDD\u5E76\u884C\u521B\u5EFA\u7B2C\u4E8C\u4E2A pending decision\u3002", impact: "\u65B0\u95EE\u9898\u6CA1\u6709\u88AB\u521B\u5EFA\uFF0C\u539F\u95EE\u9898\u4ECD\u7B49\u5F85\u56DE\u7B54\u3002", recoveryKind: "refresh", recoveryInstruction: "\u5148\u56DE\u7B54\u5F53\u524D\u95EE\u9898\uFF0C\u4E0B\u4E00\u56DE\u5408\u518D\u5904\u7406\u65B0\u95EE\u9898\u3002", retryOriginal: false });
   const current = findInteractionForTarget(state, input.target);
@@ -3141,6 +3247,7 @@ function createInteraction(state, input) {
     } : {},
     question: input.question,
     options: input.options.map((option) => ({ ...option })),
+    ...input.recommendation ? { recommendation: { ...input.recommendation } } : {},
     presentedAt: (/* @__PURE__ */ new Date()).toISOString(),
     presentedRevision: state.revision,
     presentationEventId: input.presentationEventId ?? randomUUID4(),
@@ -3200,6 +3307,38 @@ function validateComment(option, comment) {
 function resolveNativeInteraction(state, interactionId, action, comment, host) {
   const interaction = getInteraction(state, interactionId);
   if (interaction.status !== "pending") throw new DevFlowError("INTERACTION_ALREADY_RESOLVED", interactionId);
+  if (interaction.kind === "grill") {
+    if (!interaction.recommendation) throw new DevFlowError("GRILL_RECOMMENDATION_REQUIRED", interactionId);
+    const presentation = buildGrillPresentation({ question: interaction.question ?? "", options: interaction.options, recommendation: interaction.recommendation });
+    const normalizedComment2 = comment?.trim();
+    const selected = presentation.options.find((candidate) => candidate.id === action);
+    if (!selected && action !== "other") throw new DevFlowError("INTERACTION_ACTION_INVALID", action, { interactionId: interaction.id });
+    if (action === "other" && !normalizedComment2) throw new DevFlowError("INTERACTION_COMMENT_REQUIRED", "other", { recoveryHint: "\u8BF7\u8865\u5145\u4F60\u7684\u65B9\u6848\u548C\u7406\u7531" });
+    if (selected?.requiresComment && !normalizedComment2) throw new DevFlowError("INTERACTION_COMMENT_REQUIRED", selected.id);
+    const response2 = action === "other" ? {
+      action: "other",
+      kind: "other",
+      comment: normalizedComment2,
+      rawReply: `\u5176\u4ED6\uFF1A${normalizedComment2}`,
+      source: "elicitation",
+      host,
+      respondedAt: (/* @__PURE__ */ new Date()).toISOString()
+    } : {
+      action: selected.id,
+      kind: "option",
+      answerCode: selected.answerCode,
+      selectedOptionId: selected.id,
+      rawReply: selected.answerCode,
+      ...normalizedComment2 ? { comment: normalizedComment2 } : {},
+      source: "elicitation",
+      host,
+      respondedAt: (/* @__PURE__ */ new Date()).toISOString()
+    };
+    interaction.status = "resolved";
+    interaction.response = response2;
+    if (state.pendingDecision?.target === interaction.target) delete state.pendingDecision;
+    return response2;
+  }
   const option = optionFor(interaction, action);
   const normalizedComment = validateComment(option, comment);
   const response = {
@@ -3217,25 +3356,38 @@ function resolveNativeInteraction(state, interactionId, action, comment, host) {
 function resolveTextInteraction(state, interactionId, userReply, host, provenance, phraseAction) {
   const interaction = getInteraction(state, interactionId);
   if (interaction.status !== "pending") throw new DevFlowError("INTERACTION_ALREADY_RESOLVED", interactionId);
+  const grillMatch = interaction.kind === "grill" ? matchGrillReply({ options: interaction.options, userReply }) : void 0;
   let match;
-  if (phraseAction) {
+  if (grillMatch?.kind === "option") {
+    match = { option: optionFor(interaction, grillMatch.selectedOptionId), ...grillMatch.comment ? { comment: grillMatch.comment } : {} };
+  } else if (phraseAction) {
     match = { option: optionFor(interaction, phraseAction) };
   } else if (match = matchNaturalOption(interaction, userReply)) {
   }
-  if (!match) {
+  if (!match && grillMatch?.kind !== "other") {
+    const grillRecovery = interaction.kind === "grill" ? "\u8BF7\u56DE\u590D A\u3001B \u6216 C\uFF1B\u5982\u679C\u90FD\u4E0D\u5408\u9002\uFF0C\u56DE\u590D\u201C\u5176\u4ED6\uFF1A<\u4F60\u7684\u65B9\u6848\u548C\u7406\u7531>\u201D\u3002" : "\u8BF7\u6362\u4E00\u79CD\u80FD\u552F\u4E00\u6307\u5411\u67D0\u4E2A\u9009\u9879\u7684\u7B80\u77ED\u8BF4\u6CD5\uFF0C\u6216\u76F4\u63A5\u56DE\u590D\u5B8C\u6574\u9009\u9879\u3002";
     throw new DevFlowError("DECISION_REPLY_NOT_RECOGNIZED", "\u56DE\u7B54\u6CA1\u6709\u7CBE\u786E\u5339\u914D\u5F53\u524D\u95EE\u9898\u7684\u9009\u9879\u3002", {
       userMessage: "\u6CA1\u6709\u8BC6\u522B\u51FA\u5F53\u524D\u95EE\u9898\u7684\u6709\u6548\u56DE\u7B54\u3002",
       cause: "\u56DE\u7B54\u65E0\u6CD5\u552F\u4E00\u5BF9\u5E94\u5F53\u524D\u9009\u9879\uFF0C\u4E5F\u4E0D\u662F\u53D7\u652F\u6301\u7684\u6279\u51C6\u77ED\u8BED\u3002",
       impact: "\u5F53\u524D\u95EE\u9898\u4ECD\u4FDD\u6301\u5F85\u56DE\u7B54\uFF0C\u6CA1\u6709\u4EFB\u4F55\u72B6\u6001\u88AB\u6539\u53D8\u3002",
       recoveryKind: "retry",
-      recoveryInstruction: "\u8BF7\u6362\u4E00\u79CD\u80FD\u552F\u4E00\u6307\u5411\u67D0\u4E2A\u9009\u9879\u7684\u7B80\u77ED\u8BF4\u6CD5\uFF0C\u6216\u76F4\u63A5\u56DE\u590D\u5B8C\u6574\u9009\u9879\u3002",
+      recoveryInstruction: grillRecovery,
       retryOriginal: true
     });
   }
-  const normalizedComment = validateComment(match.option, match.comment);
+  const normalizedComment = grillMatch?.kind === "other" ? grillMatch.comment : validateComment(match.option, match.comment);
   const ids = provenance;
   const response = {
-    action: match.option.id,
+    action: grillMatch?.kind === "other" ? "other" : match.option.id,
+    ...grillMatch ? grillMatch.kind === "other" ? {
+      kind: "other",
+      rawReply: grillMatch.rawReply
+    } : {
+      kind: "option",
+      answerCode: grillMatch.answerCode,
+      selectedOptionId: grillMatch.selectedOptionId,
+      rawReply: grillMatch.rawReply
+    } : {},
     ...normalizedComment ? { comment: normalizedComment } : {},
     source: "text",
     ...ids.promptEventId ? { promptEventId: ids.promptEventId } : {},
@@ -3250,6 +3402,22 @@ function resolveTextInteraction(state, interactionId, userReply, host, provenanc
   return response;
 }
 function toPublicInteraction(interaction) {
+  if (interaction.kind === "grill") {
+    if (!interaction.recommendation) throw new DevFlowError("GRILL_RECOMMENDATION_REQUIRED", interaction.id);
+    const presentation = buildGrillPresentation({
+      question: interaction.question ?? "",
+      options: interaction.options,
+      recommendation: interaction.recommendation
+    });
+    return {
+      kind: interaction.kind,
+      status: interaction.status,
+      question: presentation.question,
+      options: presentation.options.map((option) => ({ ...option })),
+      recommendation: { ...presentation.recommendation },
+      presentation: presentation.text
+    };
+  }
   return {
     kind: interaction.kind,
     status: interaction.status,
@@ -3265,6 +3433,14 @@ function decisionHint(interaction) {
     if (confirm) parts.push("\u2705 \u5982\u9700\u786E\u8BA4\u5F00\u59CB\u6267\u884C\uFF0C\u76F4\u63A5\u56DE\u590D\u4EE5\u4E0B\u4EFB\u4E00\u77ED\u8BED\uFF1A\u786E\u8BA4 / \u786E\u8BA4\u9700\u6C42 / \u9700\u6C42\u5DF2\u786E\u8BA4 / \u540C\u610F\u9700\u6C42 / \u786E\u8BA4\u6267\u884C / \u6279\u51C6\u5B9E\u73B0 / \u540C\u610F\u5B9E\u73B0 / \u5F00\u59CB\u5B9E\u73B0 / \u5F00\u59CB\u6267\u884C / \u786E\u8BA4\u5F00\u59CB\u6267\u884C / \u540C\u610F\u5F00\u59CB\u6267\u884C / \u6279\u51C6\u6267\u884C / \u540C\u610F\u6267\u884C / approved / LGTM");
     if (changes) parts.push(`\u270F\uFE0F \u5982\u9700\u8C03\u6574\uFF0C\u8BF7\u56DE\u590D\uFF1A\u4FEE\u6539\u8BA1\u5212: <\u8865\u5145\u4F60\u7684\u4FEE\u6539\u610F\u89C1>`);
     return parts.join("\uFF1B");
+  }
+  if (interaction.kind === "grill") {
+    if (!interaction.recommendation) throw new DevFlowError("GRILL_RECOMMENDATION_REQUIRED", interaction.id ?? interaction.target ?? "grill");
+    return buildGrillPresentation({
+      question: interaction.question ?? "",
+      options: interaction.options,
+      recommendation: interaction.recommendation
+    }).text;
   }
   const lines = [interaction.question ?? "\u8BF7\u9009\u62E9\u65B9\u6848\uFF1A"];
   interaction.options.forEach((option, index) => {
@@ -3332,7 +3508,7 @@ function resolvePromptEvent(events, input) {
       cause: "\u5F53\u524D\u5BBF\u4E3B\u6CA1\u6709\u6355\u83B7\u5230\u5339\u914D\u7684\u540E\u7EED\u7528\u6237\u6D88\u606F\uFF0C\u6216\u8BE5\u6D88\u606F\u5DF2\u88AB\u6D88\u8D39\u3002",
       impact: "\u5F53\u524D\u95EE\u9898\u4ECD\u4FDD\u6301\u5F85\u56DE\u7B54\uFF0C\u7CFB\u7EDF\u4E0D\u4F1A\u731C\u6D4B\u7528\u6237\u610F\u56FE\u3002",
       recoveryKind: "retry",
-      recoveryInstruction: "\u8BF7\u5728\u95EE\u9898\u5448\u73B0\u540E\u7684\u4E0B\u4E00\u56DE\u5408\u76F4\u63A5\u91CD\u590D\u5B8C\u6574\u56DE\u7B54\u3002",
+      recoveryInstruction: "\u5F53\u524D\u5BBF\u4E3B\u6CA1\u6709\u6355\u83B7\u8FD9\u6761\u7528\u6237\u6D88\u606F\u3002\u4E0D\u8981\u8BA9\u7528\u6237\u6539\u5199\u6216\u91CD\u590D\u540C\u4E00\u7B54\u6848\uFF1B\u5148\u8FD0\u884C dev_flow_doctor \u6062\u590D UserPromptSubmit/AskUserQuestion hook\uFF0C\u518D\u53EA\u5448\u73B0\u5F53\u524D\u95EE\u9898\u4E00\u6B21\u3002",
       retryOriginal: true
     });
   }
@@ -3389,13 +3565,27 @@ function isExplicitApproval(userReply) {
 function pendingInteraction(state) {
   return Object.values(state.interactions ?? {}).find((value) => value.status === "pending");
 }
+function rejectLegacyGrill() {
+  throw new DevFlowError("GRILL_INTERACTION_RESTART_REQUIRED", "legacy grill state has no explicit recommendation", {
+    userMessage: "\u8FD9\u4E2A grill \u95EE\u9898\u6765\u81EA\u65E7\u7248\u4EA4\u4E92\u5408\u540C\uFF0C\u4E0D\u80FD\u53EF\u9760\u7EE7\u7EED\u3002",
+    recoveryKind: "repair",
+    recoveryInstruction: "\u653E\u5F03\u53D7\u5F71\u54CD\u7684 feature\uFF0C\u518D\u7528\u5F53\u524D\u7248\u672C\u91CD\u65B0\u63D0\u51FA\u8BE5 grill \u95EE\u9898\u3002",
+    retryOriginal: false
+  });
+}
 function pendingDecisionForState(state) {
   const interaction = pendingInteraction(state);
   if (interaction) {
+    if (interaction.kind === "grill" && !interaction.recommendation) rejectLegacyGrill();
+    const grillPresentation = interaction.kind === "grill" && interaction.recommendation ? buildGrillPresentation({ question: interaction.question ?? "", options: interaction.options, recommendation: interaction.recommendation }) : void 0;
     return {
       kind: interaction.kind === "risk-acceptance" ? "review-risk" : interaction.kind,
       question: interaction.question ?? "\u8BF7\u9009\u62E9\u4E00\u4E2A\u65B9\u6848\u3002",
-      options: interaction.options.map((option, index) => ({ ...option, recommended: index === 0 })),
+      options: grillPresentation ? grillPresentation.options.map((option) => ({ ...option })) : interaction.options.map((option, index) => ({ ...option, recommended: index === 0 })),
+      ...grillPresentation ? {
+        recommendation: { ...grillPresentation.recommendation },
+        presentation: grillPresentation.text
+      } : {},
       basisHash: interaction.basisHash,
       presentedAt: interaction.presentedAt,
       presentedRevision: interaction.presentedRevision ?? state.pendingDecision?.presentedRevision ?? state.revision,
@@ -3404,6 +3594,7 @@ function pendingDecisionForState(state) {
       ...interaction.presentationEventId ? { presentationEventId: interaction.presentationEventId } : {}
     };
   }
+  if (state.pendingDecision?.kind === "grill") rejectLegacyGrill();
   return state.pendingDecision;
 }
 function publicPendingDecision(state) {
@@ -3415,9 +3606,12 @@ function publicPendingDecision(state) {
     options: decision.options.map((option, index) => ({
       label: option.label,
       ...option.description ? { description: option.description } : {},
+      ...option.answerCode ? { answerCode: option.answerCode } : {},
       recommended: option.recommended ?? index === 0,
       requiresComment: Boolean(option.requiresComment)
-    }))
+    })),
+    ...decision.recommendation ? { recommendation: { ...decision.recommendation } } : {},
+    ...decision.presentation ? { presentation: decision.presentation } : {}
   };
 }
 function matchDecisionReply(decision, userReply) {
@@ -4130,7 +4324,7 @@ ${objectiveForSwitch(input)}`).digest("hex"),
         decisionLedger: [],
         blockingFindings: [],
         logicComplete: false,
-        lastUpdatedBy: { host: input.host, pluginVersion: "5.0.1" }
+        lastUpdatedBy: { host: input.host, pluginVersion: "5.0.2" }
       };
       const ownershipPaths = unknownOwnershipPaths(state);
       state.workspace.unownedPaths = ownershipPaths;
@@ -4292,7 +4486,7 @@ async function resolveWorkspaceOwnershipText(root2, id, expectedRevision, intera
       const next = presentWorkspaceOwnership(draft, [remaining[0]], { batchPaths: remaining, remainingPaths: remaining.slice(1), single: true });
       nextPresentationEventId = next.presentationEventId;
     }
-    draft.lastUpdatedBy = { host, pluginVersion: "5.0.1" };
+    draft.lastUpdatedBy = { host, pluginVersion: "5.0.2" };
   }, () => ({
     promptEventId: prompt.eventId,
     action: matched.option.id,
@@ -4348,7 +4542,7 @@ async function lockClassification(root2, id, expectedRevision, facts, boundaryAu
           kind: "route-confirmation",
           target: "route-confirmation",
           basisHash: basisHash2,
-          question: `\u8BF7\u786E\u8BA4 Dev Flow 5.0 \u8DEF\u7EBF\uFF1A${selected.classification.orderedRoute.join(" \u2192 ")}`,
+          question: `\u8BF7\u786E\u8BA4 Dev Flow \u8DEF\u7EBF\uFF1A${selected.classification.orderedRoute.join(" \u2192 ")}`,
           options: [
             { id: "confirm", label: "\u786E\u8BA4\u8FD9\u6761\u8DEF\u7EBF" },
             { id: "correct", label: "\u4FEE\u6B63\u5206\u7C7B\u4E8B\u5B9E", requiresComment: true }
@@ -4424,7 +4618,7 @@ async function confirmRouteClassification(root2, id, expectedRevision, userReply
     if (review2) draft.review = review2;
     delete draft.pendingDecision;
     delete draft.routeConfirmation;
-    draft.lastUpdatedBy = { host, pluginVersion: "5.0.1" };
+    draft.lastUpdatedBy = { host, pluginVersion: "5.0.2" };
   }, { promptEventId: prompt.eventId, level: selected.classification.level, orderedRoute: selected.classification.orderedRoute });
 }
 async function resolveTaskSwitchAnswer(root2, id, expectedRevision, userReply, host) {
@@ -4473,7 +4667,7 @@ async function resolveRouteClassificationElicitation(root2, id, expectedRevision
     if (traceability) draft.traceability = traceability;
     if (review2) draft.review = review2;
     delete draft.routeConfirmation;
-    draft.lastUpdatedBy = { host, pluginVersion: "5.0.1" };
+    draft.lastUpdatedBy = { host, pluginVersion: "5.0.2" };
   }, { interactionId, action, level: selected.classification.level, orderedRoute: selected.classification.orderedRoute });
 }
 async function recordDecision(root2, id, expectedRevision, question, evidence, conclusion, factRefs = [], host) {
@@ -4490,7 +4684,7 @@ async function recordDecision(root2, id, expectedRevision, question, evidence, c
       const ledger = draft.decisionLedger ?? [];
       if (ledger.some((candidate) => candidate.id === decision.id)) return;
       draft.decisionLedger = [...ledger, decision];
-      draft.lastUpdatedBy = { host, pluginVersion: "5.0.1" };
+      draft.lastUpdatedBy = { host, pluginVersion: "5.0.2" };
     },
     eventData: { decisionId: decision.id, promptEventId: prompt.eventId, status: "resolved" }
   }));
@@ -4567,7 +4761,7 @@ async function pauseFeature(root2, id, expectedRevision, reason, host) {
     if (state.lifecycle !== "active") throw new DevFlowError("INVALID_LIFECYCLE", "\u53EA\u6709\u8FDB\u884C\u4E2D\u7684 feature \u53EF\u4EE5\u6682\u505C\u3002", { userMessage: "\u5F53\u524D feature \u4E0D\u80FD\u6682\u505C\u3002", recoveryKind: "refresh", recoveryInstruction: "\u5237\u65B0\u72B6\u6001\u540E\u4ECE\u5F53\u524D\u9636\u6BB5\u7EE7\u7EED\u3002", retryOriginal: false });
     state.lifecycle = "paused";
     state.resumeSummary = `\u6682\u505C\u539F\u56E0\uFF1A${reason.trim()}\u3002\u6062\u590D\u540E\u5148\u5BF9\u8D26\u5DE5\u4F5C\u533A\uFF0C\u518D\u4ECE${state.currentStage ? `\u201C${state.currentStage}\u201D` : "\u5F53\u524D\u9636\u6BB5"}\u7EE7\u7EED\u3002`;
-    state.lastUpdatedBy = { host, pluginVersion: "5.0.1" };
+    state.lastUpdatedBy = { host, pluginVersion: "5.0.2" };
   }, { reason: reason.trim() });
 }
 async function reconcileWorkspace(root2, id, expectedRevision, host) {
@@ -4585,7 +4779,7 @@ async function reconcileWorkspace(root2, id, expectedRevision, host) {
       markAffectedEvidenceStale(draft, changedPaths, reopenedLifecycle, legalCheckpointPaths);
     }
     presentationEventId = queueNextOwnershipDecision(draft);
-    draft.lastUpdatedBy = { host, pluginVersion: "5.0.1" };
+    draft.lastUpdatedBy = { host, pluginVersion: "5.0.2" };
   }, () => ({
     observedHead: workspace.observedHead,
     commitCount: workspace.observedCommits.length,
@@ -4698,7 +4892,7 @@ async function resumeFeature(root2, id, host) {
     }
     presentationEventId = queueNextOwnershipDecision(state);
     state.resumeSummary = `\u5DF2\u6062\u590D${state.currentStage ? `\uFF0C\u4ECE\u201C${state.currentStage}\u201D\u7EE7\u7EED` : "\u5F53\u524D\u4EFB\u52A1"}\u3002${contentChanged ? "\u5DE5\u4F5C\u533A\u5185\u5BB9\u6709\u53D8\u5316\uFF0C\u76F8\u5173\u8BC1\u636E\u5DF2\u6807\u8BB0\u4E3A\u5F85\u66F4\u65B0\u3002" : ""}`;
-    state.lastUpdatedBy = { host, pluginVersion: "5.0.1" };
+    state.lastUpdatedBy = { host, pluginVersion: "5.0.2" };
   }, () => ({ observedHead: workspace.observedHead, contentChanged, checkpointAffected, ...presentationEventId ? { presentationEventId } : {} }));
 }
 async function abandonFeature(root2, id, expectedRevision, reason, userEvidence) {
@@ -4754,7 +4948,7 @@ async function repairFeature(root2, id, expectedRevision, host) {
       state.logicComplete = state.lifecycle === "finalized" && finalEvidenceCurrent;
       state.currentStage = state.logicComplete ? "complete" : definition.orderedSteps.find((step) => state.steps[step]?.status !== "satisfied") ?? "finalize";
     }
-    state.lastUpdatedBy = { host, pluginVersion: "5.0.1" };
+    state.lastUpdatedBy = { host, pluginVersion: "5.0.2" };
   }, { repaired: ["active-pointer", "current-stage", "freshness", "review/status-projection"] });
 }
 function isRecoveryPhase(value) {
@@ -6162,14 +6356,15 @@ async function requestGrillDecision(root2, id, expectedRevision, input) {
       target,
       basisHash: decisionBasisHash({ objective: draft.objective, questionId: input.questionId, requirements: draft.artifacts.requirements?.sha256 }),
       question: input.question,
-      options: input.options
+      options: input.options,
+      recommendation: input.recommendation
     });
     const ledger = draft.decisionLedger ?? [];
     const index = ledger.findIndex((decision) => decision.id === input.questionId);
     if (index >= 0) ledger[index] = { ...ledger[index], question: input.question, status: "open", evidence: void 0, conclusion: void 0, source: "grill" };
     else ledger.push({ id: input.questionId, question: input.question, status: "open", source: "grill" });
     draft.decisionLedger = ledger;
-    draft.lastUpdatedBy = { host: input.host, pluginVersion: "5.0.1" };
+    draft.lastUpdatedBy = { host: input.host, pluginVersion: "5.0.2" };
   }, () => ({ questionId: input.questionId, mode: "decision", presentationEventId: interaction?.presentationEventId }));
   if (!interaction) throw new DevFlowError("INTERACTION_NOT_CREATED", target);
   return { state, interaction: toPublicInteraction(interaction), interactionId: interaction.id };
@@ -6198,7 +6393,7 @@ async function resolveGrillDecision(root2, id, expectedRevision, interactionId, 
       next[index] = resolveDecision(next[index], input.source === "elicitation" ? input.comment ?? "\u7528\u6237\u9009\u62E9" : input.userReply, response.action);
       draft.decisionLedger = next;
     }
-    draft.lastUpdatedBy = { host, pluginVersion: "5.0.1" };
+    draft.lastUpdatedBy = { host, pluginVersion: "5.0.2" };
   }, { interactionId, mode: "decision" });
   if (!response) throw new DevFlowError("INTERACTION_NOT_RESOLVED", "\u5F53\u524D\u95EE\u9898\u6CA1\u6709\u5B8C\u6210\u56DE\u7B54\u3002", { interactionId });
   return { state, interaction: toPublicInteraction(getInteraction(state, interactionId)), response, interactionId };
@@ -6496,7 +6691,7 @@ async function runVerification(root2, id, expectedRevision, host, commandIds, ma
       const signature = `${exitCode}:${createHash13("sha256").update(fullOutput).digest("hex").slice(0, 16)}`;
       state.repair = recordRepairAttempt(state.repair ?? startRepairLoop(), signature, output.slice(-3));
     }
-    state.lastUpdatedBy = { host, pluginVersion: "5.0.1" };
+    state.lastUpdatedBy = { host, pluginVersion: "5.0.2" };
   });
 }
 async function readVerificationFreshness(root2, state) {
@@ -6618,7 +6813,7 @@ async function resolveQualityExceptionResponse(root2, featureId, expectedRevisio
         state.obligations = satisfyObligations(state.obligations, [kind]);
       }
     }
-    state.lastUpdatedBy = { host, pluginVersion: "5.0.1" };
+    state.lastUpdatedBy = { host, pluginVersion: "5.0.2" };
   }, { interactionId });
 }
 
@@ -6627,13 +6822,13 @@ var digest5 = (value) => createHash14("sha256").update(value).digest("hex");
 var leaseMilliseconds = 60 * 60 * 1e3;
 var samplingLeaseMilliseconds = 120 * 1e3;
 var basisArtifactKinds = ["requirements", "implementation-plan", "coverage-matrix", "rollback-units"];
-function invalid3(code, message, details = {}) {
+function invalid4(code, message, details = {}) {
   throw new DevFlowError(code, message, details);
 }
 function currentBatch2(ledger, batchId) {
   const batch = ledger.batches.find((candidate) => candidate.batchId === batchId);
-  if (!batch) invalid3("REVIEW_BATCH_NOT_FOUND", "review batch does not exist", { batchId });
-  if (batch.validity !== "current") invalid3("REVIEW_BATCH_STALE", "review batch is stale", { batchId });
+  if (!batch) invalid4("REVIEW_BATCH_NOT_FOUND", "review batch does not exist", { batchId });
+  if (batch.validity !== "current") invalid4("REVIEW_BATCH_STALE", "review batch is stale", { batchId });
   return batch;
 }
 function satisfyCompletedReviewObligation(obligations, batch) {
@@ -6653,20 +6848,20 @@ function reviewArtifactKinds(state) {
   return basisArtifactKinds.filter((kind) => Boolean(state.artifacts[kind]));
 }
 async function deriveReviewInput(root2, state) {
-  if (!state.traceability) invalid3("REVIEW_BASIS_UNAVAILABLE", "review basis requires a current Trace pointer");
+  if (!state.traceability) invalid4("REVIEW_BASIS_UNAVAILABLE", "review basis requires a current Trace pointer");
   const trace2 = await readTraceability(root2, state);
   const { config, sha256: projectConfigSha256 } = await readProjectConfigSnapshot(root2);
   const frozenArtifacts = await Promise.all(reviewArtifactKinds(state).map(async (kind) => {
     const artifact = state.artifacts[kind];
-    if (!artifact) invalid3("REVIEW_BASIS_ARTIFACT_MISSING", `review basis artifact is missing: ${kind}`, { kind });
+    if (!artifact) invalid4("REVIEW_BASIS_ARTIFACT_MISSING", `review basis artifact is missing: ${kind}`, { kind });
     let contents;
     try {
       contents = await readFile11(path14.join(root2, ".dev-flow", "features", state.featureId, artifact.path), "utf8");
     } catch {
-      invalid3("REVIEW_BASIS_ARTIFACT_MISSING", `review basis artifact cannot be read: ${kind}`, { kind });
+      invalid4("REVIEW_BASIS_ARTIFACT_MISSING", `review basis artifact cannot be read: ${kind}`, { kind });
     }
     if (digest5(contents) !== artifact.sha256) {
-      invalid3("ARTIFACT_INTEGRITY_FAILED", `review basis artifact was edited without registration: ${kind}`, {
+      invalid4("ARTIFACT_INTEGRITY_FAILED", `review basis artifact was edited without registration: ${kind}`, {
         kind,
         recoveryHint: `Re-register the edited ${kind} artifact with the latest feature revision known before the edit.`
       });
@@ -6675,7 +6870,7 @@ async function deriveReviewInput(root2, state) {
   }));
   const projectContents = await readFile11(path14.join(root2, ".dev-flow", "project.json"), "utf8");
   if (digest5(projectContents) !== projectConfigSha256) {
-    invalid3("REVIEW_BASIS_UNAVAILABLE", "project configuration changed while review basis was being captured");
+    invalid4("REVIEW_BASIS_UNAVAILABLE", "project configuration changed while review basis was being captured");
   }
   const scopeManifest = {
     inScope: [...state.scope.inScope].sort(),
@@ -6769,12 +6964,12 @@ function roleBasisHash(basis, frozenArtifacts, trace2, role) {
 }
 function requireClaimRequestId(value) {
   if (typeof value !== "string" || value.length < 24 || !/[A-Za-z]/.test(value) || !/[0-9]/.test(value)) {
-    invalid3("REVIEW_CLAIM_REQUEST_INVALID", "claimRequestId must be an unguessable high-entropy value");
+    invalid4("REVIEW_CLAIM_REQUEST_INVALID", "claimRequestId must be an unguessable high-entropy value");
   }
 }
 function findJob(batch, jobId) {
   const job = batch.jobs.find((candidate) => candidate.jobId === jobId);
-  if (!job) invalid3("REVIEW_JOB_NOT_FOUND", "review job does not exist", { batchId: batch.batchId, jobId });
+  if (!job) invalid4("REVIEW_JOB_NOT_FOUND", "review job does not exist", { batchId: batch.batchId, jobId });
   return job;
 }
 function visibleJob(job) {
@@ -6820,7 +7015,7 @@ function assertAttestationUnique(ledger, batchId, jobId, attestation) {
       if (batch.batchId === batchId && job.jobId === jobId) continue;
       if (job.status !== "submitted" || !job.submission?.attestation) continue;
       if (job.submission.attestation.rawSha256 === attestation.rawSha256) {
-        invalid3("REVIEW_ATTESTATION_REUSED", "the same host attestation cannot be reused across review jobs or successor batches", {
+        invalid4("REVIEW_ATTESTATION_REUSED", "the same host attestation cannot be reused across review jobs or successor batches", {
           jobId,
           priorJobId: job.jobId,
           priorBatchId: batch.batchId
@@ -6841,11 +7036,11 @@ function validScopeManifest(value) {
 async function readBoundReviewPackage(root2, featureId, batch, job) {
   const reviewPackage = await readReviewPackage(root2, featureId, job.packageSha256);
   if (typeof reviewPackage !== "object" || reviewPackage === null || Array.isArray(reviewPackage)) {
-    invalid3("REVIEW_INTEGRITY_FAILED", "review package does not belong to its job", { batchId: batch.batchId, jobId: job.jobId });
+    invalid4("REVIEW_INTEGRITY_FAILED", "review package does not belong to its job", { batchId: batch.batchId, jobId: job.jobId });
   }
   const packageRecord = reviewPackage;
   if (packageRecord.featureId !== featureId || packageRecord.batchId !== batch.batchId || packageRecord.jobId !== job.jobId || packageRecord.basisHash !== batch.basisHash) {
-    invalid3("REVIEW_INTEGRITY_FAILED", "review package does not belong to its job", { batchId: batch.batchId, jobId: job.jobId });
+    invalid4("REVIEW_INTEGRITY_FAILED", "review package does not belong to its job", { batchId: batch.batchId, jobId: job.jobId });
   }
   return packageRecord;
 }
@@ -6859,13 +7054,13 @@ function assertFindingScope(manifest, findings, resolutions) {
   const validEvidence = (value) => inManifest(value) || manifest.frozenArtifactPaths.includes(value);
   const invalidPaths = [];
   for (const finding of findings) {
-    if (finding.severity === "blocking" && !finding.evidence.length) invalid3("REVIEW_FINDING_EVIDENCE_REQUIRED", "blocking finding requires evidence");
+    if (finding.severity === "blocking" && !finding.evidence.length) invalid4("REVIEW_FINDING_EVIDENCE_REQUIRED", "blocking finding requires evidence");
     invalidPaths.push(...finding.targets.filter((target) => !validTarget(target)));
     invalidPaths.push(...finding.evidence.map((evidence) => evidence.path).filter((path20) => !validEvidence(path20)));
   }
   invalidPaths.push(...resolutions.flatMap((resolution) => resolution.evidence.map((evidence) => evidence.path).filter((path20) => !validEvidence(path20))));
   if (invalidPaths.length) {
-    invalid3("REVIEW_FINDING_SCOPE_INVALID", "finding targets and evidence must be package-relative paths inside the scope manifest", {
+    invalid4("REVIEW_FINDING_SCOPE_INVALID", "finding targets and evidence must be package-relative paths inside the scope manifest", {
       invalidPaths: [...new Set(invalidPaths)].sort(),
       allowedScopes: allowed.sort()
     });
@@ -6892,7 +7087,7 @@ function dedupeFindings(findings) {
 async function createReviewBatch(root2, id, expectedRevision) {
   let result;
   const state = await mutatePrepared(root2, id, expectedRevision, "review-batch-created", async (current, nextStateRevision) => {
-    if (current.lifecycle !== "active") invalid3("INVALID_LIFECYCLE", "only active features can create review batches");
+    if (current.lifecycle !== "active") invalid4("INVALID_LIFECYCLE", "only active features can create review batches");
     const ledger = await readReviewLedger(root2, current);
     const reviewInput = await deriveReviewInput(root2, current);
     const { basis } = reviewInput;
@@ -6907,7 +7102,7 @@ async function createReviewBatch(root2, id, expectedRevision) {
       result = { state: void 0, batch: existing, created: false };
       return { mutate: () => void 0, unchanged: true, eventData: { batchId: existing.batchId, basisHash: currentBasisHash, idempotent: true } };
     }
-    if (!requirements.length) invalid3("REVIEW_ROUTE_UNSUPPORTED", "\u5F53\u524D\u52A8\u6001\u8DEF\u7EBF\u6CA1\u6709\u542F\u7528\u72EC\u7ACB plan-review \u89D2\u8272\u3002");
+    if (!requirements.length) invalid4("REVIEW_ROUTE_UNSUPPORTED", "\u5F53\u524D\u52A8\u6001\u8DEF\u7EBF\u6CA1\u6709\u542F\u7528\u72EC\u7ACB plan-review \u89D2\u8272\u3002");
     const prevCurrent = ledger.batches.find((batch2) => batch2.validity === "current");
     const reusableByRole = /* @__PURE__ */ new Map();
     for (const requirement of requirements) {
@@ -7002,7 +7197,7 @@ async function getReviewJob(root2, id, batchId, jobId, capability) {
   const state = await readState(root2, id);
   const batch = currentBatch2(await readReviewLedger(root2, state), batchId);
   const job = findJob(batch, jobId);
-  if (!job.claim || digest5(capability) !== job.claim.requestSha256) invalid3("REVIEW_JOB_CAPABILITY_INVALID", "review job capability is invalid");
+  if (!job.claim || digest5(capability) !== job.claim.requestSha256) invalid4("REVIEW_JOB_CAPABILITY_INVALID", "review job capability is invalid");
   const reviewPackage = await readBoundReviewPackage(root2, id, batch, job);
   return { job: visibleJob(job), package: reviewPackage };
 }
@@ -7015,10 +7210,10 @@ async function claimReviewJob(root2, id, expectedRevision, batchId, jobId, claim
     const requestSha256 = digest5(claimRequestId);
     const original = findJob(batch, jobId);
     const job = recoverExpiredSampling(recoverExpiredLease(original, now), now);
-    if (job.status === "submitted" || job.status === "reused") invalid3("REVIEW_JOB_ALREADY_SUBMITTED", "review job is already satisfied", { jobId });
-    if (job.status === "sampling") invalid3("REVIEW_JOB_SAMPLING_IN_PROGRESS", "review job is held by server sampling", { jobId });
+    if (job.status === "submitted" || job.status === "reused") invalid4("REVIEW_JOB_ALREADY_SUBMITTED", "review job is already satisfied", { jobId });
+    if (job.status === "sampling") invalid4("REVIEW_JOB_SAMPLING_IN_PROGRESS", "review job is held by server sampling", { jobId });
     if (job.status === "claimed" && job.claim.requestSha256 !== requestSha256) {
-      invalid3("REVIEW_JOB_ALREADY_CLAIMED", "review job is claimed by another capability", { jobId });
+      invalid4("REVIEW_JOB_ALREADY_CLAIMED", "review job is claimed by another capability", { jobId });
     }
     const idempotent = job.status === "claimed";
     const claimed = idempotent ? job : {
@@ -7045,10 +7240,10 @@ async function releaseReviewJob(root2, id, expectedRevision, batchId, jobId, cap
     const ledger = await readReviewLedger(root2, current);
     const batch = currentBatch2(ledger, batchId);
     const original = findJob(batch, jobId);
-    if (original.status === "submitted") invalid3("REVIEW_JOB_ALREADY_SUBMITTED", "review job has already been submitted", { jobId });
-    if (original.status === "sampling") invalid3("REVIEW_JOB_SAMPLING_IN_PROGRESS", "review job is held by server sampling", { jobId });
-    if (original.status !== "claimed" || !original.claim) invalid3("REVIEW_JOB_NOT_CLAIMED", "review job is not currently claimed", { jobId });
-    if (digest5(capability) !== original.claim.requestSha256) invalid3("REVIEW_JOB_CAPABILITY_INVALID", "review job capability is invalid");
+    if (original.status === "submitted") invalid4("REVIEW_JOB_ALREADY_SUBMITTED", "review job has already been submitted", { jobId });
+    if (original.status === "sampling") invalid4("REVIEW_JOB_SAMPLING_IN_PROGRESS", "review job is held by server sampling", { jobId });
+    if (original.status !== "claimed" || !original.claim) invalid4("REVIEW_JOB_NOT_CLAIMED", "review job is not currently claimed", { jobId });
+    if (digest5(capability) !== original.claim.requestSha256) invalid4("REVIEW_JOB_CAPABILITY_INVALID", "review job capability is invalid");
     const released = { ...original, status: "pending", claim: void 0 };
     const updatedBatch = {
       ...batch,
@@ -7088,15 +7283,15 @@ function normalizeReviewCompletion(parsed) {
 async function submitParsedReviewJob(root2, featureId, ledger, batch, job, parsed, now, samplingAttempt, hostAttestation) {
   const normalizedParsed = normalizeReviewCompletion(parsed);
   if (normalizedParsed.findings.some((finding) => finding.category !== job.role)) {
-    invalid3("REVIEW_FINDING_ROLE_MISMATCH", "a job may only submit findings for its assigned review role", { jobId: job.jobId, role: job.role });
+    invalid4("REVIEW_FINDING_ROLE_MISMATCH", "a job may only submit findings for its assigned review role", { jobId: job.jobId, role: job.role });
   }
   if (samplingAttempt && hostAttestation) {
-    invalid3("REVIEW_ATTESTATION_INVALID", "server sampling submissions cannot carry host attestation");
+    invalid4("REVIEW_ATTESTATION_INVALID", "server sampling submissions cannot carry host attestation");
   }
   if (hostAttestation) assertAttestationUnique(ledger, batch.batchId, job.jobId, hostAttestation);
   const reviewPackage = await readBoundReviewPackage(root2, featureId, batch, job);
   if (!validScopeManifest(reviewPackage.scopeManifest)) {
-    invalid3("REVIEW_INTEGRITY_FAILED", "review package scope manifest is invalid", { jobId: job.jobId });
+    invalid4("REVIEW_INTEGRITY_FAILED", "review package scope manifest is invalid", { jobId: job.jobId });
   }
   const manifest = reviewPackage.scopeManifest;
   assertFindingScope(manifest, normalizedParsed.findings, normalizedParsed.resolutions ?? []);
@@ -7104,15 +7299,15 @@ async function submitParsedReviewJob(root2, featureId, ledger, batch, job, parse
   const findingEvents = [];
   const resolvedIds = /* @__PURE__ */ new Set();
   for (const resolution of normalizedParsed.resolutions ?? []) {
-    if (resolvedIds.has(resolution.findingId)) invalid3("REVIEW_RESOLUTION_DUPLICATE", "a finding may be resolved only once per successor batch", { findingId: resolution.findingId });
+    if (resolvedIds.has(resolution.findingId)) invalid4("REVIEW_RESOLUTION_DUPLICATE", "a finding may be resolved only once per successor batch", { findingId: resolution.findingId });
     const source = ledger.batches.filter((candidate) => candidate.batchId !== batch.batchId).flatMap((candidate) => candidate.jobs.map((candidateJob) => ({ batch: candidate, job: candidateJob }))).find(({ job: candidateJob }) => candidateJob.submission?.findings.some((finding2) => finding2.findingId === resolution.findingId));
     const finding = source?.job.submission?.findings.find((candidate) => candidate.findingId === resolution.findingId);
-    if (!source || !finding) invalid3("REVIEW_RESOLUTION_UNKNOWN_FINDING", "resolution references an unknown prior finding", { findingId: resolution.findingId });
+    if (!source || !finding) invalid4("REVIEW_RESOLUTION_UNKNOWN_FINDING", "resolution references an unknown prior finding", { findingId: resolution.findingId });
     if (finding.severity !== "blocking" || source.job.role !== job.role) {
-      invalid3("REVIEW_RESOLUTION_ROLE_MISMATCH", "only the same role may resolve a prior blocking finding", { findingId: resolution.findingId });
+      invalid4("REVIEW_RESOLUTION_ROLE_MISMATCH", "only the same role may resolve a prior blocking finding", { findingId: resolution.findingId });
     }
     if (dispositions[resolution.findingId]) {
-      invalid3("REVIEW_RESOLUTION_ALREADY_DISPOSED", "a prior finding already has a disposition", { findingId: resolution.findingId });
+      invalid4("REVIEW_RESOLUTION_ALREADY_DISPOSED", "a prior finding already has a disposition", { findingId: resolution.findingId });
     }
     dispositions[resolution.findingId] = {
       kind: "resolved-in-successor",
@@ -7151,7 +7346,7 @@ async function submitParsedReviewJob(root2, featureId, ledger, batch, job, parse
   }
   const missingCarried = (job.carriedFindings ?? []).filter((finding) => !resolvedIds.has(finding.findingId));
   if (missingCarried.length) {
-    invalid3("REVIEW_CARRIED_FINDING_UNRESOLVED", "\u6BCF\u4E2A\u7ED3\u8F6C blocker \u90FD\u5FC5\u987B\u63D0\u4EA4\u660E\u786E\u5904\u7F6E\u7ED3\u679C", {
+    invalid4("REVIEW_CARRIED_FINDING_UNRESOLVED", "\u6BCF\u4E2A\u7ED3\u8F6C blocker \u90FD\u5FC5\u987B\u63D0\u4EA4\u660E\u786E\u5904\u7F6E\u7ED3\u679C", {
       findingIds: missingCarried.map((finding) => finding.findingId),
       recoveryHint: "\u4E3A\u6BCF\u4E2A carried finding \u63D0\u4EA4 resolved\u3001still-blocking \u6216 risk-acceptance-required \u7ED3\u679C"
     });
@@ -7209,24 +7404,24 @@ async function submitReviewJob(root2, id, expectedRevision, batchId, jobId, capa
     const batch = currentBatch2(ledger, batchId);
     const job = findJob(batch, jobId);
     const payloadSha256 = digest5(canonicalReviewValueJson(parsed));
-    if (job.status === "sampling") invalid3("REVIEW_JOB_SAMPLING_IN_PROGRESS", "review job is held by server sampling", { jobId });
+    if (job.status === "sampling") invalid4("REVIEW_JOB_SAMPLING_IN_PROGRESS", "review job is held by server sampling", { jobId });
     if (!job.claim || digest5(capability) !== job.claim.requestSha256) {
-      invalid3("REVIEW_JOB_CAPABILITY_INVALID", "review job capability is invalid");
+      invalid4("REVIEW_JOB_CAPABILITY_INVALID", "review job capability is invalid");
     }
     if (job.status === "submitted") {
-      if (job.submission?.payloadSha256 !== payloadSha256) invalid3("REVIEW_SUBMISSION_CONFLICT", "review job was submitted with a different payload", { jobId });
+      if (job.submission?.payloadSha256 !== payloadSha256) invalid4("REVIEW_SUBMISSION_CONFLICT", "review job was submitted with a different payload", { jobId });
       if (hostAttestation) {
         const existing = job.submission?.attestation;
         if (!existing || existing.rawSha256 !== hostAttestation.rawSha256 || existing.agentId !== hostAttestation.agentId || existing.host !== hostAttestation.host) {
-          invalid3("REVIEW_SUBMISSION_CONFLICT", "review job was submitted with a different host attestation", { jobId });
+          invalid4("REVIEW_SUBMISSION_CONFLICT", "review job was submitted with a different host attestation", { jobId });
         }
       } else if (job.submission?.attestation) {
-        invalid3("REVIEW_SUBMISSION_CONFLICT", "review job was submitted with a different host attestation", { jobId });
+        invalid4("REVIEW_SUBMISSION_CONFLICT", "review job was submitted with a different host attestation", { jobId });
       }
       result = { batch, idempotent: true };
       return { mutate: () => void 0, unchanged: true, eventData: { batchId, jobId, idempotent: true } };
     }
-    if (Date.parse(job.claim.leaseExpiresAt) <= now.getTime()) invalid3("REVIEW_JOB_LEASE_EXPIRED", "review job lease has expired", {
+    if (Date.parse(job.claim.leaseExpiresAt) <= now.getTime()) invalid4("REVIEW_JOB_LEASE_EXPIRED", "review job lease has expired", {
       jobId,
       leaseExpiresAt: job.claim.leaseExpiresAt,
       recoveryHint: "\u91CD\u65B0 claim \u5F53\u524D job \u540E\u518D\u63D0\u4EA4\uFF1B\u8FC7\u671F\u79DF\u7EA6\u4E0D\u4F1A\u81EA\u52A8\u4FDD\u7559\u63D0\u4EA4\u6743"
@@ -7236,7 +7431,7 @@ async function submitReviewJob(root2, id, expectedRevision, batchId, jobId, capa
       submitted = await submitParsedReviewJob(root2, id, ledger, batch, job, parsed, now, void 0, hostAttestation);
     } catch (error) {
       if (error instanceof DevFlowError) {
-        invalid3(error.code, error.message, {
+        invalid4(error.code, error.message, {
           ...error.details,
           claimRetained: true,
           leaseExpiresAt: job.claim.leaseExpiresAt,
@@ -7266,7 +7461,7 @@ async function submitReviewJob(root2, id, expectedRevision, batchId, jobId, capa
 function samplingCurrentBatch(ledger, batchId) {
   const batch = ledger.batches.find((candidate) => candidate.batchId === batchId);
   if (!batch || batch.validity !== "current") {
-    invalid3("REVIEW_SAMPLING_REQUEST_REPLAY", "sampling request is not valid for a current review batch", { batchId });
+    invalid4("REVIEW_SAMPLING_REQUEST_REPLAY", "sampling request is not valid for a current review batch", { batchId });
   }
   return batch;
 }
@@ -7274,7 +7469,7 @@ function samplingAttemptForRequest(job, requestId) {
   const requestSha256 = digest5(requestId);
   const attempt = activeSamplingAttempt(job);
   if (job.status !== "sampling" || !attempt || attempt.requestSha256 !== requestSha256) {
-    invalid3("REVIEW_SAMPLING_REQUEST_REPLAY", "sampling request was already consumed or does not belong to this job", { jobId: job.jobId });
+    invalid4("REVIEW_SAMPLING_REQUEST_REPLAY", "sampling request was already consumed or does not belong to this job", { jobId: job.jobId });
   }
   return attempt;
 }
@@ -7285,9 +7480,9 @@ async function beginReviewSampling(root2, id, expectedRevision, batchId, jobId, 
     const batch = currentBatch2(ledger, batchId);
     const original = findJob(batch, jobId);
     const job = recoverExpiredSampling(original, now);
-    if (job.status === "submitted") invalid3("REVIEW_JOB_ALREADY_SUBMITTED", "review job has already been submitted", { jobId });
-    if (job.status === "claimed") invalid3("REVIEW_JOB_ALREADY_CLAIMED", "review job is claimed by a human capability", { jobId });
-    if (job.status === "sampling") invalid3("REVIEW_JOB_SAMPLING_IN_PROGRESS", "review job is already held by server sampling", { jobId });
+    if (job.status === "submitted") invalid4("REVIEW_JOB_ALREADY_SUBMITTED", "review job has already been submitted", { jobId });
+    if (job.status === "claimed") invalid4("REVIEW_JOB_ALREADY_CLAIMED", "review job is claimed by a human capability", { jobId });
+    if (job.status === "sampling") invalid4("REVIEW_JOB_SAMPLING_IN_PROGRESS", "review job is already held by server sampling", { jobId });
     const requestId = `${randomUUID6()}-${randomUUID6()}`;
     const attempt = {
       requestSha256: digest5(requestId),
@@ -7364,7 +7559,7 @@ async function completeReviewSampling(root2, id, expectedRevision, batchId, jobI
     const job = findJob(batch, jobId);
     const attempt = samplingAttemptForRequest(job, requestId);
     if (Date.parse(attempt.leaseExpiresAt) <= now.getTime()) {
-      invalid3("REVIEW_SAMPLING_REQUEST_EXPIRED", "sampling request lease has expired", { jobId });
+      invalid4("REVIEW_SAMPLING_REQUEST_EXPIRED", "sampling request lease has expired", { jobId });
     }
     const submitted = await submitParsedReviewJob(root2, id, ledger, batch, job, parsed, now, attempt);
     const pointer = await writeReviewSnapshot(root2, cloneLedger(
@@ -7389,11 +7584,11 @@ function submittedFindings(ledger) {
 }
 function sortedFindingIds(findingIds) {
   if (!Array.isArray(findingIds) || !findingIds.length || findingIds.some((id) => typeof id !== "string" || !id)) {
-    invalid3("REVIEW_RISK_ACCEPTANCE_INVALID", "risk acceptance requires one or more finding ids");
+    invalid4("REVIEW_RISK_ACCEPTANCE_INVALID", "risk acceptance requires one or more finding ids");
   }
   const sorted = [...findingIds].sort();
   if (new Set(sorted).size !== sorted.length) {
-    invalid3("REVIEW_RISK_ACCEPTANCE_INVALID", "risk acceptance finding ids must be unique");
+    invalid4("REVIEW_RISK_ACCEPTANCE_INVALID", "risk acceptance finding ids must be unique");
   }
   return sorted;
 }
@@ -7404,7 +7599,7 @@ function findingSetHash(batch, findings) {
 function riskBinding(interaction) {
   const binding = interaction.binding;
   if (interaction.kind !== "risk-acceptance" || !binding || typeof binding.batchId !== "string" || typeof binding.findingSetHash !== "string" || !Array.isArray(binding.findingIds)) {
-    invalid3("REVIEW_RISK_ACCEPTANCE_INVALID", "interaction is not a valid review risk-acceptance decision", { interactionId: interaction.id });
+    invalid4("REVIEW_RISK_ACCEPTANCE_INVALID", "interaction is not a valid review risk-acceptance decision", { interactionId: interaction.id });
   }
   return { batchId: binding.batchId, findingIds: sortedFindingIds(binding.findingIds), findingSetHash: binding.findingSetHash };
 }
@@ -7415,12 +7610,12 @@ function planReviewBoundToBatch(state, batch) {
 async function currentBatchWithBasis(root2, state, options = {}) {
   const ledger = await readReviewLedger(root2, state);
   const batch = ledger.batches.find((candidate) => candidate.validity === "current");
-  if (!batch) invalid3("REVIEW_BATCH_REQUIRED", "a current review batch is required");
+  if (!batch) invalid4("REVIEW_BATCH_REQUIRED", "a current review batch is required");
   const requireLiveBasis = options.requireLiveBasis ?? !planReviewBoundToBatch(state, batch);
   const reviewInput = await deriveReviewInput(root2, state);
   if (requireLiveBasis) {
     if (basisHash(reviewInput.basis) !== batch.basisHash) {
-      invalid3("REVIEW_BASIS_STALE", "review batch basis no longer matches current feature state", {
+      invalid4("REVIEW_BASIS_STALE", "review batch basis no longer matches current feature state", {
         batchId: batch.batchId,
         recoveryHint: "\u91CD\u5EFA\u6279\u6B21\u2192\u91CD\u4EA4 jobs\u2192re-record planning"
       });
@@ -7430,7 +7625,7 @@ async function currentBatchWithBasis(root2, state, options = {}) {
   for (const requirement of requirements) {
     const job = batch.jobs.find((candidate) => candidate.role === requirement.role);
     if (!job || job.roleBasisHash !== reviewInput.roleBasisHashes[requirement.role]) {
-      invalid3("REVIEW_BASIS_STALE", "review role basis no longer matches current feature semantics", {
+      invalid4("REVIEW_BASIS_STALE", "review role basis no longer matches current feature semantics", {
         batchId: batch.batchId,
         role: requirement.role,
         recoveryHint: "\u91CD\u5EFA\u6279\u6B21\u2192\u91CD\u4EA4\u53D7\u5F71\u54CD role job\u2192re-record planning"
@@ -7447,13 +7642,13 @@ function selectCurrentBlockingFindings(ledger, batch, findingIds, unresolvedOnly
     const roleBasis = (origin) => batch.jobs.find((job) => job.role === origin.role)?.roleBasisHash;
     const unresolved = new Map(unresolvedBlockingFindings(ledger, roleBasis).filter((finding) => effectiveFindingState(ledger, finding.findingId, roleBasis)?.status !== "needs-revalidation").map((finding) => [finding.findingId, finding]));
     const selected2 = sortedFindingIds(findingIds).map((findingId) => unresolved.get(findingId));
-    if (selected2.some((finding) => !finding)) invalid3("REVIEW_RISK_ACCEPTANCE_INVALID", "\u98CE\u9669\u63A5\u53D7\u53EA\u80FD\u8986\u76D6\u5F53\u524D\u672A\u89E3\u51B3\u7684\u963B\u65AD\u53D1\u73B0", { findingIds });
+    if (selected2.some((finding) => !finding)) invalid4("REVIEW_RISK_ACCEPTANCE_INVALID", "\u98CE\u9669\u63A5\u53D7\u53EA\u80FD\u8986\u76D6\u5F53\u524D\u672A\u89E3\u51B3\u7684\u963B\u65AD\u53D1\u73B0", { findingIds });
     return selected2;
   }
   const byId = new Map(submittedFindings(ledger).filter(({ batch: source, finding }) => source.batchId === batch.batchId && finding.severity === "blocking" && (!unresolvedOnly || !batch.dispositions?.[finding.findingId])).map(({ finding }) => [finding.findingId, finding]));
   const selected = sortedFindingIds(findingIds).map((findingId) => byId.get(findingId));
   if (selected.some((finding) => !finding)) {
-    invalid3("REVIEW_RISK_ACCEPTANCE_INVALID", "risk acceptance can cover only current unresolved blocking findings", {
+    invalid4("REVIEW_RISK_ACCEPTANCE_INVALID", "risk acceptance can cover only current unresolved blocking findings", {
       batchId: batch.batchId,
       findingIds
     });
@@ -7465,7 +7660,7 @@ async function presentReviewRiskAcceptance(root2, id, expectedRevision, findingI
   let presentationEventId;
   const state = await mutatePrepared(root2, id, expectedRevision, "review-risk-acceptance-presented", async (current) => {
     const { ledger, batch } = await currentBatchWithBasis(root2, current);
-    if (batch.progress !== "complete") invalid3("REVIEW_BATCH_INCOMPLETE", "all required review jobs must be submitted", { batchId: batch.batchId });
+    if (batch.progress !== "complete") invalid4("REVIEW_BATCH_INCOMPLETE", "all required review jobs must be submitted", { batchId: batch.batchId });
     const findings = acceptanceFindings(ledger, batch, findingIds);
     const ids = findings.map((finding) => finding.findingId).sort();
     const setHash = findingSetHash(batch, findings);
@@ -7501,10 +7696,10 @@ function assertResolvedAcceptance(state, interaction, batch, findings) {
   const expectedIds = findings.map((finding) => finding.findingId).sort();
   const expectedSetHash = findingSetHash(batch, findings);
   if (interaction.basisHash !== batch.basisHash || binding.batchId !== batch.batchId || binding.findingSetHash !== expectedSetHash || binding.findingIds.join("\n") !== expectedIds.join("\n")) {
-    invalid3("REVIEW_RISK_ACCEPTANCE_STALE", "risk acceptance no longer matches the current batch and finding set", { interactionId: interaction.id });
+    invalid4("REVIEW_RISK_ACCEPTANCE_STALE", "risk acceptance no longer matches the current batch and finding set", { interactionId: interaction.id });
   }
   if (state.interactions?.[interaction.id] !== interaction) {
-    invalid3("REVIEW_RISK_ACCEPTANCE_INVALID", "risk acceptance interaction is not part of feature state", { interactionId: interaction.id });
+    invalid4("REVIEW_RISK_ACCEPTANCE_INVALID", "risk acceptance interaction is not part of feature state", { interactionId: interaction.id });
   }
 }
 function assertReviewRiskAcceptanceEvidence(event, interaction, promptEventId, userReply, host) {
@@ -7584,7 +7779,7 @@ async function resolveReviewRiskAcceptanceResponse(root2, id, expectedRevision, 
         result = { acceptedFindingIds: binding.findingIds, idempotent: true };
         return { mutate: () => void 0, unchanged: true, eventData: { interactionId, idempotent: true } };
       }
-      invalid3("INTERACTION_ALREADY_RESOLVED", interactionId);
+      invalid4("INTERACTION_ALREADY_RESOLVED", interactionId);
     }
     const findings = acceptanceFindings(ledger, batch, binding.findingIds);
     assertResolvedAcceptance(current, interaction, batch, findings);
@@ -7645,11 +7840,11 @@ async function resolveReviewRiskAcceptanceResponse(root2, id, expectedRevision, 
 }
 async function assertReviewComplete(root2, state) {
   const { ledger, batch } = await currentBatchWithBasis(root2, state);
-  if (batch.progress !== "complete") invalid3("REVIEW_BATCH_INCOMPLETE", "all required review jobs must be submitted", { batchId: batch.batchId });
+  if (batch.progress !== "complete") invalid4("REVIEW_BATCH_INCOMPLETE", "all required review jobs must be submitted", { batchId: batch.batchId });
   if (ledger.findingEvents?.length) {
     const roleBasis = (origin) => batch.jobs.find((job) => job.role === origin.role)?.roleBasisHash;
     const unresolved = unresolvedBlockingFindings(ledger, roleBasis);
-    if (unresolved.length && !hasCurrentQualityException(state, "review")) invalid3("REVIEW_BLOCKING_FINDINGS", "review ledger has unresolved blocking findings", {
+    if (unresolved.length && !hasCurrentQualityException(state, "review")) invalid4("REVIEW_BLOCKING_FINDINGS", "review ledger has unresolved blocking findings", {
       batchId: batch.batchId,
       findingIds: unresolved.map((finding) => finding.findingId)
     });
@@ -7682,7 +7877,7 @@ async function assertReviewComplete(root2, state) {
     const sourceJob = jobs.find((candidate) => candidate.jobId === finding.jobId);
     return !successor || !resolutionJob || !sourceJob || resolutionJob.role !== sourceJob.role || !resolutionJob.submission?.resolutions.some((resolution) => resolution.findingId === finding.findingId);
   });
-  if (blocking.length) invalid3("REVIEW_BLOCKING_FINDINGS", "review batch has unresolved blocking findings", {
+  if (blocking.length) invalid4("REVIEW_BLOCKING_FINDINGS", "review batch has unresolved blocking findings", {
     batchId: batch.batchId,
     findingIds: blocking.map((finding) => finding.findingId)
   });
@@ -8080,7 +8275,7 @@ async function resolveApprovalResponse(root2, id, expectedRevision, interactionI
     } else {
       throw new DevFlowError("INTERACTION_ACTION_INVALID", response.action);
     }
-    state.lastUpdatedBy = { host, pluginVersion: "5.0.1" };
+    state.lastUpdatedBy = { host, pluginVersion: "5.0.2" };
   }, () => ({ approval, interactionId, response }));
 }
 async function resolveApprovalElicitation(root2, id, expectedRevision, interactionId, action, comment, host) {
@@ -8419,6 +8614,7 @@ async function readCompactStatus(root2, featureId) {
   const total = definition?.orderedSteps.length ?? 1;
   const completed = definition?.orderedSteps.filter((step) => state.steps[step]?.status === "satisfied").length ?? 0;
   const decision = pendingDecisionForState(state);
+  const publicDecision = decision ? publicPendingDecision(state) : void 0;
   const content = {
     statusSchemaVersion: STATUS_SCHEMA_VERSION,
     \u72B6\u6001: state.lifecycle === "finalized" && state.qualityExceptions.some((exception) => exception.status === "current") ? "\u5DF2\u5B8C\u6210\uFF08\u7528\u6237\u63A5\u53D7\u98CE\u9669\uFF09" : lifecycleLabel(state.lifecycle),
@@ -8432,8 +8628,10 @@ async function readCompactStatus(root2, featureId) {
     ...decision ? {
       attention: "\u8BF7\u53EA\u56DE\u7B54\u5F53\u524D\u8FD9\u4E00\u9053\u95EE\u9898\u3002",
       pendingDecision: {
-        question: publicPendingDecision(state).question,
-        options: publicPendingDecision(state).options
+        question: publicDecision.question,
+        options: publicDecision.options,
+        ...publicDecision.recommendation ? { recommendation: publicDecision.recommendation } : {},
+        ...publicDecision.presentation ? { presentation: publicDecision.presentation } : {}
       }
     } : {}
   };
@@ -9498,7 +9696,7 @@ async function resolveRollbackGateResponse(root2, featureId, expectedRevision, i
     } else {
       throw new DevFlowError("INTERACTION_ACTION_INVALID", response.action);
     }
-    state.lastUpdatedBy = { host, pluginVersion: "5.0.1" };
+    state.lastUpdatedBy = { host, pluginVersion: "5.0.2" };
   }, () => ({ gate: "rollback-confirmation", interactionId, response }));
 }
 async function resolveRollbackGateElicitation(root2, featureId, expectedRevision, interactionId, action, comment, host) {
@@ -11189,11 +11387,15 @@ var manualAcceptanceSchema = { oneOf: [
     scenarios: manualAcceptanceScenarioSchema
   })
 ] };
-var interactionOptionSchema = object(["id", "label"], {
+var interactionOptionSchema = object(["id", "label", "description"], {
   id: string,
   label: string,
   description: string,
   requiresComment: { type: "boolean" }
+});
+var grillRecommendationSchema = object(["optionId", "reason"], {
+  optionId: string,
+  reason: string
 });
 var boundaryAuditItemSchema = object(["id", "kind", "disposition", "summary"], {
   id: string,
@@ -11336,8 +11538,9 @@ var toolSchemas = {
       questionId: string,
       question: string,
       options: { type: "array", minItems: 2, maxItems: 3, items: interactionOptionSchema },
+      recommendation: grillRecommendationSchema,
       host: { enum: ["claude", "codex"] }
-    }, ["questionId", "question", "options", "host"])
+    }, ["questionId", "question", "options", "recommendation", "host"])
   },
   dev_flow_reclassify: {
     description: "Recompute controls before governed writes; after implementation starts only monotonic strengthening is allowed.",
@@ -11419,7 +11622,8 @@ function compactMutationResult(toolName, value) {
     ...interaction?.status === "pending" ? {
       \u9700\u8981\u7528\u6237\u51B3\u5B9A: true,
       \u5F53\u524D\u95EE\u9898: interaction.question ?? "\u8BF7\u56DE\u7B54\u5F53\u524D\u95EE\u9898\u3002",
-      \u9009\u9879: interaction.options.map((option) => option.label)
+      \u4EA4\u4E92\u63D0\u793A: interaction.presentation ?? interaction.question ?? "\u8BF7\u56DE\u7B54\u5F53\u524D\u95EE\u9898\u3002",
+      \u9009\u9879: interaction.options.map((option) => `${option.answerCode ? `${option.answerCode}. ` : ""}${option.label}${option.recommended ? "\uFF08\u63A8\u8350\uFF09" : ""}`)
     } : {}
   });
   if (isFeatureState(value)) {
@@ -11549,7 +11753,14 @@ function interactionEnvelope(state, interaction, interactionOutcome, response) {
     state,
     interaction,
     interactionOutcome: optionLabel ?? interactionOutcome,
-    ...response ? { response: { action: optionLabel ?? response.action, ...response.comment ? { comment: response.comment } : {} } } : {}
+    ...response ? { response: {
+      action: optionLabel ?? response.action,
+      ...response.kind ? { kind: response.kind } : {},
+      ...response.answerCode ? { answerCode: response.answerCode } : {},
+      ...response.selectedOptionId ? { selectedOptionId: response.selectedOptionId } : {},
+      ...response.rawReply ? { rawReply: response.rawReply } : {},
+      ...response.comment ? { comment: response.comment } : {}
+    } } : {}
   };
 }
 function rollbackGateMessage(preview) {
@@ -11616,13 +11827,15 @@ var McpConnection = class {
   expired = /* @__PURE__ */ new Set();
   nextClientRequestId = 0;
   pending = /* @__PURE__ */ new Map();
-  configure(capabilities) {
+  configure(capabilities, clientInfo) {
     this.supportsFormElicitation = false;
     this.elicitationFused = false;
     this.supportsSampling = false;
     if (!capabilities || typeof capabilities !== "object" || Array.isArray(capabilities)) return;
     const sampling = capabilities.sampling;
     this.supportsSampling = !!sampling && typeof sampling === "object" && !Array.isArray(sampling);
+    const clientName = clientInfo && typeof clientInfo === "object" && !Array.isArray(clientInfo) ? clientInfo.name : void 0;
+    if (clientName === "claude-code") return;
     const elicitation = capabilities.elicitation;
     if (!elicitation || typeof elicitation !== "object" || Array.isArray(elicitation)) return;
     const modes = elicitation;
@@ -11702,6 +11915,13 @@ var McpConnection = class {
   async elicit(interaction, message) {
     if (!this.supportsFormElicitation || this.elicitationFused) return void 0;
     let raw;
+    const choices = interaction.kind === "grill" ? [
+      ...interaction.options.map((option) => ({
+        const: option.id,
+        title: `${option.answerCode}. ${option.label}${option.recommended ? "\uFF08\u63A8\u8350\uFF09" : ""}`
+      })),
+      { const: "other", title: "\u5176\u4ED6\uFF08\u8BF7\u8865\u5145\u65B9\u6848\u548C\u7406\u7531\uFF09" }
+    ] : interaction.options.map((option) => ({ const: option.id, title: option.label }));
     try {
       raw = await this.request("elicitation/create", {
         mode: "form",
@@ -11713,7 +11933,7 @@ var McpConnection = class {
               type: "string",
               title: "\u64CD\u4F5C",
               description: "\u9009\u62E9\u786E\u8BA4\u3001\u63D0\u51FA\u4FEE\u6539\u610F\u89C1\uFF0C\u6216\u5F53\u524D\u95EE\u9898\u7684\u4E00\u4E2A\u9009\u9879",
-              oneOf: interaction.options.map((option) => ({ const: option.id, title: option.label }))
+              oneOf: choices
             },
             comment: {
               type: "string",
@@ -12041,6 +12261,7 @@ async function call(name, a, connection2) {
       );
     }
     case "dev_flow_answer": {
+      await assertHostHealth(root, a.host, "\u56DE\u7B54\u5F53\u524D\u95EE\u9898");
       const state = await readState(root, a.featureId);
       const decision = pendingDecisionForState(state);
       if (!decision) {
@@ -12217,10 +12438,11 @@ async function call(name, a, connection2) {
         questionId: a.questionId,
         question: a.question,
         options: a.options,
+        recommendation: a.recommendation,
         host: a.host
       });
       emitAttentionNotification({ kind: "decision-required", featureId: a.featureId, decision: "grill" });
-      const selection = await connection2.elicit(result.interaction, result.interaction.question ?? "\u8BF7\u9009\u62E9\u4E00\u4E2A\u65B9\u6848\u3002");
+      const selection = await connection2.elicit(result.interaction, result.interaction.presentation ?? result.interaction.question ?? "\u8BF7\u9009\u62E9\u4E00\u4E2A\u65B9\u6848\u3002");
       if (!selection) return interactionEnvelope(result.state, result.interaction, "pending");
       const resolved = await resolveGrillElicitation(
         root,
@@ -12256,7 +12478,7 @@ async function call(name, a, connection2) {
     case "dev_flow_enable_windows_notifications":
       return enableWindowsNotifications({ nodeExecutable: process.execPath });
     case "dev_flow_doctor":
-      return collectDoctorReport(root, pluginRoot, "5.0.1", tools);
+      return collectDoctorReport(root, pluginRoot, "5.0.2", tools);
     case "dev_flow_recover_corrupt_feature":
       return recoverCorruptFeature(root, {
         featureId: a.featureId,
@@ -12277,10 +12499,10 @@ async function dispatchRequest(message) {
   try {
     if (!Object.hasOwn(message, "id") || message.id === void 0 || message.id === null) return;
     if (message.method === "initialize") {
-      connection.configure(message.params?.capabilities);
+      connection.configure(message.params?.capabilities, message.params?.clientInfo);
       protocolResult(message.id, {
         protocolVersion: message.params?.protocolVersion || "2024-11-05",
-        serverInfo: { name: "dev-flow", version: "5.0.1" },
+        serverInfo: { name: "dev-flow", version: "5.0.2" },
         capabilities: { tools: {} },
         instructions: "\u5148\u5B8C\u6210\u4E8B\u5B9E\u8C03\u67E5\u548C\u8DEF\u7EBF\u5206\u7C7B\u3002\u65E5\u5E38\u8BFB\u53D6 dev_flow_status\uFF1B\u5B83\u4F1A\u663E\u793A\u4E2D\u6587\u9636\u6BB5\u3001\u5F53\u524D\u4E0B\u4E00\u6B65\u548C\u552F\u4E00\u5F85\u51B3\u95EE\u9898\u3002\u6240\u6709\u7528\u6237\u51B3\u5B9A\u7EDF\u4E00\u4F7F\u7528 dev_flow_answer\uFF0C\u7CFB\u7EDF\u4F1A\u81EA\u52A8\u6309\u95EE\u9898\u7C7B\u578B\u5904\u7406\u3002\u6CA1\u6709\u771F\u5B9E\u51B3\u7B56\u7F3A\u53E3\u65F6\u6D41\u7A0B\u4F1A\u81EA\u52A8\u63A8\u8FDB\u3002\u5148\u8C03\u7528 dev_flow_init_project\uFF0C\u518D\u5F00\u59CB feature\u3002"
       });

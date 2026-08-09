@@ -1,6 +1,6 @@
 ---
 name: coverage-review
-description: 核对 Dev Flow 5.0 冻结 Trace 的需求、验收、任务、测试与 RU 覆盖。
+description: 核对 Dev Flow 冻结 Trace 的需求、验收、任务、测试与 RU 覆盖。
 ---
 
 读取 `dev_flow_inspect` 的 artifacts、trace 与 review。确认每个 REQ/AC 均落到 TASK 与 TEST，每个 TASK 属于合法 RU，每个 RU 的 scope、depends_on、targeted forward verification 和恢复命令完整。覆盖缺口在计划登记阶段修复。

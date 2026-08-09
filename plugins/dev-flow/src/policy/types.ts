@@ -119,12 +119,15 @@ export interface PendingDecisionOption {
   description?: string;
   recommended?: boolean;
   requiresComment?: boolean;
+  answerCode?: "A" | "B" | "C";
 }
 
 export interface PendingDecision {
   kind: PendingDecisionKind;
   question: string;
   options: PendingDecisionOption[];
+  recommendation?: { optionId: string; reason: string };
+  presentation?: string;
   basisHash: string;
   presentedAt: string;
   presentedRevision: number;

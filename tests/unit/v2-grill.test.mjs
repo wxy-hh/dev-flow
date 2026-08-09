@@ -16,24 +16,25 @@ test("requirements templates contain no grill control state", () => {
   assert.doesNotMatch(contents, /grill_status|grill_question_id|grill_response_hint|in_progress/);
 });
 
-test("decision replies require a complete option label", () => {
+test("grill decision rejects an unavailable code and accepts a complete option label", () => {
   const state = {
     interactions: {
       "i-1": {
         id: "i-1",
         kind: "grill",
         status: "pending",
-         fallbackToken: "internal-only",
+        question: "如何处理需求边界？",
         options: [
-          { id: "first", label: "保守处理" },
-          { id: "other", label: "扩大范围" },
+          { id: "first", label: "保守处理", description: "保持当前边界。" },
+          { id: "expand", label: "扩大范围", description: "纳入额外需求。" },
         ],
+        recommendation: { optionId: "first", reason: "先保持改动边界稳定。" },
       },
     },
   };
   assert.throws(() => interactions.resolveTextInteraction(state, "i-1", "C", "codex", { promptEventId: "prompt" }), /DECISION_REPLY_NOT_RECOGNIZED/);
   const response = interactions.resolveTextInteraction(state, "i-1", "扩大范围", "codex", { promptEventId: "prompt" });
-  assert.equal(response.action, "other");
+  assert.equal(response.action, "expand");
 });
 
 test("routed pending requirements can request grill directly and resolve interaction plus ledger together", async () => {
@@ -70,7 +71,11 @@ test("routed pending requirements can request grill directly and resolve interac
     const requested = await grill.requestGrillDecision(root, state.featureId, state.revision, {
       questionId: "G-001",
       question: "选择需求边界",
-      options: [{ id: "answer", label: "保守处理" }, { id: "other", label: "扩大范围" }],
+      options: [
+        { id: "answer", label: "保守处理", description: "保持当前边界。" },
+        { id: "expand", label: "扩大范围", description: "纳入额外需求。" },
+      ],
+      recommendation: { optionId: "answer", reason: "改动范围更可控。" },
       host: "codex",
     });
     assert.equal(requested.state.decisionLedger.find((item) => item.id === "G-001").status, "open");
@@ -92,7 +97,16 @@ test("intake grill request reopens a previously resolved decision", async () => 
       governedRoots: ["src"],
     });
     let state = await stateStore.startFeature(root, { featureId: "grill-intake", host: "codex", objective: "intake" });
-    const input = { questionId: "G-REOPEN", question: "再次确认", options: [{ id: "yes", label: "确认" }, { id: "no", label: "拒绝" }], host: "codex" };
+    const input = {
+      questionId: "G-REOPEN",
+      question: "再次确认",
+      options: [
+        { id: "yes", label: "确认", description: "按当前方案继续。" },
+        { id: "no", label: "拒绝", description: "停止采用当前方案。" },
+      ],
+      recommendation: { optionId: "yes", reason: "当前方案已经完成前置澄清。" },
+      host: "codex",
+    };
     const first = await grill.requestGrillDecision(root, state.featureId, state.revision, input);
     const resolved = await grill.resolveGrillElicitation(root, state.featureId, first.state.revision, first.interactionId, "yes", undefined, "codex");
     const second = await grill.requestGrillDecision(root, state.featureId, resolved.state.revision, input);
@@ -113,7 +127,16 @@ test("intake grill token requires a matching host user-prompt event", async () =
       governedRoots: ["src"],
     });
     const state = await stateStore.startFeature(root, { featureId: "grill-intake-provenance", host: "codex", objective: "intake" });
-    const input = { questionId: "G-PROVENANCE", question: "确认", options: [{ id: "yes", label: "确认" }, { id: "no", label: "拒绝" }], host: "codex" };
+    const input = {
+      questionId: "G-PROVENANCE",
+      question: "确认",
+      options: [
+        { id: "yes", label: "确认", description: "按当前方案继续。" },
+        { id: "no", label: "拒绝", description: "停止采用当前方案。" },
+      ],
+      recommendation: { optionId: "yes", reason: "当前方案已经完成前置澄清。" },
+      host: "codex",
+    };
     const requested = await grill.requestGrillDecision(root, state.featureId, state.revision, input);
     const at = new Date(Date.now() + 1000).toISOString();
     await stateStore.recordHostEvent(root, { eventId: "prompt-wrong-host", type: "user-prompt", host: "claude", text: "确认", at });

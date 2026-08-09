@@ -7,7 +7,7 @@ import { DevFlowError, failureFrom } from "../core/errors.js";
 import { finalize, recordStep } from "../core/feature-check.js";
 import { presentApproval, resolveApprovalAnswer, resolveApprovalElicitation } from "../core/approval-interactions.js";
 import {
-  initProject, updateProjectConfig, startFeature, lockClassification, confirmRouteClassification, resolveRouteClassificationElicitation, resolveWorkspaceOwnershipText, resolveTaskSwitchAnswer, recordDecision, abandonFeature, reclassifyFeature, recoverCorruptFeature, repairFeature, readState, readFeatureEvents, mutate, pauseFeature, resumeFeature, reconcileWorkspace,
+  initProject, updateProjectConfig, startFeature, lockClassification, confirmRouteClassification, resolveRouteClassificationElicitation, resolveWorkspaceOwnershipText, resolveTaskSwitchAnswer, recordDecision, abandonFeature, reclassifyFeature, recoverCorruptFeature, repairFeature, readState, readFeatureEvents, mutate, pauseFeature, resumeFeature, reconcileWorkspace, assertHostHealth,
 } from "../core/state-store.js";
 import type { FeatureState } from "../core/state-store.js";
 import { buildFeatureMutationSummary } from "../core/execution-brief.js";
@@ -222,11 +222,15 @@ const manualAcceptanceSchema = { oneOf: [
   }),
 ] };
 
-const interactionOptionSchema = object(["id", "label"], {
+const interactionOptionSchema = object(["id", "label", "description"], {
   id: string,
   label: string,
   description: string,
   requiresComment: { type: "boolean" },
+});
+const grillRecommendationSchema = object(["optionId", "reason"], {
+  optionId: string,
+  reason: string,
 });
 const boundaryAuditItemSchema = object(["id", "kind", "disposition", "summary"], {
   id: string,
@@ -370,8 +374,9 @@ const toolSchemas: Record<string, { description: string; inputSchema: Record<str
       questionId: string,
       question: string,
       options: { type: "array", minItems: 2, maxItems: 3, items: interactionOptionSchema },
+      recommendation: grillRecommendationSchema,
       host: { enum: ["claude", "codex"] },
-    }, ["questionId", "question", "options", "host"]),
+    }, ["questionId", "question", "options", "recommendation", "host"]),
   },
   dev_flow_reclassify: {
     description: "Recompute controls before governed writes; after implementation starts only monotonic strengthening is allowed.",
@@ -465,7 +470,8 @@ function compactMutationResult(toolName: string, value: unknown): unknown {
     ...(interaction?.status === "pending" ? {
       需要用户决定: true,
       当前问题: interaction.question ?? "请回答当前问题。",
-      选项: interaction.options.map((option) => option.label),
+      交互提示: interaction.presentation ?? interaction.question ?? "请回答当前问题。",
+      选项: interaction.options.map((option) => `${option.answerCode ? `${option.answerCode}. ` : ""}${option.label}${option.recommended ? "（推荐）" : ""}`),
     } : {}),
   });
   if (isFeatureState(value)) {
@@ -637,7 +643,14 @@ function interactionEnvelope(
     state,
     interaction,
     interactionOutcome: optionLabel ?? interactionOutcome,
-    ...(response ? { response: { action: optionLabel ?? response.action, ...(response.comment ? { comment: response.comment } : {}) } } : {}),
+    ...(response ? { response: {
+      action: optionLabel ?? response.action,
+      ...(response.kind ? { kind: response.kind } : {}),
+      ...(response.answerCode ? { answerCode: response.answerCode } : {}),
+      ...(response.selectedOptionId ? { selectedOptionId: response.selectedOptionId } : {}),
+      ...(response.rawReply ? { rawReply: response.rawReply } : {}),
+      ...(response.comment ? { comment: response.comment } : {}),
+    } } : {}),
   };
 }
 
@@ -726,13 +739,20 @@ class McpConnection {
     timeout?: ReturnType<typeof setTimeout>;
   }>();
 
-  configure(capabilities: unknown): void {
+  configure(capabilities: unknown, clientInfo?: unknown): void {
     this.supportsFormElicitation = false;
     this.elicitationFused = false;
     this.supportsSampling = false;
     if (!capabilities || typeof capabilities !== "object" || Array.isArray(capabilities)) return;
     const sampling = (capabilities as { sampling?: unknown }).sampling;
     this.supportsSampling = !!sampling && typeof sampling === "object" && !Array.isArray(sampling);
+    const clientName = clientInfo && typeof clientInfo === "object" && !Array.isArray(clientInfo)
+      ? (clientInfo as { name?: unknown }).name
+      : undefined;
+    // Claude Code currently renders oneOf form fields as a nested control that
+    // requires expand + space + extra focus navigation. Prefer the trusted
+    // text interaction immediately instead of waiting for the form timeout.
+    if (clientName === "claude-code") return;
     const elicitation = (capabilities as { elicitation?: unknown }).elicitation;
     if (!elicitation || typeof elicitation !== "object" || Array.isArray(elicitation)) return;
     const modes = elicitation as Record<string, unknown>;
@@ -814,6 +834,15 @@ class McpConnection {
   async elicit(interaction: PublicInteraction, message: string): Promise<ElicitationSelection | undefined> {
     if (!this.supportsFormElicitation || this.elicitationFused) return undefined;
     let raw: unknown;
+    const choices = interaction.kind === "grill"
+      ? [
+        ...interaction.options.map((option) => ({
+          const: option.id,
+          title: `${option.answerCode}. ${option.label}${option.recommended ? "（推荐）" : ""}`,
+        })),
+        { const: "other", title: "其他（请补充方案和理由）" },
+      ]
+      : interaction.options.map((option) => ({ const: option.id, title: option.label }));
     try {
       raw = await this.request("elicitation/create", {
         mode: "form",
@@ -825,7 +854,7 @@ class McpConnection {
               type: "string",
               title: "操作",
               description: "选择确认、提出修改意见，或当前问题的一个选项",
-              oneOf: interaction.options.map((option) => ({ const: option.id, title: option.label })),
+              oneOf: choices,
             },
             comment: {
               type: "string",
@@ -1106,6 +1135,7 @@ async function call(name: string, a: any, connection: McpConnection) {
        );
      }
      case "dev_flow_answer": {
+       await assertHostHealth(root, a.host, "回答当前问题");
        const state = await readState(root, a.featureId);
        const decision = pendingDecisionForState(state);
         if (!decision) {
@@ -1282,10 +1312,11 @@ async function call(name: string, a: any, connection: McpConnection) {
         questionId: a.questionId,
         question: a.question,
         options: a.options,
+        recommendation: a.recommendation,
          host: a.host,
       });
       emitAttentionNotification({ kind: "decision-required", featureId: a.featureId, decision: "grill" });
-      const selection = await connection.elicit(result.interaction, result.interaction.question ?? "请选择一个方案。");
+      const selection = await connection.elicit(result.interaction, result.interaction.presentation ?? result.interaction.question ?? "请选择一个方案。");
       if (!selection) return interactionEnvelope(result.state, result.interaction, "pending");
       const resolved = await resolveGrillElicitation(
          root, a.featureId, result.state.revision, result.interactionId,
@@ -1328,7 +1359,7 @@ async function dispatchRequest(message: { id?: unknown; method?: string; params?
     if (!Object.hasOwn(message, "id") || message.id === undefined || message.id === null) return;
 
     if (message.method === "initialize") {
-      connection.configure(message.params?.capabilities);
+      connection.configure(message.params?.capabilities, message.params?.clientInfo);
       protocolResult(message.id, {
         protocolVersion: message.params?.protocolVersion || "2024-11-05",
         serverInfo: { name: "dev-flow", version: __DEV_FLOW_VERSION__ },

@@ -21,8 +21,9 @@ test("grillme in intake records and resolves a decision without a requirements d
   const started = await state.startFeature(root, { featureId: "f", objective: "澄清一个需求", host: "codex" });
   const presented = await grill.requestGrillDecision(root, "f", started.revision, {
     questionId: "DEC-001", question: "是否保留现有兼容行为？", options: [
-      { id: "keep", label: "保留" }, { id: "remove", label: "移除" },
-    ], host: "codex",
+      { id: "keep", label: "保留", description: "继续支持当前行为。" },
+      { id: "remove", label: "移除", description: "删除当前兼容行为。" },
+    ], recommendation: { optionId: "keep", reason: "避免在当前任务中引入额外破坏。" }, host: "codex",
   });
   assert.equal(presented.state.mode, "intake");
   const resolved = await grill.resolveGrillElicitation(root, "f", presented.state.revision, presented.interactionId, "keep", undefined, "codex");

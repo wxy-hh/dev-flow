@@ -1,4 +1,4 @@
-# Dev Flow 5.0 架构
+# Dev Flow 架构
 
 ## 分层
 
@@ -44,6 +44,12 @@ RU checkpoint 只运行 targeted forward verification。Final verification 用�
 
 ## MCP 交互
 
-原生 form elicitation 使用 `oneOf + const + title`。所有路线、ownership、grill、approval、risk、quality exception、rollback 和 task-switch 问题都落在同一个 interaction 账本；等待上限 60 秒，超时发送 cancellation 并熔断当前会话到文本；decline/cancel/协议错误保留 pending。普通决策的表单与文本回答经过同一语义匹配器，只接受唯一可判定的标签、简称或登记同义表达；approval 保留严格整句策略。回答由 append-only presentation cursor、同宿主和一次性消费共同证明，不能重建事件或手改状态。错误统一包含稳定 code、中文原因、影响、恢复动作和白名单安全细节。
+`grill-interaction.ts` 是 grill 的深模块接缝。它验证 2–3 个带说明的正式选项与唯一推荐理由，按不可变选项顺序派生 A/B/C，并生成文本、表单标题和状态投影共同使用的 presentation。Core 不把“第一项”隐式当推荐，也不把 `other` 保存成第四个正式选项。
+
+同一模块确定性归一回答：代码字母、带选择语义的句子和唯一完整标签落为 `{ kind: "option", answerCode, selectedOptionId, rawReply }`；带实质方案的其他回答落为 `{ kind: "other", rawReply, comment }`。歧义、多选、单纯否定或缺少说明保持 pending，不调用模型猜测。approval 不经过该宽松入口，仍执行严格整句策略。
+
+能稳定消费原生 form elicitation 的客户端使用 `oneOf + const + title`。Claude Code 当前会把这种选择渲染成需要展开、空格选择和额外焦点导航的多步表单，因此 Core 识别其 `clientInfo.name` 后立即使用同一份可信文本 presentation，不等待 60 秒超时。所有路线、ownership、grill、approval、risk、quality exception、rollback 和 task-switch 问题仍落在同一个 interaction 账本；其他客户端表单超时会发送 cancellation 并熔断当前会话到文本，decline/cancel/协议错误保留 pending。回答由 append-only presentation cursor、同宿主和一次性消费共同证明，不能重建事件或手改状态。错误统一包含稳定 code、中文原因、影响、恢复动作和白名单安全细节。
+
+Claude `AskUserQuestion` 的成功 `PostToolUse` 会把宿主实际展示问题对应的选择记为可信 user-prompt；Core 不接受未展示问题的伪造答案。因此模型可在一次原生选择后直接调用 `dev_flow_answer`，不再让用户切换到文本重复确认。
 
 开始任务、implementation 推进、checkpoint 和 finalize 前，Core 校验同宿主 15 分钟内的 hook 健康信号。doctor 按 session、prompt、tool 能力分别诊断 missing、stale、healthy，避免 SessionStart 掩盖 prompt/tool 局部断线。Host adapter 只归一化信号；失联后的首个恢复信号由 Core 触发活动工作区对账，未知路径自动进入正式 ownership interaction。

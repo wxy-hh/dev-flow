@@ -1,6 +1,6 @@
 ---
 name: verify
-description: 按 Dev Flow 5.0 guarantee 集选择最小去重验证命令并记录证据。
+description: 按 Dev Flow guarantee 集选择最小去重验证命令并记录证据。
 ---
 
 只运行 project config 登记的命令。读取 `classification.controls.verification` 的 targeted/behavior/integration/full guarantee 集，由 Core 选择覆盖全部保证的最小命令集合并去重；不得把单个命令的名字当作保证，也不得擅自降级。

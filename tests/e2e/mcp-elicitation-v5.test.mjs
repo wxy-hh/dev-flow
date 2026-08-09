@@ -49,11 +49,39 @@ function interactiveClient(cwd, timeoutMs = "1000") {
   return { send, next, close };
 }
 
-async function initialize(client, capabilities = { elicitation: { form: {} } }) {
-  client.send({ jsonrpc: "2.0", id: "init", method: "initialize", params: { protocolVersion: "2025-11-25", capabilities, clientInfo: { name: "test", version: "1" } } });
+async function initialize(client, capabilities = { elicitation: { form: {} } }, clientInfo = { name: "test", version: "1" }) {
+  client.send({ jsonrpc: "2.0", id: "init", method: "initialize", params: { protocolVersion: "2025-11-25", capabilities, clientInfo } });
   const initialized = await client.next();
   assert.equal(initialized.id, "init");
 }
+
+test("Claude Code skips its multi-step form renderer and returns text fallback immediately", async () => {
+  const fixture = await createTinyApp();
+  let client;
+  try {
+    await mcpCall(server, fixture.root, "dev_flow_init_project", { config: strictProjectConfig });
+    const started = await mcpCall(server, fixture.root, "dev_flow_start", { featureId: "elicitation", objective: "测试 Claude 文本降级", host: "claude" });
+    client = interactiveClient(fixture.root);
+    await initialize(client, { elicitation: { form: {} } }, { name: "claude-code", version: "2.1.226" });
+    client.send({ jsonrpc: "2.0", id: "tool-claude", method: "tools/call", params: { name: "dev_flow_request_grill_decision", arguments: { ...grillArgs(started.control.expectedRevision), host: "claude" } } });
+    let response;
+    for (;;) {
+      const message = await client.next();
+      assert.notEqual(message.method, "elicitation/create");
+      if (message.id === "tool-claude") {
+        response = message;
+        break;
+      }
+    }
+    assert.equal(response.result.structuredContent.interactionOutcome, "pending");
+    assert.match(response.result.structuredContent.interaction.presentation, /A\. 保留现有行为（推荐）/);
+    assert.match(response.result.structuredContent.interaction.presentation, /保持当前行为，避免无关改动。/);
+    assert.match(response.result.structuredContent.interaction.presentation, /请回复 A 或 B/);
+  } finally {
+    if (client) await client.close();
+    await fixture.dispose();
+  }
+});
 
 async function nextMatching(client, predicate) {
   for (;;) {
@@ -67,7 +95,11 @@ const grillArgs = (revision, suffix = "1") => ({
   expectedRevision: revision,
   questionId: `DEC-00${suffix}`,
   question: "是否保留现有行为？",
-  options: [{ id: "keep", label: "保留" }, { id: "remove", label: "移除" }],
+  options: [
+    { id: "keep", label: "保留现有行为", description: "不改变当前行为。" },
+    { id: "remove", label: "移除现有行为", description: "删除当前行为。" },
+  ],
+  recommendation: { optionId: "keep", reason: "保持当前行为，避免无关改动。" },
   host: "codex",
 });
 
@@ -79,6 +111,65 @@ const qualityExceptionArgs = (revision) => ({
   fingerprint: "b".repeat(64),
   riskSummary: "验证证据需要用户明确接受。",
   host: "codex",
+});
+
+test("text grill journey accepts semantic A and substantive other replies without reformulation", async () => {
+  const fixture = await createTinyApp();
+  try {
+    await mcpCall(server, fixture.root, "dev_flow_init_project", { config: strictProjectConfig });
+    const started = await mcpCall(server, fixture.root, "dev_flow_start", {
+      featureId: "elicitation",
+      objective: "测试 grill 文本语义回答",
+      host: "codex",
+    });
+    const first = await mcpCall(server, fixture.root, "dev_flow_request_grill_decision", grillArgs(started.control.expectedRevision));
+    assert.match(first.interaction.presentation, /A\. 保留现有行为（推荐）/);
+    const status = await mcpCall(server, fixture.root, "dev_flow_status", { featureId: "elicitation" });
+    assert.equal(status.pendingDecision.presentation, first.interaction.presentation);
+    assert.deepEqual(status.pendingDecision.options.map((option) => option.answerCode), ["A", "B"]);
+    await store.recordHostEvent(fixture.root, {
+      eventId: "semantic-a",
+      type: "user-prompt",
+      host: "codex",
+      text: "我选择 A",
+    });
+    const selected = await mcpCall(server, fixture.root, "dev_flow_answer", {
+      featureId: "elicitation",
+      expectedRevision: first.control.expectedRevision,
+      userReply: "我选择 A",
+      host: "codex",
+    });
+    assert.deepEqual(selected.response, {
+      action: "保留现有行为",
+      kind: "option",
+      answerCode: "A",
+      selectedOptionId: "keep",
+      rawReply: "我选择 A",
+    });
+
+    const second = await mcpCall(server, fixture.root, "dev_flow_request_grill_decision", grillArgs(selected.control.expectedRevision, "2"));
+    const otherReply = "其他：先做一个最小实验，再依据结果决定是否保留。";
+    await store.recordHostEvent(fixture.root, {
+      eventId: "semantic-other",
+      type: "user-prompt",
+      host: "codex",
+      text: otherReply,
+    });
+    const custom = await mcpCall(server, fixture.root, "dev_flow_answer", {
+      featureId: "elicitation",
+      expectedRevision: second.control.expectedRevision,
+      userReply: otherReply,
+      host: "codex",
+    });
+    assert.deepEqual(custom.response, {
+      action: "other",
+      kind: "other",
+      rawReply: otherReply,
+      comment: "先做一个最小实验，再依据结果决定是否保留。",
+    });
+  } finally {
+    await fixture.dispose();
+  }
 });
 
 test("decline and cancel preserve the pending decision and fall back to explicit text", async (t) => {
@@ -136,9 +227,12 @@ test("form elicitation uses oneOf const/title and accept atomically resolves the
     client.send({ jsonrpc: "2.0", id: "tool", method: "tools/call", params: { name: "dev_flow_request_grill_decision", arguments: grillArgs(started.control.expectedRevision) } });
     const request = await nextMatching(client, (message) => message.method === "elicitation/create");
     assert.equal(request.method, "elicitation/create");
+    assert.match(request.params.message, /A\. 保留现有行为（推荐）/);
+    assert.match(request.params.message, /保持当前行为，避免无关改动。/);
     assert.deepEqual(request.params.requestedSchema.properties.action.oneOf, [
-      { const: "keep", title: "保留" },
-      { const: "remove", title: "移除" },
+      { const: "keep", title: "A. 保留现有行为（推荐）" },
+      { const: "remove", title: "B. 移除现有行为" },
+      { const: "other", title: "其他（请补充方案和理由）" },
     ]);
     assert.equal("enumNames" in request.params.requestedSchema.properties.action, false);
     client.send({ jsonrpc: "2.0", id: request.id, result: { action: "accept", content: { action: "keep" } } });
@@ -151,6 +245,37 @@ test("form elicitation uses oneOf const/title and accept atomically resolves the
     assert.equal(state.decisionLedger[0].status, "resolved");
     await client.close();
   } finally { await fixture.dispose(); }
+});
+
+test("form elicitation exposes other and persists its required explanation", async () => {
+  const fixture = await createTinyApp();
+  try {
+    await mcpCall(server, fixture.root, "dev_flow_init_project", { config: strictProjectConfig });
+    const started = await mcpCall(server, fixture.root, "dev_flow_start", { featureId: "elicitation", objective: "测试表单其他方案", host: "codex" });
+    const client = interactiveClient(fixture.root);
+    await initialize(client);
+    client.send({ jsonrpc: "2.0", id: "tool-other", method: "tools/call", params: { name: "dev_flow_request_grill_decision", arguments: grillArgs(started.control.expectedRevision) } });
+    const request = await nextMatching(client, (message) => message.method === "elicitation/create");
+    client.send({
+      jsonrpc: "2.0",
+      id: request.id,
+      result: { action: "accept", content: { action: "other", comment: "先验证行为差异，再决定保留或移除。" } },
+    });
+    const response = await nextMatching(client, (message) => message.id === "tool-other");
+    assert.deepEqual(response.result.structuredContent.response, {
+      action: "other",
+      kind: "other",
+      rawReply: "其他：先验证行为差异，再决定保留或移除。",
+      comment: "先验证行为差异，再决定保留或移除。",
+    });
+    const state = await store.readState(fixture.root, "elicitation");
+    const resolved = Object.values(state.interactions).find((interaction) => interaction.kind === "grill");
+    assert.equal(resolved.response.kind, "other");
+    assert.equal(resolved.response.comment, "先验证行为差异，再决定保留或移除。");
+    await client.close();
+  } finally {
+    await fixture.dispose();
+  }
 });
 
 test("route confirmation uses the same native form and resolves in one MCP call", async () => {
@@ -271,8 +396,8 @@ test("elicitation timeout cancels, ignores a late response, and fuses the sessio
 
     // Resolve through trusted text, then prove the same MCP session no longer
     // emits a second elicitation/create request.
-    await store.recordHostEvent(fixture.root, { eventId: "text-answer", type: "user-prompt", host: "codex", text: "保留" });
-    client.send({ jsonrpc: "2.0", id: "answer", method: "tools/call", params: { name: "dev_flow_answer", arguments: { featureId: "elicitation", expectedRevision: state.revision, userReply: "保留", host: "codex" } } });
+    await store.recordHostEvent(fixture.root, { eventId: "text-answer", type: "user-prompt", host: "codex", text: "A" });
+    client.send({ jsonrpc: "2.0", id: "answer", method: "tools/call", params: { name: "dev_flow_answer", arguments: { featureId: "elicitation", expectedRevision: state.revision, userReply: "A", host: "codex" } } });
     assert.equal((await nextMatching(client, (message) => message.id === "answer")).id, "answer");
     state = await store.readState(fixture.root, "elicitation");
     client.send({ jsonrpc: "2.0", id: "tool-fused", method: "tools/call", params: { name: "dev_flow_request_grill_decision", arguments: grillArgs(state.revision, "2") } });

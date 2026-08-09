@@ -1,6 +1,12 @@
 import { randomUUID } from "node:crypto";
 import { matchNaturalDecision } from "./decision-language.js";
 import { DevFlowError } from "./errors.js";
+import {
+  buildGrillPresentation,
+  matchGrillReply,
+  type GrillAnswerCode,
+  type GrillRecommendation,
+} from "./grill-interaction.js";
 import type { FeatureState } from "./state-store.js";
 
 export type InteractionKind = "approval" | "grill" | "risk-acceptance" | "rollback-confirmation" | "quality-exception" | "workspace-ownership" | "route-confirmation" | "task-switch";
@@ -20,6 +26,10 @@ export interface InteractionOption {
 
 export interface InteractionResponse {
   action: string;
+  kind?: "option" | "other";
+  answerCode?: GrillAnswerCode;
+  selectedOptionId?: string;
+  rawReply?: string;
   comment?: string;
   source: InteractionSource;
   promptEventId?: string;
@@ -42,6 +52,7 @@ export interface UserInteraction {
   };
   question?: string;
   options: InteractionOption[];
+  recommendation?: GrillRecommendation;
   presentedAt: string;
   /** State revision captured when the question was presented. */
   presentedRevision?: number;
@@ -61,7 +72,9 @@ export interface PublicInteraction {
   kind: InteractionKind;
   status: "pending" | "resolved";
   question?: string;
-  options: InteractionOption[];
+  options: Array<InteractionOption & { answerCode?: GrillAnswerCode; recommended?: boolean }>;
+  recommendation?: GrillRecommendation;
+  presentation?: string;
 }
 
 export interface InteractionInput {
@@ -71,6 +84,7 @@ export interface InteractionInput {
   binding?: UserInteraction["binding"];
   question?: string;
   options: InteractionOption[];
+  recommendation?: GrillRecommendation;
   presentationEventId?: string;
   workspacePaths?: string[];
   workspaceBatchPaths?: string[];
@@ -97,6 +111,10 @@ function validateOptions(options: InteractionOption[]): void {
 
 export function createInteraction(state: FeatureState, input: InteractionInput): UserInteraction {
   validateOptions(input.options);
+  if (input.kind === "grill") {
+    if (!input.recommendation) throw new DevFlowError("GRILL_RECOMMENDATION_REQUIRED", "grill requires one explicit recommendation");
+    buildGrillPresentation({ question: input.question ?? "", options: input.options, recommendation: input.recommendation });
+  }
   const pending = Object.values(state.interactions ?? {}).filter((value) => (value as UserInteraction).status === "pending");
   if (pending.length) throw new DevFlowError("MULTIPLE_PENDING_DECISIONS", "同一 feature 只能存在一个待决问题。", { userMessage: "当前已有一个问题等待回答。", cause: "系统拒绝并行创建第二个 pending decision。", impact: "新问题没有被创建，原问题仍等待回答。", recoveryKind: "refresh", recoveryInstruction: "先回答当前问题，下一回合再处理新问题。", retryOriginal: false });
   const current = findInteractionForTarget(state, input.target);
@@ -117,6 +135,7 @@ export function createInteraction(state: FeatureState, input: InteractionInput):
     } : {}),
     question: input.question,
     options: input.options.map((option) => ({ ...option })),
+    ...(input.recommendation ? { recommendation: { ...input.recommendation } } : {}),
     presentedAt: new Date().toISOString(),
     presentedRevision: state.revision,
     presentationEventId: input.presentationEventId ?? randomUUID(),
@@ -192,6 +211,38 @@ export function resolveNativeInteraction(
 ): InteractionResponse {
   const interaction = getInteraction(state, interactionId);
   if (interaction.status !== "pending") throw new DevFlowError("INTERACTION_ALREADY_RESOLVED", interactionId);
+  if (interaction.kind === "grill") {
+    if (!interaction.recommendation) throw new DevFlowError("GRILL_RECOMMENDATION_REQUIRED", interactionId);
+    const presentation = buildGrillPresentation({ question: interaction.question ?? "", options: interaction.options, recommendation: interaction.recommendation });
+    const normalizedComment = comment?.trim();
+    const selected = presentation.options.find((candidate) => candidate.id === action);
+    if (!selected && action !== "other") throw new DevFlowError("INTERACTION_ACTION_INVALID", action, { interactionId: interaction.id });
+    if (action === "other" && !normalizedComment) throw new DevFlowError("INTERACTION_COMMENT_REQUIRED", "other", { recoveryHint: "请补充你的方案和理由" });
+    if (selected?.requiresComment && !normalizedComment) throw new DevFlowError("INTERACTION_COMMENT_REQUIRED", selected.id);
+    const response: InteractionResponse = action === "other" ? {
+      action: "other",
+      kind: "other",
+      comment: normalizedComment!,
+      rawReply: `其他：${normalizedComment}`,
+      source: "elicitation",
+      host,
+      respondedAt: new Date().toISOString(),
+    } : {
+      action: selected!.id,
+      kind: "option",
+      answerCode: selected!.answerCode,
+      selectedOptionId: selected!.id,
+      rawReply: selected!.answerCode,
+      ...(normalizedComment ? { comment: normalizedComment } : {}),
+      source: "elicitation",
+      host,
+      respondedAt: new Date().toISOString(),
+    };
+    interaction.status = "resolved";
+    interaction.response = response;
+    if (state.pendingDecision?.target === interaction.target) delete state.pendingDecision;
+    return response;
+  }
   const option = optionFor(interaction, action);
   const normalizedComment = validateComment(option, comment);
   const response: InteractionResponse = {
@@ -217,27 +268,46 @@ export function resolveTextInteraction(
 ): InteractionResponse {
   const interaction = getInteraction(state, interactionId);
   if (interaction.status !== "pending") throw new DevFlowError("INTERACTION_ALREADY_RESOLVED", interactionId);
+  const grillMatch = interaction.kind === "grill"
+    ? matchGrillReply({ options: interaction.options, userReply })
+    : undefined;
   let match: { option: InteractionOption; comment?: string } | undefined;
-  if (phraseAction) {
+  if (grillMatch?.kind === "option") {
+    match = { option: optionFor(interaction, grillMatch.selectedOptionId), ...(grillMatch.comment ? { comment: grillMatch.comment } : {}) };
+  } else if (phraseAction) {
     // Approval phrases are normalized by the Core approval policy before this path.
     match = { option: optionFor(interaction, phraseAction) };
   } else if ((match = matchNaturalOption(interaction, userReply))) {
     // Other decisions require an exact option label.
   }
-  if (!match) {
+  if (!match && grillMatch?.kind !== "other") {
+    const grillRecovery = interaction.kind === "grill"
+      ? "请回复 A、B 或 C；如果都不合适，回复“其他：<你的方案和理由>”。"
+      : "请换一种能唯一指向某个选项的简短说法，或直接回复完整选项。";
     throw new DevFlowError("DECISION_REPLY_NOT_RECOGNIZED", "回答没有精确匹配当前问题的选项。", {
       userMessage: "没有识别出当前问题的有效回答。",
       cause: "回答无法唯一对应当前选项，也不是受支持的批准短语。",
       impact: "当前问题仍保持待回答，没有任何状态被改变。",
       recoveryKind: "retry",
-      recoveryInstruction: "请换一种能唯一指向某个选项的简短说法，或直接回复完整选项。",
+      recoveryInstruction: grillRecovery,
       retryOriginal: true,
     });
   }
-  const normalizedComment = validateComment(match.option, match.comment);
+  const normalizedComment = grillMatch?.kind === "other"
+    ? grillMatch.comment
+    : validateComment(match!.option, match!.comment);
   const ids = provenance;
   const response: InteractionResponse = {
-    action: match.option.id,
+    action: grillMatch?.kind === "other" ? "other" : match!.option.id,
+    ...(grillMatch ? grillMatch.kind === "other" ? {
+      kind: "other" as const,
+      rawReply: grillMatch.rawReply,
+    } : {
+      kind: "option" as const,
+      answerCode: grillMatch.answerCode,
+      selectedOptionId: grillMatch.selectedOptionId,
+      rawReply: grillMatch.rawReply,
+    } : {}),
     ...(normalizedComment ? { comment: normalizedComment } : {}),
     source: "text",
     ...(ids.promptEventId ? { promptEventId: ids.promptEventId } : {}),
@@ -253,6 +323,22 @@ export function resolveTextInteraction(
 }
 
 export function toPublicInteraction(interaction: UserInteraction): PublicInteraction {
+  if (interaction.kind === "grill") {
+    if (!interaction.recommendation) throw new DevFlowError("GRILL_RECOMMENDATION_REQUIRED", interaction.id);
+    const presentation = buildGrillPresentation({
+      question: interaction.question ?? "",
+      options: interaction.options,
+      recommendation: interaction.recommendation,
+    });
+    return {
+      kind: interaction.kind,
+      status: interaction.status,
+      question: presentation.question,
+      options: presentation.options.map((option) => ({ ...option })),
+      recommendation: { ...presentation.recommendation },
+      presentation: presentation.text,
+    };
+  }
   return {
     kind: interaction.kind,
     status: interaction.status,
@@ -270,6 +356,14 @@ export function decisionHint(interaction: UserInteraction): string {
     if (confirm) parts.push("✅ 如需确认开始执行，直接回复以下任一短语：确认 / 确认需求 / 需求已确认 / 同意需求 / 确认执行 / 批准实现 / 同意实现 / 开始实现 / 开始执行 / 确认开始执行 / 同意开始执行 / 批准执行 / 同意执行 / approved / LGTM");
     if (changes) parts.push(`✏️ 如需调整，请回复：修改计划: <补充你的修改意见>`);
     return parts.join("；");
+  }
+  if (interaction.kind === "grill") {
+    if (!interaction.recommendation) throw new DevFlowError("GRILL_RECOMMENDATION_REQUIRED", interaction.id ?? interaction.target ?? "grill");
+    return buildGrillPresentation({
+      question: interaction.question ?? "",
+      options: interaction.options,
+      recommendation: interaction.recommendation,
+    }).text;
   }
   const lines = [interaction.question ?? "请选择方案："];
   interaction.options.forEach((option, index) => {
