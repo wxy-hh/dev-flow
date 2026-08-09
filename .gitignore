@@ -21,3 +21,5 @@ coverage/
 *.log
 *.tmp
 .codefree*
+.agent*
+.claude*
