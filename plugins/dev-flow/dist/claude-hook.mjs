@@ -1,4 +1,4 @@
-/* dev-flow 5.0.3; built from source, deterministic build */
+/* dev-flow 5.0.4; built from source, deterministic build */
 
 // plugins/dev-flow/src/core/state-store.ts
 import { randomUUID as randomUUID5, createHash as createHash7 } from "node:crypto";
@@ -2322,7 +2322,7 @@ async function recordTrustedWriteOwnership(root, paths, host, eventId2) {
       draft.workspace.ownershipSource[file] = "trusted-hook";
     }
     draft.workspace.unownedPaths = (draft.workspace.unownedPaths ?? []).filter((file) => !governed.includes(file));
-    draft.lastUpdatedBy = { host, pluginVersion: "5.0.3" };
+    draft.lastUpdatedBy = { host, pluginVersion: "5.0.4" };
   }, { eventId: eventId2, host, paths: governed, after });
 }
 async function recordHostAuthorizationEvent(root, type, record) {
@@ -2468,7 +2468,7 @@ async function reconcileWorkspace(root, id, expectedRevision, host) {
       markAffectedEvidenceStale(draft, changedPaths, reopenedLifecycle, legalCheckpointPaths);
     }
     presentationEventId = queueNextOwnershipDecision(draft);
-    draft.lastUpdatedBy = { host, pluginVersion: "5.0.3" };
+    draft.lastUpdatedBy = { host, pluginVersion: "5.0.4" };
   }, () => ({
     observedHead: workspace.observedHead,
     commitCount: workspace.observedCommits.length,
@@ -4269,7 +4269,8 @@ if (event.hook_event_name === "UserPromptSubmit" || event.hook_event_name === "S
             eventId: `${sourceEventId}:answer:${index}`,
             type: "user-prompt",
             host: "claude",
-            text: answer.answer
+            text: answer.answer,
+            ...answer.question ? { question: answer.question } : {}
           });
         } catch {
         }

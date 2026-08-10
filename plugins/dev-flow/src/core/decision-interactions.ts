@@ -98,7 +98,7 @@ export function matchDecisionReply(
       cause: "回答无法唯一对应当前选项，也不是受支持的批准短语。",
       impact: "当前问题仍保持待回答，没有任何状态被改变。",
       recoveryKind: "retry",
-      recoveryInstruction: "请换一种能唯一指向某个选项的简短说法，或直接回复完整选项。",
+      recoveryInstruction: `请换一种能唯一指向某个选项的简短说法，或直接回复完整选项。当前问题可选回答：${options.map((option) => option.label).join("、")}。`,
       retryOriginal: true,
     });
   }

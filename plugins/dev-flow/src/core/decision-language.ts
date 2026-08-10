@@ -1,17 +1,17 @@
 import type { InteractionKind, InteractionOption } from "./user-interactions.js";
+import { normalizeReplyText } from "./text-normalization.js";
 
 export interface NaturalOptionMatch {
   option: InteractionOption;
   comment?: string;
 }
 
-function normalize(value: string): string {
-  return value
-    .trim()
-    .replace(/[\s\u00A0\uFEFF]+/g, " ")
-    .replace(/[，。！？、；：,.!?;:()（）【】\[\]“”"']/g, "")
-    .toLowerCase();
-}
+/**
+ * 确认语义词：对存在唯一确认/接受类选项（confirm/accept）的交互，
+ * 这些短答在单一待决问题的上下文中唯一指向确认。多意图问题
+ * （如工作区归属的纳入/排除并列）没有确认类选项，因此不受影响。
+ */
+const confirmationTerms: readonly string[] = ["确认", "同意", "批准", "可以", "好的", "行", "没问题", "lgtm", "approved"];
 
 function unique(matches: NaturalOptionMatch[]): NaturalOptionMatch | undefined {
   const byOption = new Map(matches.map((match) => [match.option.id, match]));
@@ -46,7 +46,7 @@ export function matchNaturalDecision(
   userReply: string,
 ): NaturalOptionMatch | undefined {
   const raw = userReply.trim();
-  const normalized = normalize(raw);
+  const normalized = normalizeReplyText(raw);
   if (!normalized) return undefined;
 
   const editMatch = raw.match(/^修改(?:需求|意见|计划|方案|)?[:：]?\s*([\s\S]*)$/u);
@@ -57,7 +57,7 @@ export function matchNaturalDecision(
 
   const matches: NaturalOptionMatch[] = [];
   for (const option of options) {
-    const label = normalize(option.label);
+    const label = normalizeReplyText(option.label);
     if (!label) continue;
     if (label === normalized) matches.push({ option });
 
@@ -71,11 +71,23 @@ export function matchNaturalDecision(
       matches.push({ option, comment: raw.slice(option.label.length).trim() });
     }
 
-    if (kind !== "approval" && (optionAliases[option.id] ?? []).some((alias) => normalize(alias) === normalized)) {
+    // 纯展示后缀（如「（推荐）」）不改变回答指向，对 confirm 同样容忍；
+    // 非展示后缀（如「确认，但要修改…」）仍被拒绝，防止条件文本伪装确认。
+    if (normalized.startsWith(label) && normalized.length > label.length) {
+      const tail = normalized.slice(label.length);
+      if (tail === "推荐" || tail === "推荐选项" || tail === "recommended") matches.push({ option });
+    }
+
+    if (kind !== "approval" && (optionAliases[option.id] ?? []).some((alias) => normalizeReplyText(alias) === normalized)) {
       matches.push({ option });
     }
-    if (kind !== "approval" && (interactionAliases[kind]?.[option.id] ?? []).some((alias) => normalize(alias) === normalized)) {
+    if (kind !== "approval" && (interactionAliases[kind]?.[option.id] ?? []).some((alias) => normalizeReplyText(alias) === normalized)) {
       matches.push({ option });
+    }
+  }
+  if (confirmationTerms.includes(normalized)) {
+    for (const option of options) {
+      if (option.id === "confirm" || option.id === "accept") matches.push({ option });
     }
   }
   return unique(matches);

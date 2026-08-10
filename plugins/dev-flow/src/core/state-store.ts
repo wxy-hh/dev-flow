@@ -831,7 +831,7 @@ export async function resolveWorkspaceOwnershipText(
       paths: presentedPaths,
     });
   }
-  const matched = matchDecisionReply(decision, userReply);
+  const matched = matchDecisionReply(decision, prompt.text);
   let nextPresentationEventId: string | undefined;
   const state = await mutate(root, id, expectedRevision, "workspace-ownership-answered", async (draft) => {
     const draftInteraction = draft.interactions?.[interactionId] as import("./user-interactions.js").UserInteraction | undefined;
@@ -851,7 +851,7 @@ export async function resolveWorkspaceOwnershipText(
         paths: batchPaths,
       });
     }
-    resolveTextInteraction(draft, interactionId, userReply, host, { promptEventId: prompt.eventId });
+    resolveTextInteraction(draft, interactionId, prompt.text, host, { promptEventId: prompt.eventId });
     const currentPaths = draftInteraction.workspacePaths ?? batchPaths;
     if (matched.option.id === "adopt-all" || matched.option.id === "adopt" || matched.option.id === "include") {
       for (const file of matched.option.id === "adopt" || matched.option.id === "include" ? currentPaths : batchPaths) {
@@ -992,8 +992,6 @@ export async function confirmRouteClassification(
   const current = await readState(root, id);
   const pending = pendingDecisionForState(current);
   if (pending?.kind !== "route-confirmation" || !current.routeConfirmation) throw new DevFlowError("ROUTE_CONFIRMATION_NOT_PENDING", "当前没有待确认路线。");
-  const matched = matchDecisionReply(pending, userReply);
-  if (matched.option.id !== "confirm") throw new DevFlowError("ROUTE_CONFIRMATION_CORRECTION_REQUIRED", "路线需要修正，不能按当前分类锁定。", { comment: matched.comment });
   const currentInteraction = pendingInteractionForDecision(current, pending);
   const events = await readFeatureEvents(root, id);
   const prompt = currentInteraction
@@ -1002,6 +1000,9 @@ export async function confirmRouteClassification(
       host, userReply, presentedAt: pending.presentedAt, presentedRevision: pending.presentedRevision,
       ...(pending.presentationEventId ? { presentationEventId: pending.presentationEventId } : {}),
     });
+  // 选项解析以事件文本为准（选中即信任）：agent 转述只用于事件消歧，不参与内容判定。
+  const matched = matchDecisionReply(pending, prompt.text);
+  if (matched.option.id !== "confirm") throw new DevFlowError("ROUTE_CONFIRMATION_CORRECTION_REQUIRED", "路线需要修正，不能按当前分类锁定。", { comment: matched.comment });
   const selected = selectBaseRoute(current.routeConfirmation.facts);
   const definition = routeDefinitionForFeature(selected.route, selected.classification.controls);
   const traceability = traceEnforcementRequired(selected.route, selected.classification.controls)
@@ -1011,7 +1012,7 @@ export async function confirmRouteClassification(
   return mutate(root, id, expectedRevision, "route-confirmation-accepted", (draft) => {
     if (pendingDecisionForState(draft)?.basisHash !== pending.basisHash || draft.routeConfirmation?.basisHash !== pending.basisHash) throw new DevFlowError("ROUTE_CONFIRMATION_STALE", "路线确认依据已变化。");
     const interaction = Object.values(draft.interactions ?? {}).find((value) => (value as { target?: unknown; status?: unknown }).target === "route-confirmation" && (value as { status?: unknown }).status === "pending") as import("./user-interactions.js").UserInteraction | undefined;
-    if (interaction) resolveTextInteraction(draft, interaction.id, userReply, host, { promptEventId: prompt.eventId });
+    if (interaction) resolveTextInteraction(draft, interaction.id, prompt.text, host, { promptEventId: prompt.eventId });
     draft.mode = "routed";
     draft.route = selected.route;
     draft.classification = selected.classification;
@@ -1043,11 +1044,11 @@ export async function resolveTaskSwitchAnswer(
     throw new DevFlowError("TASK_SWITCH_NOT_PENDING", "当前没有待处理的任务切换问题。", { recoveryHint: "刷新状态后继续当前任务" });
   }
   const prompt = resolveInteractionPromptEvent(await readFeatureEvents(root, id), current, interaction, { host, userReply });
-  const match = matchDecisionReply(decision, userReply);
+  const match = matchDecisionReply(decision, prompt.text);
   const state = await mutate(root, id, expectedRevision, "task-switch-answered", (draft) => {
     const live = draft.interactions?.[interaction.id] as import("./user-interactions.js").UserInteraction | undefined;
     if (!live || live.status !== "pending") throw new DevFlowError("INTERACTION_ALREADY_RESOLVED", interaction.id);
-    resolveTextInteraction(draft, interaction.id, userReply, host, { promptEventId: prompt.eventId });
+    resolveTextInteraction(draft, interaction.id, prompt.text, host, { promptEventId: prompt.eventId });
     if (match.option.id === "pause-old") {
       draft.lifecycle = "paused";
       draft.resumeSummary = "旧任务已暂停；恢复时会自动对账工作区。";

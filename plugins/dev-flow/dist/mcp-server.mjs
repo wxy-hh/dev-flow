@@ -1,4 +1,4 @@
-/* dev-flow 5.0.3; built from source, deterministic build */
+/* dev-flow 5.0.4; built from source, deterministic build */
 
 // plugins/dev-flow/src/mcp/server.ts
 import readline from "node:readline";
@@ -3064,10 +3064,19 @@ async function reconcileWorkspaceForFeature(root2, state, config) {
 // plugins/dev-flow/src/core/user-interactions.ts
 import { randomUUID as randomUUID4 } from "node:crypto";
 
-// plugins/dev-flow/src/core/decision-language.ts
-function normalize(value) {
+// plugins/dev-flow/src/core/text-normalization.ts
+function normalizeReplyText(value) {
   return value.trim().replace(/[\s\u00A0\uFEFF]+/g, " ").replace(/[，。！？、；：,.!?;:()（）【】\[\]“”"']/g, "").toLowerCase();
 }
+function textCompatible(left, right) {
+  const a = normalizeReplyText(left);
+  const b = normalizeReplyText(right);
+  if (!a || !b) return false;
+  return a === b || a.startsWith(b) || b.startsWith(a);
+}
+
+// plugins/dev-flow/src/core/decision-language.ts
+var confirmationTerms = ["\u786E\u8BA4", "\u540C\u610F", "\u6279\u51C6", "\u53EF\u4EE5", "\u597D\u7684", "\u884C", "\u6CA1\u95EE\u9898", "lgtm", "approved"];
 function unique(matches) {
   const byOption = new Map(matches.map((match) => [match.option.id, match]));
   return byOption.size === 1 ? [...byOption.values()][0] : void 0;
@@ -3090,7 +3099,7 @@ var interactionAliases = {
 };
 function matchNaturalDecision(kind, options, userReply) {
   const raw = userReply.trim();
-  const normalized = normalize(raw);
+  const normalized = normalizeReplyText(raw);
   if (!normalized) return void 0;
   const editMatch = raw.match(/^修改(?:需求|意见|计划|方案|)?[:：]?\s*([\s\S]*)$/u);
   if (editMatch) {
@@ -3099,7 +3108,7 @@ function matchNaturalDecision(kind, options, userReply) {
   }
   const matches = [];
   for (const option of options) {
-    const label = normalize(option.label);
+    const label = normalizeReplyText(option.label);
     if (!label) continue;
     if (label === normalized) matches.push({ option });
     if (kind !== "approval" && normalized.length >= 4 && label.includes(normalized)) {
@@ -3108,11 +3117,20 @@ function matchNaturalDecision(kind, options, userReply) {
     if (option.id !== "confirm" && normalized.startsWith(label) && normalized.length > label.length) {
       matches.push({ option, comment: raw.slice(option.label.length).trim() });
     }
-    if (kind !== "approval" && (optionAliases[option.id] ?? []).some((alias) => normalize(alias) === normalized)) {
+    if (normalized.startsWith(label) && normalized.length > label.length) {
+      const tail = normalized.slice(label.length);
+      if (tail === "\u63A8\u8350" || tail === "\u63A8\u8350\u9009\u9879" || tail === "recommended") matches.push({ option });
+    }
+    if (kind !== "approval" && (optionAliases[option.id] ?? []).some((alias) => normalizeReplyText(alias) === normalized)) {
       matches.push({ option });
     }
-    if (kind !== "approval" && (interactionAliases[kind]?.[option.id] ?? []).some((alias) => normalize(alias) === normalized)) {
+    if (kind !== "approval" && (interactionAliases[kind]?.[option.id] ?? []).some((alias) => normalizeReplyText(alias) === normalized)) {
       matches.push({ option });
+    }
+  }
+  if (confirmationTerms.includes(normalized)) {
+    for (const option of options) {
+      if (option.id === "confirm" || option.id === "accept") matches.push({ option });
     }
   }
   return unique(matches);
@@ -3221,9 +3239,6 @@ function matchGrillReply(input) {
 }
 
 // plugins/dev-flow/src/core/user-interactions.ts
-function normalizeReplyText(value) {
-  return value.trim().replace(/[\s\u00A0\uFEFF]+/g, " ").toLowerCase();
-}
 function interactions(state) {
   if (!state.interactions) state.interactions = {};
   return state.interactions;
@@ -3488,7 +3503,12 @@ function promptFrom(record) {
   if (data.type !== "user-prompt" || typeof data.eventId !== "string" || typeof data.text !== "string" || data.host !== "claude" && data.host !== "codex") return void 0;
   const at = typeof data.at === "string" ? data.at : record.at;
   if (Number.isNaN(Date.parse(at))) return void 0;
-  return { eventId: data.eventId, text: data.text, host: data.host, at };
+  const question = typeof data.question === "string" && data.question.trim() ? data.question : void 0;
+  return { eventId: data.eventId, text: data.text, host: data.host, at, ...question ? { question } : {} };
+}
+function eventMatchesPrompt(prompt, input) {
+  if (textCompatible(prompt.text, input.userReply)) return true;
+  return Boolean(input.question && prompt.question && textCompatible(prompt.question, input.question));
 }
 function resolvePromptEvent(events, input) {
   const consumed = new Set(input.consumedEventIds ?? []);
@@ -3501,7 +3521,7 @@ function resolvePromptEvent(events, input) {
     const prompt = promptFrom(record);
     if (!prompt || prompt.host === input.host || consumed.has(prompt.eventId)) return [];
     if (!isAfterPresentation(record, index)) return [];
-    return normalizeReplyText(prompt.text) === normalizeReplyText(input.userReply) ? [prompt] : [];
+    return eventMatchesPrompt(prompt, input) ? [prompt] : [];
   });
   if (otherHost.length) {
     throw new DevFlowError("HOST_EVENT_HOST_MISMATCH", "\u5339\u914D\u5230\u7684\u7528\u6237\u56DE\u7B54\u6765\u81EA\u53E6\u4E00\u4E2A\u5BBF\u4E3B\u3002", {
@@ -3518,7 +3538,7 @@ function resolvePromptEvent(events, input) {
     const prompt = promptFrom(record);
     if (!prompt || prompt.host !== input.host || consumed.has(prompt.eventId)) return [];
     if (!isAfterPresentation(record, index)) return [];
-    if (normalizeReplyText(prompt.text) !== normalizeReplyText(input.userReply)) return [];
+    if (!eventMatchesPrompt(prompt, input)) return [];
     return [{ eventId: prompt.eventId, revision: record.revision, at: prompt.at, text: prompt.text, host: prompt.host }];
   });
   if (matches.length === 0) {
@@ -3550,7 +3570,8 @@ function resolveInteractionPromptEvent(events, state, interaction, input) {
     ...input,
     presentedAt: interaction.presentedAt,
     presentedRevision,
-    ...interaction.presentationEventId ? { presentationEventId: interaction.presentationEventId } : {}
+    ...interaction.presentationEventId ? { presentationEventId: interaction.presentationEventId } : {},
+    ...interaction.question ? { question: interaction.question } : {}
   });
 }
 
@@ -3649,7 +3670,7 @@ function matchDecisionReply(decision, userReply) {
       cause: "\u56DE\u7B54\u65E0\u6CD5\u552F\u4E00\u5BF9\u5E94\u5F53\u524D\u9009\u9879\uFF0C\u4E5F\u4E0D\u662F\u53D7\u652F\u6301\u7684\u6279\u51C6\u77ED\u8BED\u3002",
       impact: "\u5F53\u524D\u95EE\u9898\u4ECD\u4FDD\u6301\u5F85\u56DE\u7B54\uFF0C\u6CA1\u6709\u4EFB\u4F55\u72B6\u6001\u88AB\u6539\u53D8\u3002",
       recoveryKind: "retry",
-      recoveryInstruction: "\u8BF7\u6362\u4E00\u79CD\u80FD\u552F\u4E00\u6307\u5411\u67D0\u4E2A\u9009\u9879\u7684\u7B80\u77ED\u8BF4\u6CD5\uFF0C\u6216\u76F4\u63A5\u56DE\u590D\u5B8C\u6574\u9009\u9879\u3002",
+      recoveryInstruction: `\u8BF7\u6362\u4E00\u79CD\u80FD\u552F\u4E00\u6307\u5411\u67D0\u4E2A\u9009\u9879\u7684\u7B80\u77ED\u8BF4\u6CD5\uFF0C\u6216\u76F4\u63A5\u56DE\u590D\u5B8C\u6574\u9009\u9879\u3002\u5F53\u524D\u95EE\u9898\u53EF\u9009\u56DE\u7B54\uFF1A${options.map((option) => option.label).join("\u3001")}\u3002`,
       retryOriginal: true
     });
   }
@@ -4343,7 +4364,7 @@ ${objectiveForSwitch(input)}`).digest("hex"),
         decisionLedger: [],
         blockingFindings: [],
         logicComplete: false,
-        lastUpdatedBy: { host: input.host, pluginVersion: "5.0.3" }
+        lastUpdatedBy: { host: input.host, pluginVersion: "5.0.4" }
       };
       const ownershipPaths = unknownOwnershipPaths(state);
       state.workspace.unownedPaths = ownershipPaths;
@@ -4463,7 +4484,7 @@ async function resolveWorkspaceOwnershipText(root2, id, expectedRevision, intera
       paths: presentedPaths
     });
   }
-  const matched = matchDecisionReply(decision, userReply);
+  const matched = matchDecisionReply(decision, prompt.text);
   let nextPresentationEventId;
   const state = await mutate(root2, id, expectedRevision, "workspace-ownership-answered", async (draft) => {
     const draftInteraction = draft.interactions?.[interactionId];
@@ -4483,7 +4504,7 @@ async function resolveWorkspaceOwnershipText(root2, id, expectedRevision, intera
         paths: batchPaths
       });
     }
-    resolveTextInteraction(draft, interactionId, userReply, host, { promptEventId: prompt.eventId });
+    resolveTextInteraction(draft, interactionId, prompt.text, host, { promptEventId: prompt.eventId });
     const currentPaths2 = draftInteraction.workspacePaths ?? batchPaths;
     if (matched.option.id === "adopt-all" || matched.option.id === "adopt" || matched.option.id === "include") {
       for (const file of matched.option.id === "adopt" || matched.option.id === "include" ? currentPaths2 : batchPaths) {
@@ -4505,7 +4526,7 @@ async function resolveWorkspaceOwnershipText(root2, id, expectedRevision, intera
       const next = presentWorkspaceOwnership(draft, [remaining[0]], { batchPaths: remaining, remainingPaths: remaining.slice(1), single: true });
       nextPresentationEventId = next.presentationEventId;
     }
-    draft.lastUpdatedBy = { host, pluginVersion: "5.0.3" };
+    draft.lastUpdatedBy = { host, pluginVersion: "5.0.4" };
   }, () => ({
     promptEventId: prompt.eventId,
     action: matched.option.id,
@@ -4606,8 +4627,6 @@ async function confirmRouteClassification(root2, id, expectedRevision, userReply
   const current = await readState(root2, id);
   const pending = pendingDecisionForState(current);
   if (pending?.kind !== "route-confirmation" || !current.routeConfirmation) throw new DevFlowError("ROUTE_CONFIRMATION_NOT_PENDING", "\u5F53\u524D\u6CA1\u6709\u5F85\u786E\u8BA4\u8DEF\u7EBF\u3002");
-  const matched = matchDecisionReply(pending, userReply);
-  if (matched.option.id !== "confirm") throw new DevFlowError("ROUTE_CONFIRMATION_CORRECTION_REQUIRED", "\u8DEF\u7EBF\u9700\u8981\u4FEE\u6B63\uFF0C\u4E0D\u80FD\u6309\u5F53\u524D\u5206\u7C7B\u9501\u5B9A\u3002", { comment: matched.comment });
   const currentInteraction = pendingInteractionForDecision(current, pending);
   const events = await readFeatureEvents(root2, id);
   const prompt = currentInteraction ? resolveInteractionPromptEvent(events, current, currentInteraction, { host, userReply }) : resolvePromptEvent(events, {
@@ -4617,6 +4636,8 @@ async function confirmRouteClassification(root2, id, expectedRevision, userReply
     presentedRevision: pending.presentedRevision,
     ...pending.presentationEventId ? { presentationEventId: pending.presentationEventId } : {}
   });
+  const matched = matchDecisionReply(pending, prompt.text);
+  if (matched.option.id !== "confirm") throw new DevFlowError("ROUTE_CONFIRMATION_CORRECTION_REQUIRED", "\u8DEF\u7EBF\u9700\u8981\u4FEE\u6B63\uFF0C\u4E0D\u80FD\u6309\u5F53\u524D\u5206\u7C7B\u9501\u5B9A\u3002", { comment: matched.comment });
   const selected = selectBaseRoute(current.routeConfirmation.facts);
   const definition = routeDefinitionForFeature(selected.route, selected.classification.controls);
   const traceability = traceEnforcementRequired(selected.route, selected.classification.controls) ? await writeTraceSnapshot(root2, emptyTraceabilityLedger(id, expectedRevision + 1, (await readProjectConfigSnapshot(root2)).sha256)) : void 0;
@@ -4624,7 +4645,7 @@ async function confirmRouteClassification(root2, id, expectedRevision, userReply
   return mutate(root2, id, expectedRevision, "route-confirmation-accepted", (draft) => {
     if (pendingDecisionForState(draft)?.basisHash !== pending.basisHash || draft.routeConfirmation?.basisHash !== pending.basisHash) throw new DevFlowError("ROUTE_CONFIRMATION_STALE", "\u8DEF\u7EBF\u786E\u8BA4\u4F9D\u636E\u5DF2\u53D8\u5316\u3002");
     const interaction = Object.values(draft.interactions ?? {}).find((value) => value.target === "route-confirmation" && value.status === "pending");
-    if (interaction) resolveTextInteraction(draft, interaction.id, userReply, host, { promptEventId: prompt.eventId });
+    if (interaction) resolveTextInteraction(draft, interaction.id, prompt.text, host, { promptEventId: prompt.eventId });
     draft.mode = "routed";
     draft.route = selected.route;
     draft.classification = selected.classification;
@@ -4637,7 +4658,7 @@ async function confirmRouteClassification(root2, id, expectedRevision, userReply
     if (review2) draft.review = review2;
     delete draft.pendingDecision;
     delete draft.routeConfirmation;
-    draft.lastUpdatedBy = { host, pluginVersion: "5.0.3" };
+    draft.lastUpdatedBy = { host, pluginVersion: "5.0.4" };
   }, { promptEventId: prompt.eventId, level: selected.classification.level, orderedRoute: selected.classification.orderedRoute });
 }
 async function resolveTaskSwitchAnswer(root2, id, expectedRevision, userReply, host) {
@@ -4648,11 +4669,11 @@ async function resolveTaskSwitchAnswer(root2, id, expectedRevision, userReply, h
     throw new DevFlowError("TASK_SWITCH_NOT_PENDING", "\u5F53\u524D\u6CA1\u6709\u5F85\u5904\u7406\u7684\u4EFB\u52A1\u5207\u6362\u95EE\u9898\u3002", { recoveryHint: "\u5237\u65B0\u72B6\u6001\u540E\u7EE7\u7EED\u5F53\u524D\u4EFB\u52A1" });
   }
   const prompt = resolveInteractionPromptEvent(await readFeatureEvents(root2, id), current, interaction, { host, userReply });
-  const match = matchDecisionReply(decision, userReply);
+  const match = matchDecisionReply(decision, prompt.text);
   const state = await mutate(root2, id, expectedRevision, "task-switch-answered", (draft) => {
     const live = draft.interactions?.[interaction.id];
     if (!live || live.status !== "pending") throw new DevFlowError("INTERACTION_ALREADY_RESOLVED", interaction.id);
-    resolveTextInteraction(draft, interaction.id, userReply, host, { promptEventId: prompt.eventId });
+    resolveTextInteraction(draft, interaction.id, prompt.text, host, { promptEventId: prompt.eventId });
     if (match.option.id === "pause-old") {
       draft.lifecycle = "paused";
       draft.resumeSummary = "\u65E7\u4EFB\u52A1\u5DF2\u6682\u505C\uFF1B\u6062\u590D\u65F6\u4F1A\u81EA\u52A8\u5BF9\u8D26\u5DE5\u4F5C\u533A\u3002";
@@ -4686,7 +4707,7 @@ async function resolveRouteClassificationElicitation(root2, id, expectedRevision
     if (traceability) draft.traceability = traceability;
     if (review2) draft.review = review2;
     delete draft.routeConfirmation;
-    draft.lastUpdatedBy = { host, pluginVersion: "5.0.3" };
+    draft.lastUpdatedBy = { host, pluginVersion: "5.0.4" };
   }, { interactionId, action, level: selected.classification.level, orderedRoute: selected.classification.orderedRoute });
 }
 async function recordDecision(root2, id, expectedRevision, question, evidence, conclusion, factRefs = [], host) {
@@ -4703,7 +4724,7 @@ async function recordDecision(root2, id, expectedRevision, question, evidence, c
       const ledger = draft.decisionLedger ?? [];
       if (ledger.some((candidate) => candidate.id === decision.id)) return;
       draft.decisionLedger = [...ledger, decision];
-      draft.lastUpdatedBy = { host, pluginVersion: "5.0.3" };
+      draft.lastUpdatedBy = { host, pluginVersion: "5.0.4" };
     },
     eventData: { decisionId: decision.id, promptEventId: prompt.eventId, status: "resolved" }
   }));
@@ -4780,7 +4801,7 @@ async function pauseFeature(root2, id, expectedRevision, reason, host) {
     if (state.lifecycle !== "active") throw new DevFlowError("INVALID_LIFECYCLE", "\u53EA\u6709\u8FDB\u884C\u4E2D\u7684 feature \u53EF\u4EE5\u6682\u505C\u3002", { userMessage: "\u5F53\u524D feature \u4E0D\u80FD\u6682\u505C\u3002", recoveryKind: "refresh", recoveryInstruction: "\u5237\u65B0\u72B6\u6001\u540E\u4ECE\u5F53\u524D\u9636\u6BB5\u7EE7\u7EED\u3002", retryOriginal: false });
     state.lifecycle = "paused";
     state.resumeSummary = `\u6682\u505C\u539F\u56E0\uFF1A${reason.trim()}\u3002\u6062\u590D\u540E\u5148\u5BF9\u8D26\u5DE5\u4F5C\u533A\uFF0C\u518D\u4ECE${state.currentStage ? `\u201C${state.currentStage}\u201D` : "\u5F53\u524D\u9636\u6BB5"}\u7EE7\u7EED\u3002`;
-    state.lastUpdatedBy = { host, pluginVersion: "5.0.3" };
+    state.lastUpdatedBy = { host, pluginVersion: "5.0.4" };
   }, { reason: reason.trim() });
 }
 async function reconcileWorkspace(root2, id, expectedRevision, host) {
@@ -4798,7 +4819,7 @@ async function reconcileWorkspace(root2, id, expectedRevision, host) {
       markAffectedEvidenceStale(draft, changedPaths, reopenedLifecycle, legalCheckpointPaths);
     }
     presentationEventId = queueNextOwnershipDecision(draft);
-    draft.lastUpdatedBy = { host, pluginVersion: "5.0.3" };
+    draft.lastUpdatedBy = { host, pluginVersion: "5.0.4" };
   }, () => ({
     observedHead: workspace.observedHead,
     commitCount: workspace.observedCommits.length,
@@ -4911,7 +4932,7 @@ async function resumeFeature(root2, id, host) {
     }
     presentationEventId = queueNextOwnershipDecision(state);
     state.resumeSummary = `\u5DF2\u6062\u590D${state.currentStage ? `\uFF0C\u4ECE\u201C${state.currentStage}\u201D\u7EE7\u7EED` : "\u5F53\u524D\u4EFB\u52A1"}\u3002${contentChanged ? "\u5DE5\u4F5C\u533A\u5185\u5BB9\u6709\u53D8\u5316\uFF0C\u76F8\u5173\u8BC1\u636E\u5DF2\u6807\u8BB0\u4E3A\u5F85\u66F4\u65B0\u3002" : ""}`;
-    state.lastUpdatedBy = { host, pluginVersion: "5.0.3" };
+    state.lastUpdatedBy = { host, pluginVersion: "5.0.4" };
   }, () => ({ observedHead: workspace.observedHead, contentChanged, checkpointAffected, ...presentationEventId ? { presentationEventId } : {} }));
 }
 async function abandonFeature(root2, id, expectedRevision, reason, userEvidence) {
@@ -4967,7 +4988,7 @@ async function repairFeature(root2, id, expectedRevision, host) {
       state.logicComplete = state.lifecycle === "finalized" && finalEvidenceCurrent;
       state.currentStage = state.logicComplete ? "complete" : definition.orderedSteps.find((step) => state.steps[step]?.status !== "satisfied") ?? "finalize";
     }
-    state.lastUpdatedBy = { host, pluginVersion: "5.0.3" };
+    state.lastUpdatedBy = { host, pluginVersion: "5.0.4" };
   }, { repaired: ["active-pointer", "current-stage", "freshness", "review/status-projection"] });
 }
 function isRecoveryPhase(value) {
@@ -6383,7 +6404,7 @@ async function requestGrillDecision(root2, id, expectedRevision, input) {
     if (index >= 0) ledger[index] = { ...ledger[index], question: input.question, status: "open", evidence: void 0, conclusion: void 0, source: "grill" };
     else ledger.push({ id: input.questionId, question: input.question, status: "open", source: "grill" });
     draft.decisionLedger = ledger;
-    draft.lastUpdatedBy = { host: input.host, pluginVersion: "5.0.3" };
+    draft.lastUpdatedBy = { host: input.host, pluginVersion: "5.0.4" };
   }, () => ({ questionId: input.questionId, mode: "decision", presentationEventId: interaction?.presentationEventId }));
   if (!interaction) throw new DevFlowError("INTERACTION_NOT_CREATED", target);
   return { state, interaction: toPublicInteraction(interaction), interactionId: interaction.id };
@@ -6394,6 +6415,7 @@ async function resolveGrillDecision(root2, id, expectedRevision, interactionId, 
   const interaction = getInteraction(initial, interactionId);
   if (interaction.kind !== "grill" || interaction.status !== "pending") throw new DevFlowError("INTERACTION_NOT_PENDING", "\u5F53\u524D\u95EE\u9898\u5DF2\u7ECF\u5904\u7406\u6216\u4E0D\u5B58\u5728\u3002", { interactionId });
   let promptEventId;
+  let promptText;
   if (input.source === "text") {
     const events = await readFeatureEvents(root2, id);
     const match = resolveInteractionPromptEvent(events, initial, interaction, {
@@ -6401,10 +6423,11 @@ async function resolveGrillDecision(root2, id, expectedRevision, interactionId, 
       userReply: input.userReply
     });
     promptEventId = match.eventId;
+    promptText = match.text;
   }
   let response;
   const state = await mutate(root2, id, expectedRevision, "decision-answered", (draft) => {
-    response = input.source === "elicitation" ? resolveNativeInteraction(draft, interactionId, input.action, input.comment, host) : resolveTextInteraction(draft, interactionId, input.userReply, host, { promptEventId });
+    response = input.source === "elicitation" ? resolveNativeInteraction(draft, interactionId, input.action, input.comment, host) : resolveTextInteraction(draft, interactionId, promptText ?? input.userReply, host, { promptEventId });
     const decisionId = interaction.target.slice("grill:".length);
     const index = (draft.decisionLedger ?? []).findIndex((decision) => decision.id === decisionId);
     if (index >= 0 && response) {
@@ -6412,7 +6435,7 @@ async function resolveGrillDecision(root2, id, expectedRevision, interactionId, 
       next[index] = resolveDecision(next[index], input.source === "elicitation" ? input.comment ?? "\u7528\u6237\u9009\u62E9" : input.userReply, response.action);
       draft.decisionLedger = next;
     }
-    draft.lastUpdatedBy = { host, pluginVersion: "5.0.3" };
+    draft.lastUpdatedBy = { host, pluginVersion: "5.0.4" };
   }, { interactionId, mode: "decision" });
   if (!response) throw new DevFlowError("INTERACTION_NOT_RESOLVED", "\u5F53\u524D\u95EE\u9898\u6CA1\u6709\u5B8C\u6210\u56DE\u7B54\u3002", { interactionId });
   return { state, interaction: toPublicInteraction(getInteraction(state, interactionId)), response, interactionId };
@@ -6710,7 +6733,7 @@ async function runVerification(root2, id, expectedRevision, host, commandIds, ma
       const signature = `${exitCode}:${createHash13("sha256").update(fullOutput).digest("hex").slice(0, 16)}`;
       state.repair = recordRepairAttempt(state.repair ?? startRepairLoop(), signature, output.slice(-3));
     }
-    state.lastUpdatedBy = { host, pluginVersion: "5.0.3" };
+    state.lastUpdatedBy = { host, pluginVersion: "5.0.4" };
   });
 }
 async function readVerificationFreshness(root2, state) {
@@ -6801,7 +6824,8 @@ async function resolveQualityExceptionAnswer(root2, featureId, expectedRevision,
   return resolveQualityExceptionResponse(root2, featureId, expectedRevision, interactionId, host, {
     source: "text",
     userReply,
-    promptEventId: match.eventId
+    promptEventId: match.eventId,
+    promptText: match.text
   });
 }
 async function resolveQualityExceptionElicitation(root2, featureId, expectedRevision, interactionId, action, comment, host) {
@@ -6816,7 +6840,7 @@ async function resolveQualityExceptionResponse(root2, featureId, expectedRevisio
   const interaction = getInteraction(initial, interactionId);
   if (interaction.kind !== "quality-exception" || interaction.status !== "pending") throw new DevFlowError("INTERACTION_NOT_PENDING", "\u5F53\u524D\u98CE\u9669\u95EE\u9898\u5DF2\u7ECF\u5904\u7406\u3002", { interactionId });
   return mutate(root2, featureId, expectedRevision, "quality-exception-answered", (state) => {
-    const response = input.source === "text" ? resolveTextInteraction(state, interactionId, input.userReply, host, { promptEventId: input.promptEventId }) : resolveNativeInteraction(state, interactionId, input.action, input.comment, host);
+    const response = input.source === "text" ? resolveTextInteraction(state, interactionId, input.promptText ?? input.userReply, host, { promptEventId: input.promptEventId }) : resolveNativeInteraction(state, interactionId, input.action, input.comment, host);
     const kind = interaction.target.slice("quality-exception:".length);
     if (response.action === "accept") {
       state.qualityExceptions.push({
@@ -6824,7 +6848,7 @@ async function resolveQualityExceptionResponse(root2, featureId, expectedRevisio
         basisHash: interaction.basisHash,
         fingerprint: state.workspace.lastWorkspaceFingerprint,
         riskSummary: interaction.question ?? "\u5DF2\u63A5\u53D7\u5F53\u524D\u6D41\u7A0B\u8D28\u91CF\u98CE\u9669\u3002",
-        userEvidence: response.comment ?? (input.source === "text" ? input.userReply : input.action),
+        userEvidence: response.comment ?? (input.source === "text" ? input.promptText ?? input.userReply : input.action),
         at: response.respondedAt,
         status: "current"
       });
@@ -6832,7 +6856,7 @@ async function resolveQualityExceptionResponse(root2, featureId, expectedRevisio
         state.obligations = satisfyObligations(state.obligations, [kind]);
       }
     }
-    state.lastUpdatedBy = { host, pluginVersion: "5.0.3" };
+    state.lastUpdatedBy = { host, pluginVersion: "5.0.4" };
   }, { interactionId });
 }
 
@@ -7742,10 +7766,10 @@ function assertReviewRiskAcceptanceEvidence(event, interaction, promptEventId, u
       recoveryHint: "\u4F7F\u7528\u5F53\u524D\u5BBF\u4E3B\u6355\u83B7\u7684 user-prompt event \u518D\u91CD\u8BD5"
     });
   }
-  if (payload.text !== userReply) {
-    throw new DevFlowError("REVIEW_RISK_ACCEPTANCE_REPLY_MISMATCH", "userReply must match the captured prompt text exactly", {
+  if (!textCompatible(String(payload.text ?? ""), userReply)) {
+    throw new DevFlowError("REVIEW_RISK_ACCEPTANCE_REPLY_MISMATCH", "userReply must be compatible with the captured prompt text", {
       eventId: promptEventId,
-      recoveryHint: "\u4F20\u5165\u4E0E host event \u5B8C\u5168\u4E00\u81F4\u7684 userReply"
+      recoveryHint: "\u4F20\u5165\u4E0E host event \u8BED\u4E49\u517C\u5BB9\u7684 userReply"
     });
   }
   const eventTime = Date.parse(typeof payload.at === "string" ? payload.at : event.at);
@@ -7767,10 +7791,12 @@ async function resolveReviewRiskAcceptanceAnswer(root2, id, expectedRevision, in
   }).eventId;
   const hostEvent = events.find((event) => event.type === "host-event" && event.data.eventId === resolvedPromptEventId);
   assertReviewRiskAcceptanceEvidence(hostEvent, interaction, resolvedPromptEventId, userReply, host);
+  const promptText = hostEvent?.data?.text;
   return resolveReviewRiskAcceptanceResponse(root2, id, expectedRevision, interactionId, host, {
     source: "text",
     userReply,
-    promptEventId: resolvedPromptEventId
+    promptEventId: resolvedPromptEventId,
+    ...typeof promptText === "string" ? { promptText } : {}
   });
 }
 async function resolveReviewRiskAcceptanceElicitation(root2, id, expectedRevision, interactionId, action, comment, host) {
@@ -7803,7 +7829,7 @@ async function resolveReviewRiskAcceptanceResponse(root2, id, expectedRevision, 
     const findings = acceptanceFindings(ledger, batch, binding.findingIds);
     assertResolvedAcceptance(current, interaction, batch, findings);
     const preview = structuredClone(current);
-    const resolveOn = (draft) => input.source === "text" ? resolveTextInteraction(draft, interactionId, input.userReply, host, { promptEventId: input.promptEventId }) : resolveNativeInteraction(draft, interactionId, input.action, input.comment, host);
+    const resolveOn = (draft) => input.source === "text" ? resolveTextInteraction(draft, interactionId, input.promptText ?? input.userReply, host, { promptEventId: input.promptEventId }) : resolveNativeInteraction(draft, interactionId, input.action, input.comment, host);
     const response = resolveOn(preview);
     if (response.action !== "accept") {
       result = { acceptedFindingIds: [], idempotent: false };
@@ -8177,8 +8203,8 @@ function assertApprovalEvidenceTiming(eventRecord, event, presented, recoveryHin
   }
 }
 function assertApprovalPromptEvidence(event, userReply, recoveryHint) {
-  if (event?.type !== "user-prompt" || normalizeReplyText(String(event.text ?? "")) !== normalizeReplyText(userReply)) {
-    throw new DevFlowError("APPROVAL_REPLY_MISMATCH", "userReply must match the captured prompt", {
+  if (event?.type !== "user-prompt" || !textCompatible(String(event.text ?? ""), userReply)) {
+    throw new DevFlowError("APPROVAL_REPLY_MISMATCH", "userReply must be compatible with the captured prompt", {
       recoveryHint
     });
   }
@@ -8196,7 +8222,7 @@ function resolveProvenance(events, state, approval, userReply, provenance, host)
   const consumed = new Set(Object.values(state.humanGates).flatMap(confirmationEventIds));
   const match = [...events].reverse().find((item) => {
     const event = item.data;
-    return item.type === "host-event" && typeof event.eventId === "string" && !consumed.has(event.eventId) && event.type === "user-prompt" && event.host === host && normalizeReplyText(String(event.text ?? "")) === normalizeReplyText(userReply) && item.revision > (current?.presentedRevision ?? state.revision) && typeof current?.presentedAt === "string" && typeof event.at === "string" && Date.parse(event.at) >= Date.parse(current.presentedAt);
+    return item.type === "host-event" && typeof event.eventId === "string" && !consumed.has(event.eventId) && event.type === "user-prompt" && event.host === host && textCompatible(String(event.text ?? ""), userReply) && item.revision > (current?.presentedRevision ?? state.revision) && typeof current?.presentedAt === "string" && typeof event.at === "string" && Date.parse(event.at) >= Date.parse(current.presentedAt);
   });
   const eventId = match?.data?.eventId;
   if (typeof eventId !== "string") {
@@ -8240,6 +8266,7 @@ async function resolveApprovalResponse(root2, id, expectedRevision, interactionI
   const approval = approvalFromInteraction(initial, interactionId);
   const events = input.source === "text" ? await readFeatureEvents(root2, id) : [];
   const provenance = input.source === "text" ? assertTokenEvidence(events, initial, approval, input.userReply, input.provenance, host) : void 0;
+  const promptText = input.source === "text" && provenance?.promptEventId ? events.find((item) => item.type === "host-event" && item.data.eventId === provenance.promptEventId)?.data?.text : void 0;
   let response;
   return mutate(root2, id, expectedRevision, "approval-interaction-resolved", async (state) => {
     await assertRequirementsGrillSatisfied(root2, id, state);
@@ -8271,12 +8298,12 @@ async function resolveApprovalResponse(root2, id, expectedRevision, interactionI
     response = input.source === "elicitation" ? resolveNativeInteraction(state, interactionId, input.action, input.comment, host) : resolveTextInteraction(
       state,
       interactionId,
-      input.userReply,
+      promptText ?? input.userReply,
       host,
       provenance,
       // 动态 approval 支持自然语言批准词（如“确认需求”“批准实现”），映射为 confirm 选项；
       // Approval phrases are handled by the single natural-language answer path.
-      isExplicitApproval(input.userReply) ? "confirm" : void 0
+      isExplicitApproval(promptText ?? input.userReply) ? "confirm" : void 0
     );
     if (response.action === "confirm") {
       state.humanGates[approval] = {
@@ -8294,7 +8321,7 @@ async function resolveApprovalResponse(root2, id, expectedRevision, interactionI
     } else {
       throw new DevFlowError("INTERACTION_ACTION_INVALID", response.action);
     }
-    state.lastUpdatedBy = { host, pluginVersion: "5.0.3" };
+    state.lastUpdatedBy = { host, pluginVersion: "5.0.4" };
   }, () => ({ approval, interactionId, response }));
 }
 async function resolveApprovalElicitation(root2, id, expectedRevision, interactionId, action, comment, host) {
@@ -9675,6 +9702,7 @@ async function resolveRollbackGateResponse(root2, featureId, expectedRevision, i
     });
   }
   let resolvedPromptEventId;
+  let promptText;
   if (input.source === "text") {
     const events = await readFeatureEvents(root2, featureId);
     resolvedPromptEventId = input.promptEventId ?? resolveInteractionPromptEvent(events, initial, interaction, {
@@ -9690,6 +9718,7 @@ async function resolveRollbackGateResponse(root2, featureId, expectedRevision, i
       });
     }
     const event = eventRecord.data;
+    promptText = typeof event.text === "string" ? event.text : void 0;
     if (event.host !== host) {
       throw new DevFlowError("HOST_EVENT_HOST_MISMATCH", "host event belongs to a different host", {
         expectedHost: host,
@@ -9712,9 +9741,9 @@ async function resolveRollbackGateResponse(root2, featureId, expectedRevision, i
         recoveryHint: "Submit the confirmation reply after the gate has been presented"
       });
     }
-    if (event.text !== input.userReply) {
-      throw new DevFlowError("ROLLBACK_GATE_REPLY_MISMATCH", "userReply must match the captured prompt text exactly", {
-        recoveryHint: "Pass the exact user prompt text that was captured for this event"
+    if (!textCompatible(event.text ?? "", input.userReply)) {
+      throw new DevFlowError("ROLLBACK_GATE_REPLY_MISMATCH", "userReply must be compatible with the captured prompt text", {
+        recoveryHint: "Pass the user prompt text that was captured for this event"
       });
     }
   }
@@ -9724,7 +9753,7 @@ async function resolveRollbackGateResponse(root2, featureId, expectedRevision, i
     if (!currentGate || currentGate.status !== "pending" || currentGate.interactionId !== interactionId) {
       throw new DevFlowError("ROLLBACK_GATE_NOT_PENDING", "rollback gate was resolved concurrently");
     }
-    response = input.source === "elicitation" ? resolveNativeInteraction(state, interactionId, input.action, input.comment, host) : resolveTextInteraction(state, interactionId, input.userReply, host, { promptEventId: resolvedPromptEventId });
+    response = input.source === "elicitation" ? resolveNativeInteraction(state, interactionId, input.action, input.comment, host) : resolveTextInteraction(state, interactionId, promptText ?? input.userReply, host, { promptEventId: resolvedPromptEventId });
     if (response.action === "confirm") {
       state.rollbackGate = {
         ...currentGate,
@@ -9737,7 +9766,7 @@ async function resolveRollbackGateResponse(root2, featureId, expectedRevision, i
     } else {
       throw new DevFlowError("INTERACTION_ACTION_INVALID", response.action);
     }
-    state.lastUpdatedBy = { host, pluginVersion: "5.0.3" };
+    state.lastUpdatedBy = { host, pluginVersion: "5.0.4" };
   }, () => ({ gate: "rollback-confirmation", interactionId, response }));
 }
 async function resolveRollbackGateElicitation(root2, featureId, expectedRevision, interactionId, action, comment, host) {
@@ -12358,9 +12387,10 @@ async function call(name, a, connection2) {
           userReply: a.userReply,
           presentedAt: decision.presentedAt,
           presentedRevision: decision.presentedRevision,
-          ...decision.presentationEventId ? { presentationEventId: decision.presentationEventId } : {}
+          ...decision.presentationEventId ? { presentationEventId: decision.presentationEventId } : {},
+          ...decision.question ? { question: decision.question } : {}
         });
-        const matched = matchDecisionReply(decision, a.userReply);
+        const matched = matchDecisionReply(decision, prompt.text);
         let nextPresentationEventId;
         const next = await mutate(root, a.featureId, a.expectedRevision, "decision-answered", async (draft) => {
           const current = draft.pendingDecision;
@@ -12531,7 +12561,7 @@ async function call(name, a, connection2) {
     case "dev_flow_enable_windows_notifications":
       return enableWindowsNotifications({ nodeExecutable: process.execPath });
     case "dev_flow_doctor":
-      return collectDoctorReport(root, pluginRoot, "5.0.3", tools);
+      return collectDoctorReport(root, pluginRoot, "5.0.4", tools);
     case "dev_flow_recover_corrupt_feature":
       return recoverCorruptFeature(root, {
         featureId: a.featureId,
@@ -12555,7 +12585,7 @@ async function dispatchRequest(message) {
       connection.configure(message.params?.capabilities, message.params?.clientInfo);
       protocolResult(message.id, {
         protocolVersion: message.params?.protocolVersion || "2024-11-05",
-        serverInfo: { name: "dev-flow", version: "5.0.3" },
+        serverInfo: { name: "dev-flow", version: "5.0.4" },
         capabilities: { tools: {} },
         instructions: "\u5148\u5B8C\u6210\u4E8B\u5B9E\u8C03\u67E5\u548C\u8DEF\u7EBF\u5206\u7C7B\u3002\u65E5\u5E38\u8BFB\u53D6 dev_flow_status\uFF1B\u5B83\u4F1A\u663E\u793A\u4E2D\u6587\u9636\u6BB5\u3001\u5F53\u524D\u4E0B\u4E00\u6B65\u548C\u552F\u4E00\u5F85\u51B3\u95EE\u9898\u3002\u6240\u6709\u7528\u6237\u51B3\u5B9A\u7EDF\u4E00\u4F7F\u7528 dev_flow_answer\uFF0C\u7CFB\u7EDF\u4F1A\u81EA\u52A8\u6309\u95EE\u9898\u7C7B\u578B\u5904\u7406\u3002\u6CA1\u6709\u771F\u5B9E\u51B3\u7B56\u7F3A\u53E3\u65F6\u6D41\u7A0B\u4F1A\u81EA\u52A8\u63A8\u8FDB\u3002\u5148\u8C03\u7528 dev_flow_init_project\uFF0C\u518D\u5F00\u59CB feature\u3002"
       });

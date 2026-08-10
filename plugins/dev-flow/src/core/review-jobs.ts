@@ -36,6 +36,7 @@ import {
   getInteraction,
   resolveNativeInteraction,
   resolveTextInteraction,
+  textCompatible,
   toPublicInteraction,
   type PublicInteraction,
   type UserInteraction,
@@ -1266,10 +1267,10 @@ export function assertReviewRiskAcceptanceEvidence(
       recoveryHint: "使用当前宿主捕获的 user-prompt event 再重试",
     });
   }
-  if (payload.text !== userReply) {
-    throw new DevFlowError("REVIEW_RISK_ACCEPTANCE_REPLY_MISMATCH", "userReply must match the captured prompt text exactly", {
+  if (!textCompatible(String(payload.text ?? ""), userReply)) {
+    throw new DevFlowError("REVIEW_RISK_ACCEPTANCE_REPLY_MISMATCH", "userReply must be compatible with the captured prompt text", {
       eventId: promptEventId,
-      recoveryHint: "传入与 host event 完全一致的 userReply",
+      recoveryHint: "传入与 host event 语义兼容的 userReply",
     });
   }
   const eventTime = Date.parse(typeof payload.at === "string" ? payload.at : event.at);
@@ -1301,10 +1302,12 @@ export async function resolveReviewRiskAcceptanceAnswer(
   const hostEvent = events.find((event) => event.type === "host-event"
     && (event.data as { eventId?: unknown }).eventId === resolvedPromptEventId);
   assertReviewRiskAcceptanceEvidence(hostEvent, interaction, resolvedPromptEventId, userReply, host);
+  const promptText = (hostEvent?.data as { text?: unknown } | undefined)?.text;
   return resolveReviewRiskAcceptanceResponse(root, id, expectedRevision, interactionId, host, {
     source: "text",
     userReply,
     promptEventId: resolvedPromptEventId,
+    ...(typeof promptText === "string" ? { promptText } : {}),
   });
 }
 
@@ -1326,7 +1329,7 @@ export async function resolveReviewRiskAcceptanceElicitation(
 }
 
 type ReviewRiskAcceptanceInput =
-  | { source: "text"; userReply: string; promptEventId: string }
+  | { source: "text"; userReply: string; promptEventId: string; promptText?: string }
   | { source: "elicitation"; action: string; comment?: string };
 
 async function resolveReviewRiskAcceptanceResponse(
@@ -1373,7 +1376,7 @@ async function resolveReviewRiskAcceptanceResponse(
     assertResolvedAcceptance(current as FeatureState, interaction, batch, findings);
     const preview = structuredClone(current as FeatureState);
     const resolveOn = (draft: FeatureState) => input.source === "text"
-      ? resolveTextInteraction(draft, interactionId, input.userReply, host, { promptEventId: input.promptEventId })
+      ? resolveTextInteraction(draft, interactionId, input.promptText ?? input.userReply, host, { promptEventId: input.promptEventId })
       : resolveNativeInteraction(draft, interactionId, input.action, input.comment, host);
     const response = resolveOn(preview);
     if (response.action !== "accept") {

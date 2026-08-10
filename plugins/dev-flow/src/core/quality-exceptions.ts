@@ -82,6 +82,7 @@ export async function resolveQualityExceptionAnswer(
     source: "text",
     userReply,
     promptEventId: match.eventId,
+    promptText: match.text,
   });
 }
 
@@ -103,7 +104,7 @@ export async function resolveQualityExceptionElicitation(
 }
 
 type QualityExceptionResolution =
-  | { source: "text"; userReply: string; promptEventId: string }
+  | { source: "text"; userReply: string; promptEventId: string; promptText?: string }
   | { source: "elicitation"; action: string; comment?: string };
 
 async function resolveQualityExceptionResponse(
@@ -119,7 +120,7 @@ async function resolveQualityExceptionResponse(
   if (interaction.kind !== "quality-exception" || interaction.status !== "pending") throw new DevFlowError("INTERACTION_NOT_PENDING", "当前风险问题已经处理。", { interactionId });
   return mutate(root, featureId, expectedRevision, "quality-exception-answered", (state) => {
     const response = input.source === "text"
-      ? resolveTextInteraction(state, interactionId, input.userReply, host, { promptEventId: input.promptEventId })
+      ? resolveTextInteraction(state, interactionId, input.promptText ?? input.userReply, host, { promptEventId: input.promptEventId })
       : resolveNativeInteraction(state, interactionId, input.action, input.comment, host);
     const kind = interaction.target.slice("quality-exception:".length) as QualityException["kind"];
     if (response.action === "accept") {
@@ -128,7 +129,7 @@ async function resolveQualityExceptionResponse(
         basisHash: interaction.basisHash,
         fingerprint: state.workspace.lastWorkspaceFingerprint,
         riskSummary: interaction.question ?? "已接受当前流程质量风险。",
-        userEvidence: response.comment ?? (input.source === "text" ? input.userReply : input.action),
+        userEvidence: response.comment ?? (input.source === "text" ? (input.promptText ?? input.userReply) : input.action),
         at: response.respondedAt,
         status: "current",
       });

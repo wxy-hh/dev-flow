@@ -20,6 +20,7 @@ import {
   decisionHint,
   getInteraction,
   normalizeReplyText,
+  textCompatible,
   resolveNativeInteraction,
   resolveTextInteraction,
   toPublicInteraction,
@@ -154,8 +155,8 @@ function assertApprovalPromptEvidence(
   userReply: string,
   recoveryHint: string,
 ): void {
-  if (event?.type !== "user-prompt" || normalizeReplyText(String(event.text ?? "")) !== normalizeReplyText(userReply)) {
-    throw new DevFlowError("APPROVAL_REPLY_MISMATCH", "userReply must match the captured prompt", {
+  if (event?.type !== "user-prompt" || !textCompatible(String(event.text ?? ""), userReply)) {
+    throw new DevFlowError("APPROVAL_REPLY_MISMATCH", "userReply must be compatible with the captured prompt", {
       recoveryHint,
     });
   }
@@ -188,7 +189,7 @@ function resolveProvenance(
       && !consumed.has(event.eventId)
       && event.type === "user-prompt"
       && event.host === host
-      && normalizeReplyText(String(event.text ?? "")) === normalizeReplyText(userReply)
+      && textCompatible(String(event.text ?? ""), userReply)
       && item.revision > (current?.presentedRevision ?? state.revision)
       && typeof current?.presentedAt === "string"
       && typeof event.at === "string"
@@ -256,6 +257,11 @@ async function resolveApprovalResponse(
   const provenance = input.source === "text"
     ? assertTokenEvidence(events, initial, approval, input.userReply, input.provenance, host)
     : undefined;
+  // 选项判定以事件文本为准：结构化/文本凭证都取宿主捕获的原话，agent 转述不参与内容判定。
+  const promptText = input.source === "text" && provenance?.promptEventId
+    ? (events.find((item) => item.type === "host-event"
+      && (item.data as { eventId?: string }).eventId === provenance!.promptEventId)?.data as { text?: string } | undefined)?.text
+    : undefined;
   let response: InteractionResponse | undefined;
   return mutate(root, id, expectedRevision, "approval-interaction-resolved", async (state) => {
     await assertRequirementsGrillSatisfied(root, id, state);
@@ -295,12 +301,12 @@ async function resolveApprovalResponse(
       : resolveTextInteraction(
           state,
           interactionId,
-          input.userReply,
+          promptText ?? input.userReply,
           host,
           provenance!,
           // 动态 approval 支持自然语言批准词（如“确认需求”“批准实现”），映射为 confirm 选项；
           // Approval phrases are handled by the single natural-language answer path.
-          isExplicitApproval(input.userReply) ? "confirm" : undefined,
+          isExplicitApproval(promptText ?? input.userReply) ? "confirm" : undefined,
         );
     if (response.action === "confirm") {
       state.humanGates[approval] = {

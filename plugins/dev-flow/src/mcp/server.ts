@@ -1196,8 +1196,9 @@ async function call(name: string, a: any, connection: McpConnection) {
            presentedAt: decision.presentedAt,
            presentedRevision: decision.presentedRevision,
            ...(decision.presentationEventId ? { presentationEventId: decision.presentationEventId } : {}),
+           ...(decision.question ? { question: decision.question } : {}),
          });
-         const matched = matchDecisionReply(decision, a.userReply);
+         const matched = matchDecisionReply(decision, prompt.text);
          let nextPresentationEventId: string | undefined;
          const next = await mutate(root, a.featureId, a.expectedRevision, "decision-answered", async (draft) => {
            const current = draft.pendingDecision;

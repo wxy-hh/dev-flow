@@ -1,4 +1,4 @@
-import { normalizeReplyText, type UserInteraction } from "./user-interactions.js";
+import { normalizeReplyText, textCompatible, type UserInteraction } from "./user-interactions.js";
 import { DevFlowError } from "./errors.js";
 
 export interface HostEventRecord {
@@ -32,13 +32,27 @@ function presentationEventIndex(
   return index >= 0 ? index : undefined;
 }
 
-function promptFrom(record: HostEventRecord): { eventId: string; text: string; host: "claude" | "codex"; at: string } | undefined {
+function promptFrom(record: HostEventRecord): { eventId: string; text: string; host: "claude" | "codex"; at: string; question?: string } | undefined {
   if (record.type !== "host-event" || !record.data || typeof record.data !== "object" || Array.isArray(record.data)) return undefined;
-  const data = record.data as { eventId?: unknown; type?: unknown; text?: unknown; host?: unknown; at?: unknown };
+  const data = record.data as { eventId?: unknown; type?: unknown; text?: unknown; host?: unknown; at?: unknown; question?: unknown };
   if (data.type !== "user-prompt" || typeof data.eventId !== "string" || typeof data.text !== "string" || (data.host !== "claude" && data.host !== "codex")) return undefined;
   const at = typeof data.at === "string" ? data.at : record.at;
   if (Number.isNaN(Date.parse(at))) return undefined;
-  return { eventId: data.eventId, text: data.text, host: data.host, at };
+  const question = typeof data.question === "string" && data.question.trim() ? data.question : undefined;
+  return { eventId: data.eventId, text: data.text, host: data.host, at, ...(question ? { question } : {}) };
+}
+
+/**
+ * 事件与本次回答的关系判定：事件文本与 userReply 语义兼容，
+ * 或事件携带的问题文本与当前交互问题兼容（结构化凭证——表单选中
+ * 与 agent 转述无关，转述不参与归属）。
+ */
+function eventMatchesPrompt(
+  prompt: { text: string; question?: string },
+  input: { userReply: string; question?: string },
+): boolean {
+  if (textCompatible(prompt.text, input.userReply)) return true;
+  return Boolean(input.question && prompt.question && textCompatible(prompt.question, input.question));
 }
 
 /** Resolve a user reply to exactly one later, same-host prompt event. */
@@ -51,6 +65,7 @@ export function resolvePromptEvent(
     presentedRevision: number;
     presentationEventId?: string;
     consumedEventIds?: Iterable<string>;
+    question?: string;
   },
 ): ResolvedPromptEvent {
   const consumed = new Set(input.consumedEventIds ?? []);
@@ -63,7 +78,7 @@ export function resolvePromptEvent(
     const prompt = promptFrom(record);
     if (!prompt || prompt.host === input.host || consumed.has(prompt.eventId)) return [];
     if (!isAfterPresentation(record, index)) return [];
-    return normalizeReplyText(prompt.text) === normalizeReplyText(input.userReply) ? [prompt] : [];
+    return eventMatchesPrompt(prompt, input) ? [prompt] : [];
   });
   if (otherHost.length) {
     throw new DevFlowError("HOST_EVENT_HOST_MISMATCH", "匹配到的用户回答来自另一个宿主。", {
@@ -80,7 +95,7 @@ export function resolvePromptEvent(
     const prompt = promptFrom(record);
     if (!prompt || prompt.host !== input.host || consumed.has(prompt.eventId)) return [];
     if (!isAfterPresentation(record, index)) return [];
-    if (normalizeReplyText(prompt.text) !== normalizeReplyText(input.userReply)) return [];
+    if (!eventMatchesPrompt(prompt, input)) return [];
     return [{ eventId: prompt.eventId, revision: record.revision, at: prompt.at, text: prompt.text, host: prompt.host }];
   });
   if (matches.length === 0) {
@@ -131,6 +146,7 @@ export function resolveInteractionPromptEvent(
     presentedAt: interaction.presentedAt,
     presentedRevision,
     ...(interaction.presentationEventId ? { presentationEventId: interaction.presentationEventId } : {}),
+    ...(interaction.question ? { question: interaction.question } : {}),
   });
 }
 

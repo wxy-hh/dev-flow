@@ -72,6 +72,7 @@ if (event.hook_event_name === "UserPromptSubmit" || event.hook_event_name === "S
             type: "user-prompt",
             host: "claude",
             text: answer.answer,
+            ...(answer.question ? { question: answer.question } : {}),
           });
         } catch { /* native user answers must not fail normal host operation */ }
       }

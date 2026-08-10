@@ -59,7 +59,7 @@ test("public review jobs expose lease timestamps but never capability hashes", (
   assert.equal("requestSha256" in job.submission.samplingProvenance, false);
 });
 
-test("risk acceptance evidence requires matching host, exact reply, and later timestamp", () => {
+test("risk acceptance evidence requires matching host, compatible reply, and later timestamp", () => {
   const interaction = { presentedAt: "2026-08-04T10:00:00.000Z" };
   const event = {
     revision: 4,
@@ -67,7 +67,9 @@ test("risk acceptance evidence requires matching host, exact reply, and later ti
     data: { eventId: "prompt-1", host: "codex", type: "user-prompt", text: "接受风险" },
   };
   assert.doesNotThrow(() => jobs.assertReviewRiskAcceptanceEvidence(event, interaction, "prompt-1", "接受风险", "codex"));
-  assert.throws(() => jobs.assertReviewRiskAcceptanceEvidence(event, interaction, "prompt-1", "接受风险 ", "codex"), /REVIEW_RISK_ACCEPTANCE_REPLY_MISMATCH/);
+  assert.doesNotThrow(() => jobs.assertReviewRiskAcceptanceEvidence(event, interaction, "prompt-1", "接受风险 ", "codex"), "归一化后相等（尾随空格）应兼容");
+  assert.doesNotThrow(() => jobs.assertReviewRiskAcceptanceEvidence(event, interaction, "prompt-1", "接受风险（推荐）", "codex"), "展示后缀应兼容");
+  assert.throws(() => jobs.assertReviewRiskAcceptanceEvidence(event, interaction, "prompt-1", "不接受风险", "codex"), /REVIEW_RISK_ACCEPTANCE_REPLY_MISMATCH/, "否定前缀不得被误判为兼容");
   assert.throws(() => jobs.assertReviewRiskAcceptanceEvidence(event, interaction, "prompt-1", "接受风险", "claude"), /HOST_EVENT_HOST_MISMATCH/);
   assert.throws(() => jobs.assertReviewRiskAcceptanceEvidence({ ...event, at: "2026-08-04T09:59:00.000Z" }, interaction, "prompt-1", "接受风险", "codex"), /REVIEW_RISK_ACCEPTANCE_SAME_TURN/);
 });

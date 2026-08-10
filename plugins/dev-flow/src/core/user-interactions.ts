@@ -12,10 +12,8 @@ import type { FeatureState } from "./state-store.js";
 export type InteractionKind = "approval" | "grill" | "risk-acceptance" | "rollback-confirmation" | "quality-exception" | "workspace-ownership" | "route-confirmation" | "task-switch";
 export type InteractionSource = "elicitation" | "text";
 
-/** 比较用归一化：trim + 折叠连续空白 + 小写。仅用于匹配比较，存储始终保留原始输入。 */
-export function normalizeReplyText(value: string): string {
-  return value.trim().replace(/[\s\u00A0\uFEFF]+/g, " ").toLowerCase();
-}
+/** 比较用归一化与语义兼容判定：仅用于匹配比较，存储始终保留原始输入。 */
+export { normalizeReplyText, textCompatible } from "./text-normalization.js";
 
 export interface InteractionOption {
   id: string;

@@ -36,6 +36,7 @@ import {
   getInteraction,
   resolveNativeInteraction,
   resolveTextInteraction,
+  textCompatible,
   toPublicInteraction,
   type InteractionResponse,
   type PublicInteraction,
@@ -612,6 +613,7 @@ async function resolveRollbackGateResponse(
   // For text resolution, verify the confirming event is a real user
   // prompt from a later turn — not a tool event or a pre-presentation event.
   let resolvedPromptEventId: string | undefined;
+  let promptText: string | undefined;
   if (input.source === "text") {
     const events = await readFeatureEvents(root, featureId);
     resolvedPromptEventId = input.promptEventId ?? resolveInteractionPromptEvent(events, initial, interaction, {
@@ -629,6 +631,7 @@ async function resolveRollbackGateResponse(
       });
     }
     const event = eventRecord.data as { type?: string; text?: string; at?: string; host?: string };
+    promptText = typeof event.text === "string" ? event.text : undefined;
 
     if (event.host !== host) {
       throw new DevFlowError("HOST_EVENT_HOST_MISMATCH", "host event belongs to a different host", {
@@ -659,11 +662,11 @@ async function resolveRollbackGateResponse(
       });
     }
 
-    // The reply text must match exactly (prevents substituting a different
-    // user prompt with the same eventId).
-    if (event.text !== input.userReply) {
-      throw new DevFlowError("ROLLBACK_GATE_REPLY_MISMATCH", "userReply must match the captured prompt text exactly", {
-        recoveryHint: "Pass the exact user prompt text that was captured for this event",
+    // The reply text must be semantically compatible (prevents substituting a
+    // different user prompt with the same eventId).
+    if (!textCompatible(event.text ?? "", input.userReply)) {
+      throw new DevFlowError("ROLLBACK_GATE_REPLY_MISMATCH", "userReply must be compatible with the captured prompt text", {
+        recoveryHint: "Pass the user prompt text that was captured for this event",
       });
     }
   }
@@ -678,7 +681,7 @@ async function resolveRollbackGateResponse(
     response =
       input.source === "elicitation"
         ? resolveNativeInteraction(state, interactionId, input.action, input.comment, host)
-        : resolveTextInteraction(state, interactionId, input.userReply, host, { promptEventId: resolvedPromptEventId });
+        : resolveTextInteraction(state, interactionId, promptText ?? input.userReply, host, { promptEventId: resolvedPromptEventId });
 
     if (response.action === "confirm") {
       state.rollbackGate = {

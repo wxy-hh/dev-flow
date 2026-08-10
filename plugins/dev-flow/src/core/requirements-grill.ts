@@ -86,6 +86,7 @@ async function resolveGrillDecision(
   const interaction = getInteraction(initial, interactionId);
   if (interaction.kind !== "grill" || interaction.status !== "pending") throw new DevFlowError("INTERACTION_NOT_PENDING", "当前问题已经处理或不存在。", { interactionId });
   let promptEventId: string | undefined;
+  let promptText: string | undefined;
   if (input.source === "text") {
     const events = await readFeatureEvents(root, id);
     const match = resolveInteractionPromptEvent(events, initial, interaction, {
@@ -93,12 +94,13 @@ async function resolveGrillDecision(
       userReply: input.userReply,
     });
     promptEventId = match.eventId;
+    promptText = match.text;
   }
   let response: InteractionResponse | undefined;
   const state = await mutate(root, id, expectedRevision, "decision-answered", (draft) => {
     response = input.source === "elicitation"
       ? resolveNativeInteraction(draft, interactionId, input.action, input.comment, host)
-      : resolveTextInteraction(draft, interactionId, input.userReply, host, { promptEventId });
+      : resolveTextInteraction(draft, interactionId, promptText ?? input.userReply, host, { promptEventId });
     const decisionId = interaction.target.slice("grill:".length);
     const index = (draft.decisionLedger ?? []).findIndex((decision) => decision.id === decisionId);
     if (index >= 0 && response) {
