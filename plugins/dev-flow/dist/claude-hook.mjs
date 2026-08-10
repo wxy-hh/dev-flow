@@ -1,4 +1,4 @@
-/* dev-flow 5.0.2; built from source, deterministic build */
+/* dev-flow 5.0.3; built from source, deterministic build */
 
 // plugins/dev-flow/src/core/state-store.ts
 import { randomUUID as randomUUID5, createHash as createHash7 } from "node:crypto";
@@ -301,7 +301,9 @@ var safeDetailKeys = /* @__PURE__ */ new Set([
   "incomplete",
   "conflicts",
   "issues",
-  "recoveryHint"
+  "recoveryHint",
+  "itemId",
+  "required"
 ]);
 function safeFailureDetails(details) {
   return Object.fromEntries(Object.entries(details).filter(([key, value]) => {
@@ -1036,7 +1038,10 @@ async function assertTraceGateCurrent(root, state, step) {
   throw new DevFlowError(
     inspection.blocker.code,
     `Trace slice is not ready for ${step}`,
-    inspection.blocker.details
+    {
+      ...inspection.blocker.details,
+      recoveryHint: inspection.blocker.code === "TRACE_SLICE_STALE" ? "\u9A8C\u8BC1\u914D\u7F6E\u6216 trace \u8BC1\u636E\u5DF2\u53D8\u66F4\uFF1A\u82E5\u5B58\u5728\u6D3B\u52A8\u5B9E\u73B0\u5355\u5143\uFF0C\u5148\u7528 dev_flow_abandon_implementation_unit \u53D6\u6D88\uFF0C\u518D\u91CD\u767B\u8BB0\u8BA1\u5212\u5237\u65B0 Trace \u57FA\u7EBF\u3002" : "\u6309\u5F53\u524D\u9636\u6BB5\u8865\u9F50 trace \u8BC1\u636E\u540E\u91CD\u8BD5\u3002"
+    }
   );
 }
 
@@ -2317,7 +2322,7 @@ async function recordTrustedWriteOwnership(root, paths, host, eventId2) {
       draft.workspace.ownershipSource[file] = "trusted-hook";
     }
     draft.workspace.unownedPaths = (draft.workspace.unownedPaths ?? []).filter((file) => !governed.includes(file));
-    draft.lastUpdatedBy = { host, pluginVersion: "5.0.2" };
+    draft.lastUpdatedBy = { host, pluginVersion: "5.0.3" };
   }, { eventId: eventId2, host, paths: governed, after });
 }
 async function recordHostAuthorizationEvent(root, type, record) {
@@ -2463,7 +2468,7 @@ async function reconcileWorkspace(root, id, expectedRevision, host) {
       markAffectedEvidenceStale(draft, changedPaths, reopenedLifecycle, legalCheckpointPaths);
     }
     presentationEventId = queueNextOwnershipDecision(draft);
-    draft.lastUpdatedBy = { host, pluginVersion: "5.0.2" };
+    draft.lastUpdatedBy = { host, pluginVersion: "5.0.3" };
   }, () => ({
     observedHead: workspace.observedHead,
     commitCount: workspace.observedCommits.length,

@@ -15,7 +15,7 @@ import { readCompactStatus } from "../core/status-projection.js";
 import { inspectFeature, inspectionTopics } from "../core/inspection.js";
 import { presentQualityException, resolveQualityExceptionAnswer, resolveQualityExceptionElicitation } from "../core/quality-exceptions.js";
 import { rebuildReviewProjection } from "../core/review-projection-rebuild.js";
-import { beginImplementationUnit } from "../core/implementation-units.js";
+import { beginImplementationUnit, abandonImplementationUnit } from "../core/implementation-units.js";
 import { checkpointImplementationUnit } from "../core/checkpoints.js";
 import { executeRollback, presentRollbackGate, previewRollback, resolveRollbackGateElicitation, resolveRollbackGateAnswer, type RollbackPreview } from "../core/rollback.js";
 import { runVerification } from "../core/verification.js";
@@ -71,7 +71,7 @@ const tools = [
   "dev_flow_present_approval", "dev_flow_present_quality_exception", "dev_flow_answer", "dev_flow_reclassify", "dev_flow_verify",
   "dev_flow_request_grill_decision",
   "dev_flow_finalize", "dev_flow_repair_feature", "dev_flow_abandon", "dev_flow_enable_windows_notifications", "dev_flow_doctor",
-  "dev_flow_begin_implementation_unit", "dev_flow_checkpoint_implementation_unit", "dev_flow_preview_rollback",
+  "dev_flow_begin_implementation_unit", "dev_flow_checkpoint_implementation_unit", "dev_flow_abandon_implementation_unit", "dev_flow_preview_rollback",
   "dev_flow_present_rollback_gate", "dev_flow_execute_rollback",
   "dev_flow_recover_corrupt_feature",
 ];
@@ -353,6 +353,10 @@ const toolSchemas: Record<string, { description: string; inputSchema: Record<str
   dev_flow_checkpoint_implementation_unit: {
     description: "Confirm the active rollback unit: scope-checked diff, forward verification, content-addressed checkpoint.",
     inputSchema: object(["featureId", "expectedRevision", "unitId"], { featureId: string, expectedRevision: integer, unitId: traceId("RU") }),
+  },
+  dev_flow_abandon_implementation_unit: {
+    description: "Cancel the active rollback unit without touching the workspace; the unit returns to pending so the plan can be re-registered and the unit re-begun (e.g. after a verification config change made its Trace basis stale).",
+    inputSchema: object(["featureId", "expectedRevision", "unitId", "reason", "host"], { featureId: string, expectedRevision: integer, unitId: traceId("RU"), reason: string, host: { enum: ["claude", "codex"] } }),
   },
   dev_flow_preview_rollback: {
     description: "Read-only rollback plan for a confirmed checkpoint: undo order, restored files, verification commands.",
@@ -1082,6 +1086,13 @@ async function call(name: string, a: any, connection: McpConnection) {
     case "dev_flow_checkpoint_implementation_unit": {
       assertUnitMutationInput(a, "dev_flow_checkpoint_implementation_unit");
       return checkpointImplementationUnit(root, a.featureId, a.expectedRevision, a.unitId);
+    }
+    case "dev_flow_abandon_implementation_unit": {
+      assertUnitMutationInput(a, "dev_flow_abandon_implementation_unit");
+      if (typeof a.reason !== "string" || !a.reason.trim() || (a.host !== "claude" && a.host !== "codex")) {
+        throw new DevFlowError("INVALID_TOOL_INPUT", "dev_flow_abandon_implementation_unit input does not match its schema");
+      }
+      return abandonImplementationUnit(root, a.featureId, a.expectedRevision, a.unitId, a.reason, a.host);
     }
     case "dev_flow_preview_rollback": {
       assertPreviewRollbackInput(a);

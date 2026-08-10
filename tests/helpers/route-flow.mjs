@@ -55,6 +55,12 @@ async function completeReviewJobs(root, featureId, state, batch, options = {}) {
   let current = state;
   const observed = [];
   for (const job of batch.jobs) {
+    // A reused job carries a prior submission and needs no claim or submit;
+    // re-claiming it would fail with REVIEW_JOB_ALREADY_SUBMITTED.
+    if (job.status === "reused") {
+      observed.push({ jobId: job.jobId, reused: true });
+      continue;
+    }
     const host = hosts[job.role] ?? hosts["*"] ?? "route-flow";
     const capability = claimCapability(job.jobId, host);
     const pending = await assertNext(root, featureId, (action) => {

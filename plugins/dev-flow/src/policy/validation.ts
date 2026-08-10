@@ -8,6 +8,9 @@ export class PolicyError extends Error {
     readonly details: Record<string, unknown> = {},
   ) {
     super(`${code}: ${message}`);
+    // Named marker so failureFrom can map policy contract violations to
+    // actionable failures across bundles without an instanceof dependency.
+    this.name = "PolicyError";
   }
 }
 

@@ -1,4 +1,4 @@
-/* dev-flow 5.0.2; built from source, deterministic build */
+/* dev-flow 5.0.3; built from source, deterministic build */
 
 // plugins/dev-flow/src/mcp/server.ts
 import readline from "node:readline";
@@ -306,7 +306,9 @@ var safeDetailKeys = /* @__PURE__ */ new Set([
   "incomplete",
   "conflicts",
   "issues",
-  "recoveryHint"
+  "recoveryHint",
+  "itemId",
+  "required"
 ]);
 function safeFailureDetails(details) {
   return Object.fromEntries(Object.entries(details).filter(([key, value]) => {
@@ -351,8 +353,21 @@ var DevFlowError = class extends Error {
     };
   }
 };
+function isPolicyError(error) {
+  return error instanceof Error && error.name === "PolicyError" && typeof error.code === "string";
+}
 function failureFrom(error) {
   if (error instanceof DevFlowError) return error.toFailure();
+  if (isPolicyError(error)) {
+    return {
+      code: error.code,
+      userMessage: "\u5206\u7C7B\u53C2\u6570\u672A\u901A\u8FC7\u7B56\u7565\u6821\u9A8C\u3002",
+      cause: error.message,
+      impact: "\u6D41\u7A0B\u4FDD\u6301\u5728\u5F53\u524D\u9636\u6BB5\uFF0C\u672A\u9501\u5B9A\u4EFB\u4F55\u72B6\u6001\uFF1B\u4FEE\u6B63\u8F93\u5165\u540E\u53EF\u91CD\u8BD5\u3002",
+      recovery: { kind: "retry", instruction: "\u4FEE\u6B63\u5206\u7C7B\u53C2\u6570\u6216\u8FB9\u754C\u5BA1\u8BA1\u9879\u540E\u91CD\u65B0\u63D0\u4EA4\u3002", requiresUserDecision: false, retryOriginal: true },
+      technical: safeFailureDetails(error.details ?? {})
+    };
+  }
   return {
     code: "INTERNAL_ERROR",
     userMessage: "\u7CFB\u7EDF\u52A8\u4F5C\u672A\u5B8C\u6210\u3002",
@@ -497,6 +512,7 @@ var PolicyError = class extends Error {
     super(`${code}: ${message}`);
     this.code = code;
     this.details = details;
+    this.name = "PolicyError";
   }
 };
 var levels = ["XS", "S", "M", "L"];
@@ -2107,7 +2123,10 @@ async function assertTraceGateCurrent(root2, state, step) {
   throw new DevFlowError(
     inspection.blocker.code,
     `Trace slice is not ready for ${step}`,
-    inspection.blocker.details
+    {
+      ...inspection.blocker.details,
+      recoveryHint: inspection.blocker.code === "TRACE_SLICE_STALE" ? "\u9A8C\u8BC1\u914D\u7F6E\u6216 trace \u8BC1\u636E\u5DF2\u53D8\u66F4\uFF1A\u82E5\u5B58\u5728\u6D3B\u52A8\u5B9E\u73B0\u5355\u5143\uFF0C\u5148\u7528 dev_flow_abandon_implementation_unit \u53D6\u6D88\uFF0C\u518D\u91CD\u767B\u8BB0\u8BA1\u5212\u5237\u65B0 Trace \u57FA\u7EBF\u3002" : "\u6309\u5F53\u524D\u9636\u6BB5\u8865\u9F50 trace \u8BC1\u636E\u540E\u91CD\u8BD5\u3002"
+    }
   );
 }
 
@@ -4324,7 +4343,7 @@ ${objectiveForSwitch(input)}`).digest("hex"),
         decisionLedger: [],
         blockingFindings: [],
         logicComplete: false,
-        lastUpdatedBy: { host: input.host, pluginVersion: "5.0.2" }
+        lastUpdatedBy: { host: input.host, pluginVersion: "5.0.3" }
       };
       const ownershipPaths = unknownOwnershipPaths(state);
       state.workspace.unownedPaths = ownershipPaths;
@@ -4486,7 +4505,7 @@ async function resolveWorkspaceOwnershipText(root2, id, expectedRevision, intera
       const next = presentWorkspaceOwnership(draft, [remaining[0]], { batchPaths: remaining, remainingPaths: remaining.slice(1), single: true });
       nextPresentationEventId = next.presentationEventId;
     }
-    draft.lastUpdatedBy = { host, pluginVersion: "5.0.2" };
+    draft.lastUpdatedBy = { host, pluginVersion: "5.0.3" };
   }, () => ({
     promptEventId: prompt.eventId,
     action: matched.option.id,
@@ -4618,7 +4637,7 @@ async function confirmRouteClassification(root2, id, expectedRevision, userReply
     if (review2) draft.review = review2;
     delete draft.pendingDecision;
     delete draft.routeConfirmation;
-    draft.lastUpdatedBy = { host, pluginVersion: "5.0.2" };
+    draft.lastUpdatedBy = { host, pluginVersion: "5.0.3" };
   }, { promptEventId: prompt.eventId, level: selected.classification.level, orderedRoute: selected.classification.orderedRoute });
 }
 async function resolveTaskSwitchAnswer(root2, id, expectedRevision, userReply, host) {
@@ -4667,7 +4686,7 @@ async function resolveRouteClassificationElicitation(root2, id, expectedRevision
     if (traceability) draft.traceability = traceability;
     if (review2) draft.review = review2;
     delete draft.routeConfirmation;
-    draft.lastUpdatedBy = { host, pluginVersion: "5.0.2" };
+    draft.lastUpdatedBy = { host, pluginVersion: "5.0.3" };
   }, { interactionId, action, level: selected.classification.level, orderedRoute: selected.classification.orderedRoute });
 }
 async function recordDecision(root2, id, expectedRevision, question, evidence, conclusion, factRefs = [], host) {
@@ -4684,7 +4703,7 @@ async function recordDecision(root2, id, expectedRevision, question, evidence, c
       const ledger = draft.decisionLedger ?? [];
       if (ledger.some((candidate) => candidate.id === decision.id)) return;
       draft.decisionLedger = [...ledger, decision];
-      draft.lastUpdatedBy = { host, pluginVersion: "5.0.2" };
+      draft.lastUpdatedBy = { host, pluginVersion: "5.0.3" };
     },
     eventData: { decisionId: decision.id, promptEventId: prompt.eventId, status: "resolved" }
   }));
@@ -4761,7 +4780,7 @@ async function pauseFeature(root2, id, expectedRevision, reason, host) {
     if (state.lifecycle !== "active") throw new DevFlowError("INVALID_LIFECYCLE", "\u53EA\u6709\u8FDB\u884C\u4E2D\u7684 feature \u53EF\u4EE5\u6682\u505C\u3002", { userMessage: "\u5F53\u524D feature \u4E0D\u80FD\u6682\u505C\u3002", recoveryKind: "refresh", recoveryInstruction: "\u5237\u65B0\u72B6\u6001\u540E\u4ECE\u5F53\u524D\u9636\u6BB5\u7EE7\u7EED\u3002", retryOriginal: false });
     state.lifecycle = "paused";
     state.resumeSummary = `\u6682\u505C\u539F\u56E0\uFF1A${reason.trim()}\u3002\u6062\u590D\u540E\u5148\u5BF9\u8D26\u5DE5\u4F5C\u533A\uFF0C\u518D\u4ECE${state.currentStage ? `\u201C${state.currentStage}\u201D` : "\u5F53\u524D\u9636\u6BB5"}\u7EE7\u7EED\u3002`;
-    state.lastUpdatedBy = { host, pluginVersion: "5.0.2" };
+    state.lastUpdatedBy = { host, pluginVersion: "5.0.3" };
   }, { reason: reason.trim() });
 }
 async function reconcileWorkspace(root2, id, expectedRevision, host) {
@@ -4779,7 +4798,7 @@ async function reconcileWorkspace(root2, id, expectedRevision, host) {
       markAffectedEvidenceStale(draft, changedPaths, reopenedLifecycle, legalCheckpointPaths);
     }
     presentationEventId = queueNextOwnershipDecision(draft);
-    draft.lastUpdatedBy = { host, pluginVersion: "5.0.2" };
+    draft.lastUpdatedBy = { host, pluginVersion: "5.0.3" };
   }, () => ({
     observedHead: workspace.observedHead,
     commitCount: workspace.observedCommits.length,
@@ -4892,7 +4911,7 @@ async function resumeFeature(root2, id, host) {
     }
     presentationEventId = queueNextOwnershipDecision(state);
     state.resumeSummary = `\u5DF2\u6062\u590D${state.currentStage ? `\uFF0C\u4ECE\u201C${state.currentStage}\u201D\u7EE7\u7EED` : "\u5F53\u524D\u4EFB\u52A1"}\u3002${contentChanged ? "\u5DE5\u4F5C\u533A\u5185\u5BB9\u6709\u53D8\u5316\uFF0C\u76F8\u5173\u8BC1\u636E\u5DF2\u6807\u8BB0\u4E3A\u5F85\u66F4\u65B0\u3002" : ""}`;
-    state.lastUpdatedBy = { host, pluginVersion: "5.0.2" };
+    state.lastUpdatedBy = { host, pluginVersion: "5.0.3" };
   }, () => ({ observedHead: workspace.observedHead, contentChanged, checkpointAffected, ...presentationEventId ? { presentationEventId } : {} }));
 }
 async function abandonFeature(root2, id, expectedRevision, reason, userEvidence) {
@@ -4948,7 +4967,7 @@ async function repairFeature(root2, id, expectedRevision, host) {
       state.logicComplete = state.lifecycle === "finalized" && finalEvidenceCurrent;
       state.currentStage = state.logicComplete ? "complete" : definition.orderedSteps.find((step) => state.steps[step]?.status !== "satisfied") ?? "finalize";
     }
-    state.lastUpdatedBy = { host, pluginVersion: "5.0.2" };
+    state.lastUpdatedBy = { host, pluginVersion: "5.0.3" };
   }, { repaired: ["active-pointer", "current-stage", "freshness", "review/status-projection"] });
 }
 function isRecoveryPhase(value) {
@@ -5796,7 +5815,7 @@ function assertPlanRevisionQuiescent(state, kind) {
   if (active) {
     throw new DevFlowError("PLAN_REVISION_REQUIRES_QUIESCENT_UNIT", "implementation-plan cannot change while an implementation unit is active", {
       activeUnitId: active.unitId,
-      hint: "\u5148 checkpoint \u6216 rollback \u518D\u4FEE\u8BA2\u8BA1\u5212"
+      hint: "\u5148 checkpoint\u3001\u53D6\u6D88\uFF08dev_flow_abandon_implementation_unit\uFF09\u6216 rollback \u518D\u4FEE\u8BA2\u8BA1\u5212"
     });
   }
 }
@@ -6364,7 +6383,7 @@ async function requestGrillDecision(root2, id, expectedRevision, input) {
     if (index >= 0) ledger[index] = { ...ledger[index], question: input.question, status: "open", evidence: void 0, conclusion: void 0, source: "grill" };
     else ledger.push({ id: input.questionId, question: input.question, status: "open", source: "grill" });
     draft.decisionLedger = ledger;
-    draft.lastUpdatedBy = { host: input.host, pluginVersion: "5.0.2" };
+    draft.lastUpdatedBy = { host: input.host, pluginVersion: "5.0.3" };
   }, () => ({ questionId: input.questionId, mode: "decision", presentationEventId: interaction?.presentationEventId }));
   if (!interaction) throw new DevFlowError("INTERACTION_NOT_CREATED", target);
   return { state, interaction: toPublicInteraction(interaction), interactionId: interaction.id };
@@ -6393,7 +6412,7 @@ async function resolveGrillDecision(root2, id, expectedRevision, interactionId, 
       next[index] = resolveDecision(next[index], input.source === "elicitation" ? input.comment ?? "\u7528\u6237\u9009\u62E9" : input.userReply, response.action);
       draft.decisionLedger = next;
     }
-    draft.lastUpdatedBy = { host, pluginVersion: "5.0.2" };
+    draft.lastUpdatedBy = { host, pluginVersion: "5.0.3" };
   }, { interactionId, mode: "decision" });
   if (!response) throw new DevFlowError("INTERACTION_NOT_RESOLVED", "\u5F53\u524D\u95EE\u9898\u6CA1\u6709\u5B8C\u6210\u56DE\u7B54\u3002", { interactionId });
   return { state, interaction: toPublicInteraction(getInteraction(state, interactionId)), response, interactionId };
@@ -6691,7 +6710,7 @@ async function runVerification(root2, id, expectedRevision, host, commandIds, ma
       const signature = `${exitCode}:${createHash13("sha256").update(fullOutput).digest("hex").slice(0, 16)}`;
       state.repair = recordRepairAttempt(state.repair ?? startRepairLoop(), signature, output.slice(-3));
     }
-    state.lastUpdatedBy = { host, pluginVersion: "5.0.2" };
+    state.lastUpdatedBy = { host, pluginVersion: "5.0.3" };
   });
 }
 async function readVerificationFreshness(root2, state) {
@@ -6813,7 +6832,7 @@ async function resolveQualityExceptionResponse(root2, featureId, expectedRevisio
         state.obligations = satisfyObligations(state.obligations, [kind]);
       }
     }
-    state.lastUpdatedBy = { host, pluginVersion: "5.0.2" };
+    state.lastUpdatedBy = { host, pluginVersion: "5.0.3" };
   }, { interactionId });
 }
 
@@ -8275,7 +8294,7 @@ async function resolveApprovalResponse(root2, id, expectedRevision, interactionI
     } else {
       throw new DevFlowError("INTERACTION_ACTION_INVALID", response.action);
     }
-    state.lastUpdatedBy = { host, pluginVersion: "5.0.2" };
+    state.lastUpdatedBy = { host, pluginVersion: "5.0.3" };
   }, () => ({ approval, interactionId, response }));
 }
 async function resolveApprovalElicitation(root2, id, expectedRevision, interactionId, action, comment, host) {
@@ -9063,7 +9082,10 @@ async function checkpointImplementationUnit(root2, id, expectedRevision, unitId,
   const traceCommandHashes = ledger.verificationCommandHashes;
   const commandSliceStale = traceCommandHashes ? verificationCommandIdsForRefs(verificationRefs).some((id2) => traceCommandHashes[id2] !== currentCommandHashes[id2]) : node.verificationConfigSha256 !== projectConfigSha256;
   if (commandSliceStale) {
-    throw new DevFlowError("TRACE_SLICE_STALE", "rollback verification configuration is stale", { unitId });
+    throw new DevFlowError("TRACE_SLICE_STALE", "rollback verification configuration is stale", {
+      unitId,
+      recoveryHint: "\u9A8C\u8BC1\u547D\u4EE4\u5B9A\u4E49\u5DF2\u53D8\u66F4\uFF1A\u5148\u7528 dev_flow_abandon_implementation_unit \u53D6\u6D88\u5F53\u524D\u5355\u5143\uFF0C\u518D\u91CD\u767B\u8BB0\u8BA1\u5212\u5237\u65B0 Trace \u57FA\u7EBF\uFF0C\u7136\u540E\u91CD\u65B0\u5F00\u59CB\u8BE5\u5355\u5143\u3002"
+    });
   }
   const commands = resolveVerificationCommands(config, node);
   const preflightCommands = resolvePreflightCommands(config);
@@ -9237,6 +9259,25 @@ async function checkpointChain(root2, featureId, state) {
 
 // plugins/dev-flow/src/core/implementation-units.ts
 var digest8 = (value) => createHash17("sha256").update(value).digest("hex");
+async function abandonImplementationUnit(root2, id, expectedRevision, unitId, reason, host) {
+  const reasonText = reason.trim();
+  if (!reasonText) {
+    throw new DevFlowError("IMPLEMENTATION_UNIT_CANCEL_REASON_REQUIRED", "cancelling an implementation unit requires a reason", {
+      recoveryHint: "\u8BF4\u660E\u4E3A\u4EC0\u4E48\u53D6\u6D88\u8BE5\u5355\u5143\uFF08\u4F8B\u5982\u9A8C\u8BC1\u914D\u7F6E\u53D8\u66F4\u540E\u9700\u8981\u91CD\u767B\u8BB0\u8BA1\u5212\uFF09"
+    });
+  }
+  return mutate(root2, id, expectedRevision, "implementation-unit-cancelled", async (state) => {
+    await assertHostHealth(root2, state.lastUpdatedBy.host, "implementation unit");
+    const unit = (state.implementationUnits ?? []).find((candidate) => candidate.unitId === unitId);
+    if (!unit) throw new DevFlowError("IMPLEMENTATION_UNIT_UNKNOWN", "rollback unit has no implementation state", { unitId });
+    if (unit.status !== "active") {
+      throw new DevFlowError("IMPLEMENTATION_UNIT_NOT_ACTIVE", "only an active rollback unit can be cancelled", { unitId, status: unit.status });
+    }
+    unit.status = "pending";
+    delete unit.startedFingerprint;
+    delete unit.beginNonce;
+  }, { unitId, reason: reasonText, host });
+}
 function currentRollbackNodes(ledger) {
   return Object.values(ledger?.nodes ?? {}).filter((node) => node.kind === "rollback" && node.status === "current");
 }
@@ -9696,7 +9737,7 @@ async function resolveRollbackGateResponse(root2, featureId, expectedRevision, i
     } else {
       throw new DevFlowError("INTERACTION_ACTION_INVALID", response.action);
     }
-    state.lastUpdatedBy = { host, pluginVersion: "5.0.2" };
+    state.lastUpdatedBy = { host, pluginVersion: "5.0.3" };
   }, () => ({ gate: "rollback-confirmation", interactionId, response }));
 }
 async function resolveRollbackGateElicitation(root2, featureId, expectedRevision, interactionId, action, comment, host) {
@@ -11225,6 +11266,7 @@ var tools = [
   "dev_flow_doctor",
   "dev_flow_begin_implementation_unit",
   "dev_flow_checkpoint_implementation_unit",
+  "dev_flow_abandon_implementation_unit",
   "dev_flow_preview_rollback",
   "dev_flow_present_rollback_gate",
   "dev_flow_execute_rollback",
@@ -11517,6 +11559,10 @@ var toolSchemas = {
   dev_flow_checkpoint_implementation_unit: {
     description: "Confirm the active rollback unit: scope-checked diff, forward verification, content-addressed checkpoint.",
     inputSchema: object(["featureId", "expectedRevision", "unitId"], { featureId: string, expectedRevision: integer, unitId: traceId("RU") })
+  },
+  dev_flow_abandon_implementation_unit: {
+    description: "Cancel the active rollback unit without touching the workspace; the unit returns to pending so the plan can be re-registered and the unit re-begun (e.g. after a verification config change made its Trace basis stale).",
+    inputSchema: object(["featureId", "expectedRevision", "unitId", "reason", "host"], { featureId: string, expectedRevision: integer, unitId: traceId("RU"), reason: string, host: { enum: ["claude", "codex"] } })
   },
   dev_flow_preview_rollback: {
     description: "Read-only rollback plan for a confirmed checkpoint: undo order, restored files, verification commands.",
@@ -12199,6 +12245,13 @@ async function call(name, a, connection2) {
       assertUnitMutationInput(a, "dev_flow_checkpoint_implementation_unit");
       return checkpointImplementationUnit(root, a.featureId, a.expectedRevision, a.unitId);
     }
+    case "dev_flow_abandon_implementation_unit": {
+      assertUnitMutationInput(a, "dev_flow_abandon_implementation_unit");
+      if (typeof a.reason !== "string" || !a.reason.trim() || a.host !== "claude" && a.host !== "codex") {
+        throw new DevFlowError("INVALID_TOOL_INPUT", "dev_flow_abandon_implementation_unit input does not match its schema");
+      }
+      return abandonImplementationUnit(root, a.featureId, a.expectedRevision, a.unitId, a.reason, a.host);
+    }
     case "dev_flow_preview_rollback": {
       assertPreviewRollbackInput(a);
       return previewRollback(root, a.featureId, a.targetCheckpointId);
@@ -12478,7 +12531,7 @@ async function call(name, a, connection2) {
     case "dev_flow_enable_windows_notifications":
       return enableWindowsNotifications({ nodeExecutable: process.execPath });
     case "dev_flow_doctor":
-      return collectDoctorReport(root, pluginRoot, "5.0.2", tools);
+      return collectDoctorReport(root, pluginRoot, "5.0.3", tools);
     case "dev_flow_recover_corrupt_feature":
       return recoverCorruptFeature(root, {
         featureId: a.featureId,
@@ -12502,7 +12555,7 @@ async function dispatchRequest(message) {
       connection.configure(message.params?.capabilities, message.params?.clientInfo);
       protocolResult(message.id, {
         protocolVersion: message.params?.protocolVersion || "2024-11-05",
-        serverInfo: { name: "dev-flow", version: "5.0.2" },
+        serverInfo: { name: "dev-flow", version: "5.0.3" },
         capabilities: { tools: {} },
         instructions: "\u5148\u5B8C\u6210\u4E8B\u5B9E\u8C03\u67E5\u548C\u8DEF\u7EBF\u5206\u7C7B\u3002\u65E5\u5E38\u8BFB\u53D6 dev_flow_status\uFF1B\u5B83\u4F1A\u663E\u793A\u4E2D\u6587\u9636\u6BB5\u3001\u5F53\u524D\u4E0B\u4E00\u6B65\u548C\u552F\u4E00\u5F85\u51B3\u95EE\u9898\u3002\u6240\u6709\u7528\u6237\u51B3\u5B9A\u7EDF\u4E00\u4F7F\u7528 dev_flow_answer\uFF0C\u7CFB\u7EDF\u4F1A\u81EA\u52A8\u6309\u95EE\u9898\u7C7B\u578B\u5904\u7406\u3002\u6CA1\u6709\u771F\u5B9E\u51B3\u7B56\u7F3A\u53E3\u65F6\u6D41\u7A0B\u4F1A\u81EA\u52A8\u63A8\u8FDB\u3002\u5148\u8C03\u7528 dev_flow_init_project\uFF0C\u518D\u5F00\u59CB feature\u3002"
       });

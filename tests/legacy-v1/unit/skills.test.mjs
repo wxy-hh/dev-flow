@@ -22,9 +22,7 @@ const SKILL_ALIASES = {
   implement: ["df-implement", "dev-flow-implement"],
   "code-review": ["df-code-review", "dev-flow-code-review"],
   verify: ["df-verify", "dev-flow-verify"],
-  "feature-check": ["df-feature-check", "dev-flow-feature-check"],
   finish: ["df-finish", "dev-flow-finish"],
-  "risk-review": ["df-risk-review", "dev-flow-risk-review"],
 };
 
 const ROUTE_HIT_TOKENS = {
@@ -32,7 +30,6 @@ const ROUTE_HIT_TOKENS = {
   "code-review": [/code_review/, /reviewType: "code"/, /requiredEvidence/, /full-code-review/, /blocking|实质审查/, /diff|变更/],
   implement: [/implementation/, /implementation_approval/, /dev_flow_begin_implementation_unit/, /dev_flow_checkpoint_implementation_unit/, /fileScope/, /连续编辑多个文件/, /当前 diff/, /只调用一次/],
   verify: [/verification/, /dev_flow_verify/, /requiredEvidence\.verificationKinds/, /manualAcceptance/, /user-signoff/, /acceptanceAssist/, /明确要求协助/, /交付后检查/],
-  "feature-check": [/feature-check/, /dev_flow_feature_check/, /不得编造/, /人工\/UI 验收/, /Core/],
   finish: [/finalize/, /dev_flow_finalize/, /logic-complete/, /可选审计信息/, /不得假装浏览器验收/],
   requirements: [/requirements/, /requirement_confirmation/, /dev_flow_record_artifact/, /scaffold_artifact/, /dev_flow_present_gate/, /禁止同回合/, /merge-remaining/],
   grillme: [/grill me/, /requirements/, /每轮只问一个阻塞问题/, /禁止调用任何 MCP mutation/, /grill_question_id/, /dev_flow_record_artifact/, /Source: codebase/, /清单预批/, /合并剩余/],
@@ -42,7 +39,6 @@ const ROUTE_HIT_TOKENS = {
   status: [/dev_flow_status/, /dev_flow_next/, /progress\.wait/, /继续/, /verificationFreshness/, /replyHint/, /requiredEvidence/, /可选建议，不影响流程/, /reviewStatus/, /validTargets/, /activeUnitId/, /remainingUnitIds/],
   doctor: [/dev_flow_doctor/],
   plan: [/dev_flow_next/, /scaffold_artifact/, /dev_flow_present_gate/, /禁止同回合/],
-  "risk-review": [/dev_flow_record_step|risk-card/, /requiredEvidence/, /禁止.*复制/],
 };
 
 const ARTIFACT_OWNERS = new Set([
@@ -51,7 +47,6 @@ const ARTIFACT_OWNERS = new Set([
   "grillme",
   "plan",
   "coverage-review",
-  "risk-review",
   "rollback-safety",
   "code-review",
   "verify",

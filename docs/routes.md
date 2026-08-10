@@ -43,6 +43,8 @@ M 共享契约：requirements_alignment → planning → plan_review → executi
 
 boundaryAudit 必须显式扫描 assumption、free-space、tbd、fallback、scope、acceptance。每个发现以 repository fact/evidence 或 resolved decision 处置。M/L 或任一风险先展示事实、level、完整路线及启用/未启用控制原因，由 route-confirmation 确认；无风险 XS/S 展示后直接锁定。
 
+需求文档登记后同样需要用户确认：`requirements` 技能展示范围、目标、非目标、验收条件摘要与决策记录，用户确认或提出修改（修改需重新登记）后才进入 planning。
+
 首次 governed write 前可以基于纠正事实重算；实质路线变化会使旧确认失效。实现开始后控制只能增加。
 
 ## 机器权威

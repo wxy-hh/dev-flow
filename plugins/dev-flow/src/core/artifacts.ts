@@ -85,7 +85,7 @@ function assertPlanRevisionQuiescent(state: FeatureState, kind: string): void {
   if (active) {
     throw new DevFlowError("PLAN_REVISION_REQUIRES_QUIESCENT_UNIT", "implementation-plan cannot change while an implementation unit is active", {
       activeUnitId: active.unitId,
-      hint: "先 checkpoint 或 rollback 再修订计划",
+      hint: "先 checkpoint、取消（dev_flow_abandon_implementation_unit）或 rollback 再修订计划",
     });
   }
 }

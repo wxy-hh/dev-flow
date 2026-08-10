@@ -31,6 +31,7 @@ const safeDetailKeys = new Set([
   "path", "paths", "file", "files", "field", "allowed", "missing", "missingGuarantees",
   "command", "commandId", "currentRevision", "expectedRevision", "expectedStage", "schemaVersion",
   "decisionIds", "approvalIds", "incomplete", "conflicts", "issues", "recoveryHint",
+  "itemId", "required",
 ]);
 
 export function safeFailureDetails(details: Record<string, unknown>): Record<string, unknown> {
@@ -86,8 +87,26 @@ export class DevFlowError extends Error {
   }
 }
 
+function isPolicyError(error: unknown): error is { code: string; message: string; details?: Record<string, unknown> } {
+  return error instanceof Error && error.name === "PolicyError" && typeof (error as { code?: unknown }).code === "string";
+}
+
 export function failureFrom(error: unknown): DevFlowFailure {
   if (error instanceof DevFlowError) return error.toFailure();
+  if (isPolicyError(error)) {
+    // Policy contract violations (invalid classification facts, incomplete
+    // boundary audits, unsupported control enhancements) are caller-input
+    // errors, not internal faults. Surface their code and details so the
+    // agent can repair the input and retry instead of misreading INTERNAL_ERROR.
+    return {
+      code: error.code,
+      userMessage: "分类参数未通过策略校验。",
+      cause: error.message,
+      impact: "流程保持在当前阶段，未锁定任何状态；修正输入后可重试。",
+      recovery: { kind: "retry", instruction: "修正分类参数或边界审计项后重新提交。", requiresUserDecision: false, retryOriginal: true },
+      technical: safeFailureDetails(error.details ?? {}),
+    };
+  }
   return {
     code: "INTERNAL_ERROR",
     userMessage: "系统动作未完成。",

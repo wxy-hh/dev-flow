@@ -351,7 +351,10 @@ export async function checkpointImplementationUnit(
     ? verificationCommandIdsForRefs(verificationRefs).some((id) => traceCommandHashes[id] !== currentCommandHashes[id])
     : node.verificationConfigSha256 !== projectConfigSha256;
   if (commandSliceStale) {
-    throw new DevFlowError("TRACE_SLICE_STALE", "rollback verification configuration is stale", { unitId });
+    throw new DevFlowError("TRACE_SLICE_STALE", "rollback verification configuration is stale", {
+      unitId,
+      recoveryHint: "验证命令定义已变更：先用 dev_flow_abandon_implementation_unit 取消当前单元，再重登记计划刷新 Trace 基线，然后重新开始该单元。",
+    });
   }
   const commands = resolveVerificationCommands(config, node);
   const preflightCommands = resolvePreflightCommands(config);

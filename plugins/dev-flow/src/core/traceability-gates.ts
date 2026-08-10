@@ -84,6 +84,11 @@ export async function assertTraceGateCurrent(root: string, state: FeatureState, 
   throw new DevFlowError(
     inspection.blocker.code,
     `Trace slice is not ready for ${step}`,
-    inspection.blocker.details,
+    {
+      ...inspection.blocker.details,
+      recoveryHint: inspection.blocker.code === "TRACE_SLICE_STALE"
+        ? "验证配置或 trace 证据已变更：若存在活动实现单元，先用 dev_flow_abandon_implementation_unit 取消，再重登记计划刷新 Trace 基线。"
+        : "按当前阶段补齐 trace 证据后重试。",
+    },
   );
 }

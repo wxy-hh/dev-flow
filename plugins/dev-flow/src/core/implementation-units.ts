@@ -22,6 +22,44 @@ export interface ImplementationUnitWriteBlock {
   details: Record<string, unknown>;
 }
 
+/**
+ * Cancel an active implementation unit without touching the workspace.
+ *
+ * The unit returns to `pending` so it can be re-begun after the trace basis is
+ * repaired (e.g. re-registering the plan after a verification config change).
+ * Workspace edits made during the cancelled incarnation stay on disk and are
+ * absorbed by the re-begun unit's baseline; the cancellation is recorded as an
+ * audit event with a required reason.
+ */
+export async function abandonImplementationUnit(
+  root: string,
+  id: string,
+  expectedRevision: number,
+  unitId: string,
+  reason: string,
+  host: "claude" | "codex",
+): Promise<FeatureState> {
+  const reasonText = reason.trim();
+  if (!reasonText) {
+    throw new DevFlowError("IMPLEMENTATION_UNIT_CANCEL_REASON_REQUIRED", "cancelling an implementation unit requires a reason", {
+      recoveryHint: "说明为什么取消该单元（例如验证配置变更后需要重登记计划）",
+    });
+  }
+  return mutate(root, id, expectedRevision, "implementation-unit-cancelled", async (state) => {
+    await assertHostHealth(root, state.lastUpdatedBy.host, "implementation unit");
+    const unit = (state.implementationUnits ?? []).find((candidate) => candidate.unitId === unitId);
+    if (!unit) throw new DevFlowError("IMPLEMENTATION_UNIT_UNKNOWN", "rollback unit has no implementation state", { unitId });
+    if (unit.status !== "active") {
+      throw new DevFlowError("IMPLEMENTATION_UNIT_NOT_ACTIVE", "only an active rollback unit can be cancelled", { unitId, status: unit.status });
+    }
+    unit.status = "pending";
+    // Pending units never carry a begin-time fingerprint or nonce (see
+    // validateImplementationUnits); begin re-mints both for the new incarnation.
+    delete unit.startedFingerprint;
+    delete unit.beginNonce;
+  }, { unitId, reason: reasonText, host });
+}
+
 function currentRollbackNodes(ledger: TraceabilityLedger | undefined): RollbackNode[] {
   return Object.values(ledger?.nodes ?? {}).filter((node): node is RollbackNode => node.kind === "rollback" && node.status === "current");
 }
