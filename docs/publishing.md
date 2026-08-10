@@ -26,7 +26,7 @@ codex plugin marketplace add wxy-hh/dev-flow
 codex plugin add dev-flow@dev-flow-marketplace
 ```
 
-升级只用各宿主 marketplace / plugin 更新命令。无迁移包、复制安装器、兼容模式或 CLAUDE.md 注入。
+升级只用各宿主 marketplace / plugin 更新命令。无迁移包、复制安装器、兼容模式或 CLAUDE.md 注入。用户级与项目级（Claude Code `--scope project`）的安装、升级、卸载命令差异见根 [README.md](../README.md) 的「安装与升级」。
 
 ## 真机与 smoke
 

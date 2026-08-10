@@ -18,36 +18,50 @@ Hook 只处理能可靠识别的目标；复杂 wrapper、管道或变量展开�
 
 ## 安装与升级
 
-### Claude Code 用户级
+插件安装是宿主级操作，项目初始化是每个业务仓的一次性 MCP 操作（见下文「初始化业务仓」）。「用户级」指本机所有项目可用；「项目级」指仅当前业务仓库生效——Claude Code 用 `--scope project` 把安装记录写入项目配置；Codex CLI 目前只有用户级，没有项目级 scope。
+
+### Claude Code
+
+**用户级安装**（任意目录执行）：
 
 ```bash
 claude plugin marketplace add wxy-hh/dev-flow
 claude plugin install dev-flow@dev-flow-marketplace
 ```
 
-### Claude Code 项目级
-
-在业务仓库根目录执行：
+**项目级安装**（在业务仓库根目录执行，追加 `--scope project`）：
 
 ```bash
 claude plugin marketplace add wxy-hh/dev-flow --scope project
 claude plugin install dev-flow@dev-flow-marketplace --scope project
 ```
 
-升级：
+**升级**（先刷新 marketplace 快照，再按安装时的 scope 更新插件；`plugin update` 默认 scope 为 user）：
 
 ```bash
+# 刷新已配置的 marketplace 快照（省略名称时更新全部来源，无 scope 参数）
 claude plugin marketplace update
+
+# 用户级升级
 claude plugin update dev-flow@dev-flow-marketplace
+
+# 项目级升级（在业务仓库根目录执行）
 claude plugin update dev-flow@dev-flow-marketplace --scope project
 ```
 
-升级后新开会话或执行 `/reload-plugins`。卸载时 scope 必须与安装一致；卸载插件不会自动删除业务仓的 `.dev-flow/`。
+升级后新开会话或执行 `/reload-plugins` 生效。卸载时 scope 必须与安装一致：`claude plugin uninstall dev-flow@dev-flow-marketplace`（用户级）或 `claude plugin uninstall dev-flow@dev-flow-marketplace --scope project`（项目级）。卸载插件不会删除业务仓的 `.dev-flow/`。
 
 ### Codex CLI
 
+Codex 的插件安装为**用户级**（写入 `~/.codex` 配置），没有项目级 scope：
+
 ```bash
+# 安装
 codex plugin marketplace add wxy-hh/dev-flow
+codex plugin add dev-flow@dev-flow-marketplace
+
+# 升级（先升级 marketplace 快照，再重新应用插件到最新快照）
+codex plugin marketplace upgrade dev-flow-marketplace
 codex plugin add dev-flow@dev-flow-marketplace
 ```
 
