@@ -140,12 +140,13 @@ test("block outcome 稳定包含原因、影响、解决方案、确认和自动
   assert.match(formatted, /继续方式：解决后自动重试原操作/);
 });
 
-test("unresolved 分析默认是无提示 allow outcome", async () => {
+test("unresolved 分析给出 allow 与归属提示 advisory", async () => {
   const root = await startIntake("unresolved-outcome");
-  assert.deepEqual(
-    await adapter.evaluatePreToolUse(root, { tool_name: "bash", tool_input: { command: "bash -c 'printf ok > docs/result.md'" } }),
-    { kind: "allow" },
-  );
+  const outcome = await adapter.evaluatePreToolUse(root, { tool_name: "bash", tool_input: { command: "bash -c 'printf ok > docs/result.md'" } });
+  assert.equal(outcome.kind, "allow");
+  if (outcome.kind !== "allow") return;
+  assert.equal(outcome.advisory?.code, "DEV_FLOW_HOOK_UNRESOLVED_WRITE");
+  assert.match(outcome.advisory?.message ?? "", /没有自动把这些文件记入当前任务/);
 });
 
 test("批准增强信息的事件账本损坏时保持 state unreadable，不 fail-open protected 写入", async () => {

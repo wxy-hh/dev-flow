@@ -49,7 +49,7 @@ export interface PreToolBlock {
 }
 
 export interface PreToolAdvisory {
-  code: "DEV_FLOW_HOOK_EVALUATION_FAILED";
+  code: "DEV_FLOW_HOOK_EVALUATION_FAILED" | "DEV_FLOW_HOOK_UNRESOLVED_WRITE";
   message: string;
 }
 
@@ -818,9 +818,11 @@ function unreadableTargetBlock(root: string, target: string, workflow: Unreadabl
 /** Evaluate policy without making adapters infer meaning from exceptions. */
 export async function evaluatePreToolUse(root: string, event: HookEvent): Promise<PreToolOutcome> {
   if (!isRelevantPreToolUse(event)) return { kind: "allow" };
+  const advisoryOut: { advisory?: PreToolAdvisory } = {};
   try {
-    const block = await evaluatePreToolUseInternal(root, event);
-    return block ? { kind: "block", block } : { kind: "allow" };
+    const block = await evaluatePreToolUseInternal(root, event, advisoryOut);
+    if (block) return { kind: "block", block };
+    return advisoryOut.advisory ? { kind: "allow", advisory: advisoryOut.advisory } : { kind: "allow" };
   } catch (error) {
     const detail = error instanceof Error ? error.message : String(error);
     return {
@@ -845,7 +847,11 @@ export async function preToolBlockReason(root: string, event: HookEvent): Promis
   return block ? formatPreToolBlock(block) : undefined;
 }
 
-async function evaluatePreToolUseInternal(root: string, event: HookEvent): Promise<PreToolBlock | undefined> {
+async function evaluatePreToolUseInternal(
+  root: string,
+  event: HookEvent,
+  advisoryOut: { advisory?: PreToolAdvisory } = {},
+): Promise<PreToolBlock | undefined> {
   if (!isRelevantPreToolUse(event)) return undefined;
 
   // A statically known control target remains fail-closed even if loading the
@@ -942,7 +948,16 @@ async function evaluatePreToolUseInternal(root: string, event: HookEvent): Promi
     if (analysis.kind === "read-only") return undefined;
     // The analyzer is advisory. Unknown shell syntax must not become a second
     // permission system or force the model to rewrite an otherwise valid tool call.
-    if (analysis.kind === "unresolved") return undefined;
+    // The write itself is allowed (host permissions stay authoritative), but
+    // the affected files will not be auto-owned; surface that plainly instead
+    // of letting the ownership prompt surprise the user later.
+    if (analysis.kind === "unresolved") {
+      advisoryOut.advisory = {
+        code: "DEV_FLOW_HOOK_UNRESOLVED_WRITE",
+        message: "DEV_FLOW_HOOK_UNRESOLVED_WRITE: 无法从命令文本确认本次写入涉及哪些文件，因此没有自动把这些文件记入当前任务；如果涉及项目文件，稍后会请你确认这些文件是否属于当前任务。",
+      };
+      return undefined;
+    }
     const preparationDiagnostic = await prepareImplementationWrite(analysis.targets);
     for (const target of analysis.targets) {
       const block = classifyTarget(root, target, workflow);
