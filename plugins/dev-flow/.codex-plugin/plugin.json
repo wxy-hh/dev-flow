@@ -1,6 +1,6 @@
 {
   "name": "dev-flow",
-  "version": "5.0.5",
+  "version": "5.0.6",
   "description": "Dynamic, evidence-based development governance for Claude Code and Codex CLI.",
   "author": {
     "name": "wxy-hh",

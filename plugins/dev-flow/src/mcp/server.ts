@@ -63,20 +63,6 @@ import { lifecycleLabel, routeLabel, stageLabel } from "../policy/presentation.j
 const root = process.cwd();
 const moduleDirectory = path.dirname(fileURLToPath(import.meta.url));
 const pluginRoot = path.basename(moduleDirectory) === "dist" ? path.resolve(moduleDirectory, "..") : path.resolve(moduleDirectory, "../..");
-const tools = [
-  "dev_flow_init_project", "dev_flow_update_project", "dev_flow_classify", "dev_flow_start", "dev_flow_lock_classification", "dev_flow_record_decision", "dev_flow_status", "dev_flow_inspect",
-  "dev_flow_scaffold_artifact", "dev_flow_record_artifact", "dev_flow_record_step", "dev_flow_pause", "dev_flow_resume", "dev_flow_reconcile_workspace",
-  "dev_flow_record_artifact_with_trace", "dev_flow_get_traceability", "dev_flow_rebuild_review_projection",
-  "dev_flow_create_review_batch", "dev_flow_get_review_job", "dev_flow_claim_review_job", "dev_flow_submit_review_job", "dev_flow_sample_review_job", "dev_flow_release_review_job",
-  "dev_flow_present_review_risk_acceptance",
-  "dev_flow_present_approval", "dev_flow_present_quality_exception", "dev_flow_present_acceptance_confirmation", "dev_flow_record_acceptance_evidence", "dev_flow_answer", "dev_flow_reclassify", "dev_flow_verify",
-  "dev_flow_request_grill_decision",
-  "dev_flow_finalize", "dev_flow_repair_feature", "dev_flow_abandon", "dev_flow_enable_windows_notifications", "dev_flow_doctor",
-  "dev_flow_begin_implementation_unit", "dev_flow_checkpoint_implementation_unit", "dev_flow_abandon_implementation_unit", "dev_flow_preview_rollback",
-  "dev_flow_present_rollback_gate", "dev_flow_execute_rollback",
-  "dev_flow_recover_corrupt_feature",
-];
-
 const object = (required: string[], properties: Record<string, unknown> = {}) => ({
   type: "object", required, properties, additionalProperties: false,
 });
@@ -268,7 +254,9 @@ const boundaryAuditSchema = object(["scanned", "items"], {
   items: { type: "array", items: boundaryAuditItemSchema },
 });
 
-const toolSchemas: Record<string, { description: string; inputSchema: Record<string, unknown>; annotations?: Record<string, boolean> }> = {
+type ToolSchemaEntry = { description: string; inputSchema: Record<string, unknown>; annotations?: Record<string, boolean>; expose?: boolean };
+
+const toolSchemas = {
   dev_flow_init_project: { description: "Create strict project configuration.", inputSchema: object(["config"], { config: { type: "object" } }) },
   dev_flow_update_project: { description: "Update strict project configuration using sha256 compare-and-swap.", inputSchema: object(["config", "expectedSha256"], { config: { type: "object" }, expectedSha256: string }) },
   dev_flow_classify: {
@@ -382,6 +370,7 @@ const toolSchemas: Record<string, { description: string; inputSchema: Record<str
     }),
   },
   dev_flow_record_review_execution_event: {
+    expose: false, // 宿主接缝：agent 不可调用、不进入 tools/list，也无需 dispatch case
     description: "Record one review-execution event for the active feature (host adapter seam for subagent reviews). Only this dedicated event type can prove review source or context isolation; ordinary user-prompt/tool events never qualify. contextId must identify the review context and implementationContextId the implementation context; submitReviewJob validates that contextId differs from implementationContextId.",
     inputSchema: object(["event"], {
       event: object(["eventId", "type", "host", "batchId", "jobId", "executionId", "sourceId", "contextId", "implementationContextId"], {
@@ -493,7 +482,13 @@ const toolSchemas: Record<string, { description: string; inputSchema: Record<str
       },
     ),
   },
-};
+} satisfies Record<string, ToolSchemaEntry>;
+
+type ToolName = keyof typeof toolSchemas;
+// 内部接缝（expose: false）不进公开面、也不要求 dispatch case；公开面由声明派生，杜绝"注册了却忘了暴露"
+type PublicToolName = { [K in ToolName]: (typeof toolSchemas)[K] extends { expose: false } ? never : K }[ToolName];
+const publicTools = (Object.keys(toolSchemas) as ToolName[]).filter((name) => (toolSchemas[name] as ToolSchemaEntry).expose !== false);
+const publicToolSet = new Set<string>(publicTools);
 
 /** Protocol-level JSON-RPC result (initialize, tools/list, …). */
 function protocolResult(id: unknown, value: unknown) {
@@ -975,6 +970,11 @@ function samplingFailureCode(error: unknown): "client-error" | "timeout" | "inva
 }
 
 async function call(name: string, a: any, connection: McpConnection) {
+  if (!publicToolSet.has(name)) throw new DevFlowError("UNKNOWN_TOOL", name);
+  return dispatch(name as PublicToolName, a, connection);
+}
+
+async function dispatch(name: PublicToolName, a: any, connection: McpConnection) {
   switch (name) {
     case "dev_flow_init_project": {
       await initProject(root, a.config);
@@ -1501,7 +1501,7 @@ async function call(name: string, a: any, connection: McpConnection) {
     }
     case "dev_flow_abandon": return abandonFeature(root, a.featureId, a.expectedRevision, a.reason, a.userEvidence);
     case "dev_flow_enable_windows_notifications": return enableWindowsNotifications({ nodeExecutable: process.execPath });
-    case "dev_flow_doctor": return collectDoctorReport(root, pluginRoot, __DEV_FLOW_VERSION__, tools);
+    case "dev_flow_doctor": return collectDoctorReport(root, pluginRoot, __DEV_FLOW_VERSION__, publicTools);
     case "dev_flow_recover_corrupt_feature": return recoverCorruptFeature(root, {
       featureId: a.featureId,
       stateSha256: a.stateSha256,
@@ -1511,7 +1511,11 @@ async function call(name: string, a: any, connection: McpConnection) {
       userEvidence: a.userEvidence,
        host: a.host,
     });
-    default: throw new DevFlowError("UNKNOWN_TOOL", name);
+    default: {
+      // 任一公开工具（PublicToolName）缺 dispatch case 时此赋值在编译期报错
+      const _exhaustive: never = name;
+      throw new DevFlowError("UNKNOWN_TOOL", name);
+    }
   }
 }
 
@@ -1535,7 +1539,10 @@ async function dispatchRequest(message: { id?: unknown; method?: string; params?
     }
     if (message.method === "tools/list") {
       protocolResult(message.id, {
-        tools: tools.map((name) => ({ name, ...toolSchemas[name] })),
+        tools: publicTools.map((name) => {
+          const { expose, ...schema } = toolSchemas[name] as ToolSchemaEntry;
+          return { name, ...schema };
+        }),
       });
       return;
     }

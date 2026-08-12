@@ -1,4 +1,4 @@
-/* dev-flow 5.0.5; built from source, deterministic build */
+/* dev-flow 5.0.6; built from source, deterministic build */
 
 // plugins/dev-flow/src/core/state-store.ts
 import { randomUUID as randomUUID6, createHash as createHash11 } from "node:crypto";
@@ -2168,7 +2168,7 @@ async function reconcileWorkspace(root, id, expectedRevision, host) {
     draft.workspace = workspace;
     if (contentChanged) markAffectedEvidenceStale(draft, changedPaths, reopenedLifecycle, legalCheckpointPaths);
     presentationEventId = queueNextOwnershipDecision(draft);
-    draft.lastUpdatedBy = { host, pluginVersion: "5.0.5" };
+    draft.lastUpdatedBy = { host, pluginVersion: "5.0.6" };
   }, () => ({
     observedHead: workspace.observedHead,
     commitCount: workspace.observedCommits.length,
@@ -2857,7 +2857,7 @@ async function recordTrustedWriteOwnership(root, paths, host, eventId2) {
       draft.workspace.ownershipSource[file] = "trusted-hook";
     }
     draft.workspace.unownedPaths = (draft.workspace.unownedPaths ?? []).filter((file) => !governed.includes(file));
-    draft.lastUpdatedBy = { host, pluginVersion: "5.0.5" };
+    draft.lastUpdatedBy = { host, pluginVersion: "5.0.6" };
   }, { eventId: eventId2, host, paths: governed, after });
 }
 async function recordHostAuthorizationEvent(root, type, record) {
