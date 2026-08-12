@@ -26,8 +26,10 @@ export async function collectProjectConfigAffectedEvidence(
   if (state.traceability) {
     const ledger = await readTraceability(root, state);
     for (const node of Object.values(ledger.nodes)) {
-      if (node.status === "tombstoned" || node.kind !== "rollback") continue;
-      const refs = [...node.forwardVerification, ...node.rollbackVerification]
+      if (node.status === "tombstoned" || (node.kind !== "rollback" && node.kind !== "implementation-unit")) continue;
+      const refs = (node.kind === "rollback"
+        ? [...node.forwardVerification, ...node.rollbackVerification]
+        : [...node.forwardVerification])
         .filter((ref): ref is string => typeof ref === "string");
       if (refs.some((id) => changed.has(id))) traceNodeIds.push(node.id);
     }

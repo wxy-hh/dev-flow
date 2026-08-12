@@ -31,14 +31,11 @@ export function requiredEvidenceForStep(
     else required.fields.reviewType = "plan";
     if (route === "l") addChecks(required.checks, ["rollback-strategy"]);
   }
-  if (step === "code_review") required.fields.reviewType = "code";
+  if (step === "code_review") required.fields.reviewBatch = true;
   if (step === "implementation" && workflowCapabilities?.checkpoints === 1) {
     required.fields.files = "governed-root-paths";
   }
 
-  if (step === "code_review" && risk.checks.includes("full-code-review")) {
-    required.fields.reviewDepth = "full";
-  }
 
   // Risk overlays use one explicit evidence check at the first review-capable
   // point. This is a contract obligation, not another user-visible route.

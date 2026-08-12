@@ -11,7 +11,7 @@
 
 ## Schema 与状态
 
-- FeatureState schema v4，project config v2，review ledger v2，checkpoint manifest v2。
+- FeatureState 运行态 schema v5（仅当前 5.0 schema v4 active state 在加载入口转换），project config v2，review ledger v2，checkpoint manifest v2。
 - 旧 schema 返回 `UNSUPPORTED_*_SCHEMA`，没有迁移器。
 - 所有 mutation 使用进程锁、revision CAS、fsync 和 atomic rename；原始事件与内容寻址 snapshot 是审计事实。
 - `dev_flow_repair_feature` 只能重建派生 pointer/stage/freshness/projection。

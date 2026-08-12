@@ -13,17 +13,21 @@ const bundles = await buildTestBundles();
 const hook = bundles.pathFor("claude-hook");
 
 const boundaryAudit = { scanned: ["assumption", "free-space", "tbd", "fallback", "scope", "acceptance"], items: [] };
-const mBasis = {
-  scopeFacts: ["只改一个模块"], topologyFacts: ["没有共享契约"], uncertaintyFacts: [],
-  riskFacts: {}, decisionRefs: [],
-  signals: { changeSurface: "multi-component", behaviorChange: "new-capability", topology: "local", unitCount: 1, requirements: "provided-confirmed", operationalRecovery: false, executableRollback: false },
-};
 
 async function lockRouteConfirmation(fixture, featureId) {
   await store.initProject(fixture.root, strictProjectConfig);
   const started = await store.startFeature(fixture.root, { featureId, objective: "测试结构化凭证", host: "claude" });
-  const pending = await store.lockClassification(fixture.root, featureId, started.revision, {
-    ...mBasis, level: "M", topology: "local", requirements: "provided-confirmed",
+  // v5 分类引用已登记的仓库事实记录（ADR-0018）：绑定既有受管文件，不新增文件。
+  const withFact = await store.registerRepositoryFact(fixture.root, featureId, started.revision, {
+    assertion: "只改一个模块",
+    location: { kind: "positive", path: "src/counter.js" },
+  }, "claude");
+  const factRef = withFact.governance.repositoryFacts[withFact.governance.repositoryFacts.length - 1].recordId;
+  const pending = await store.lockClassification(fixture.root, featureId, withFact.revision, {
+    scopeFactRefs: [factRef], topologyFactRefs: [factRef], uncertaintyFactRefs: [],
+    riskFactRefs: {}, decisionRefs: [],
+    signals: { changeSurface: "multi-component", behaviorChange: "new-capability", topology: "local", unitCount: 1, requirements: "provided-confirmed", operationalRecovery: false, executableRollback: false },
+    level: "M", topology: "local", requirements: "provided-confirmed",
   }, boundaryAudit);
   assert.equal(decisions.pendingDecisionForState(pending).kind, "route-confirmation");
   return pending;

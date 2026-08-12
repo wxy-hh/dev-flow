@@ -16,14 +16,14 @@ const config = {
 };
 const facts = {
   level: "M", topology: "local", requirements: "provided-confirmed",
-  scopeFacts: ["只改一个模块"], topologyFacts: ["没有共享契约"], uncertaintyFacts: [], riskFacts: {}, decisionRefs: [],
+  scopeFactRefs: [], topologyFactRefs: [], uncertaintyFactRefs: [], riskFactRefs: {}, decisionRefs: [],
   signals: { changeSurface: "multi-component", behaviorChange: "new-capability", topology: "local", unitCount: 1, requirements: "provided-confirmed", operationalRecovery: false, executableRollback: false },
 };
 const boundaryAudit = { scanned: ["assumption", "free-space", "tbd", "fallback", "scope", "acceptance"], items: [] };
 
-function basis(changeSurface, behaviorChange, topology = "local", riskFacts = {}) {
+function basis(changeSurface, behaviorChange, topology = "local", riskFactRefs = {}) {
   return {
-    scopeFacts: [`surface:${changeSurface}`], topologyFacts: [`topology:${topology}`], uncertaintyFacts: [], riskFacts, decisionRefs: [],
+    scopeFactRefs: [], topologyFactRefs: [], uncertaintyFactRefs: [], riskFactRefs, decisionRefs: [],
     signals: { changeSurface, behaviorChange, topology, unitCount: 1, requirements: "provided-confirmed", operationalRecovery: false, executableRollback: false },
   };
 }
@@ -33,7 +33,7 @@ test("start creates intake and route confirmation atomically creates routed v4 s
   await mkdir(path.join(root, "src"));
   await state.initProject(root, config);
   const intake = await state.startFeature(root, { featureId: "f", objective: "调整模块行为", scope: { inScope: ["src/需求a\u0301"], outOfScope: [] }, host: "codex" });
-  assert.equal(intake.schemaVersion, 4);
+  assert.equal(intake.schemaVersion, 5);
   assert.equal(intake.mode, "intake");
   assert.equal(intake.route, undefined);
   assert.deepEqual(intake.scope.inScope, ["src/需求á"]);
@@ -43,7 +43,7 @@ test("start creates intake and route confirmation atomically creates routed v4 s
   const routed = await state.confirmRouteClassification(root, "f", pending.revision, "确认这条路线", "codex");
   assert.equal(routed.mode, "routed");
   assert.equal(routed.route, "m");
-  assert.equal(routed.schemaVersion, 4);
+  assert.equal(routed.schemaVersion, 5);
   assert.ok(routed.classificationBasis);
 });
 
@@ -57,7 +57,8 @@ test("pre-v4 state is rejected with an actionable hard-cut error", async () => {
 test("v4 JSON schema closes runtime state and has no feature-check compatibility field", async () => {
   const schema = JSON.parse(await readFile(path.resolve("plugins/dev-flow/policy/state.schema.json"), "utf8"));
   assert.equal(schema.additionalProperties, false);
-  assert.ok(schema.required.includes("qualityExceptions"));
+  assert.ok(schema.required.includes("governance"));
+  assert.equal(schema.required.includes("qualityExceptions"), false);
   assert.ok(schema.properties.workspace.required.includes("observedPathFingerprints"));
   assert.equal("featureCheck" in schema.properties, false);
   assert.equal(schema.$defs.classificationBasis.properties.controlEnhancements.$ref, "#/$defs/controlEnhancements");
@@ -73,8 +74,8 @@ test("lock with contradictory classification args reports a readable contradicti
   await assert.rejects(
     () => state.lockClassification(root, "f", intake.revision, {
       level: "M", topology: "local",
-      scopeFacts: ["只改一个模块"], topologyFacts: ["没有共享契约"], uncertaintyFacts: [],
-      riskFacts: {}, decisionRefs: [],
+      scopeFactRefs: [], topologyFactRefs: [], uncertaintyFactRefs: [],
+      riskFactRefs: {}, decisionRefs: [],
       signals: { changeSurface: "system-wide", behaviorChange: "systemic-change", topology: "local", unitCount: 1, requirements: "provided-confirmed", operationalRecovery: false, executableRollback: false },
     }, boundaryAudit),
     (error) => {

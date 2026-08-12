@@ -6,7 +6,7 @@ const brief = await loadSource("plugins/dev-flow/src/core/execution-brief.ts");
 
 test("mutation summary derives stage from steps and keeps obligation counts separate", () => {
   const summary = brief.buildFeatureMutationSummary({
-    schemaVersion: 4,
+    schemaVersion: 5,
     mode: "routed",
     featureId: "f",
     revision: 7,

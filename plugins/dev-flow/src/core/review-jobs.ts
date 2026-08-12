@@ -1,8 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
-import { readFile } from "node:fs/promises";
-import path from "node:path";
 import { toPublicReviewJob, type ReviewAgentAttestation, type ReviewBasis, type ReviewBatch, type ReviewFindingEvent, type ReviewJob, type ReviewLedger, type ReviewSamplingAttempt, type PublicReviewJob } from "../policy/review.js";
-import type { TraceNode, TraceabilityLedger } from "../policy/traceability.js";
+import type { AcceptanceCriterionNode, TraceNode, TraceabilityLedger, VerificationDispositionKind } from "../policy/traceability.js";
 import type { ReviewAssurance, ReviewFinding, ReviewFindingInput, ReviewFindingResolutionInput, ReviewRole } from "../policy/types.js";
 import { pathWithinFileScope } from "../policy/rollback.js";
 import {
@@ -15,9 +13,10 @@ import {
   type ReviewIdentityVerifier,
 } from "../policy/review.js";
 import { DevFlowError } from "./errors.js";
-import { normalizeUnicode } from "./path-normalization.js";
+import { isAbsoluteProjectPath, isCanonicalProjectPath, normalizeUnicode } from "./path-normalization.js";
 import { fingerprintGovernedRoots } from "./fingerprint.js";
 import { mutatePrepared, readFeatureEvents, readState, type FeatureState } from "./state-store.js";
+import { assertArtifactCurrent } from "./artifacts.js";
 import {
   canonicalReviewValueJson,
   readReviewLedger,
@@ -46,6 +45,8 @@ import { carriedFindings } from "./review-findings.js";
 import { effectiveFindingState, unresolvedBlockingFindings } from "./review-findings.js";
 import { hasCurrentQualityException } from "./quality-exceptions.js";
 import { verificationCommandHashes } from "./project-config.js";
+import { currentOpenStep } from "./step-order.js";
+import { reviewEnforcementRequired } from "../policy/contract.js";
 
 const digest = (value: string) => createHash("sha256").update(value).digest("hex");
 const leaseMilliseconds = 60 * 60 * 1000;
@@ -65,6 +66,49 @@ interface DerivedReviewInput {
   frozenArtifacts: FrozenReviewArtifact[];
   projectConfig: { sha256: string; contents: string };
   scopeManifest: { governedRoots: string[]; rollbackFileScopes: string[]; traceIds: string[]; frozenArtifactPaths: string[] };
+  nonBehaviorDispositions: NonBehaviorDispositionExemption[];
+}
+
+/** 一条非行为验证处置豁免：AC 声明不由行为测试验证，及其自报理由与覆盖任务。 */
+interface NonBehaviorDispositionExemption {
+  criterionId: string;
+  dispositionKind: VerificationDispositionKind;
+  reason?: string;
+  target?: string;
+  coveredBy: Array<{ taskId: string; tdd?: "test-first" | "direct" }>;
+}
+
+/**
+ * 非行为验证处置清单（spec 计划审查既定机制）。计划编译没有可靠的机器信号
+ * 能判定任务是否改变行为——任务 tdd 与 AC verificationDisposition 都是调用方
+ * 自报。把两组自报并排显式纳入 requirements-coverage 角色的 basis 与审查包：
+ * 不当豁免（行为变化却声明 file-check 等非行为处置）成为可定位的显式 finding，
+ * 清单本身的变化也会使该角色 basis 失效并触发重审。
+ */
+function nonBehaviorDispositions(trace: TraceabilityLedger | undefined): NonBehaviorDispositionExemption[] {
+  const nodes = Object.values(trace?.nodes ?? {}).filter((node) => node.status !== "tombstoned");
+  const coveredBy = new Map<string, Array<{ taskId: string; tdd?: "test-first" | "direct" }>>();
+  for (const node of nodes) {
+    if (node.kind !== "task") continue;
+    for (const covered of node.covers) {
+      if (!covered.startsWith("AC-")) continue;
+      const list = coveredBy.get(covered) ?? [];
+      list.push({ taskId: node.id, ...(node.tdd ? { tdd: node.tdd } : {}) });
+      coveredBy.set(covered, list);
+    }
+  }
+  return nodes
+    .filter((node): node is AcceptanceCriterionNode => node.kind === "acceptance-criterion"
+      && node.verificationDisposition !== undefined
+      && node.verificationDisposition.kind !== "behavior-test")
+    .map((node) => ({
+      criterionId: node.id,
+      dispositionKind: node.verificationDisposition!.kind,
+      ...(node.verificationDisposition!.reason ? { reason: node.verificationDisposition!.reason } : {}),
+      ...(node.verificationDisposition!.target ? { target: node.verificationDisposition!.target } : {}),
+      coveredBy: (coveredBy.get(node.id) ?? []).sort((left, right) => left.taskId.localeCompare(right.taskId)),
+    }))
+    .sort((left, right) => left.criterionId.localeCompare(right.criterionId));
 }
 
 export interface CreateReviewBatchResult {
@@ -149,15 +193,17 @@ function reviewArtifactKinds(state: FeatureState): typeof basisArtifactKinds[num
 }
 
 async function deriveReviewInput(root: string, state: FeatureState): Promise<DerivedReviewInput> {
-  if (!state.traceability) invalid("REVIEW_BASIS_UNAVAILABLE", "review basis requires a current Trace pointer");
-  const trace = await readTraceability(root, state);
+  const trace = state.traceability ? await readTraceability(root, state) : undefined;
   const { config, sha256: projectConfigSha256 } = await readProjectConfigSnapshot(root);
   const frozenArtifacts = await Promise.all(reviewArtifactKinds(state).map(async (kind) => {
     const artifact = state.artifacts[kind];
     if (!artifact) invalid("REVIEW_BASIS_ARTIFACT_MISSING", `review basis artifact is missing: ${kind}`, { kind });
-    let contents: string;
-    try { contents = await readFile(path.join(root, ".dev-flow", "features", state.featureId, artifact!.path), "utf8"); }
-    catch { invalid("REVIEW_BASIS_ARTIFACT_MISSING", `review basis artifact cannot be read: ${kind}`, { kind }); }
+      let contents: string;
+      try { contents = await assertArtifactCurrent(root, state.featureId, state, kind); }
+      catch (error) {
+        if (error instanceof DevFlowError && error.code === "ARTIFACT_INTEGRITY_FAILED") throw error;
+        invalid("REVIEW_BASIS_ARTIFACT_MISSING", `review basis artifact cannot be read: ${kind}`, { kind });
+      }
     if (digest(contents!) !== artifact!.sha256) {
       invalid("ARTIFACT_INTEGRITY_FAILED", `review basis artifact was edited without registration: ${kind}`, {
         kind,
@@ -166,7 +212,7 @@ async function deriveReviewInput(root: string, state: FeatureState): Promise<Der
     }
     return { kind, path: artifact!.path, sha256: artifact!.sha256, contents: contents! };
   }));
-  const projectContents = await readFile(path.join(root, ".dev-flow", "project.json"), "utf8");
+      const projectContents = (await readProjectConfigSnapshot(root)).contents;
   if (digest(projectContents) !== projectConfigSha256) {
     invalid("REVIEW_BASIS_UNAVAILABLE", "project configuration changed while review basis was being captured");
   }
@@ -174,9 +220,9 @@ async function deriveReviewInput(root: string, state: FeatureState): Promise<Der
     inScope: [...state.scope.inScope].sort(),
     outOfScope: [...state.scope.outOfScope].sort(),
     governedRoots: [...config.governedRoots].sort(),
-    rollbackFileScopes: Object.values(trace.nodes)
+    rollbackFileScopes: Object.values(trace?.nodes ?? {})
       .reduce<Array<{ id: string; fileScope: string[] }>>((scopes, node) => {
-        if (node.kind === "rollback" && node.status === "current") {
+        if ((node.kind === "implementation-unit" || node.kind === "rollback") && node.status === "current") {
           scopes.push({ id: node.id, fileScope: [...node.fileScope].sort() });
         }
         return scopes;
@@ -198,14 +244,18 @@ async function deriveReviewInput(root: string, state: FeatureState): Promise<Der
       riskLabels: [...state.classification.riskLabels].sort(),
     },
     artifacts: frozenArtifacts.map(({ kind, path: artifactPath, sha256 }) => ({ kind, path: artifactPath, sha256 })),
-    traceability: { path: state.traceability.path, sha256: state.traceability.sha256, revision: trace.revision },
+    ...(state.traceability && trace ? { traceability: { path: state.traceability.path, sha256: state.traceability.sha256, revision: trace.revision } } : {}),
     projectConfigSha256,
     verificationCommandHashes: verificationCommandHashes(config),
     scopeManifestSha256: digest(canonicalReviewValueJson(scopeManifest)),
     governedRootsFingerprint,
   };
+  const roles = [...new Set<ReviewRole>([
+    ...state.classification.controls.reviewRoles,
+    ...(state.classification.controls.codeReview !== "none" ? ["code-quality" as const, "requirement-fidelity" as const] : []),
+  ])];
   const roleBasisHashes = Object.fromEntries(
-    state.classification.controls.reviewRoles.map((role) => [role, roleBasisHash(basis, frozenArtifacts, trace, role)]),
+    roles.map((role) => [role, roleBasisHash(basis, frozenArtifacts, trace, role)]),
   ) as Record<ReviewRole, string>;
   return {
     basis,
@@ -215,9 +265,10 @@ async function deriveReviewInput(root: string, state: FeatureState): Promise<Der
     scopeManifest: {
       governedRoots: scopeManifest.governedRoots,
       rollbackFileScopes: scopeManifest.rollbackFileScopes.flatMap((item) => item.fileScope),
-      traceIds: Object.values(trace.nodes).filter((node) => node.status === "current").map((node) => node.id).sort(),
+      traceIds: Object.values(trace?.nodes ?? {}).filter((node) => node.status === "current").map((node) => node.id).sort(),
       frozenArtifactPaths: frozenArtifacts.map((artifact) => artifact.path).sort(),
     },
+    nonBehaviorDispositions: nonBehaviorDispositions(trace),
   };
 }
 
@@ -228,23 +279,24 @@ function basisHash(basis: ReviewBasis): string {
 function roleBasisHash(
   basis: ReviewBasis,
   frozenArtifacts: FrozenReviewArtifact[],
-  trace: TraceabilityLedger,
+  trace: TraceabilityLedger | undefined,
   role: ReviewRole,
 ): string {
   const artifacts = frozenArtifacts.filter((artifact) => {
+    if (role === "code-quality" || role === "requirement-fidelity") return true;
     if (role === "requirements-coverage") return artifact.kind === "requirements" || artifact.kind === "implementation-plan";
     if (role === "architecture-testability") return artifact.kind === "implementation-plan";
     if (role === "rollback-operability") return artifact.kind === "implementation-plan" || artifact.kind === "rollback-units";
     return artifact.kind === "requirements" || artifact.kind === "implementation-plan";
   }).map(({ kind, path: artifactPath, sha256 }) => ({ kind, path: artifactPath, sha256 }));
-  const traceKinds: TraceNode["kind"][] = role === "requirements-coverage"
-    ? ["requirement", "acceptance-criterion", "task", "test"]
-    : role === "architecture-testability"
-      ? ["task", "test"]
-      : role === "rollback-operability"
-        ? ["task", "rollback"]
-        : ["requirement", "acceptance-criterion", "task", "test", "rollback"];
-  const traceSlice = Object.values(trace.nodes)
+  const traceKinds: TraceNode["kind"][] = role === "requirements-coverage" || role === "requirement-fidelity"
+      ? ["requirement", "acceptance-criterion", "task", "test", "implementation-unit"]
+      : role === "architecture-testability"
+        ? ["task", "test", "implementation-unit"]
+        : role === "rollback-operability"
+          ? ["task", "implementation-unit", "recovery", "rollback"]
+          : ["requirement", "acceptance-criterion", "task", "test", "implementation-unit", "recovery", "rollback"];
+  const traceSlice = Object.values(trace?.nodes ?? {})
     .filter((node) => node.status !== "tombstoned" && traceKinds.includes(node.kind))
     .sort((left, right) => left.id.localeCompare(right.id))
     .map(({ sourceArtifact: _sourceArtifact, sourceSha256: _sourceSha256, sourceAnchor: _sourceAnchor, sourceBlockSha256: _sourceBlockSha256, status: _status, ...semantic }) => semantic);
@@ -269,10 +321,11 @@ function roleBasisHash(
       traceSlice,
     }));
   }
-  const referencedCommandIds = traceSlice.flatMap((node) => [
-    ...(node.kind === "rollback" ? node.forwardVerification : []),
-    ...(node.kind === "rollback" ? node.rollbackVerification : []),
-  ]).filter((reference): reference is string => typeof reference === "string");
+  const referencedCommandIds = traceSlice.flatMap((node) => {
+    if (node.kind === "implementation-unit") return node.forwardVerification;
+    if (node.kind === "rollback") return [...node.forwardVerification, ...node.rollbackVerification];
+    return [];
+  }).filter((reference): reference is string => typeof reference === "string");
   const referencedCommandHashes = Object.fromEntries([...new Set(referencedCommandIds)].sort()
     .filter((id) => basis.verificationCommandHashes?.[id] !== undefined)
     .map((id) => [id, basis.verificationCommandHashes![id]]));
@@ -282,6 +335,9 @@ function roleBasisHash(
     level: basis.classification.level,
     artifacts,
     traceSlice,
+    // requirements-coverage 显式绑定非行为处置豁免清单：豁免变化必须使该角色
+    // basis 失效（traceSlice 已覆盖，这里把语义绑定写明，防止切片收窄后脱钩）。
+    ...(role === "requirements-coverage" ? { nonBehaviorDispositions: nonBehaviorDispositions(trace) } : {}),
     ...(role === "architecture-testability" || role === "rollback-operability" ? { verificationCommandHashes: referencedCommandHashes } : {}),
   }));
 }
@@ -364,8 +420,8 @@ function assertAttestationUnique(
 
 function safePackagePath(value: string): boolean {
   const normalized = normalizeUnicode(value);
-  return normalized.length > 0 && normalized === normalized.trim() && !path.posix.isAbsolute(normalized) && !normalized.includes("\\")
-    && path.posix.normalize(normalized) === normalized && !normalized.split("/").includes("..");
+      return normalized.length > 0 && normalized === normalized.trim() && !isAbsoluteProjectPath(normalized) && !normalized.includes("\\")
+        && isCanonicalProjectPath(normalized) && !normalized.split("/").includes("..");
 }
 
 function validScopeManifest(value: unknown): value is { governedRoots: string[]; rollbackFileScopes: string[]; traceIds: string[]; frozenArtifactPaths: string[] } {
@@ -374,7 +430,7 @@ function validScopeManifest(value: unknown): value is { governedRoots: string[];
   return Array.isArray(manifest.governedRoots) && Array.isArray(manifest.rollbackFileScopes)
     && manifest.governedRoots.every((entry) => typeof entry === "string" && safePackagePath(entry))
     && manifest.rollbackFileScopes.every((entry) => typeof entry === "string" && safePackagePath(entry))
-    && Array.isArray(manifest.traceIds) && manifest.traceIds.every((entry) => typeof entry === "string" && /^(?:REQ|AC|TASK|TEST|RU)-[0-9]{3,}$/.test(entry))
+    && Array.isArray(manifest.traceIds) && manifest.traceIds.every((entry) => typeof entry === "string" && /^(?:REQ|AC|TASK|TEST|UNIT|RU)-[0-9]{3,}$/.test(entry))
     && Array.isArray(manifest.frozenArtifactPaths) && manifest.frozenArtifactPaths.every((entry) => typeof entry === "string" && safePackagePath(entry));
 }
 
@@ -463,8 +519,9 @@ export async function createReviewBatch(
     const reviewInput = await deriveReviewInput(root, current);
     const { basis } = reviewInput;
     const currentBasisHash = basisHash(basis);
-    const requirements = deriveReviewJobRequirements(current.route, current.classification.riskLabels, current.classification.controls.reviewRoles);
-    const existing = ledger.batches.find((batch) => batch.validity === "current" && batch.basisHash === currentBasisHash);
+    const phase = currentOpenStep(current) === "code_review" ? "code" : "plan";
+    const requirements = deriveReviewJobRequirements(current.route, current.classification.riskLabels, current.classification.controls.reviewRoles, phase);
+    const existing = ledger.batches.find((batch) => batch.validity === "current" && (batch.phase ?? "plan") === phase && batch.basisHash === currentBasisHash);
     const existingRolesCurrent = existing && requirements.every((requirement) => {
       const job = existing.jobs.find((candidate) => candidate.role === requirement.role);
       return job?.roleBasisHash === reviewInput.roleBasisHashes[requirement.role];
@@ -518,6 +575,9 @@ export async function createReviewBatch(
         scopeManifest: reviewInput.scopeManifest,
         role: requirement.role,
         reviewDepth: requirement.reviewDepth,
+        // requirements-coverage 的审查包显式列出非行为处置豁免清单（含覆盖任务的
+        // tdd 自报），让「行为变化却豁免行为测试」成为可定位的显式 finding 对象。
+        ...(requirement.role === "requirements-coverage" ? { nonBehaviorDispositions: reviewInput.nonBehaviorDispositions } : {}),
         carriedFindings: carried.map((item) => ({
           findingId: item.finding.findingId,
           originBatchId: item.originBatchId,
@@ -546,6 +606,7 @@ export async function createReviewBatch(
     }
     const batch: ReviewBatch = {
       batchId,
+      phase,
       basis,
       basisHash: currentBasisHash,
       validity: "current",
@@ -553,6 +614,13 @@ export async function createReviewBatch(
       executionMode: "parallel-safe",
       assuranceLevel: assuranceForReview2a(),
       jobs,
+      // 未知 diff 诊断（issue 16）：basis 变化字段、未命中切片原因与全量重审决定。
+      ...(unknownDiff ? {
+        unknownDiffInfo: {
+          changedFields: Object.keys(basis).filter((key) => JSON.stringify((prevCurrent!.basis as unknown as Record<string, unknown>)[key]) !== JSON.stringify((basis as unknown as Record<string, unknown>)[key])),
+          reason: "basis 变化未落入任何角色语义切片，保守执行完整重审而不是静默复用。",
+        },
+      } : {}),
     };
     const batches = [
       ...ledger.batches.map((candidate) => candidate.validity === "current" ? { ...candidate, validity: "stale" as const } : candidate),
@@ -562,7 +630,12 @@ export async function createReviewBatch(
     result = { state: undefined as unknown as FeatureState, batch, created: true };
     return {
       mutate: (draft) => { draft.review = pointer; },
-      eventData: { batchId, basisHash: currentBasisHash, roles: jobs.map((job) => job.role) },
+      eventData: {
+        batchId,
+        basisHash: currentBasisHash,
+        roles: jobs.map((job) => job.role),
+        ...(batch.unknownDiffInfo ? { unknownDiff: batch.unknownDiffInfo } : {}),
+      },
     };
   });
   return { ...result!, state };
@@ -695,6 +768,8 @@ async function submitParsedReviewJob(
   now: Date,
   samplingAttempt?: ReviewSamplingAttempt,
   hostAttestation?: ReviewAgentAttestation,
+  attestationSourceVerified = false,
+  isolationProof?: { mode: "subagent" | "sampling"; hostEventId?: string },
 ): Promise<SubmittedReviewJob> {
   const normalizedParsed = normalizeReviewCompletion(parsed);
   if (normalizedParsed.findings.some((finding) => finding.category !== job.role)) {
@@ -799,6 +874,8 @@ async function submitParsedReviewJob(
         },
       } : {}),
       ...(hostAttestation ? { attestation: hostAttestation } : {}),
+      ...(hostAttestation && attestationSourceVerified ? { attestationSourceVerified: true } : {}),
+      ...(isolationProof ? { isolationProof } : {}),
     },
   };
   let updatedBatch: ReviewBatch = {
@@ -834,6 +911,33 @@ export async function submitReviewJob(
     : (maybeNow instanceof Date ? maybeNow : new Date());
   const parsed = parseReviewJobCompletion(completion);
   const hostAttestation = attestation === undefined ? undefined : normalizeHostAttestation(attestation, now);
+  // Core 来源校验（ADR-0007）：attestation 声明的宿主事件必须真实存在于
+  // 当前 feature 事件账本且来自同宿主；验证结果由 Core 写入，调用方不能
+  // 自行声明来源可信。
+  let attestationSourceVerified = false;
+  let isolationProven = false;
+  if (hostAttestation?.hostEventId) {
+    const events = await readFeatureEvents(root, id);
+    // 只接受专用 review-execution 事件。user-prompt、tool、started、step-recorded
+    // 以及调用方自带的 isolated/agentId/raw 都不是来源或隔离证明。
+    const execution = events.find((event) => {
+      const data = event.data as Partial<{ eventId: string; type: string; host: string; batchId: string; jobId: string; sourceId: string; executionId: string; contextId: string; implementationContextId: string }> | undefined;
+      return event.type === "review-execution"
+        && data?.type === "review-execution"
+        && data.eventId === hostAttestation.hostEventId
+        && data.host === hostAttestation.host
+        && data.batchId === batchId
+        && data.jobId === jobId
+        && typeof data.sourceId === "string" && data.sourceId.length > 0
+        && typeof data.executionId === "string" && data.executionId.length > 0
+        && typeof data.contextId === "string" && data.contextId.length > 0
+        && typeof data.implementationContextId === "string" && data.implementationContextId.length > 0;
+    });
+    attestationSourceVerified = execution !== undefined;
+    isolationProven = execution !== undefined
+      && execution.data !== undefined
+      && (execution.data as { contextId?: string; implementationContextId?: string }).contextId !== (execution.data as { implementationContextId?: string }).implementationContextId;
+  }
   let result: Omit<{ state: FeatureState; batch: ReviewBatch; idempotent: boolean }, "state"> | undefined;
   const state = await mutatePrepared(root, id, expectedRevision, "review-job-submitted", async (current, nextStateRevision) => {
     const ledger = await readReviewLedger(root, current);
@@ -865,7 +969,7 @@ export async function submitReviewJob(
     });
     let submitted: SubmittedReviewJob;
     try {
-      submitted = await submitParsedReviewJob(root, id, ledger, batch, job, parsed, now, undefined, hostAttestation);
+      submitted = await submitParsedReviewJob(root, id, ledger, batch, job, parsed, now, undefined, hostAttestation, attestationSourceVerified, isolationProven && hostAttestation?.hostEventId ? { mode: "subagent", hostEventId: hostAttestation.hostEventId } : undefined);
     } catch (error) {
       if (error instanceof DevFlowError) {
         invalid(error.code, error.message, {
@@ -1027,7 +1131,9 @@ export async function completeReviewSampling(
     if (Date.parse(attempt.leaseExpiresAt) <= now.getTime()) {
       invalid("REVIEW_SAMPLING_REQUEST_EXPIRED", "sampling request lease has expired", { jobId });
     }
-    const submitted = await submitParsedReviewJob(root, id, ledger, batch, job, parsed, now, attempt);
+    // 受控 server sampling 是 Core 权威的隔离上下文（spec §188 / issue 19）：
+    // 采样完成的 job 直接获得 sampling 隔离证明，不依赖任何调用方自述。
+    const submitted = await submitParsedReviewJob(root, id, ledger, batch, job, parsed, now, attempt, undefined, false, { mode: "sampling" });
     const pointer = await writeReviewSnapshot(root, cloneLedger(
       ledger,
       nextStateRevision,
@@ -1115,7 +1221,8 @@ async function currentBatchWithBasis(
   // change without changing the overall semantic basis. Role slices still
   // have to match so architecture/rollback review evidence cannot be reused
   // across a changed execution command.
-  const requirements = deriveReviewJobRequirements(state.route, state.classification.riskLabels, state.classification.controls.reviewRoles);
+  const phase = batch!.phase ?? "plan";
+  const requirements = deriveReviewJobRequirements(state.route, state.classification.riskLabels, state.classification.controls.reviewRoles, phase);
   for (const requirement of requirements) {
     const job = batch!.jobs.find((candidate) => candidate.role === requirement.role);
     if (!job || job.roleBasisHash !== reviewInput.roleBasisHashes[requirement.role]) {
@@ -1431,25 +1538,25 @@ async function resolveReviewRiskAcceptanceResponse(
 }
 
 /** Only Core derives plan-review evidence from a complete, current batch. */
-export async function assertReviewComplete(
-  root: string,
-  state: FeatureState,
-): Promise<{ batchId: string; basisHash: string; assuranceLevel: ReviewAssurance }> {
-  const { ledger, batch } = await currentBatchWithBasis(root, state);
-  if (batch.progress !== "complete") invalid("REVIEW_BATCH_INCOMPLETE", "all required review jobs must be submitted", { batchId: batch.batchId });
+/**
+ * 统一的“当前未解决严重发现”查询（issue 16）：inspect 与所有推进门禁
+ * 读取完全相同的集合。
+ * - 新格式（findingEvents）：由 finding 事件账本派生；
+ * - 旧格式批次（无 findingEvents）：由 jobs + dispositions 派生。
+ * 两条路径不再由不同调用者自行归约。
+ */
+export function currentUnresolvedBlocking(
+  ledger: ReviewLedger,
+  batch: ReviewBatch,
+  state: Pick<FeatureState, "interactions">,
+): ReviewFinding[] {
   if (ledger.findingEvents?.length) {
     const roleBasis = (origin: ReviewFindingEvent & { type: "origin" }) => batch.jobs.find((job) => job.role === origin.role)?.roleBasisHash;
-    const unresolved = unresolvedBlockingFindings(ledger, roleBasis);
-    if (unresolved.length && !hasCurrentQualityException(state, "review")) invalid("REVIEW_BLOCKING_FINDINGS", "review ledger has unresolved blocking findings", {
-      batchId: batch.batchId,
-      findingIds: unresolved.map((finding) => finding.findingId),
-    });
-    await assertCurrentReviewProjection(root, state);
-    return { batchId: batch.batchId, basisHash: batch.basisHash, assuranceLevel: batch.assuranceLevel };
+    return unresolvedBlockingFindings(ledger, roleBasis);
   }
   const jobs = ledger.batches.flatMap((candidate) => candidate.jobs);
   const dispositions = Object.assign({}, ...ledger.batches.map((candidate) => candidate.dispositions ?? {}));
-  const blocking = jobs.flatMap((job) => job.submission?.findings ?? [])
+  return jobs.flatMap((job) => job.submission?.findings ?? [])
     .filter((finding) => {
       if (finding.severity !== "blocking") return false;
       const disposition = dispositions[finding.findingId];
@@ -1480,12 +1587,47 @@ export async function assertReviewComplete(
       return !successor || !resolutionJob || !sourceJob || resolutionJob.role !== sourceJob.role
         || !resolutionJob.submission?.resolutions.some((resolution) => resolution.findingId === finding.findingId);
     });
-  if (blocking.length) invalid("REVIEW_BLOCKING_FINDINGS", "review batch has unresolved blocking findings", {
+}
+
+export async function assertReviewComplete(
+  root: string,
+  state: FeatureState,
+): Promise<{ batchId: string; basisHash: string; assuranceLevel: ReviewAssurance }> {
+  const { ledger, batch } = await currentBatchWithBasis(root, state);
+  const expectedPhase = currentOpenStep(state) === "code_review" ? "code" : "plan";
+  if ((batch.phase ?? "plan") !== expectedPhase) invalid("REVIEW_BATCH_REQUIRED", `a current ${expectedPhase} review batch is required`, { expectedPhase });
+  if (batch.progress !== "complete") invalid("REVIEW_BATCH_INCOMPLETE", "all required review jobs must be submitted", { batchId: batch.batchId });
+  // 独立代码审查的隔离门禁（ADR-0017 / issue 19）：M/L 路线默认要求
+  // codeReview "independent"，高后果标签会提升到 "full"——两者都要求审查在
+  // 与实现隔离的新上下文中完成。只有绑定专用 review-execution 事件的 subagent
+  // 证明或受控 server sampling 能形成隔离证明；缺失时审查保持未完成并阻塞，
+  // 恢复路径：宿主 subagent 在独立上下文重做、使用服务端采样完成 job，或通过
+  // 质量例外（kind=review）显式接受独立性风险后继续。
+  const requiresIsolation = expectedPhase === "code"
+    && (state.classification.controls.codeReview === "independent" || state.classification.controls.codeReview === "full");
+  if (requiresIsolation) {
+    const missingIsolation = batch.jobs
+      .filter((job) => job.status === "submitted")
+      .filter((job) => !job.submission?.isolationProof)
+      .map((job) => job.jobId);
+    if (missingIsolation.length && !hasCurrentQualityException(state, "review")) {
+      invalid("REVIEW_ISOLATION_REQUIRED", "独立代码审查要求审查在与实现隔离的新上下文中完成，当前批次缺少隔离证明。", {
+        jobIds: missingIsolation,
+        batchId: batch.batchId,
+        recoveryHint: "在与实现隔离的上下文中重新完成这些审查 job 并记录 review-execution 事件，或通过服务端采样完成 job；宿主无法提供隔离上下文时，可通过质量例外（presentQualityException kind=review）显式接受独立性风险后继续。",
+        retryOriginal: true,
+      });
+    }
+  }
+  const unresolved = currentUnresolvedBlocking(ledger, batch, state);
+  if (unresolved.length && !hasCurrentQualityException(state, "review")) invalid("REVIEW_BLOCKING_FINDINGS", "review ledger has unresolved blocking findings", {
     batchId: batch.batchId,
-    findingIds: blocking.map((finding) => finding.findingId),
+    findingIds: unresolved.map((finding) => finding.findingId),
   });
   // The ledger is the authority, but plan-review remains a required generated
   // artifact. Do not allow a complete batch to bypass a missing/corrupt view.
-  await assertCurrentReviewProjection(root, state);
+  if (reviewEnforcementRequired(state.route, state.classification.controls)) {
+    await assertCurrentReviewProjection(root, state);
+  }
   return { batchId: batch.batchId, basisHash: batch.basisHash, assuranceLevel: batch.assuranceLevel };
 }

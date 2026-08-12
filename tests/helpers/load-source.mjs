@@ -1,6 +1,6 @@
 import { build } from "esbuild";
 import { execFile } from "node:child_process";
-import { appendFile, mkdir } from "node:fs/promises";
+import { appendFile, mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
@@ -55,10 +55,31 @@ export async function loadSource(relativePath) {
       startFeature: async (root, input, options) => {
         await ensureLegacyFixtureGit(root);
         await ensureFixtureHookHealth(root, input?.host ?? "codex");
+        const riskLabels = input?.riskLabels ?? [];
+        const legacyBasis = input?.classificationBasis ?? {};
+        const needsFixtureFact = input?.level !== undefined && input?.topology !== undefined && !legacyBasis.scopeFactRefs;
+        // v5 classification references registered repository facts instead of
+        // caller-authored prose. Write a sentinel file inside the first
+        // governed root and commit it BEFORE startFeature so it is neither
+        // dirty workspace drift nor an unowned path, then register one
+        // fixture fact against it and reuse its record id for every legacy
+        // prose field.
+        let factPath;
+        if (needsFixtureFact) {
+          const config = await module.readProjectConfig(root);
+          const governedRoot = config.governedRoots[0] ?? ".";
+          factPath = governedRoot === "." ? "dev-flow-legacy-fact.txt" : `${governedRoot}/dev-flow-legacy-fact.txt`;
+          await mkdir(path.dirname(path.join(root, factPath)), { recursive: true });
+          await writeFile(path.join(root, factPath), "legacy test fixture repository fact\n");
+          const pending = await run("git", ["status", "--porcelain", "--", factPath], { cwd: root });
+          if (pending.stdout.trim()) {
+            await run("git", ["add", "--", factPath], { cwd: root });
+            await run("git", ["-c", "user.name=Dev Flow Tests", "-c", "user.email=tests@example.invalid", "commit", "--quiet", "-m", "legacy fixture fact", "--", factPath], { cwd: root });
+          }
+        }
         const state = await startFeature(root, input, options);
         if (input?.level === undefined || input?.topology === undefined) return state;
-        const riskLabels = input.riskLabels ?? [];
-        const signals = {
+        const signals = legacyBasis.signals ?? {
           changeSurface: input.level === "XS" ? "single-site" : input.level === "S" ? "single-component" : input.level === "M" ? "multi-component" : "system-wide",
           behaviorChange: input.level === "XS" ? "mechanical" : input.level === "S" ? "bounded-rule" : input.level === "M" ? "new-capability" : "systemic-change",
           topology: input.topology,
@@ -67,16 +88,31 @@ export async function loadSource(relativePath) {
           operationalRecovery: input.topology !== "local",
           executableRollback: input.topology === "coordinated-rollback",
         };
-        const basis = input.classificationBasis?.signals ? input.classificationBasis : {
-          scopeFacts: ["legacy test fixture scope"],
-          topologyFacts: ["legacy test fixture topology"],
-          uncertaintyFacts: input.requirements === "provided-confirmed" ? [] : [input.requirements ?? "legacy test fixture uncertainty"],
-          riskFacts: Object.fromEntries(riskLabels.map((label) => [label, [`legacy test fixture evidence: ${label}`]])),
-          decisionRefs: [],
-          signals,
-        };
-        let routed = await lockClassification(root, state.featureId, state.revision, {
-          ...basis,
+        let lockedState = state;
+        let facts;
+        if (legacyBasis.scopeFactRefs) {
+          facts = { ...legacyBasis, signals };
+        } else {
+          lockedState = await module.registerRepositoryFact(root, state.featureId, state.revision, {
+            assertion: "legacy test fixture repository fact",
+            location: { kind: "positive", path: factPath },
+          }, input.host ?? "codex");
+          const factRef = lockedState.governance.repositoryFacts[lockedState.governance.repositoryFacts.length - 1].recordId;
+          const refLabels = riskLabels.length ? riskLabels : Object.keys(legacyBasis.riskFacts ?? {});
+          facts = {
+            scopeFactRefs: [factRef],
+            topologyFactRefs: [factRef],
+            uncertaintyFactRefs: legacyBasis.signals
+              ? (legacyBasis.uncertaintyFacts?.length ? [factRef] : [])
+              : (input.requirements === "provided-confirmed" ? [] : [factRef]),
+            riskFactRefs: Object.fromEntries(refLabels.map((label) => [label, [factRef]])),
+            decisionRefs: legacyBasis.decisionRefs ?? [],
+            signals,
+            ...(legacyBasis.controlEnhancements ? { controlEnhancements: legacyBasis.controlEnhancements } : {}),
+          };
+        }
+        let routed = await lockClassification(root, state.featureId, lockedState.revision, {
+          ...facts,
           level: input.level,
           topology: input.topology,
           ...(input.requirements ? { requirements: input.requirements } : {}),

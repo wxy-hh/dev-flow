@@ -9,6 +9,7 @@ import type { ProjectConfig } from "./project-config.js";
 import type { FeatureState } from "./state-store.js";
 import { pathWithinFileScope } from "../policy/rollback.js";
 import { changedPathsBetween, gitBranchAndHead, isAncestor } from "./git-reconciliation.js";
+import { currentRiskAuthorizations } from "./governance-state.js";
 
 const run = promisify(execFile);
 
@@ -33,6 +34,8 @@ export interface DeliverySnapshot {
   manualAdoptedPaths?: string[];
   uncommittedPaths?: string[];
   qualityExceptions?: string[];
+  /** 已排除但仍有内容变化的路径（透明性提示，不属于交付内容）。 */
+  excludedChangedPaths?: string[];
 }
 
 const digest = (value: string | Buffer) => createHash("sha256").update(value).digest("hex");
@@ -287,6 +290,11 @@ export async function createDeliverySnapshot(
     });
   }
   const files = [...featureOwned].sort();
+  // 非交付改动：已明确排除但仍有内容变化的 governed 路径。只作透明性
+  // 提示，不加入 patch、不阻塞 finalize、不重新打开归属交互。
+  const excludedChangedPaths = protectedChanged
+    .filter((file) => lineage.ownership[file] === "excluded")
+    .sort();
   const untracked = await untrackedFiles(root, files);
   const tracked = files.filter((file) => !untracked.has(file));
   const patches: string[] = [];
@@ -327,7 +335,15 @@ export async function createDeliverySnapshot(
     `- Feature-owned 路径：${files.length ? files.join(", ") : "无"}`,
     `- 用户手动接纳路径：${Object.entries(lineage.ownershipSource).filter(([, source]) => source === "user-adopted").map(([file]) => file).join(", ") || "无"}`,
     `- 未提交路径：${currentDirty.filter((file) => featureOwned.has(file)).join(", ") || "无"}`,
-    `- 用户接受风险：${state.qualityExceptions.filter((exception) => exception.status === "current").map((exception) => exception.kind).join(", ") || "无"}`,
+    `- 用户接受风险：${currentRiskAuthorizations(state, { contentFingerprint: state.businessFingerprint }).map((authorization) => authorization.target).join(", ") || "无"}`,
+    ...(excludedChangedPaths.length ? [
+      "",
+      "## 非交付改动",
+      "",
+      "以下路径已被排除或不属于当前任务交付，但仍检测到变化；它们不会进入交付 patch，也不会阻塞完成。请记得单独处理：",
+      "",
+      ...excludedChangedPaths.map((file) => `- ${file}`),
+    ] : []),
     "",
     "## 回滚",
     "",
@@ -349,6 +365,7 @@ export async function createDeliverySnapshot(
     ownedPaths: files,
     manualAdoptedPaths: Object.entries(lineage.ownershipSource).filter(([, source]) => source === "user-adopted").map(([file]) => file),
     uncommittedPaths: currentDirty.filter((file) => featureOwned.has(file)),
-    qualityExceptions: state.qualityExceptions.filter((exception) => exception.status === "current").map((exception) => exception.kind),
+    qualityExceptions: currentRiskAuthorizations(state, { contentFingerprint: state.businessFingerprint }).map((authorization) => authorization.target),
+    ...(excludedChangedPaths.length ? { excludedChangedPaths } : {}),
   };
 }

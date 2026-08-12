@@ -5,7 +5,7 @@ import { emitWindowsToast, type NotificationCommandExecutor, type NotificationPa
 const run = promisify(execFile);
 
 export type AttentionEvent =
-  | { kind: "decision-required"; featureId: string; decision: "approval" | "grill" | "rollback-confirmation" | "quality-exception" | "review-risk" | "route-confirmation"; approvalId?: string }
+  | { kind: "decision-required"; featureId: string; decision: "approval" | "grill" | "rollback-confirmation" | "quality-exception" | "review-risk" | "route-confirmation" | "decision-ratification" | "decision-revision" | "plan-revision" | "side-effect-rerun" | "acceptance-confirmation"; approvalId?: string }
   | { kind: "workflow-finalized"; featureId: string };
 
 export interface AttentionOptions {
@@ -31,6 +31,16 @@ function messageFor(event: AttentionEvent): { title: string; body: string } {
           ? "审查风险确认"
       : event.decision === "route-confirmation"
           ? "路线确认"
+      : event.decision === "decision-ratification"
+          ? "决定追认"
+      : event.decision === "decision-revision"
+          ? "决定修订"
+      : event.decision === "plan-revision"
+          ? "计划修订"
+      : event.decision === "side-effect-rerun"
+          ? "副作用单元重跑确认"
+      : event.decision === "acceptance-confirmation"
+          ? "验收确认"
       : "需求选择";
   return { title: "Dev Flow 需要决策", body: `当前功能正在等待你的${decision}。` };
 }

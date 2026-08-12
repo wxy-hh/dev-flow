@@ -14,7 +14,7 @@ function checkpointManifest() {
   return {
     schemaVersion: 2,
     checkpointId: "CP-001",
-    unitId: "RU-001",
+    unitId: "UNIT-001",
     sequence: 1,
     basisHash: sha("1"),
     startedFingerprint: sha("2"),
@@ -40,7 +40,7 @@ async function activeEvidenceFixture(root) {
   await store.mutate(root, "config-impact", started.revision, "test-evidence", (draft) => {
     draft.verification.attempts = [{ id: 7, verificationCommandHashes: { unit: sha("b") } }];
     draft.implementationUnits = [{
-      unitId: "RU-001", status: "checkpointed", basisHash: sha("1"),
+      unitId: "UNIT-001", status: "checkpointed", basisHash: sha("1"),
       startedFingerprint: sha("2"), checkpointId: "CP-001",
     }];
   });

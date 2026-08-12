@@ -132,7 +132,7 @@ function validateBatch(value: unknown): value is ReviewBatch {
     || batch.progress !== "open" && batch.progress !== "complete"
     || batch.executionMode !== "isolated-sequential" && batch.executionMode !== "parallel-safe" && batch.executionMode !== "mcp-sampling" && batch.executionMode !== "native-subagent"
     || batch.assuranceLevel !== "multi-perspective" && batch.assuranceLevel !== "independent-sampling"
-      && batch.assuranceLevel !== "multi-agent-attested" && batch.assuranceLevel !== "multi-agent-verified"
+      && batch.assuranceLevel !== "multi-agent-verified"
     || !Array.isArray(batch.jobs)) return false;
   const ids = new Set<string>();
   const attestationRaws = new Set<string>();
@@ -196,7 +196,7 @@ function validateLedger(value: unknown): asserts value is ReviewLedger {
       integrity("isolated review batch assurance is not Core-derived", { batchId: batch.batchId });
     }
     // mcp-sampling may later accept manual host attestation on claim/submit; ladder
-    // can then reach multi-agent-attested while executionMode remains diagnostic.
+    // Host attestation remains diagnostic while executionMode stays explicit.
     batchIds.add(batch.batchId);
   }
   if (ledger.findingEvents !== undefined) {

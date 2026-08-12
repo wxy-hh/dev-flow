@@ -16,7 +16,7 @@ const config = {
   governedRoots: ["src"],
 };
 
-test("Claude/Codex 共享 intake、可信 resolved decision 与锁定后的 v4 状态", async () => {
+test("Claude/Codex 共享 intake、可信 decision 与锁定后的 v5 状态", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "dev-flow-v2-interop-"));
   await mkdir(path.join(root, "src"));
   await writeFile(path.join(root, "src", "feature.txt"), "baseline\n");
@@ -33,12 +33,25 @@ test("Claude/Codex 共享 intake、可信 resolved decision 与锁定后的 v4 �
     scope: { inScope: ["src/feature.txt"], outOfScope: [] },
     host: "claude",
   });
+  // v5 分类引用已登记的仓库事实记录（ADR-0018）：先登记事实（并提交文件），
+  // 再记录依赖当前内容指纹的决定，最后用事实 recordId 锁定路线。
+  await writeFile(path.join(root, "src", "feature-fact.txt"), "shared contract evidence\n");
+  execFileSync("git", ["add", "src/feature-fact.txt"], { cwd: root });
+  execFileSync("git", ["commit", "-qm", "feature fact"], { cwd: root });
+  const withFact = await state.registerRepositoryFact(root, intake.featureId, intake.revision, {
+    assertion: "共享契约会影响多个调用方",
+    location: { kind: "positive", path: "src/feature-fact.txt" },
+  }, "codex");
+  const factRef = withFact.governance.repositoryFacts[withFact.governance.repositoryFacts.length - 1].recordId;
   await state.recordHostEvent(root, { eventId: "codex-existing-conclusion", type: "user-prompt", host: "codex", text: "允许共享契约变更" });
-  const recorded = await state.recordDecision(root, intake.featureId, intake.revision, "是否允许共享契约变更？", "调用方兼容性已核实", "允许共享契约变更", ["scope"], "codex");
-  const pending = await state.lockClassification(root, intake.featureId, recorded.state.revision, {
+  const recorded = await state.recordDecision(root, intake.featureId, withFact.revision, "是否允许共享契约变更？", "调用方兼容性已核实", "允许共享契约变更", [factRef], "codex");
+  // 较早对话的决定需要用户追认（issue 08）：确认后才是 resolved 决定
+  await state.recordHostEvent(root, { eventId: "codex-ratify", type: "user-prompt", host: "codex", text: "确认登记" });
+  const ratified = await state.resolveRatificationAnswer(root, intake.featureId, recorded.state.revision, recorded.interactionId, "确认登记", "codex");
+  const pending = await state.lockClassification(root, intake.featureId, ratified.state.revision, {
     level: "M", topology: "shared-contract", requirements: "provided-confirmed",
-    scopeFacts: ["共享契约会影响多个调用方"], topologyFacts: ["存在共享调用方"], uncertaintyFacts: [],
-    riskFacts: {}, decisionRefs: [recorded.decisionId],
+    scopeFactRefs: [factRef], topologyFactRefs: [factRef], uncertaintyFactRefs: [],
+    riskFactRefs: {}, decisionRefs: [recorded.decisionId],
     signals: { changeSurface: "multi-component", behaviorChange: "bounded-rule", topology: "shared-contract", unitCount: 1, requirements: "provided-confirmed", operationalRecovery: false, executableRollback: false },
   }, { scanned: ["assumption", "free-space", "tbd", "fallback", "scope", "acceptance"], items: [] });
   await state.recordHostEvent(root, { eventId: "codex-route-confirm", type: "user-prompt", host: "codex", text: "确认这条路线" });
@@ -47,7 +60,7 @@ test("Claude/Codex 共享 intake、可信 resolved decision 与锁定后的 v4 �
   assert.equal(handedOff.mode, "routed");
   assert.equal(handedOff.route, "m");
   assert.equal(handedOff.lastUpdatedBy.host, "codex");
-  assert.equal(handedOff.decisionLedger[0].status, "resolved");
+  assert.equal(handedOff.governance.decisions[0].recordId, recorded.decisionId);
   assert.deepEqual(handedOff.classificationBasis, routed.classificationBasis);
 });
 

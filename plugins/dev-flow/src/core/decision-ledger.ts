@@ -29,6 +29,16 @@ export function dismissDecision(decision: DecisionRecord, reason: string, affect
   return { ...decision, status: "dismissed", dismissedReason: reason.trim() };
 }
 
+/**
+ * 决策修订（ADR-0010）：用户确认后追加新决策并把旧决策标记为 superseded。
+ * 旧记录保持不可变，只追加修订链引用；调用方负责在同一 CAS mutation 中
+ * 完成失效传播。
+ */
+export function supersedeDecision(decision: DecisionRecord, successorId: string): DecisionRecord {
+  if (decision.status === "superseded") throw new DevFlowError("DECISION_ALREADY_SUPERSEDED", "decision is already superseded");
+  return { ...decision, status: "superseded", supersededBy: successorId };
+}
+
 export function hasOpenImpactingDecision(decisions: DecisionRecord[], impactingIds: string[]): boolean {
   const ids = new Set(impactingIds);
   return decisions.some((decision) => decision.status === "open" && ids.has(decision.id));

@@ -49,11 +49,11 @@ test("a formal v5 plan registers after its required requirements evidence", asyn
   }
 });
 
-test("a formal v5 plan rejects a dangling task-to-RU reference", async () => {
+test("a formal v5 plan rejects a dangling task-to-UNIT reference", async () => {
   const { root, state, planPath } = await setupFormalFeature();
   try {
     const contents = await readFile(planPath, "utf8");
-    await writeFile(planPath, contents.replace(/rollback_unit: RU-001/, "rollback_unit: RU-999"));
+    await writeFile(planPath, contents.replace(/implementation_unit: UNIT-001/, "implementation_unit: UNIT-999"));
     await assert.rejects(
       () => artifacts.recordArtifact(root, state.featureId, state.revision, "implementation-plan"),
       (error) => error.code === "PLAN_TASK_GRAPH_INVALID",
@@ -63,7 +63,7 @@ test("a formal v5 plan rejects a dangling task-to-RU reference", async () => {
   }
 });
 
-test("a formal v5 plan rejects a cyclic RU dependency graph", async () => {
+test("a formal v5 plan rejects a cyclic UNIT dependency graph", async () => {
   const { root, state, planPath } = await setupFormalFeature();
   try {
     const contents = await readFile(planPath, "utf8");
@@ -72,20 +72,20 @@ test("a formal v5 plan rejects a cyclic RU dependency graph", async () => {
 ### TASK-002：第二任务
 
 - covers: [REQ-001]
-- rollback_unit: RU-002
+- implementation_unit: UNIT-002
 
-<!-- dev-flow:id=RU-002 kind=rollback -->
-### RU-002：第二回撤单元
+<!-- dev-flow:id=UNIT-002 kind=implementation-unit -->
+### UNIT-002：第二实现单元
 
 - tasks: [TASK-002]
-- depends_on: [RU-001]
+- depends_on: [UNIT-001]
 - file_scope: []
 - covers: [REQ-001]
 - forward_verification: [unit]
-- rollback_verification: [unit]
+- forward_verification: [unit]
 `;
-    // 让 RU-001 反向依赖 RU-002，形成 RU-001 → RU-002 → RU-001 的环。
-    const cyclic = withCycle.replace(/depends_on: \[\]/, "depends_on: [RU-002]");
+    // 让 UNIT-001 反向依赖 UNIT-002，形成环。
+    const cyclic = withCycle.replace(/depends_on: \[\]/, "depends_on: [UNIT-002]");
     await writeFile(planPath, cyclic);
     await assert.rejects(
       () => artifacts.recordArtifact(root, state.featureId, state.revision, "implementation-plan"),

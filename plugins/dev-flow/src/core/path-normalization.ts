@@ -12,3 +12,11 @@ export function normalizeUnicode(value: string): string {
 export function normalizeProjectPath(value: string): string {
   return path.posix.normalize(normalizeUnicode(value).replaceAll("\\", "/"));
 }
+
+export function isAbsoluteProjectPath(value: string): boolean {
+  return path.posix.isAbsolute(value);
+}
+
+export function isCanonicalProjectPath(value: string): boolean {
+  return normalizeProjectPath(value) === value;
+}

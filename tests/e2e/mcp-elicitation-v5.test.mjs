@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { build } from "esbuild";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import readline from "node:readline";
@@ -99,7 +99,12 @@ const grillArgs = (revision, suffix = "1") => ({
     { id: "keep", label: "保留现有行为", description: "不改变当前行为。" },
     { id: "remove", label: "移除现有行为", description: "删除当前行为。" },
   ],
-  recommendation: { optionId: "keep", reason: "保持当前行为，避免无关改动。" },
+  recommendation: {
+    optionId: "keep",
+    reason: "保持当前行为，避免无关改动。",
+    drawback: "会继续保留当前行为的维护成本。",
+    alternative: { optionId: "remove", condition: "如果后续确认应删除现有行为。" },
+  },
   host: "codex",
 });
 
@@ -241,8 +246,8 @@ test("form elicitation uses oneOf const/title and accept atomically resolves the
     assert.equal(response.result.isError, undefined);
     const state = await store.readState(fixture.root, "elicitation");
     assert.equal(decisions.pendingDecisionForState(state), undefined);
-    assert.equal(state.decisionLedger.length, 1);
-    assert.equal(state.decisionLedger[0].status, "resolved");
+    assert.equal(state.governance.decisions.length, 1);
+    assert.equal(state.governance.decisions[0].conclusion, "keep");
     await client.close();
   } finally { await fixture.dispose(); }
 });
@@ -283,22 +288,38 @@ test("route confirmation uses the same native form and resolves in one MCP call"
   try {
     await mcpCall(server, fixture.root, "dev_flow_init_project", { config: strictProjectConfig });
     const started = await mcpCall(server, fixture.root, "dev_flow_start", { featureId: "route-form", objective: "测试路线原生确认", host: "codex" });
+    // v5 分类引用已登记的仓库事实记录（ADR-0018）：先登记事实并提交，再记录
+    // 依赖当前内容指纹的决定，最后用事实 recordId 锁定路线。
+    await writeFile(path.join(fixture.root, "src", "route-fact.txt"), "single module evidence\n");
+    execFileSync("git", ["add", "src/route-fact.txt"], { cwd: fixture.root });
+    execFileSync("git", ["commit", "-qm", "route fact"], { cwd: fixture.root });
+    const withFact = await store.registerRepositoryFact(fixture.root, "route-form", started.control.expectedRevision, {
+      assertion: "只改一个模块",
+      location: { kind: "positive", path: "src/route-fact.txt" },
+    }, "codex");
+    const factRef = withFact.governance.repositoryFacts[withFact.governance.repositoryFacts.length - 1].recordId;
     await store.recordHostEvent(fixture.root, { eventId: "route-decision", type: "user-prompt", host: "codex", text: "保留" });
     const recorded = await mcpCall(server, fixture.root, "dev_flow_record_decision", {
-      featureId: "route-form", expectedRevision: started.control.expectedRevision,
+      featureId: "route-form", expectedRevision: withFact.revision,
       question: "是否保留兼容行为？", evidence: "用户已有明确结论", conclusion: "保留", factRefs: [], host: "codex",
+    });
+    // issue 08：较早对话的决定需要用户追认后才成为当前决定
+    await store.recordHostEvent(fixture.root, { eventId: "ratify-route", type: "user-prompt", host: "codex", text: "确认登记" });
+    const ratified = await mcpCall(server, fixture.root, "dev_flow_answer", {
+      featureId: "route-form", expectedRevision: recorded.control.expectedRevision,
+      userReply: "确认登记", host: "codex",
     });
     const client = interactiveClient(fixture.root);
     await initialize(client);
     client.send({ jsonrpc: "2.0", id: "lock", method: "tools/call", params: {
       name: "dev_flow_lock_classification",
       arguments: {
-        featureId: "route-form", expectedRevision: recorded.control.expectedRevision,
+        featureId: "route-form", expectedRevision: ratified.state.revision,
         classification: {
           level: "M", topology: "local", requirements: "provided-confirmed",
           classificationBasis: {
-            scopeFacts: ["只改一个模块"], topologyFacts: ["没有共享契约"], uncertaintyFacts: [],
-            riskFacts: {}, decisionRefs: [recorded.decisionId],
+            scopeFactRefs: [factRef], topologyFactRefs: [factRef], uncertaintyFactRefs: [],
+            riskFactRefs: {}, decisionRefs: [recorded.decisionId],
             signals: { changeSurface: "multi-component", behaviorChange: "new-capability", topology: "local", unitCount: 1, requirements: "provided-confirmed", operationalRecovery: false, executableRollback: false },
           },
         },
@@ -343,9 +364,9 @@ test("quality-exception form accept records the accepted risk with the form comm
     assert.equal(response.result.isError, undefined);
     assert.equal(response.result.structuredContent.interactionOutcome, "接受风险");
     const state = await store.readState(fixture.root, "elicitation");
-    assert.equal(state.qualityExceptions.length, 1);
-    assert.equal(state.qualityExceptions[0].status, "current");
-    assert.equal(state.qualityExceptions[0].userEvidence, "已了解验证风险");
+    assert.equal(state.governance.authorizations.length, 1);
+    assert.equal(state.governance.authorizations[0].authorizationType, "risk-acceptance");
+    assert.equal(state.governance.credentials[0].rawText, "已了解验证风险");
     assert.equal(decisions.pendingDecisionForState(state), undefined);
     await client.close();
   } finally { await fixture.dispose(); }
@@ -365,7 +386,7 @@ test("quality-exception form decline resolves without recording acceptance", asy
     assert.equal(response.result.isError, undefined);
     assert.equal(response.result.structuredContent.interactionOutcome, "先修复问题");
     const state = await store.readState(fixture.root, "elicitation");
-    assert.equal(state.qualityExceptions.length, 0);
+    assert.equal(state.governance.authorizations.length, 0);
     assert.equal(decisions.pendingDecisionForState(state), undefined);
     await client.close();
   } finally { await fixture.dispose(); }

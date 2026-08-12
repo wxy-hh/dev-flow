@@ -73,11 +73,11 @@ Core 用一个模块统一生成 grill 的文本、表单和状态展示：2–3
 
 文本回答允许 `A`、`a`、全角字母、`我选择 A`、`按方案 A 来`、唯一完整标签，以及 `其他：<方案和理由>`；Core 将其分别归一为 option 或 other 响应。`A 或 B`、`A/B 都行`、`不要 A` 和没有说明的 `其他` 不会替用户猜测。执行批准仍使用严格整句合同。
 
-这是公开 MCP 和 grill state 的破坏性变更。当前合同不提供旧 grill 兼容层；升级前应完成或放弃仍有 pending grill 的旧 feature。FeatureState 主 schema 仍为 v4，不含旧 grill 的其他状态不需要迁移。
+这是公开 MCP 和 grill state 的破坏性变更。当前合同不提供旧 grill 兼容层；升级前应完成或放弃仍有 pending grill 的旧 feature。FeatureState 主 schema 为 v5；当前 Dev Flow 5.0 的 FeatureState schema v4 active state 只在加载入口确定转换为 v5 运行态。
 
 ## 5.0 schema 历史硬切换
 
-5.0 不兼容 4.x active state、project config、review/checkpoint schema 或旧 MCP 调用合同，也不提供迁移器。升级前：
+5.0 不兼容 Dev Flow 4.x active state、FeatureState schema v3 及更早状态、旧 project/review/checkpoint schema 或旧 MCP 调用合同。唯一支持的迁移范围是当前 Dev Flow 5.0 的 FeatureState schema v4 active state，且只在加载入口转换一次；4.x active state 不迁移。升级前：
 
 1. 使用 4.x finalize 或 abandon 所有未完成 feature。
 2. 备份业务仓 `.dev-flow/` 审计目录。

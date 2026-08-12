@@ -1,5 +1,5 @@
 export interface RollbackWarningNode {
-  kind: "rollback";
+  kind: "implementation-unit";
   id: string;
   status: string;
   fileScope: string[];
@@ -14,12 +14,12 @@ function isTestScope(pattern: string): boolean {
 }
 
 /**
- * Warn once when a test-only rollback unit is a dependency of a unit that also
+ * Warn once when a test-only implementation unit is a dependency of a unit that also
  * owns implementation paths. This is advisory and deliberately ignores task
  * titles and free-form descriptions.
  */
 export function detectRollbackSplitWarning(nodes: RollbackWarningNode[]): string[] {
-  const current = new Map(nodes.filter((node) => node.kind === "rollback" && node.status === "current").map((node) => [node.id, node]));
+  const current = new Map(nodes.filter((node) => node.kind === "implementation-unit" && node.status === "current").map((node) => [node.id, node]));
   const splits: string[] = [];
   for (const node of current.values()) {
     const implementationScope = node.fileScope.some((pattern) => !isTestScope(pattern));
@@ -33,5 +33,5 @@ export function detectRollbackSplitWarning(nodes: RollbackWarningNode[]): string
   }
   return splits.length === 0
     ? []
-    : [`测试与实现拆为不同回撤单元，${[...new Set(splits)].sort().join(",")}：A 的前向验证红测试期必失败死锁；建议合并原子单元`];
+    : [`测试与实现拆为不同实现单元，${[...new Set(splits)].sort().join(",")}：A 的前向验证红测试期必失败死锁；建议合并原子单元`];
 }

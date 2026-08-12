@@ -189,3 +189,76 @@ test("grill interaction hard-rejects the old implicit-recommendation contract", 
     /GRILL_INTERACTION_RESTART_REQUIRED/,
   );
 });
+
+test("high-impact recommendation appends drawback and alternative condition; plain recommendations stay short", () => {
+  const highImpact = grillInteraction.buildGrillPresentation({
+    question: "是否引入新的迁移脚本？",
+    options,
+    recommendation: {
+      optionId: "plugin-hook",
+      reason: "改动面最小。",
+      drawback: "复用现有 hook 会在迁移期间留下双份解析路径，需要额外清理。",
+      alternative: { optionId: "config-api", condition: "后续还有多个解析入口需要切换" },
+    },
+  });
+  assert.match(highImpact.text, /提醒：推荐方案的主要缺点是 复用现有 hook 会在迁移期间留下双份解析路径，需要额外清理。/);
+  assert.match(highImpact.text, /如果 后续还有多个解析入口需要切换，选项 B（新增 css\.resolve 配置 API）可能更合适。/);
+  // 提醒位于选项之后、回复引导之前
+  const reminderIndex = highImpact.text.indexOf("提醒：");
+  const guideIndex = highImpact.text.indexOf("请回复 A、B 或 C。");
+  assert.ok(reminderIndex > 0 && reminderIndex < guideIndex);
+
+  const plain = grillInteraction.buildGrillPresentation({
+    question: "普通问题？",
+    options,
+    recommendation: { optionId: "plugin-hook", reason: "改动面最小。" },
+  });
+  assert.equal(plain.text.includes("提醒："), false);
+});
+
+test("high-impact recommendation must provide both drawback and alternative, referencing a non-recommended option", () => {
+  const base = { question: "q", options, recommendation: { optionId: "plugin-hook", reason: "r" } };
+  assert.throws(
+    () => grillInteraction.buildGrillPresentation({ ...base, recommendation: { ...base.recommendation, drawback: "只有缺点" } }),
+    (error) => error.code === "GRILL_PRESENTATION_INVALID",
+  );
+  assert.throws(
+    () => grillInteraction.buildGrillPresentation({ ...base, recommendation: { ...base.recommendation, alternative: { optionId: "config-api", condition: "c" } } }),
+    (error) => error.code === "GRILL_PRESENTATION_INVALID",
+  );
+  assert.throws(
+    () => grillInteraction.buildGrillPresentation({ ...base, recommendation: { ...base.recommendation, drawback: "d", alternative: { optionId: "plugin-hook", condition: "c" } } }),
+    (error) => error.code === "GRILL_PRESENTATION_INVALID",
+  );
+  assert.throws(
+    () => grillInteraction.buildGrillPresentation({ ...base, recommendation: { ...base.recommendation, drawback: "d", alternative: { optionId: "missing", condition: "c" } } }),
+    (error) => error.code === "GRILL_PRESENTATION_INVALID",
+  );
+});
+
+test("high-impact recommendation survives the interaction seam and text reply matching stays unchanged", () => {
+  const input = {
+    kind: "grill",
+    target: "grill:q1",
+    basisHash: "e".repeat(64),
+    question: "高影响问题？",
+    options,
+    recommendation: {
+      optionId: "plugin-hook",
+      reason: "改动面最小。",
+      drawback: "缺点 X",
+      alternative: { optionId: "config-api", condition: "条件 Y" },
+    },
+  };
+  const state = { interactions: {}, pendingDecision: undefined };
+  const created = interactions.createInteraction(state, input);
+  assert.equal(created.recommendation.drawback, "缺点 X");
+  assert.equal(created.recommendation.alternative.optionId, "config-api");
+  // 回答匹配不因提醒字段改变：A/B/C 与标签匹配行为保持
+  assert.deepEqual(grillInteraction.matchGrillReply({ options, userReply: "B" }), {
+    kind: "option",
+    answerCode: "B",
+    selectedOptionId: "config-api",
+    rawReply: "B",
+  });
+});

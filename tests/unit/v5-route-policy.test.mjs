@@ -15,8 +15,21 @@ const signals = (overrides = {}) => ({
   ...overrides,
 });
 
-const basis = (signalOverrides = {}, riskFacts = {}) => ({
-  scopeFacts: ["README.md:1"], topologyFacts: ["rg call sites"], uncertaintyFacts: [], riskFacts, decisionRefs: [], signals: signals(signalOverrides),
+const basis = (signalOverrides = {}, riskFactRefs = {}) => ({
+  scopeFactRefs: ["FACT-1111111111111111"], topologyFactRefs: ["FACT-2222222222222222"], uncertaintyFactRefs: [], riskFactRefs, decisionRefs: [], signals: signals(signalOverrides),
+});
+
+test("v5 classification rejects caller-authored fact prose", () => {
+  const preview = route.recommendClassification({
+    scopeFacts: ["README.md:1"],
+    topologyFacts: ["I checked call sites"],
+    uncertaintyFacts: [],
+    riskFacts: {},
+    decisionRefs: [],
+    signals: signals(),
+  });
+  assert.equal(preview.readyToLock, false);
+  assert.equal(preview.issues[0].code, "CLASSIFICATION_BASIS_INVALID");
 });
 
 test("Core takes max of surface, behavior, topology and permits upward only", () => {

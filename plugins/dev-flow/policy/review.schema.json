@@ -38,16 +38,16 @@
       }
     },
     "reviewAssurance": {
-      "enum": ["multi-perspective", "independent-sampling", "multi-agent-attested", "multi-agent-verified"]
+      "enum": ["multi-perspective", "independent-sampling", "multi-agent-verified"]
     },
     "reviewExecutionMode": {
       "enum": ["isolated-sequential", "parallel-safe", "mcp-sampling", "native-subagent"]
     },
     "reviewRole": {
-      "enum": ["requirements-coverage", "architecture-testability", "rollback-operability", "security", "data-irreversibility", "money-safety", "contract-failure", "recovery-observability", "critical-correctness"]
+      "enum": ["code-quality", "requirement-fidelity", "requirements-coverage", "architecture-testability", "rollback-operability", "security", "data-irreversibility", "money-safety", "contract-failure", "recovery-observability", "critical-correctness"]
     },
     "reviewFindingCategory": {
-      "enum": ["requirements-coverage", "architecture-testability", "rollback-operability", "security", "data-irreversibility", "money-safety", "contract-failure", "recovery-observability", "critical-correctness"]
+      "enum": ["code-quality", "requirement-fidelity", "requirements-coverage", "architecture-testability", "rollback-operability", "security", "data-irreversibility", "money-safety", "contract-failure", "recovery-observability", "critical-correctness"]
     },
     "reviewDepth": {
       "enum": ["standard", "full"]

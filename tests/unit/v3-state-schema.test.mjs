@@ -7,15 +7,15 @@ import { loadSource } from "../helpers/load-source.mjs";
 
 const store = await loadSource("plugins/dev-flow/src/core/state-store.ts");
 
-test("new features are v4 states with lineage and independently tracked freshness", async () => {
+test("new features are v5 states with lineage and independently tracked freshness", async () => {
   const fixture = await createTinyApp();
   try {
     await store.initProject(fixture.root, strictProjectConfig);
     const state = await store.startFeature(fixture.root, { featureId: "v3", objective: "更新行为", host: "codex" });
-    assert.equal(state.schemaVersion, 4);
+    assert.equal(state.schemaVersion, 5);
     assert.equal(state.workspace.baseHead.length, 40);
     assert.equal(state.workspace.reconciliationStatus, "current");
-    assert.deepEqual(state.qualityExceptions, []);
+    assert.deepEqual(state.governance.authorizations, []);
     assert.deepEqual(state.evidenceFreshness, { review: "missing", verification: "missing", checkpoint: "missing", implementation: "current" });
   } finally {
     await fixture.dispose();

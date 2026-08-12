@@ -2,7 +2,7 @@ import { checkpointsEnforcementRequired, reviewEnforcementRequired } from "../po
 import { deriveNext } from "../policy/derive-next.js";
 import { requiredEvidenceForStep, requiredEvidenceIsEmpty } from "../policy/evidence.js";
 import type { NextAction } from "../policy/types.js";
-import type { RollbackNode } from "../policy/traceability.js";
+import type { TraceNode } from "../policy/traceability.js";
 import { readState, type FeatureState } from "./state-store.js";
 import { inspectTraceGate } from "./traceability-gates.js";
 import { readTraceability } from "./traceability-store.js";
@@ -11,11 +11,16 @@ import { assertReviewComplete } from "./review-jobs.js";
 import { readReviewLedger } from "./review-store.js";
 import { assertCurrentReviewProjection } from "./review-projection.js";
 import { routeDefinitionForState } from "./step-order.js";
+import { hasCurrentQualityException } from "./quality-exceptions.js";
+import { pendingDecisionForState } from "./decision-interactions.js";
 
 function toDerivedState(state: FeatureState, verificationStale: boolean) {
   const definition = routeDefinitionForState(state);
   const steps: Record<string, { status: "pending" | "satisfied"; artifactReady?: boolean }> = { ...state.steps };
   if (verificationStale) steps.verification = { status: "pending" };
+  // 当前风险接受结论与门禁共用（issue 22）：用户接受验证风险后，验证不再
+  // 阻塞推进，但 state.steps 不被改写——显示上始终是“风险已接受”。
+  else if (hasCurrentQualityException(state, "verification")) steps.verification = { status: "satisfied" };
   for (const [approvalId, snapshot] of Object.entries(state.humanGates)) {
     const value = snapshot as { status?: string };
     if (approvalId.startsWith("approval:") && (value.status === "pending" || value.status === "returned")) {
@@ -103,7 +108,7 @@ async function reviewPlanAction(root: string, state: FeatureState): Promise<Next
  * During the implementation step of a checkpoints:1 feature, the next action
  * is the unit lifecycle itself: checkpoint the active unit, or begin the
  * first pending unit whose dependencies are all checkpointed. Only when every
- * rollback unit is checkpointed may the route record implementation.
+ * implementation unit is checkpointed may the route record implementation.
  */
 async function unitLifecycleAction(root: string, state: FeatureState): Promise<NextAction | undefined> {
   if (!checkpointsEnforcementRequired(state.route, state.classification.controls)) return undefined;
@@ -112,7 +117,7 @@ async function unitLifecycleAction(root: string, state: FeatureState): Promise<N
   if (active) return { kind: "checkpoint-implementation-unit", unitId: active.unitId };
   const ledger = await readTraceability(root, state);
   const nodes = Object.values(ledger.nodes)
-    .filter((node): node is RollbackNode => node.kind === "rollback" && node.status === "current")
+    .filter((node): node is Extract<TraceNode, { kind: "implementation-unit" }> => node.kind === "implementation-unit" && node.status === "current")
     .sort((a, b) => a.id.localeCompare(b.id));
   const statusByUnit = new Map(units.map((unit) => [unit.unitId, unit.status]));
   const ready = nodes.find((node) =>
@@ -124,9 +129,9 @@ async function unitLifecycleAction(root: string, state: FeatureState): Promise<N
 export async function nextAction(root: string, id: string): Promise<NextAction> {
   const state = await readState(root, id);
   if (state.mode === "intake") {
-    const openDecisions = (state.decisionLedger ?? []).filter((decision) => decision.status === "open");
-    return openDecisions.length
-      ? { kind: "intake", activity: "resolve-decision", reason: `${openDecisions.length} 个决策仍待用户确认` }
+    const pending = pendingDecisionForState(state);
+    return pending
+      ? { kind: "intake", activity: "resolve-decision", reason: "当前有一个决策仍待用户确认" }
       : { kind: "intake", activity: "investigate", reason: "读取需求、代码、文档和测试完成调查后，调用 dev_flow_lock_classification 锁定路线（锁定前不要调用 record_step 等路线步骤工具）" };
   }
   const action = deriveNext(toDerivedState(state, await verificationIsStale(root, state)));

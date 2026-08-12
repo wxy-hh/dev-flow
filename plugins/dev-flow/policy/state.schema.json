@@ -3,9 +3,10 @@
   "$id": "dev-flow/state.schema.json",
   "type": "object",
   "additionalProperties": false,
-  "required": ["schemaVersion", "mode", "featureId", "revision", "lifecycle", "scope", "workspace", "evidenceFreshness", "steps", "humanGates", "artifacts", "verification", "blockingFindings", "logicComplete", "lastUpdatedBy", "qualityExceptions"],
+  "required": ["schemaVersion", "governance", "mode", "featureId", "revision", "lifecycle", "scope", "workspace", "evidenceFreshness", "steps", "humanGates", "artifacts", "verification", "blockingFindings", "logicComplete", "lastUpdatedBy"],
   "properties": {
-    "schemaVersion": { "const": 4 },
+    "schemaVersion": { "const": 5 },
+    "governance": { "$ref": "#/$defs/governanceLedger" },
     "mode": { "enum": ["intake", "routed"] },
     "featureId": { "type": "string", "minLength": 1 },
     "revision": { "type": "integer", "minimum": 0 },
@@ -26,7 +27,6 @@
     "classificationBasis": { "$ref": "#/$defs/classificationBasis" },
     "routeConfirmation": { "type": "object" },
     "pendingDecision": { "type": "object" },
-    "decisionLedger": { "type": "array" },
     "obligations": { "type": "array" },
     "workspace": {
       "type": "object",
@@ -107,7 +107,6 @@
       "properties": { "host": { "enum": ["claude", "codex"] }, "pluginVersion": { "type": "string" } },
       "additionalProperties": false
     },
-    "qualityExceptions": { "type": "array" },
     "executionSemanticBasisHash": { "type": "string" },
     "resumeSummary": { "type": "string" }
   },
@@ -166,12 +165,12 @@
     "classificationBasis": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["scopeFacts", "topologyFacts", "uncertaintyFacts", "riskFacts", "decisionRefs", "signals"],
+      "required": ["scopeFactRefs", "topologyFactRefs", "uncertaintyFactRefs", "riskFactRefs", "decisionRefs", "signals"],
       "properties": {
-        "scopeFacts": { "type": "array", "items": { "type": "string" } },
-        "topologyFacts": { "type": "array", "items": { "type": "string" } },
-        "uncertaintyFacts": { "type": "array", "items": { "type": "string" } },
-        "riskFacts": { "type": "object" },
+        "scopeFactRefs": { "type": "array", "items": { "type": "string" } },
+        "topologyFactRefs": { "type": "array", "items": { "type": "string" } },
+        "uncertaintyFactRefs": { "type": "array", "items": { "type": "string" } },
+        "riskFactRefs": { "type": "object" },
         "decisionRefs": { "type": "array", "items": { "type": "string" } },
         "controlEnhancements": { "$ref": "#/$defs/controlEnhancements" },
         "signals": {
@@ -199,12 +198,142 @@
         "plan": { "enum": ["brief", "formal"] },
         "trace": { "const": true },
         "planReview": { "const": true },
-        "reviewRoles": { "type": "array", "uniqueItems": true, "items": { "enum": ["requirements-coverage", "architecture-testability", "rollback-operability", "security", "data-irreversibility", "money-safety", "contract-failure", "recovery-observability", "critical-correctness"] } },
+        "reviewRoles": { "type": "array", "uniqueItems": true, "items": { "enum": ["code-quality", "requirement-fidelity", "requirements-coverage", "architecture-testability", "rollback-operability", "security", "data-irreversibility", "money-safety", "contract-failure", "recovery-observability", "critical-correctness"] } },
         "executionApproval": { "const": true },
         "checkpoints": { "const": "unit-chain" },
         "recovery": { "type": "array", "uniqueItems": true, "items": { "enum": ["operational-strategy", "executable-rollback", "irreversible-compensation"] } },
         "codeReview": { "enum": ["focused", "independent", "full"] },
         "verification": { "type": "array", "uniqueItems": true, "items": { "enum": ["targeted", "behavior", "integration", "full"] } }
+      }
+    },
+    "governanceLedger": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["decisions", "claims", "authorizations", "credentials", "repositoryFacts"],
+      "properties": {
+        "decisions": { "type": "array", "items": { "$ref": "#/$defs/governanceDecision" } },
+        "claims": { "type": "array", "items": { "$ref": "#/$defs/governanceClaim" } },
+        "authorizations": { "type": "array", "items": { "$ref": "#/$defs/governanceAuthorization" } },
+        "credentials": { "type": "array", "items": { "$ref": "#/$defs/governanceCredential" } },
+        "repositoryFacts": { "type": "array", "items": { "$ref": "#/$defs/governanceRepositoryFact" } }
+      }
+    },
+    "recordBasis": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "sha256"],
+          "properties": { "kind": { "const": "content" }, "sha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" } }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "eventId"],
+          "properties": { "kind": { "const": "event" }, "eventId": { "type": "string", "minLength": 1 } }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "sliceKey", "sliceHash"],
+          "properties": { "kind": { "const": "slice" }, "sliceKey": { "type": "string", "minLength": 1 }, "sliceHash": { "type": "string", "minLength": 1 } }
+        }
+      ]
+    },
+    "governanceDecision": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["recordId", "kind", "question", "conclusion"],
+      "properties": {
+        "recordId": { "type": "string" },
+        "kind": { "const": "decision" },
+        "question": { "type": "string" },
+        "conclusion": { "type": "string" },
+        "credentialId": { "type": "string" },
+        "supersededBy": { "type": "string" },
+        "basis": { "$ref": "#/$defs/recordBasis" },
+        "recordedAt": { "type": "string" }
+      }
+    },
+    "governanceClaim": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["recordId", "kind", "claimType", "subject"],
+      "properties": {
+        "recordId": { "type": "string" },
+        "kind": { "const": "claim" },
+        "claimType": { "enum": ["review-complete", "verification-current", "checkpoint-current", "approval-current", "risk-accepted"] },
+        "subject": { "type": "string" },
+        "supersededBy": { "type": "string" },
+        "basis": { "$ref": "#/$defs/recordBasis" },
+        "recordedAt": { "type": "string" }
+      }
+    },
+    "governanceAuthorization": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["recordId", "kind", "authorizationType", "target"],
+      "properties": {
+        "recordId": { "type": "string" },
+        "kind": { "const": "authorization" },
+        "authorizationType": { "enum": ["risk-acceptance", "dangerous-command", "approval"] },
+        "target": { "type": "string" },
+        "credentialId": { "type": "string" },
+        "supersededBy": { "type": "string" },
+        "basis": { "$ref": "#/$defs/recordBasis" },
+        "recordedAt": { "type": "string" }
+      }
+    },
+    "governanceCredential": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["recordId", "kind", "source", "host", "interactionId"],
+      "properties": {
+        "recordId": { "type": "string" },
+        "kind": { "const": "credential" },
+        "source": { "enum": ["native-form", "text"] },
+        "host": { "enum": ["claude", "codex"] },
+        "interactionId": { "type": "string" },
+        "optionId": { "type": "string" },
+        "rawText": { "type": "string" },
+        "supersededBy": { "type": "string" },
+        "basis": { "$ref": "#/$defs/recordBasis" },
+        "recordedAt": { "type": "string" }
+      }
+    },
+    "governanceRepositoryFact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["recordId", "kind", "assertion", "location", "observedFingerprint"],
+      "properties": {
+        "recordId": { "type": "string" },
+        "kind": { "const": "repository-fact" },
+        "assertion": { "type": "string" },
+        "location": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind"],
+          "properties": {
+            "kind": { "enum": ["positive", "negative"] },
+            "path": { "type": "string" },
+            "anchor": { "type": "string" },
+            "checkedScope": { "type": "array", "items": { "type": "string" } },
+            "conditions": { "type": "string" }
+          }
+        },
+        "observedFingerprint": { "type": "string" },
+        "observation": {
+          "oneOf": [
+            { "type": "object", "additionalProperties": false, "required": ["kind", "path"], "properties": { "kind": { "const": "file-exists" }, "path": { "type": "string", "minLength": 1 } } },
+            { "type": "object", "additionalProperties": false, "required": ["kind", "path", "text"], "properties": { "kind": { "const": "text-present" }, "path": { "type": "string", "minLength": 1 }, "text": { "type": "string", "minLength": 1 }, "occurrence": { "type": "integer", "minimum": 1 } } },
+            { "type": "object", "additionalProperties": false, "required": ["kind", "path", "symbol"], "properties": { "kind": { "const": "symbol-present" }, "path": { "type": "string", "minLength": 1 }, "symbol": { "type": "string", "minLength": 1 } } },
+            { "type": "object", "additionalProperties": false, "required": ["kind", "path", "pointer", "expected"], "properties": { "kind": { "const": "json-value" }, "path": { "type": "string", "minLength": 1 }, "pointer": { "type": "string", "pattern": "^/" }, "expected": {} } },
+            { "type": "object", "additionalProperties": false, "required": ["kind", "checkedScope", "pattern", "patternKind"], "properties": { "kind": { "const": "search-absent" }, "checkedScope": { "type": "array", "items": { "type": "string", "minLength": 1 }, "minItems": 1 }, "pattern": { "type": "string", "minLength": 1 }, "patternKind": { "enum": ["literal", "regex"] } } }
+          ]
+        },
+        "supersededBy": { "type": "string" },
+        "basis": { "$ref": "#/$defs/recordBasis" },
+        "recordedAt": { "type": "string" }
       }
     }
   }

@@ -3,6 +3,9 @@
 // 不再与 agent 转述的 userReply 逐字比较。
 // 正例基线：m-level-issue-8499 场景 B/C（带「（推荐）」后缀事件 + 精简/完整转述）。
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
+import { writeFile } from "node:fs/promises";
+import path from "node:path";
 import test from "node:test";
 import { createTinyApp, strictProjectConfig } from "../helpers/fixture-repo.mjs";
 import { mcpCall } from "../helpers/host-runner.mjs";
@@ -15,17 +18,31 @@ const bundles = await buildTestBundles();
 const server = bundles.pathFor("mcp-server");
 
 const boundaryAudit = { scanned: ["assumption", "free-space", "tbd", "fallback", "scope", "acceptance"], items: [] };
-const mBasis = {
-  scopeFacts: ["只改一个模块"], topologyFacts: ["没有共享契约"], uncertaintyFacts: [],
-  riskFacts: {}, decisionRefs: [],
-  signals: { changeSurface: "multi-component", behaviorChange: "new-capability", topology: "local", unitCount: 1, requirements: "provided-confirmed", operationalRecovery: false, executableRollback: false },
-};
+
+/** 登记一条绑定已提交文件的仓库事实（v5 分类引用事实记录，ADR-0018）。 */
+async function registerFixtureFact(root, featureId, revision) {
+  await writeFile(path.join(root, "src", "semantic-fact.txt"), "single module evidence\n");
+  execFileSync("git", ["add", "src/semantic-fact.txt"], { cwd: root });
+  execFileSync("git", ["commit", "-qm", "semantic fact"], { cwd: root });
+  const withFact = await store.registerRepositoryFact(root, featureId, revision, {
+    assertion: "只改一个模块",
+    location: { kind: "positive", path: "src/semantic-fact.txt" },
+  }, "claude");
+  return {
+    factRef: withFact.governance.repositoryFacts[withFact.governance.repositoryFacts.length - 1].recordId,
+    revision: withFact.revision,
+  };
+}
 
 async function lockRouteConfirmation(fixture, featureId) {
   await store.initProject(fixture.root, strictProjectConfig);
   const started = await store.startFeature(fixture.root, { featureId, objective: "测试文本语义解析", host: "claude" });
-  const pending = await store.lockClassification(fixture.root, featureId, started.revision, {
-    ...mBasis, level: "M", topology: "local", requirements: "provided-confirmed",
+  const { factRef, revision: afterFact } = await registerFixtureFact(fixture.root, featureId, started.revision);
+  const pending = await store.lockClassification(fixture.root, featureId, afterFact, {
+    scopeFactRefs: [factRef], topologyFactRefs: [factRef], uncertaintyFactRefs: [],
+    riskFactRefs: {}, decisionRefs: [],
+    signals: { changeSurface: "multi-component", behaviorChange: "new-capability", topology: "local", unitCount: 1, requirements: "provided-confirmed", operationalRecovery: false, executableRollback: false },
+    level: "M", topology: "local", requirements: "provided-confirmed",
   }, boundaryAudit);
   assert.equal(decisions.pendingDecisionForState(pending).kind, "route-confirmation");
   return pending;

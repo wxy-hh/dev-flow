@@ -30,9 +30,6 @@ export function normalizeClassification(input: ClassificationInput): Classificat
       recoveryHint: "Choose only contract-defined risk labels; do not invent domain labels",
     });
   }
-  if (input.manualAcceptanceRequired !== undefined && typeof input.manualAcceptanceRequired !== "boolean") {
-    throw new PolicyError("INVALID_MANUAL_ACCEPTANCE_REQUIREMENT", "manualAcceptanceRequired must be boolean");
-  }
   if (input.acceptanceAssistSuggested !== undefined && typeof input.acceptanceAssistSuggested !== "boolean") {
     throw new PolicyError("INVALID_ACCEPTANCE_ASSIST_SUGGESTION", "acceptanceAssistSuggested must be boolean");
   }
@@ -41,9 +38,8 @@ export function normalizeClassification(input: ClassificationInput): Classificat
     topology: input.topology,
     ...(input.requirements ? { requirements: input.requirements } : {}),
     riskLabels,
-    // The former hard requirement remains a compatibility input only. Browser/user
-    // acceptance is advisory and never changes a route's ability to finalize.
-    acceptanceAssistSuggested: input.acceptanceAssistSuggested === true || input.manualAcceptanceRequired === true,
+    // Browser/user acceptance is advisory and never changes a route's ability to finalize.
+    acceptanceAssistSuggested: input.acceptanceAssistSuggested === true,
     ...(input.classificationBasis ? { classificationBasis: input.classificationBasis } : {}),
     controls: {
       requirements: false,

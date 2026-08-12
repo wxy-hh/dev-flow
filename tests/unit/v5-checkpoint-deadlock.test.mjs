@@ -30,7 +30,7 @@ const routeInput = { level: "L", topology: "multi-chain", requirements: "provide
  * 5. 此后 checkpoint 报 IMPLEMENTATION_UNIT_UNKNOWN、begin 新单元被 trace gate 挡
  * 6. 单元保持 active、trace 保持 stale：无受支持的恢复出口
  */
-test("config change during an active unit leaves no supported recovery path", { timeout: 120_000 }, async () => {
+test("config change during an active unit has an explicit abandon-and-reregister recovery path", { timeout: 120_000 }, async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "dev-flow-deadlock-"));
   try {
     await run("git", ["init", "--quiet"], { cwd: root });
@@ -89,7 +89,7 @@ test("config change during an active unit leaves no supported recovery path", { 
     await writeFile(requirementsPath, `${requirementsDoc}\n补充：死锁复现编辑。\n`);
     state = (await artifacts.recordArtifactWithTrace(root, featureId, state.revision, "requirements", traceDeltaFor("requirements", "l"))).state;
     let ledger = await traceStore.readTraceability(root, state);
-    assert.equal(ledger.nodes["RU-001"].status, "stale");
+    assert.equal(ledger.nodes["UNIT-001"].status, "stale");
     assert.equal(ledger.nodes["TASK-001"].status, "stale");
     assert.equal(ledger.nodes["TEST-001"].status, "stale");
     assert.equal(state.steps.implementation, undefined, "requirements re-registration reopens implementation");
@@ -100,7 +100,7 @@ test("config change during an active unit leaves no supported recovery path", { 
       (error) => error.code === "STEP_OUT_OF_ORDER",
     );
 
-    // 症状 5：计划重登记（恢复 RU 节点 current 的唯一途径）依旧被 active unit 挡死
+    // 症状 5：计划重登记在 active unit 期间仍被挡住；先使用明确的 abandon 出口。
     await assert.rejects(
       () => artifacts.recordArtifactWithTrace(root, featureId, state.revision, "implementation-plan", traceDeltaFor("implementation-plan", "l")),
       (error) => error.code === "PLAN_REVISION_REQUIRES_QUIESCENT_UNIT",
@@ -112,11 +112,12 @@ test("config change during an active unit leaves no supported recovery path", { 
       (error) => error.code === "STEP_OUT_OF_ORDER",
     );
 
-    // 死锁终态：单元仍 active、trace 仍 stale、无任何受支持出口
-    state = await store.readState(root, featureId);
-    assert.equal(state.implementationUnits.find((unit) => unit.unitId === unitId).status, "active");
+    // 受支持的恢复出口：取消 active 单元后，重新登记计划即可恢复 Trace。
+    state = await units.abandonImplementationUnit(root, featureId, state.revision, unitId, "验证配置变更后取消并重登记", "claude");
+    assert.equal(state.implementationUnits.find((unit) => unit.unitId === unitId).status, "pending");
+    state = (await artifacts.recordArtifactWithTrace(root, featureId, state.revision, "implementation-plan", traceDeltaFor("implementation-plan", "l"))).state;
     ledger = await traceStore.readTraceability(root, state);
-    assert.equal(ledger.nodes["RU-001"].status, "stale");
+    assert.equal(ledger.nodes["UNIT-001"].status, "current");
   } finally {
     await rm(root, { recursive: true, force: true });
   }

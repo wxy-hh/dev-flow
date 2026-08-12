@@ -28,7 +28,9 @@ test("MCP rejects silently ignored fields before invoking state handlers", async
       () => mcpCall(server, root, "dev_flow_classify", { level: "M", topology: "local", riskFacts: { security: ["wrong nesting"] } }),
       (error) => {
         assert.equal(error.code, "INVALID_TOOL_INPUT");
-        assert.ok(error.details.issues.some((item) => item.path === "$.classificationBasis.riskFacts"));
+        // v5 分类只接受 classificationBasis.riskFactRefs（ADR-0018）；顶层
+        // riskFacts 属于未知字段，schema 直接拒绝而不是静默忽略。
+        assert.ok(error.details.issues.some((item) => item.path === "$.riskFacts" && item.keyword === "additionalProperties"));
         return true;
       },
     );
@@ -56,7 +58,8 @@ test("MCP rejects silently ignored fields before invoking state handlers", async
         host: "codex",
         manualAcceptance: { mode: "user-signoff", source: "prompt", scenarios: [{ name: "ok", evidence: "ok" }] },
       }),
-      (error) => error.code === "INVALID_TOOL_INPUT" && error.details.issues.some((item) => item.path === "$.manualAcceptance.userReply"),
+      (error) => error.code === "INVALID_TOOL_INPUT"
+        && error.details.issues.some((item) => item.path === "$.manualAcceptance" && item.keyword === "additionalProperties"),
     );
   } finally {
     await rm(root, { recursive: true, force: true });

@@ -41,7 +41,7 @@ export interface ReviewBasis {
   workflowCapabilities: Record<"trace" | "review" | "checkpoints" | "rollbackExecution", 0 | 1>;
   classification: { level: string; topology: string; requirements?: string; riskLabels: RiskLabel[] };
   artifacts: ReviewBasisArtifact[];
-  traceability: { path: string; sha256: string; revision: number };
+  traceability?: { path: string; sha256: string; revision: number };
   projectConfigSha256: string;
   /** Hashes of configured verification commands; role slices select only referenced IDs. */
   verificationCommandHashes?: Record<string, string>;
@@ -76,6 +76,10 @@ export interface ReviewJob {
     samplingProvenance?: ReviewSamplingProvenance;
     /** Ordinary host subagent proof; never elevates to multi-agent-verified alone. */
     attestation?: ReviewAgentAttestation;
+    /** Core 派生：attestation 引用的宿主事件真实存在（调用方不能自行声明）。 */
+    attestationSourceVerified?: boolean;
+    /** Core 派生：隔离上下文证明（subagent 声明 + 真实宿主事件），与来源证明正交。 */
+    isolationProof?: { mode: "subagent" | "sampling"; hostEventId?: string };
   };
 }
 
@@ -144,6 +148,10 @@ export interface ReviewAgentAttestation {
   raw: string;
   rawSha256: string;
   acceptedAt: string;
+  /** 调用方声明的宿主可信事件；只有 Core 校验存在后才计入来源证明。 */
+  hostEventId?: string;
+  /** 声明该审查在与实施隔离的新上下文中完成（如宿主 subagent）；Core 校验事件后才形成隔离证明。 */
+  isolated?: boolean;
 }
 
 /** Future trusted hosts plug in here; the default verifier never attests verified. */
@@ -210,6 +218,8 @@ export type ReviewFindingEvent =
 
 export interface ReviewBatch {
   batchId: string;
+  /** Missing only on early 5.0 plan-review snapshots loaded at the compatibility edge. */
+  phase?: "plan" | "code";
   basis: ReviewBasis;
   basisHash: string;
   validity: "current" | "stale";
@@ -218,6 +228,8 @@ export interface ReviewBatch {
   assuranceLevel: ReviewAssurance;
   jobs: ReviewJob[];
   dispositions?: Record<string, ReviewFindingDisposition>;
+  /** 未知 diff 全量重审的诊断：变化字段、未命中切片的原因与重审决定。 */
+  unknownDiffInfo?: { changedFields: string[]; reason: string };
 }
 
 export interface ReviewLedger {
@@ -234,9 +246,10 @@ export interface ReviewLedger {
 /**
  * Derive assurance only from persisted Core evidence.
  * Ladder: multi-agent-verified (trusted verifier only) >
- * multi-agent-attested (≥2 jobs, distinct agentId + raw) >
  * independent-sampling (≥2 jobs, distinct sampling request hashes) >
  * multi-perspective.
+ * Free-text attestation, display names, agentIds or raw hashes cannot prove
+ * distinct sources by themselves (ADR-0007 / issue 18).
  */
 export function assuranceForReviewBatch(
   batch: Pick<ReviewBatch, "jobs">,
@@ -247,10 +260,6 @@ export function assuranceForReviewBatch(
   const trustedAgents = new Set(trusted.map((job) => job.submission!.attestation!.agentId));
   const trustedRaws = new Set(trusted.map((job) => job.submission!.attestation!.rawSha256));
   if (trusted.length >= 2 && trustedAgents.size >= 2 && trustedRaws.size >= 2) return "multi-agent-verified";
-
-  const agentIds = new Set(attested.map((job) => job.submission!.attestation!.agentId));
-  const rawHashes = new Set(attested.map((job) => job.submission!.attestation!.rawSha256));
-  if (attested.length >= 2 && agentIds.size >= 2 && rawHashes.size >= 2) return "multi-agent-attested";
 
   const sampled = batch.jobs.filter((job) => job.status === "submitted" && job.submission?.samplingProvenance);
   const hashes = new Set(sampled.map((job) => job.submission!.samplingProvenance!.requestSha256));
@@ -271,7 +280,7 @@ export function evidenceSourcesForReviewBatch(batch: Pick<ReviewBatch, "jobs"> |
 /** Parse host attestation input. Rejects verified/assurance self-reports. */
 export function parseHostAttestation(value: unknown): Omit<ReviewAgentAttestation, "rawSha256" | "acceptedAt"> {
   if (!isRecord(value)
-    || Object.keys(value).some((key) => !["host", "agentId", "issuedAt", "raw"].includes(key))
+    || Object.keys(value).some((key) => !["host", "agentId", "issuedAt", "raw", "hostEventId", "isolated"].includes(key))
     || (value.host !== "claude" && value.host !== "codex")
     || typeof value.agentId !== "string" || !value.agentId.trim()
     || typeof value.issuedAt !== "string" || !value.issuedAt.trim()
@@ -284,10 +293,14 @@ export function parseHostAttestation(value: unknown): Omit<ReviewAgentAttestatio
     agentId: value.agentId.trim(),
     issuedAt: value.issuedAt,
     raw: value.raw,
+    ...(typeof value.hostEventId === "string" && value.hostEventId.trim() ? { hostEventId: value.hostEventId.trim() } : {}),
+    ...(value.isolated === true ? { isolated: true } : {}),
   };
 }
 
 const reviewRoles = [
+  "code-quality",
+  "requirement-fidelity",
   "requirements-coverage",
   "architecture-testability",
   "rollback-operability",
@@ -394,7 +407,12 @@ export function deriveReviewJobRequirements(
   route: RouteId,
   riskLabels: RiskLabel[],
   derivedRoles?: ReviewRole[],
+  phase: "plan" | "code" = "plan",
 ): ReviewJobRequirement[] {
+  if (phase === "code") {
+    const reviewDepth: ReviewDepth = riskLabels.includes("critical_correctness") ? "full" : "standard";
+    return ["code-quality", "requirement-fidelity"].map((role) => ({ role: role as ReviewRole, reviewDepth }));
+  }
   if (route !== "m" && route !== "l") return [];
   const roles: ReviewRole[] = derivedRoles?.length ? [...derivedRoles] : ["requirements-coverage", "architecture-testability", "rollback-operability"];
   if (!derivedRoles && riskLabels.includes("security")) roles.push("security");

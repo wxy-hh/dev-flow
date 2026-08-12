@@ -9,7 +9,7 @@ import {
 } from "./grill-interaction.js";
 import type { FeatureState } from "./state-store.js";
 
-export type InteractionKind = "approval" | "grill" | "risk-acceptance" | "rollback-confirmation" | "quality-exception" | "workspace-ownership" | "route-confirmation" | "task-switch";
+export type InteractionKind = "approval" | "grill" | "risk-acceptance" | "rollback-confirmation" | "quality-exception" | "workspace-ownership" | "route-confirmation" | "task-switch" | "decision-ratification" | "decision-revision" | "plan-revision" | "side-effect-rerun" | "acceptance-confirmation";
 export type InteractionSource = "elicitation" | "text";
 
 /** 比较用归一化与语义兼容判定：仅用于匹配比较，存储始终保留原始输入。 */
@@ -64,6 +64,18 @@ export interface UserInteraction {
   workspaceRemainingPaths?: string[];
   status: "pending" | "resolved";
   response?: InteractionResponse;
+  /** 决策追认候选内容（kind === "decision-ratification" 时存在）。 */
+  ratification?: { question: string; evidence: string; conclusion: string; factRefs: string[] };
+  /** 决策修订候选内容（kind === "decision-revision" 时存在）。 */
+  revision?: { decisionId: string; oldConclusion: string; newConclusion: string; reason: string; affected: string[] };
+  /** 实施中计划修订候选（kind === "plan-revision" 时存在）。 */
+  planRevision?: { affectedUnits: string[]; redoUnits: string[]; sideEffectUnits: string[]; reviewInvalidated: boolean; fallbackReason?: string };
+  /** Internal immutable inputs used to reject a stale plan-revision preview. */
+  planRevisionBasis?: { artifactSha256: string; projectConfigSha256: string; traceabilitySha256: string };
+  /** 副作用单元重跑确认（kind === "side-effect-rerun" 时存在）。 */
+  sideEffectRerun?: { units: string[] };
+  /** 验收确认只证明用户确认当前 AC 结果，不证明浏览器或代码操作发生。 */
+  acceptanceConfirmation?: { acceptanceCriterionIds: string[]; deliveryFingerprint: string; dispositionHash: string };
 }
 
 export interface PublicInteraction {
@@ -73,6 +85,13 @@ export interface PublicInteraction {
   options: Array<InteractionOption & { answerCode?: GrillAnswerCode; recommended?: boolean }>;
   recommendation?: GrillRecommendation;
   presentation?: string;
+  /** 追认/修订候选内容只读投影（不暴露内部引用以外的敏感信息）。 */
+  ratification?: { question: string; evidence: string; conclusion: string };
+  revision?: { decisionId: string; oldConclusion: string; newConclusion: string; reason: string; affected: string[] };
+  planRevision?: { affectedUnits: string[]; redoUnits: string[]; sideEffectUnits: string[]; reviewInvalidated: boolean; fallbackReason?: string };
+  /** 副作用单元重跑确认候选（kind === "side-effect-rerun" 时存在）。 */
+  sideEffectRerun?: { units: string[] };
+  acceptanceConfirmation?: { acceptanceCriterionIds: string[]; deliveryFingerprint: string; dispositionHash: string };
 }
 
 export interface InteractionInput {
@@ -87,6 +106,16 @@ export interface InteractionInput {
   workspacePaths?: string[];
   workspaceBatchPaths?: string[];
   workspaceRemainingPaths?: string[];
+  /** 决策追认候选：展示原话与拟登记结论，只有新的可信回答才能落账。 */
+  ratification?: { question: string; evidence: string; conclusion: string; factRefs: string[] };
+  /** 决策修订候选：展示旧决定、新决定与影响集，确认后追加修订链。 */
+  revision?: { decisionId: string; oldConclusion: string; newConclusion: string; reason: string; affected: string[] };
+  /** 实施中计划修订候选：展示受影响单元与副作用警示，确认后局部重做。 */
+  planRevision?: { affectedUnits: string[]; redoUnits: string[]; sideEffectUnits: string[]; reviewInvalidated: boolean; fallbackReason?: string };
+  planRevisionBasis?: UserInteraction["planRevisionBasis"];
+  /** 副作用单元重跑确认候选：计划修订后不会自动重跑有副作用的已完成单元。 */
+  sideEffectRerun?: { units: string[] };
+  acceptanceConfirmation?: { acceptanceCriterionIds: string[]; deliveryFingerprint: string; dispositionHash: string };
 }
 
 function interactions(state: FeatureState): Record<string, UserInteraction> {
@@ -140,6 +169,12 @@ export function createInteraction(state: FeatureState, input: InteractionInput):
     ...(input.workspacePaths ? { workspacePaths: [...input.workspacePaths] } : {}),
     ...(input.workspaceBatchPaths ? { workspaceBatchPaths: [...input.workspaceBatchPaths] } : {}),
     ...(input.workspaceRemainingPaths ? { workspaceRemainingPaths: [...input.workspaceRemainingPaths] } : {}),
+    ...(input.ratification ? { ratification: { ...input.ratification, factRefs: [...input.ratification.factRefs] } } : {}),
+    ...(input.revision ? { revision: { ...input.revision, affected: [...input.revision.affected] } } : {}),
+    ...(input.planRevision ? { planRevision: { ...input.planRevision, affectedUnits: [...input.planRevision.affectedUnits], redoUnits: [...input.planRevision.redoUnits], sideEffectUnits: [...input.planRevision.sideEffectUnits] } } : {}),
+    ...(input.planRevisionBasis ? { planRevisionBasis: { ...input.planRevisionBasis } } : {}),
+    ...(input.sideEffectRerun ? { sideEffectRerun: { units: [...input.sideEffectRerun.units] } } : {}),
+    ...(input.acceptanceConfirmation ? { acceptanceConfirmation: { ...input.acceptanceConfirmation, acceptanceCriterionIds: [...input.acceptanceConfirmation.acceptanceCriterionIds] } } : {}),
     status: "pending",
   };
   interactions(state)[interaction.id] = interaction;
@@ -342,6 +377,10 @@ export function toPublicInteraction(interaction: UserInteraction): PublicInterac
     status: interaction.status,
     ...(interaction.question ? { question: interaction.question } : {}),
     options: interaction.options.map((option) => ({ ...option })),
+    ...(interaction.ratification ? { ratification: { ...interaction.ratification } } : {}),
+    ...(interaction.revision ? { revision: { ...interaction.revision, affected: [...interaction.revision.affected] } } : {}),
+    ...(interaction.planRevision ? { planRevision: { ...interaction.planRevision, affectedUnits: [...interaction.planRevision.affectedUnits], redoUnits: [...interaction.planRevision.redoUnits], sideEffectUnits: [...interaction.planRevision.sideEffectUnits] } } : {}),
+    ...(interaction.acceptanceConfirmation ? { acceptanceConfirmation: { ...interaction.acceptanceConfirmation, acceptanceCriterionIds: [...interaction.acceptanceConfirmation.acceptanceCriterionIds] } } : {}),
   };
 }
 

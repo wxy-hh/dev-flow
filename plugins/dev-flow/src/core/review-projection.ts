@@ -180,9 +180,6 @@ export function renderReviewProjection(model: ReviewProjection): string {
     ...(model.assurance.evidenceSources.length
       ? [`- Evidence sources: ${model.assurance.evidenceSources.join(", ")}`]
       : []),
-    ...(model.assurance.level === "multi-agent-attested"
-      ? ["- Note: multi-agent-attested is host subagent proof, not multi-agent-verified identity."]
-      : []),
     ...(model.assurance.level === "independent-sampling"
       ? ["- Note: independent-sampling is server sampling provenance, not multi-agent identity."]
       : []),

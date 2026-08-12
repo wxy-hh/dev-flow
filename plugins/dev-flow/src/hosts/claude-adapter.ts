@@ -1,5 +1,5 @@
 import { recordHostEvent, recordTrustedWriteIntent, recordTrustedWriteOwnership } from "../core/state-store.js";
-import { evaluatePreToolUse, formatPreToolBlock, trustedWriteTargets } from "./adapter-policy.js";
+import { evaluatePreToolUse, formatPreToolBlock, hostToolExecutionDetails, trustedWriteTargets } from "./adapter-policy.js";
 import { evaluatePermissionRequest, postToolSucceeded, recordPermissionPostToolUse } from "./host-authorization.js";
 import { recordAdapterHealth, recordNativePromptHealth } from "./host-health-adapter.js";
 import { claudeNativeQuestionAnswers } from "./claude-native-question.js";
@@ -80,11 +80,13 @@ if (event.hook_event_name === "UserPromptSubmit" || event.hook_event_name === "S
   }
   try {
     const text = event.prompt ?? event.user_prompt ?? event.tool_input?.prompt;
+    const eventId = event.event_id ?? `${event.hook_event_name}-${Date.now()}`;
     await recordHostEvent(cwd, {
-      eventId: event.event_id ?? `${event.hook_event_name}-${Date.now()}`,
+      eventId,
       type: event.hook_event_name === "UserPromptSubmit" ? "user-prompt" : event.hook_event_name === "Stop" ? "turn-boundary" : "tool",
       host: "claude",
       text: typeof text === "string" ? text : undefined,
+      ...(event.hook_event_name === "PostToolUse" ? hostToolExecutionDetails(event, postToolSucceeded(event), eventId) : {}),
     });
   } catch { /* hooks must not fail normal host operation */ }
 }

@@ -1,21 +1,19 @@
-import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdir, writeFile } from "node:fs/promises";
-import path from "node:path";
-import { promisify } from "node:util";
-import type { VerificationKind } from "../policy/types.js";
+import { EMPTY_GOVERNANCE_LEDGER, type VerificationKind } from "../policy/types.js";
 import { DevFlowError } from "./errors.js";
-import { fingerprintGovernedRoots } from "./fingerprint.js";
+import { fingerprintFeatureOwned, snapshotGovernedRoots } from "./fingerprint.js";
 import { assertRequirementsGrillSatisfied } from "./requirements-grill.js";
-import { mutate, readFeatureEvents, readProjectConfig, readState, type FeatureState } from "./state-store.js";
-import { resolvePromptEvent } from "./interaction-provenance.js";
+import { mutate, readProjectConfig, readState, type FeatureState } from "./state-store.js";
 import { verificationCommandHashesForRefs, type ProjectConfig, type VerificationCommand } from "./project-config.js";
+import { readTraceability } from "./traceability-store.js";
+import type { AcceptanceDispositionState } from "../policy/types.js";
+import type { TraceabilityLedger } from "../policy/traceability.js";
 import { assertCurrentStep, currentOpenStep } from "./step-order.js";
 import { recordRepairAttempt, startRepairLoop, markRepairCompleted } from "./repair-loop.js";
 import { satisfyObligations } from "../policy/obligations.js";
 import { reviewEnforcementRequired } from "../policy/contract.js";
-
-const run = promisify(execFile);
+import { invalidateAffectedClaims, persistThroughSnapshot, workspaceChangedError } from "./change-invalidation.js";
+import { runVerificationProcess, writeVerificationOutput } from "./verification-store.js";
 
 type VerificationInvocation = { executable: string; args: string[] };
 
@@ -41,41 +39,30 @@ export function verificationInvocation(
   };
 }
 
+export type CommandExitReason = "success" | "non-zero-exit" | "timeout" | "output-limit" | "spawn-failure";
+
+/** 稳定默认：未配置单命令覆盖时的超时与输出上限。 */
+export const DEFAULT_COMMAND_TIMEOUT_MS = 120_000;
+export const DEFAULT_COMMAND_MAX_OUTPUT_BYTES = 1024 * 1024;
+
 export interface CommandRunResult {
   exitCode: number;
   output: string;
+  /** 结束原因：环境/进程问题（timeout/output-limit/spawn-failure）与测试失败（non-zero-exit）分开报告。 */
+  exitReason: CommandExitReason;
 }
 
 /** Shared deterministic runner for one configured verification command. */
 export async function runVerificationCommand(root: string, command: VerificationCommand): Promise<CommandRunResult> {
-  try {
-    const invocation = verificationInvocation(command);
-    const result = await run(invocation.executable, invocation.args, {
-      cwd: path.resolve(root, command.cwd),
-      timeout: 120_000,
-      maxBuffer: 1024 * 1024,
-    });
-    return { exitCode: 0, output: `${result.stdout}${result.stderr}` };
-  } catch (error) {
-    const failure = error as { code?: number; stdout?: string; stderr?: string; message: string };
-    return {
-      exitCode: typeof failure.code === "number" ? failure.code : 1,
-      output: `${failure.stdout ?? ""}${failure.stderr ?? failure.message}`,
-    };
-  }
-}
-
-export interface ManualAcceptance {
-  mode: "browser" | "user-signoff" | "code-path-audit";
-  source: string;
-  scenarios: Array<{ name: string; evidence: string }>;
-  userReply?: string;
-}
-
-const userSignoffPhrases = ["验收通过", "确认验收", "同意验收", "approved", "LGTM"] as const;
-
-function normalizeReply(value: string): string {
-  return value.trim().toLocaleLowerCase("en-US");
+  const timeout = command.timeoutMs ?? DEFAULT_COMMAND_TIMEOUT_MS;
+  const maxBuffer = command.maxOutputBytes ?? DEFAULT_COMMAND_MAX_OUTPUT_BYTES;
+  const invocation = verificationInvocation(command);
+  return runVerificationProcess(root, {
+    ...invocation,
+    cwd: command.cwd,
+    timeoutMs: timeout,
+    maxOutputBytes: maxBuffer,
+  });
 }
 
 export interface VerificationFreshness {
@@ -96,13 +83,14 @@ type Attempt = {
   startedAt: string;
   finishedAt: string;
   exitCode: number;
+  /** 结束原因：success/non-zero-exit/timeout/output-limit/spawn-failure。 */
+  exitReason: CommandExitReason;
   /** Legacy readers may still find an inline output field. New attempts use the file. */
   output?: string;
   outputTail: string;
   outputPath: string;
   fingerprint: string;
   host: "claude" | "codex";
-  manualAcceptance?: ManualAcceptance;
   phase?: "preflight" | "forward";
 };
 
@@ -124,85 +112,6 @@ function verificationCommandSliceStale(
   const refs = [...attempt.commandIds, ...(attempt.preflightCommandIds ?? [])];
   const current = verificationCommandHashesForRefs(config, refs);
   return Object.entries(attempt.verificationCommandHashes).some(([id, hash]) => current[id] !== hash);
-}
-
-function validateManualAcceptance(value: unknown): ManualAcceptance | undefined {
-  if (value === undefined) return undefined;
-  if (typeof value !== "object" || value === null || Array.isArray(value)) {
-    throw new DevFlowError("INVALID_MANUAL_ACCEPTANCE", "manualAcceptance must be an object");
-  }
-  const input = value as Record<string, unknown>;
-  if ((input.mode !== "browser" && input.mode !== "user-signoff" && input.mode !== "code-path-audit")
-    || typeof input.source !== "string" || !input.source.trim()
-    || !Array.isArray(input.scenarios) || input.scenarios.length === 0
-    || "outcome" in input) {
-    throw new DevFlowError("INVALID_MANUAL_ACCEPTANCE", "manualAcceptance is incomplete or invalid");
-  }
-  const scenarios = input.scenarios.map((scenario) => {
-    if (typeof scenario !== "object" || scenario === null || Array.isArray(scenario)) {
-      throw new DevFlowError("INVALID_MANUAL_ACCEPTANCE", "manualAcceptance scenarios must be objects");
-    }
-    const item = scenario as Record<string, unknown>;
-    if (typeof item.name !== "string" || !item.name.trim()
-      || typeof item.evidence !== "string" || !item.evidence.trim()) {
-      throw new DevFlowError("INVALID_MANUAL_ACCEPTANCE", "manualAcceptance scenarios require name and evidence");
-    }
-    return { name: item.name.trim(), evidence: item.evidence.trim() };
-  });
-  if (input.mode === "user-signoff") {
-    const userReply = input.userReply;
-    if (typeof userReply !== "string" || !userReply.trim()) {
-      throw new DevFlowError("INVALID_MANUAL_ACCEPTANCE", "user-signoff requires a userReply");
-    }
-    if (!userSignoffPhrases.some((phrase) => normalizeReply(phrase) === normalizeReply(userReply))) {
-      throw new DevFlowError("INVALID_MANUAL_ACCEPTANCE", "user-signoff reply is not an explicit acceptance phrase", {
-        allowed: userSignoffPhrases,
-      });
-    }
-    return {
-      mode: input.mode,
-      source: input.source.trim(),
-      scenarios,
-      userReply,
-    };
-  }
-  if (input.userReply !== undefined) {
-    throw new DevFlowError("INVALID_MANUAL_ACCEPTANCE", "only user-signoff may include a userReply");
-  }
-  return { mode: input.mode, source: input.source.trim(), scenarios };
-}
-
-function consumedSignoffEventIds(state: FeatureState): Set<string> {
-  const consumed = new Set<string>();
-  for (const attempt of state.verification.attempts) {
-    const manualAcceptance = (attempt as { manualAcceptance?: { promptEventId?: unknown } }).manualAcceptance;
-    if (typeof manualAcceptance?.promptEventId === "string") consumed.add(manualAcceptance.promptEventId);
-  }
-  for (const gate of Object.values(state.humanGates)) {
-    const confirmation = (gate as { confirmation?: { promptEventId?: unknown; turnBoundaryEventId?: unknown } }).confirmation;
-    if (typeof confirmation?.promptEventId === "string") consumed.add(confirmation.promptEventId);
-    if (typeof confirmation?.turnBoundaryEventId === "string") consumed.add(confirmation.turnBoundaryEventId);
-  }
-  return consumed;
-}
-
-async function assertOptionalManualAcceptance(
-  root: string,
-  id: string,
-  state: FeatureState,
-  manualAcceptance: ManualAcceptance | undefined,
-  host: "claude" | "codex",
-): Promise<void> {
-  if (manualAcceptance?.mode !== "user-signoff") return;
-
-  const events = await readFeatureEvents(root, id);
-  resolvePromptEvent(events, {
-    host,
-    userReply: manualAcceptance.userReply!,
-    presentedAt: new Date(0).toISOString(),
-    presentedRevision: state.revision - 1,
-    consumedEventIds: consumedSignoffEventIds(state),
-  });
 }
 
 export function minimalGuaranteeCommands(state: FeatureState, config: ProjectConfig): ProjectConfig["verification"]["commands"] {
@@ -238,13 +147,53 @@ export function minimalGuaranteeCommands(state: FeatureState, config: ProjectCon
   });
 }
 
+function dispositionKindForCriterion(ledger: TraceabilityLedger, criterionId: string): AcceptanceDispositionState["dispositionKind"] {
+  const node = ledger.nodes[criterionId];
+  if (node?.kind === "acceptance-criterion" && node.verificationDisposition) return node.verificationDisposition.kind;
+  return "behavior-test";
+}
+
+function syncAcceptanceDispositions(
+  state: FeatureState,
+  ledger: TraceabilityLedger,
+  fingerprint: string,
+  provided: Set<string>,
+  commandSucceeded: boolean,
+): { complete: boolean; pending: string[] } {
+  const currentCriteria = Object.values(ledger.nodes).filter((node) => node.status === "current" && node.kind === "acceptance-criterion");
+  state.acceptance ??= { evidence: [], dispositions: [] };
+  const pending: string[] = [];
+  for (const criterion of currentCriteria) {
+    const kind = dispositionKindForCriterion(ledger, criterion.id);
+    const existing = state.acceptance.dispositions.find((item) => item.acceptanceCriterionId === criterion.id);
+    let status: AcceptanceDispositionState["status"] = "pending";
+    let evidenceRefs = existing?.evidenceRefs ?? [];
+    if (kind === "human-acceptance") {
+      status = existing?.basis.sha256 === fingerprint && existing.status === "satisfied" ? "satisfied" : existing?.basis.sha256 === fingerprint ? existing.status : "stale";
+      evidenceRefs = [
+        ...state.acceptance.evidence.filter((record) => record.acceptanceCriterionId === criterion.id && record.basis.sha256 === fingerprint && record.evidenceKind !== "agent-self-check").map((record) => record.recordId),
+        ...(existing?.evidenceRefs.filter((ref) => ref.startsWith("CRED-ACCEPTANCE-")) ?? []),
+      ];
+      if (existing?.evidenceRefs.some((ref) => ref.startsWith("CRED-ACCEPTANCE-")) && existing.basis.sha256 === fingerprint && existing.status === "satisfied") status = "satisfied";
+    } else if (kind === "file-check") {
+      status = state.acceptance.evidence.some((record) => record.acceptanceCriterionId === criterion.id && record.evidenceKind === "file-inspection" && record.basis.sha256 === fingerprint) ? "satisfied" : "pending";
+    } else {
+      const commandKind = kind === "behavior-test" ? "behavior" : kind === "type-check" ? "type" : "rule";
+      status = commandSucceeded && provided.has(commandKind) ? "satisfied" : "pending";
+    }
+    const next: AcceptanceDispositionState = { acceptanceCriterionId: criterion.id as `AC-${string}`, dispositionKind: kind, status, evidenceRefs: [...new Set(evidenceRefs)], basis: { kind: "content", sha256: fingerprint } };
+    if (existing) Object.assign(existing, next); else state.acceptance.dispositions.push(next);
+    if (status !== "satisfied") pending.push(criterion.id);
+  }
+  return { complete: pending.length === 0, pending };
+}
+
 export async function runVerification(
   root: string,
   id: string,
   expectedRevision: number,
   host: "claude" | "codex",
   commandIds?: string[],
-  manualAcceptanceInput?: ManualAcceptance,
 ): Promise<FeatureState> {
   const initial = await readState(root, id);
   if (initial.revision !== expectedRevision) {
@@ -252,27 +201,39 @@ export async function runVerification(
       currentRevision: initial.revision,
     });
   }
+  const invalidated = await invalidateAffectedClaims(root, id, expectedRevision);
+  if (invalidated) throw workspaceChangedError(invalidated);
   await assertRequirementsGrillSatisfied(root, id, initial);
-  const manualAcceptance = validateManualAcceptance(manualAcceptanceInput);
   const config = await readProjectConfig(root);
+  // preflight 的定位是环境准备：每次验证自动执行且绝不提供保证证据。调用方
+  // 显式把 preflight 命令选为验证命令属于调用错误，直接拒绝而不是静默排除，
+  // 避免其 provides 被误当作验证保证证据。
+  const preflightIds = new Set(config.verification.preflightCommands ?? []);
+  if (commandIds?.some((commandId) => preflightIds.has(commandId))) {
+    throw new DevFlowError("PREFLIGHT_COMMAND_NOT_SELECTABLE", "preflight 命令是环境准备，不能作为验证命令显式选择。", {
+      commandIds: commandIds.filter((commandId) => preflightIds.has(commandId)),
+      recoveryHint: "从 commandIds 中移除 preflight 命令；环境准备会在每次验证时自动执行，只有普通验证命令能提供保证证据。",
+    });
+  }
   const selected = commandIds?.length
     ? config.verification.commands.filter((command) => commandIds.includes(command.id))
     : minimalGuaranteeCommands(initial, config);
   if (!selected.length || commandIds?.some((command) => !selected.some((item) => item.id === command))) {
     throw new DevFlowError("UNKNOWN_VERIFICATION_COMMAND", "verification command is not configured");
   }
-  await assertOptionalManualAcceptance(root, id, initial, manualAcceptance, host);
   const provided = new Set(selected.flatMap((command) => command.provides));
   const missingGuarantees = initial.classification.controls.verification.filter((kind) => !provided.has(kind));
   if (missingGuarantees.length) throw new DevFlowError("VERIFICATION_GUARANTEE_UNCOVERED", "选择的命令不能覆盖当前最终保证集。", { missingGuarantees });
 
-  const fingerprint = await fingerprintGovernedRoots(root, config);
+  const fingerprint = await fingerprintFeatureOwned(root, config, initial.workspace.ownership);
+  const trace = initial.traceability ? await readTraceability(root, initial) : undefined;
   const replacingStaleVerification = Boolean(
     initial.verification.verifiedFingerprint
     && initial.verification.verifiedFingerprint !== fingerprint,
   ) || verificationCommandSliceStale(initial, config);
   const startedAt = new Date().toISOString();
   let exitCode = 0;
+  let exitReason: CommandExitReason = "success";
   let phase: Attempt["phase"] = "forward";
   const output: string[] = [];
   const preflight = (config.verification.preflightCommands ?? []).map((commandId) => {
@@ -288,8 +249,9 @@ export async function runVerification(
     for (const command of group.commands) {
       const result = await runVerificationCommand(root, command);
       output.push(`[${command.id}] ${result.output}`);
-      if (result.exitCode !== 0) {
+      if (result.exitReason !== "success") {
         exitCode = result.exitCode;
+        exitReason = result.exitReason;
         phase = group.phase;
         break;
       }
@@ -320,21 +282,41 @@ export async function runVerification(
       startedAt,
       finishedAt,
       exitCode,
+      exitReason,
       outputTail: fullOutput.slice(-4_000),
       outputPath: `verification/${state.verification.attempts.length + 1}.log`,
       fingerprint,
       host,
       phase,
-      ...(manualAcceptance ? { manualAcceptance } : {}),
     };
-    const outputFile = path.join(root, ".dev-flow", "features", id, attempt.outputPath);
-    await mkdir(path.dirname(outputFile), { recursive: true });
-    await writeFile(outputFile, fullOutput);
+    await writeVerificationOutput(root, id, attempt.outputPath, fullOutput);
     state.verification.attempts.push(attempt);
     delete state.verification.satisfiedByAttemptId;
     delete state.verification.verifiedFingerprint;
-    state.steps.verification = { status: "pending", evidence: { attemptId: attempt.id, exitCode } };
-    if (exitCode === 0) {
+    state.steps.verification = { status: "pending", evidence: { attemptId: attempt.id, exitCode, exitReason } };
+    const acceptance = trace
+      ? syncAcceptanceDispositions(state, trace, fingerprint, new Set(selected.flatMap((command) => command.provides)), exitCode === 0)
+      : { complete: true, pending: [] as string[] };
+    if (exitCode === 0 && acceptance.complete) {
+      // 通过时刻的逐文件快照：后续交付内容变化时失效传播据此定位受影响
+      // 实现单元并重开审查/验证（issue 21）。
+      const snapshot = await snapshotGovernedRoots(root, config);
+      const snapshotPath = await persistThroughSnapshot(root, id, snapshot, fingerprint, "verification");
+      // 治理账本：验证通过形成 verification-current 声明（spec §202）。
+      const gov = state.governance ?? EMPTY_GOVERNANCE_LEDGER;
+      const claimId = `CLAIM-${createHash("sha256").update(`verification-current|${fingerprint}`).digest("hex").slice(0, 16)}`;
+      const claims = [...gov.claims];
+      if (!claims.some((claim) => claim.recordId === claimId)) {
+        claims.push({
+          recordId: claimId,
+          kind: "claim",
+          claimType: "verification-current",
+          subject: id,
+          basis: { kind: "content", sha256: fingerprint },
+          recordedAt: finishedAt,
+        });
+      }
+      state.governance = { ...gov, claims };
       state.verification.satisfiedByAttemptId = attempt.id;
       state.verification.verifiedFingerprint = fingerprint;
       state.businessFingerprint = fingerprint;
@@ -345,7 +327,8 @@ export async function runVerification(
           commandIds: attempt.commandIds,
           kinds: attempt.kinds,
           fingerprint,
-          ...(manualAcceptance ? { manualAcceptance } : {}),
+          snapshotPath,
+          acceptance: state.acceptance?.dispositions.map((disposition) => ({ ...disposition })),
         },
       };
       if (state.repair) state.repair = markRepairCompleted(state.repair);
@@ -359,8 +342,25 @@ export async function runVerification(
       // Keep the persisted cache aligned with the route-derived public stage.
       // The steps remain the source of truth for ordering.
       state.currentStage = "finalize";
+    } else if (exitCode === 0) {
+      // 自动命令成功不代表人工验收已经完成；保留尝试记录但不写
+      // verification-current claim，也不满足 verification 步骤。
+      state.steps.verification = {
+        status: "pending",
+        evidence: {
+          attemptId: attempt.id,
+          commandIds: attempt.commandIds,
+          kinds: attempt.kinds,
+          fingerprint,
+          pendingAcceptanceCriteria: acceptance.pending,
+          message: "自动检查通过，人工验收待完成",
+        },
+      };
+      state.evidenceFreshness.verification = "missing";
     } else {
-       const signature = `${exitCode}:${createHash("sha256").update(fullOutput).digest("hex").slice(0, 16)}`;
+      // 结束原因进入修复签名：环境/进程问题（timeout/output-limit/spawn-failure）
+      // 与代码缺陷（non-zero-exit）不会相互归并，模型不会针对不存在的缺陷反复修复。
+      const signature = `${exitReason}:${createHash("sha256").update(fullOutput).digest("hex").slice(0, 16)}`;
       state.repair = recordRepairAttempt(state.repair ?? startRepairLoop(), signature, output.slice(-3));
     }
     state.lastUpdatedBy = { host, pluginVersion: __DEV_FLOW_VERSION__ };
@@ -373,7 +373,7 @@ export async function readVerificationFreshness(
 ): Promise<VerificationFreshness> {
   if (!state.verification.verifiedFingerprint) return { status: "missing" };
   const config = await readProjectConfig(root);
-  const current = await fingerprintGovernedRoots(root, config);
+  const current = await fingerprintFeatureOwned(root, config, state.workspace.ownership);
   if (state.verification.verifiedFingerprint === current && !verificationCommandSliceStale(state, config)) return { status: "fresh" };
   return {
     status: "stale",
@@ -385,29 +385,4 @@ export async function readVerificationFreshness(
 /** Read-only freshness check used by status/next; callers must not mutate state. */
 export async function verificationIsStale(root: string, state: FeatureState): Promise<boolean> {
   return (await readVerificationFreshness(root, state)).status === "stale";
-}
-
-/** Invalidates downstream claims when governed files changed after successful verification. */
-export async function invalidateStaleVerification(
-  root: string,
-  id: string,
-  expectedRevision: number,
-): Promise<FeatureState | undefined> {
-  const config = await readProjectConfig(root);
-  const current = await fingerprintGovernedRoots(root, config);
-  const state = await readState(root, id);
-  const commandSliceStale = verificationCommandSliceStale(state, config);
-  if (!state.verification.verifiedFingerprint || (state.verification.verifiedFingerprint === current && !commandSliceStale)) return undefined;
-  if (state.revision !== expectedRevision) {
-    throw new DevFlowError("STATE_REVISION_CONFLICT", "state revision changed", {
-      currentRevision: state.revision,
-    });
-  }
-  return mutate(root, id, expectedRevision, "verification-invalidated", (draft) => {
-    delete draft.verification.satisfiedByAttemptId;
-    delete draft.verification.verifiedFingerprint;
-    draft.steps.verification = { status: "pending", evidence: { reason: "governed-files-changed", current } };
-    draft.logicComplete = false;
-    delete draft.steps.finalize;
-  });
 }

@@ -180,6 +180,25 @@ export async function fingerprintGovernedRoots(root: string, input: GovernedRoot
   return digest.digest("hex");
 }
 
+/** Delivery basis: the same governed enumeration filtered by Core-owned paths. */
+export async function fingerprintFeatureOwned(
+  root: string,
+  input: GovernedRootsInput,
+  ownership: Readonly<Record<string, "feature" | "excluded">>,
+): Promise<string> {
+  const files = (await enumerateProtectedFiles(root, input)).filter((file) => ownership[file] === "feature");
+  const digest = createHash("sha256");
+  for (const relative of files) {
+    const absolute = path.join(root, relative);
+    const metadata = await lstat(absolute);
+    digest.update(relative); digest.update("\0");
+    if (metadata.isSymbolicLink()) { digest.update("symlink\0"); digest.update(await readlink(absolute)); }
+    else { digest.update("file\0"); digest.update(await readFile(absolute)); }
+    digest.update("\0");
+  }
+  return digest.digest("hex");
+}
+
 export interface ProtectedFileSnapshot {
   path: string;
   sha256: string;
@@ -207,4 +226,12 @@ export async function snapshotGovernedRoots(root: string, input: GovernedRootsIn
     });
   }
   return snapshots;
+}
+
+export async function snapshotFeatureOwned(
+  root: string,
+  input: GovernedRootsInput,
+  ownership: Readonly<Record<string, "feature" | "excluded">>,
+): Promise<ProtectedFileSnapshot[]> {
+  return (await snapshotGovernedRoots(root, input)).filter((file) => ownership[file.path] === "feature");
 }

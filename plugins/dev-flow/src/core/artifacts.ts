@@ -9,7 +9,7 @@ import { approvalIds } from "./approval-basis.js";
 import { mutate, mutatePrepared, readState, type FeatureState, type PreparedMutationOptions } from "./state-store.js";
 import { currentOpenStep, routeDefinitionForState } from "./step-order.js";
 import { parseTraceSourceBlocks } from "./traceability-anchors.js";
-import { applyTraceDelta, assertTraceabilityComplete } from "./traceability.js";
+import { compilePlan, type PlanDiagnostic } from "./plan-compiler.js";
 import { readProjectConfigSnapshot, readTraceabilityForArtifactReplacement, type TraceStoreOptions, writeTraceSnapshot } from "./traceability-store.js";
 import { clearInteractionsByKind, clearInteractionsForTarget } from "./user-interactions.js";
 import { prepareReviewInvalidation } from "./review-store.js";
@@ -140,7 +140,6 @@ function invalidateArtifactDependents(
   if (kind === "requirements") clearInteractionsByKind(state, "grill");
   state.logicComplete = false;
   delete state.steps.finalize;
-  state.qualityExceptions = state.qualityExceptions.map((exception) => ({ ...exception, status: "stale" as const }));
   // Keep the precise causal reason in the mutation event rather than state schema.
   void reason;
   return invalidation;
@@ -152,6 +151,11 @@ export async function assertArtifactCurrent(root: string, id: string, state: Fea
   const contents = await readFile(path.join(featureDirectory(root, id), normalizeUnicode(artifact.path)), "utf8");
   if (hash(contents) !== artifact.sha256) throw new DevFlowError("ARTIFACT_INTEGRITY_FAILED", kind);
   return contents;
+}
+
+/** Read an edited artifact for a domain workflow that is about to re-register it. */
+export async function readArtifactText(root: string, id: string, artifactPath: string): Promise<string> {
+  return readFile(path.join(featureDirectory(root, id), normalizeUnicode(artifactPath)), "utf8");
 }
 
 export async function scaffoldArtifact(root: string, id: string, expectedRevision: number, kind: string): Promise<FeatureState> {
@@ -181,7 +185,7 @@ export async function recordArtifact(root: string, id: string, expectedRevision:
     if (errors.length) {
       throw new DevFlowError("PLAN_TASK_GRAPH_INVALID", "实施计划的任务间关系校验未通过", {
         errors,
-        recoveryHint: "修正计划中每个任务声明的 rollback_unit、每个 RU 的 tasks/depends_on，确保引用闭合且依赖无环后重新登记",
+        recoveryHint: "修正计划中每个任务声明的 implementation_unit、每个 UNIT 的 tasks/depends_on，确保引用闭合且依赖无环后重新登记",
       });
     }
   }
@@ -225,37 +229,56 @@ export async function recordArtifactWithTrace(
     const sourceBlocks = parseTraceSourceBlocks(contents);
     const { config, sha256: projectConfigSha256 } = await readProjectConfigSnapshot(root);
     const currentLedger = await readTraceabilityForArtifactReplacement(root, current, artifactKind);
-    const ledger = applyTraceDelta({
-      current: currentLedger,
+    // 预检与正式登记共用同一编译函数：相同输入必得相同诊断与规范化语义。
+    const compile = compilePlan({
       route: current.route,
       artifactKind,
       artifactSha256,
       sourceBlocks,
-      delta: traceDelta,
+      currentLedger,
+      traceDelta,
       projectConfigSha256,
       verificationCommandIds: config.verification.commands.map((command) => command.id),
       verificationCommandHashes: verificationCommandHashes(config),
       nextStateRevision,
+      riskLabels: current.classification.riskLabels,
     });
-    if (artifactKind === "implementation-plan") {
-      assertTraceabilityComplete(ledger, current.route, projectConfigSha256, verificationCommandHashes(config));
+    if (!compile.ok || !compile.ledger) {
+      throw new DevFlowError("PLAN_INVALID", "实施计划编译未通过。", {
+        diagnostics: compile.diagnostics,
+        userMessage: "实施计划存在需要修正的问题。",
+        cause: `计划编译发现 ${compile.diagnostics.length} 处问题。`,
+        impact: "计划没有登记，状态与工件均未变化。",
+        recoveryKind: "retry",
+        recoveryInstruction: "按诊断逐项修正计划后重新预检并登记。",
+        retryOriginal: true,
+      });
     }
+    const ledger = compile.ledger;
     const executionNodes = Object.values(ledger.nodes)
       .filter((node) => node.status === "current" && node.kind !== "test")
       .map((node) => node.kind === "rollback" ? {
         kind: node.kind, id: node.id, tasks: node.tasks, dependsOn: node.dependsOn, fileScope: node.fileScope,
         covers: node.covers, forwardVerification: node.forwardVerification, rollbackVerification: node.rollbackVerification,
-      } : node.kind === "task" ? { kind: node.kind, id: node.id, covers: node.covers, rollbackUnit: node.rollbackUnit }
+      } : node.kind === "implementation-unit" ? {
+        kind: node.kind, id: node.id, tasks: node.tasks, dependsOn: node.dependsOn, fileScope: node.fileScope,
+        covers: node.covers, forwardVerification: node.forwardVerification,
+      } : node.kind === "recovery" ? {
+        kind: node.kind, id: node.id, stepRef: node.stepRef, recoveryKind: node.recoveryKind, method: node.method, riskRef: node.riskRef,
+      } : node.kind === "task" ? { kind: node.kind, id: node.id, covers: node.covers, implementationUnit: node.implementationUnit }
         : { kind: node.kind, id: node.id })
       .sort((left, right) => left.id.localeCompare(right.id));
     const executionVerificationRefs = Object.values(ledger.nodes)
-      .filter((node): node is Extract<typeof node, { kind: "rollback" }> => node.status === "current" && node.kind === "rollback")
-      .flatMap((node) => [...node.forwardVerification, ...node.rollbackVerification]);
+      .filter((node): node is Extract<typeof node, { kind: "implementation-unit" | "rollback" }> =>
+        node.status === "current" && (node.kind === "implementation-unit" || node.kind === "rollback"))
+      .flatMap((node) => node.kind === "implementation-unit"
+        ? node.forwardVerification
+        : [...node.forwardVerification, ...node.rollbackVerification]);
     const executionSemanticBasisHash = hash(JSON.stringify({
       nodes: executionNodes,
       verificationCommandHashes: verificationCommandHashesForRefs(config, executionVerificationRefs),
     }));
-    warnings = detectRollbackSplitWarning(Object.values(ledger.nodes).filter((node) => node.kind === "rollback"));
+    warnings = detectRollbackSplitWarning(Object.values(ledger.nodes).filter((node): node is Extract<typeof node, { kind: "implementation-unit" }> => node.kind === "implementation-unit"));
     const pointer = await writeTraceSnapshot(root, ledger, options.snapshot);
     const artifactChanged = artifact.sha256 !== artifactSha256;
     const traceChanged = JSON.stringify(currentLedger.nodes) !== JSON.stringify(ledger.nodes)
@@ -299,4 +322,55 @@ export async function assertArtifactIntegrity(root: string, id: string): Promise
   for (const kind of artifactKinds(effectiveRoute(state))) {
     await assertArtifactCurrent(root, id, state, kind);
   }
+}
+
+/**
+ * 只读计划预检（issue 10）：零副作用——不推进阶段、不增加 revision、
+ * 不写快照、不创建审查批次、不产生审计垃圾。诊断顺序稳定，与正式登记
+ * 使用完全相同的编译函数，因此同一计划在预检与登记时产生相同诊断。
+ */
+export async function validatePlan(
+  root: string,
+  id: string,
+  artifactKind: TraceArtifactKind,
+  traceDelta: TraceDelta,
+): Promise<{
+  ok: boolean;
+  diagnostics: PlanDiagnostic[];
+  implementationUnits?: import("./plan-compiler.js").ImplementationUnitProjection[];
+  recoveryArrangements?: import("./plan-compiler.js").RecoveryArrangementProjection[];
+}> {
+  const state = await readState(root, id);
+  if (!traceArtifactKindList.has(artifactKind)) throw new DevFlowError("INVALID_ARTIFACT", artifactKind);
+  if (state.lifecycle !== "active") throw new DevFlowError("INVALID_LIFECYCLE", "only active features can validate plans");
+  if (!traceEnforcementRequired(state.route, state.classification.controls)) {
+    throw new DevFlowError("TRACE_NOT_ENFORCED", `${artifactKind} does not use Trace registration on ${state.route}`, {
+      route: state.route,
+      recoveryHint: "当前路线不强制 Trace；请改用 dev_flow_record_artifact 登记该文档",
+    });
+  }
+  const artifact = state.artifacts[artifactKind];
+  if (!artifact) throw new DevFlowError("MISSING_REQUIRED_ARTIFACT", artifactKind);
+  const contents = await readFile(path.join(featureDirectory(root, id), normalizeUnicode(artifact.path)), "utf8");
+  const { config, sha256: projectConfigSha256 } = await readProjectConfigSnapshot(root);
+  const currentLedger = await readTraceabilityForArtifactReplacement(root, state, artifactKind);
+  const result = compilePlan({
+    route: state.route,
+    artifactKind,
+    artifactSha256: hash(contents),
+    sourceBlocks: parseTraceSourceBlocks(contents),
+    currentLedger,
+    traceDelta,
+    projectConfigSha256,
+    verificationCommandIds: config.verification.commands.map((command) => command.id),
+    verificationCommandHashes: verificationCommandHashes(config),
+    nextStateRevision: state.revision + 1,
+    riskLabels: state.classification.riskLabels,
+  });
+  return {
+    ok: result.ok,
+    diagnostics: result.diagnostics,
+    ...(result.implementationUnits ? { implementationUnits: result.implementationUnits } : {}),
+    ...(result.recoveryArrangements ? { recoveryArrangements: result.recoveryArrangements } : {}),
+  };
 }

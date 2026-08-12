@@ -5,8 +5,8 @@ import { loadSource } from "../helpers/load-source.mjs";
 const policy = await loadSource("plugins/dev-flow/src/policy/obligations.ts");
 const evidence = await loadSource("plugins/dev-flow/src/policy/evidence.ts");
 const basis = {
-  scopeFacts: ["范围已锁定"], topologyFacts: ["调用链已调查"], uncertaintyFacts: [], decisionRefs: [],
-  riskFacts: { security: ["认证边界受影响"], external: ["外部契约会变化"] },
+  scopeFactRefs: ["FACT-scope"], topologyFactRefs: ["FACT-topology"], uncertaintyFactRefs: [], decisionRefs: [],
+  riskFactRefs: { security: ["FACT-security"], external: ["FACT-external"] },
 };
 
 test("obligations are additive, deduplicated, and basis-addressed", () => {

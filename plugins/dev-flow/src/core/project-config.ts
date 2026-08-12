@@ -10,6 +10,10 @@ export interface VerificationCommand {
   args: string[];
   cwd: string;
   provides: VerificationGuarantee[];
+  /** 单命令覆盖默认超时（毫秒）；省略时使用稳定默认值。 */
+  timeoutMs?: number;
+  /** 单命令覆盖默认输出上限（字节）；省略时使用稳定默认值。 */
+  maxOutputBytes?: number;
 }
 export interface VerificationConfig {
   commands: VerificationCommand[];
@@ -154,6 +158,12 @@ export function validateProjectConfig(value: unknown): asserts value is ProjectC
       || !Array.isArray(command.provides) || command.provides.length === 0
       || command.provides.some((kind) => !["targeted", "behavior", "integration", "full"].includes(kind))) {
       throw new DevFlowError("INVALID_PROJECT_CONFIG", "verification commands require valid provides guarantees");
+    }
+    if (command.timeoutMs !== undefined && (!Number.isInteger(command.timeoutMs) || command.timeoutMs < 1_000)) {
+      throw new DevFlowError("INVALID_PROJECT_CONFIG", `verification command ${command.id} timeoutMs must be an integer of at least 1000ms`);
+    }
+    if (command.maxOutputBytes !== undefined && (!Number.isInteger(command.maxOutputBytes) || command.maxOutputBytes < 1024)) {
+      throw new DevFlowError("INVALID_PROJECT_CONFIG", `verification command ${command.id} maxOutputBytes must be an integer of at least 1024 bytes`);
     }
     if (ids.has(command.id)) throw new DevFlowError("INVALID_PROJECT_CONFIG", "verification command ids must be unique");
     ids.add(command.id);

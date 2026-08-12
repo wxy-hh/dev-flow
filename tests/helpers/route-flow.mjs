@@ -54,6 +54,10 @@ async function completeReviewJobs(root, featureId, state, batch, options = {}) {
   const completions = options.completions ?? {};
   let current = state;
   const observed = [];
+  // 独立代码审查隔离证明（ADR-0017）：helper 扮演合规宿主——code 批次默认
+  // 为每个 job 记录 review-execution 事件并随提交携带隔离声明；options.codeIsolation
+  // 为 false 时跳过（用于测试隔离门禁的负路径）。
+  const needsIsolation = batch.phase === "code" && options.codeIsolation !== false;
   for (const job of batch.jobs) {
     // A reused job carries a prior submission and needs no claim or submit;
     // re-claiming it would fail with REVIEW_JOB_ALREADY_SUBMITTED.
@@ -63,16 +67,18 @@ async function completeReviewJobs(root, featureId, state, batch, options = {}) {
     }
     const host = hosts[job.role] ?? hosts["*"] ?? "route-flow";
     const capability = claimCapability(job.jobId, host);
-    const pending = await assertNext(root, featureId, (action) => {
-      assert.equal(action.kind, "review-jobs-pending");
-      assert.equal(action.batchId, batch.batchId);
-      assert.ok(action.jobs.some((candidate) => candidate.jobId === job.jobId && candidate.status !== "submitted"));
-      for (const pendingJob of action.jobs) {
-        assert.equal("findings" in pendingJob, false);
-        assert.equal("submission" in pendingJob, false);
-      }
-    });
-    observed.push(pending);
+    if (!options.skipPendingAssert) {
+      const pending = await assertNext(root, featureId, (action) => {
+        assert.equal(action.kind, "review-jobs-pending");
+        assert.equal(action.batchId, batch.batchId);
+        assert.ok(action.jobs.some((candidate) => candidate.jobId === job.jobId && candidate.status !== "submitted"));
+        for (const pendingJob of action.jobs) {
+          assert.equal("findings" in pendingJob, false);
+          assert.equal("submission" in pendingJob, false);
+        }
+      });
+      observed.push(pending);
+    }
     const claimed = await reviewJobs.claimReviewJob(
       root, featureId, current.revision, batch.batchId, job.jobId, capability,
     );
@@ -81,13 +87,31 @@ async function completeReviewJobs(root, featureId, state, batch, options = {}) {
       coverageSummary: `${job.role} route review complete`,
       findings: [],
     };
+    let attestation;
+    if (needsIsolation) {
+      const eventId = `review-execution-${batch.batchId}-${job.jobId}`;
+      await store.recordReviewExecutionEvent(root, {
+        eventId, type: "review-execution", host: host === "route-flow" ? "claude" : host,
+        text: `隔离审查 ${job.role}`, batchId: batch.batchId, jobId: job.jobId,
+        executionId: `execution-${job.jobId}`, sourceId: `source-${job.jobId}`,
+        contextId: `review-context-${job.jobId}`, implementationContextId: "implementation-context",
+      });
+      attestation = {
+        host: host === "route-flow" ? "claude" : host,
+        agentId: `agent-${job.jobId}`,
+        issuedAt: new Date().toISOString(),
+        raw: `raw-${job.jobId}`,
+        hostEventId: eventId,
+        isolated: true,
+      };
+    }
     const submitted = await reviewJobs.submitReviewJob(
-      root, featureId, current.revision, batch.batchId, job.jobId, capability, completion,
+      root, featureId, current.revision, batch.batchId, job.jobId, capability, completion, attestation,
     );
     current = submitted.state;
     if (options.replaySubmit) {
       const replay = await reviewJobs.submitReviewJob(
-        root, featureId, current.revision, batch.batchId, job.jobId, capability, completion,
+        root, featureId, current.revision, batch.batchId, job.jobId, capability, completion, attestation,
       );
       assert.equal(replay.idempotent, true);
       assert.equal(replay.state.revision, current.revision);
@@ -190,6 +214,7 @@ export async function driveUntil(root, featureId, state, options = {}) {
         jobHosts: options.jobHosts,
         completions: options.reviewCompletions,
         replaySubmit: options.replaySubmit,
+        codeIsolation: options.codeIsolation,
       });
       current = completed.state;
       reviewObservations.pendingSeen = completed.observedPending.length > 0;
@@ -275,10 +300,34 @@ export async function driveUntil(root, featureId, state, options = {}) {
         current = await checks.recordStep(root, featureId, current.revision, "implementation", {});
         continue;
       }
-      current = await checks.recordStep(root, featureId, current.revision, action.step, {
-        ...required.fields,
-        ...(required.checks.length ? { checks: required.checks } : {}),
-      });
+      // nextAction 只对 planning 派生 create-review-batch；code_review 按 MCP
+      // 惯例先创建并完成 code 批次（含隔离证明），再登记步骤证据。
+      if (action.step === "code_review") {
+        const createdCode = await reviewJobs.createReviewBatch(root, featureId, current.revision);
+        assert.equal(createdCode.batch.phase, "code");
+        current = createdCode.state;
+        const completedCode = await completeReviewJobs(root, featureId, current, createdCode.batch, {
+          jobHosts: options.jobHosts,
+          completions: options.reviewCompletions,
+          replaySubmit: options.replaySubmit,
+          codeIsolation: options.codeIsolation,
+          skipPendingAssert: true,
+        });
+        current = completedCode.state;
+        current = await store.readState(root, featureId);
+      }
+      current = await checks.recordStep(root, featureId, current.revision, action.step, action.step === "code_review"
+        ? {
+            reviewType: "code",
+            reviewDepth: required.fields.reviewDepth,
+            coverage: ["quality", "fidelity"],
+            findings: [],
+            ...(required.checks.length ? { checks: required.checks } : {}),
+          }
+        : {
+            ...required.fields,
+            ...(required.checks.length ? { checks: required.checks } : {}),
+          });
       continue;
     }
 

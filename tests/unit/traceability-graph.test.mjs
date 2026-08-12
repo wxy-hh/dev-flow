@@ -45,10 +45,10 @@ function requirementsLedger() {
 function populatedLedger() {
   let ledger = requirementsLedger();
   ledger = trace.applyTraceDelta(deltaInput(ledger, "implementation-plan", [
-    { kind: "task", id: "TASK-001", covers: ["AC-001"], rollbackUnit: "RU-001" },
-    { kind: "rollback", id: "RU-001", tasks: ["TASK-001"], dependsOn: [], fileScope: ["src/one.ts"], covers: ["REQ-001"], forwardVerification: ["unit"], rollbackVerification: ["unit"] },
-    { kind: "task", id: "TASK-002", covers: ["AC-002"], rollbackUnit: "RU-002" },
-    { kind: "rollback", id: "RU-002", tasks: ["TASK-002"], dependsOn: [], fileScope: ["src/two.ts"], covers: ["REQ-002"], forwardVerification: ["unit"], rollbackVerification: ["unit"] },
+    { kind: "task", id: "TASK-001", covers: ["AC-001"], implementationUnit: "UNIT-001" },
+    { kind: "implementation-unit", id: "UNIT-001", tasks: ["TASK-001"], dependsOn: [], fileScope: ["src/one.ts"], covers: ["REQ-001"], forwardVerification: ["unit"] },
+    { kind: "task", id: "TASK-002", covers: ["AC-002"], implementationUnit: "UNIT-002" },
+    { kind: "implementation-unit", id: "UNIT-002", tasks: ["TASK-002"], dependsOn: [], fileScope: ["src/two.ts"], covers: ["REQ-002"], forwardVerification: ["unit"] },
   ]));
   return trace.applyTraceDelta(deltaInput(ledger, "coverage-matrix", [
     { kind: "test", id: "TEST-001", verifies: ["AC-001"] },
@@ -84,10 +84,10 @@ test("changed source blocks stale only their reverse dependency closure", () => 
     { kind: "acceptance-criterion", id: "AC-002", parentRequirement: "REQ-002" },
   ], { salt: (node) => node.id === "REQ-001" ? "changed" : "" }));
   // Same-artifact co-registered AC stays current; external dependents go stale.
-  for (const id of ["TASK-001", "RU-001", "TEST-001"]) {
+  for (const id of ["TASK-001", "UNIT-001", "TEST-001"]) {
     assert.equal(next.nodes[id].status, "stale", id);
   }
-  for (const id of ["REQ-001", "AC-001", "REQ-002", "AC-002", "TASK-002", "RU-002", "TEST-002"]) {
+  for (const id of ["REQ-001", "AC-001", "REQ-002", "AC-002", "TASK-002", "UNIT-002", "TEST-002"]) {
     assert.equal(next.nodes[id].status, "current", id);
   }
   assert.throws(
@@ -109,13 +109,13 @@ test("re-registering dependents restores current status after an upstream block 
   assert.equal(ledger.nodes["AC-001"].status, "current");
 
   ledger = trace.applyTraceDelta(deltaInput(ledger, "implementation-plan", [
-    { kind: "task", id: "TASK-001", covers: ["AC-001"], rollbackUnit: "RU-001" },
-    { kind: "rollback", id: "RU-001", tasks: ["TASK-001"], dependsOn: [], fileScope: ["src/one.ts"], covers: ["REQ-001"], forwardVerification: ["unit"], rollbackVerification: ["unit"] },
-    { kind: "task", id: "TASK-002", covers: ["AC-002"], rollbackUnit: "RU-002" },
-    { kind: "rollback", id: "RU-002", tasks: ["TASK-002"], dependsOn: [], fileScope: ["src/two.ts"], covers: ["REQ-002"], forwardVerification: ["unit"], rollbackVerification: ["unit"] },
+    { kind: "task", id: "TASK-001", covers: ["AC-001"], implementationUnit: "UNIT-001" },
+    { kind: "implementation-unit", id: "UNIT-001", tasks: ["TASK-001"], dependsOn: [], fileScope: ["src/one.ts"], covers: ["REQ-001"], forwardVerification: ["unit"] },
+    { kind: "task", id: "TASK-002", covers: ["AC-002"], implementationUnit: "UNIT-002" },
+    { kind: "implementation-unit", id: "UNIT-002", tasks: ["TASK-002"], dependsOn: [], fileScope: ["src/two.ts"], covers: ["REQ-002"], forwardVerification: ["unit"] },
   ]));
   assert.equal(ledger.nodes["TASK-001"].status, "current");
-  assert.equal(ledger.nodes["RU-001"].status, "current");
+  assert.equal(ledger.nodes["UNIT-001"].status, "current");
   assert.equal(ledger.nodes["TEST-001"].status, "stale");
 
   ledger = trace.applyTraceDelta(deltaInput(ledger, "coverage-matrix", [
@@ -126,20 +126,23 @@ test("re-registering dependents restores current status after an upstream block 
   assert.doesNotThrow(() => trace.assertTraceabilityComplete(ledger, "m", "a".repeat(64)));
 });
 
-test("graph validation permits only standard L's partial deferred rollback reference", () => {
+test("implementation plans require an implementation unit even for L partial graphs", () => {
   let ledger = trace.emptyTraceabilityLedger("l", 0, "a".repeat(64));
   ledger = trace.applyTraceDelta(deltaInput(ledger, "requirements", [
     { kind: "requirement", id: "REQ-001" },
     { kind: "acceptance-criterion", id: "AC-001", parentRequirement: "REQ-001" },
   ], { route: "l" }));
+  assert.throws(() => trace.applyTraceDelta(deltaInput(ledger, "implementation-plan", [
+    { kind: "task", id: "TASK-001", covers: ["AC-001"], implementationUnit: "UNIT-001" },
+  ], { route: "l" })), /TRACE_GRAPH_INVALID/);
   ledger = trace.applyTraceDelta(deltaInput(ledger, "implementation-plan", [
-    { kind: "task", id: "TASK-001", covers: ["AC-001"], rollbackUnit: "RU-001" },
+    { kind: "task", id: "TASK-001", covers: ["AC-001"], implementationUnit: "UNIT-001" },
+    { kind: "implementation-unit", id: "UNIT-001", tasks: ["TASK-001"], dependsOn: [], fileScope: ["src/a.ts"], covers: ["REQ-001"], forwardVerification: ["unit"] },
   ], { route: "l" }));
   assert.doesNotThrow(() => trace.validateTraceGraph(ledger, "l", "partial"));
-  assert.throws(() => trace.validateTraceGraph(ledger, "l", "complete"), /TRACE_GRAPH_INVALID/);
 });
 
-test("delta and graph validation reject caller-owned fields and broken rollback units", () => {
+test("delta and graph validation reject caller-owned fields and broken implementation units", () => {
   assert.throws(
     () => trace.validateTraceDelta({ nodes: [{ kind: "requirement", id: "REQ-001", status: "current" }] }),
     /TRACE_GRAPH_INVALID/,
@@ -147,54 +150,54 @@ test("delta and graph validation reject caller-owned fields and broken rollback 
   const initial = trace.emptyTraceabilityLedger("f", 0, "a".repeat(64));
   assert.throws(
     () => trace.applyTraceDelta(deltaInput(initial, "implementation-plan", [
-      { kind: "task", id: "TASK-001", covers: ["REQ-001"], rollbackUnit: "RU-001" },
-      { kind: "rollback", id: "RU-001", tasks: ["TASK-002"], dependsOn: [], fileScope: ["src/a.ts"], covers: ["REQ-001"], forwardVerification: ["unknown"], rollbackVerification: ["unit"] },
+      { kind: "task", id: "TASK-001", covers: ["REQ-001"], implementationUnit: "UNIT-001" },
+      { kind: "implementation-unit", id: "UNIT-001", tasks: ["TASK-002"], dependsOn: [], fileScope: ["src/a.ts"], covers: ["REQ-001"], forwardVerification: ["unknown"] },
     ])),
     /TRACE_GRAPH_INVALID/,
   );
 });
 
-test("delta validation rejects unsafe rollback fileScope patterns before graph registration", () => {
-  const rollback = (fileScope) => ({
-    kind: "rollback", id: "RU-001", tasks: ["TASK-001"], dependsOn: [], fileScope,
-    covers: ["REQ-001"], forwardVerification: ["unit"], rollbackVerification: ["unit"],
+test("delta validation rejects unsafe implementation-unit fileScope patterns before graph registration", () => {
+  const unit = (fileScope) => ({
+    kind: "implementation-unit", id: "UNIT-001", tasks: ["TASK-001"], dependsOn: [], fileScope,
+    covers: ["REQ-001"], forwardVerification: ["unit"],
   });
   for (const fileScope of [["../x"], ["/abs"], ["C:/abs"], ["src\\x"], ["src/../../x"], ["src", "../x"]]) {
-    assert.throws(() => trace.validateTraceDelta({ nodes: [rollback(fileScope)] }), /TRACE_GRAPH_INVALID/, JSON.stringify(fileScope));
+    assert.throws(() => trace.validateTraceDelta({ nodes: [unit(fileScope)] }), /TRACE_GRAPH_INVALID/, JSON.stringify(fileScope));
   }
-  assert.doesNotThrow(() => trace.validateTraceDelta({ nodes: [rollback(["src/**"])] }));
-  assert.doesNotThrow(() => trace.validateTraceDelta({ nodes: [rollback(["."])] }));
+  assert.doesNotThrow(() => trace.validateTraceDelta({ nodes: [unit(["src/**"])] }));
+  assert.doesNotThrow(() => trace.validateTraceDelta({ nodes: [unit(["."])] }));
 });
 
-test("trace registration persists rollback paths in NFC", () => {
+test("trace registration persists implementation-unit paths in NFC", () => {
   const current = requirementsLedger();
   const next = trace.applyTraceDelta(deltaInput(current, "implementation-plan", [
-    { kind: "task", id: "TASK-001", covers: ["AC-001"], rollbackUnit: "RU-001" },
-    { kind: "rollback", id: "RU-001", tasks: ["TASK-001"], dependsOn: [], fileScope: ["src/需求a\u0301.js"], covers: ["REQ-001"], forwardVerification: ["unit"], rollbackVerification: ["unit"] },
+    { kind: "task", id: "TASK-001", covers: ["AC-001"], implementationUnit: "UNIT-001" },
+    { kind: "implementation-unit", id: "UNIT-001", tasks: ["TASK-001"], dependsOn: [], fileScope: ["src/需求a\u0301.js"], covers: ["REQ-001"], forwardVerification: ["unit"] },
   ]));
-  assert.deepEqual(next.nodes["RU-001"].fileScope, ["src/需求á.js"]);
+  assert.deepEqual(next.nodes["UNIT-001"].fileScope, ["src/需求á.js"]);
 });
 
-test("graph validation rejects every missing or asymmetric Task to RU relationship", () => {
+test("graph validation rejects every missing or asymmetric Task to implementation-unit relationship", () => {
   const requirements = requirementsLedger();
   assert.throws(
     () => trace.applyTraceDelta(deltaInput(requirements, "implementation-plan", [
-      { kind: "task", id: "TASK-001", covers: ["AC-001"], rollbackUnit: "RU-001" },
-      { kind: "rollback", id: "RU-002", tasks: ["TASK-001"], dependsOn: [], fileScope: ["src/a.ts"], covers: ["REQ-001"], forwardVerification: ["unit"], rollbackVerification: ["unit"] },
+      { kind: "task", id: "TASK-001", covers: ["AC-001"], implementationUnit: "UNIT-001" },
+      { kind: "implementation-unit", id: "UNIT-002", tasks: ["TASK-001"], dependsOn: [], fileScope: ["src/a.ts"], covers: ["REQ-001"], forwardVerification: ["unit"] },
     ])),
     /TRACE_GRAPH_INVALID/,
   );
   assert.throws(
     () => trace.applyTraceDelta(deltaInput(requirements, "implementation-plan", [
-      { kind: "task", id: "TASK-001", covers: ["AC-001"], rollbackUnit: "RU-001" },
-      { kind: "task", id: "TASK-002", covers: ["AC-002"], rollbackUnit: "RU-001" },
-      { kind: "rollback", id: "RU-001", tasks: ["TASK-001"], dependsOn: [], fileScope: ["src/a.ts"], covers: ["REQ-001"], forwardVerification: ["unit"], rollbackVerification: ["unit"] },
+      { kind: "task", id: "TASK-001", covers: ["AC-001"], implementationUnit: "UNIT-001" },
+      { kind: "task", id: "TASK-002", covers: ["AC-002"], implementationUnit: "UNIT-001" },
+      { kind: "implementation-unit", id: "UNIT-001", tasks: ["TASK-001"], dependsOn: [], fileScope: ["src/a.ts"], covers: ["REQ-001"], forwardVerification: ["unit"] },
     ])),
     /TRACE_GRAPH_INVALID/,
   );
 });
 
-test("graph validation rejects dangling references, orphan tasks, duplicate IDs, and rollback cycles", () => {
+test("graph validation rejects dangling references, orphan tasks, duplicate IDs, and implementation-unit cycles", () => {
   assert.throws(
     () => trace.validateTraceDelta({ nodes: [{ kind: "requirement", id: "REQ-01" }] }),
     /TRACE_GRAPH_INVALID/,
@@ -209,8 +212,8 @@ test("graph validation rejects dangling references, orphan tasks, duplicate IDs,
   const requirements = requirementsLedger();
   assert.throws(
     () => trace.applyTraceDelta(deltaInput(requirements, "implementation-plan", [
-      { kind: "task", id: "TASK-001", covers: [], rollbackUnit: "RU-001" },
-      { kind: "rollback", id: "RU-001", tasks: ["TASK-001"], dependsOn: [], fileScope: ["src/a.ts"], covers: ["REQ-001"], forwardVerification: ["unit"], rollbackVerification: ["unit"] },
+      { kind: "task", id: "TASK-001", covers: [], implementationUnit: "UNIT-001" },
+      { kind: "implementation-unit", id: "UNIT-001", tasks: ["TASK-001"], dependsOn: [], fileScope: ["src/a.ts"], covers: ["REQ-001"], forwardVerification: ["unit"] },
     ])),
     /TRACE_GRAPH_INVALID/,
   );
@@ -222,10 +225,10 @@ test("graph validation rejects dangling references, orphan tasks, duplicate IDs,
   );
   assert.throws(
     () => trace.applyTraceDelta(deltaInput(requirements, "implementation-plan", [
-      { kind: "task", id: "TASK-001", covers: ["AC-001"], rollbackUnit: "RU-001" },
-      { kind: "task", id: "TASK-002", covers: ["AC-002"], rollbackUnit: "RU-002" },
-      { kind: "rollback", id: "RU-001", tasks: ["TASK-001"], dependsOn: ["RU-002"], fileScope: ["src/a.ts"], covers: ["REQ-001"], forwardVerification: ["unit"], rollbackVerification: ["unit"] },
-      { kind: "rollback", id: "RU-002", tasks: ["TASK-002"], dependsOn: ["RU-001"], fileScope: ["src/b.ts"], covers: ["REQ-002"], forwardVerification: ["unit"], rollbackVerification: ["unit"] },
+      { kind: "task", id: "TASK-001", covers: ["AC-001"], implementationUnit: "UNIT-001" },
+      { kind: "task", id: "TASK-002", covers: ["AC-002"], implementationUnit: "UNIT-002" },
+      { kind: "implementation-unit", id: "UNIT-001", tasks: ["TASK-001"], dependsOn: ["UNIT-002"], fileScope: ["src/a.ts"], covers: ["REQ-001"], forwardVerification: ["unit"] },
+      { kind: "implementation-unit", id: "UNIT-002", tasks: ["TASK-002"], dependsOn: ["UNIT-001"], fileScope: ["src/b.ts"], covers: ["REQ-002"], forwardVerification: ["unit"] },
     ])),
     /TRACE_GRAPH_INVALID/,
   );
@@ -237,8 +240,8 @@ test("historical tombstones do not prevent the remaining current graph from comp
     { kind: "test", id: "TEST-001", verifies: ["AC-001"] },
   ]));
   ledger = trace.applyTraceDelta(deltaInput(ledger, "implementation-plan", [
-    { kind: "task", id: "TASK-001", covers: ["AC-001"], rollbackUnit: "RU-001" },
-    { kind: "rollback", id: "RU-001", tasks: ["TASK-001"], dependsOn: [], fileScope: ["src/one.ts"], covers: ["REQ-001"], forwardVerification: ["unit"], rollbackVerification: ["unit"] },
+    { kind: "task", id: "TASK-001", covers: ["AC-001"], implementationUnit: "UNIT-001" },
+    { kind: "implementation-unit", id: "UNIT-001", tasks: ["TASK-001"], dependsOn: [], fileScope: ["src/one.ts"], covers: ["REQ-001"], forwardVerification: ["unit"] },
   ]));
   ledger = trace.applyTraceDelta(deltaInput(ledger, "requirements", [
     { kind: "requirement", id: "REQ-001" },
@@ -262,10 +265,10 @@ test("semantic trace config checks only referenced verification command identiti
   const unitHash = "1".repeat(64);
   const lintHash = "2".repeat(64);
   ledger = trace.applyTraceDelta(deltaInput(ledger, "implementation-plan", [
-    { kind: "task", id: "TASK-001", covers: ["AC-001"], rollbackUnit: "RU-001" },
-    { kind: "rollback", id: "RU-001", tasks: ["TASK-001"], dependsOn: [], fileScope: ["src/one.ts"], covers: ["REQ-001"], forwardVerification: ["unit"], rollbackVerification: ["unit"] },
-    { kind: "task", id: "TASK-002", covers: ["AC-002"], rollbackUnit: "RU-002" },
-    { kind: "rollback", id: "RU-002", tasks: ["TASK-002"], dependsOn: [], fileScope: ["src/two.ts"], covers: ["REQ-002"], forwardVerification: ["unit"], rollbackVerification: ["unit"] },
+    { kind: "task", id: "TASK-001", covers: ["AC-001"], implementationUnit: "UNIT-001" },
+    { kind: "implementation-unit", id: "UNIT-001", tasks: ["TASK-001"], dependsOn: [], fileScope: ["src/one.ts"], covers: ["REQ-001"], forwardVerification: ["unit"] },
+    { kind: "task", id: "TASK-002", covers: ["AC-002"], implementationUnit: "UNIT-002" },
+    { kind: "implementation-unit", id: "UNIT-002", tasks: ["TASK-002"], dependsOn: [], fileScope: ["src/two.ts"], covers: ["REQ-002"], forwardVerification: ["unit"] },
   ], { verificationCommandHashes: { unit: unitHash, lint: lintHash } }));
   ledger = trace.applyTraceDelta(deltaInput(ledger, "coverage-matrix", [
     { kind: "test", id: "TEST-001", verifies: ["AC-001"] },

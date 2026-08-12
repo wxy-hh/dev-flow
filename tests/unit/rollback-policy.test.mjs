@@ -10,17 +10,16 @@ const types = await loadSource("plugins/dev-flow/src/policy/types.ts");
 const sha = (letter) => letter.repeat(64);
 
 const standardMNode = Object.freeze({
-  kind: "rollback",
-  id: "RU-001",
+  kind: "implementation-unit",
+  id: "UNIT-001",
   tasks: ["TASK-001", "TASK-002"],
   dependsOn: [],
   fileScope: ["src/api/**"],
   covers: ["REQ-001", "AC-001"],
   forwardVerification: ["unit", "typecheck"],
-  rollbackVerification: ["unit", "typecheck"],
   sourceArtifact: "implementation-plan",
   sourceSha256: sha("a"),
-  sourceAnchor: "<!-- dev-flow:id=RU-001 kind=rollback -->",
+  sourceAnchor: "<!-- dev-flow:id=UNIT-001 kind=implementation-unit -->",
   sourceBlockSha256: sha("b"),
   verificationConfigSha256: sha("c"),
   status: "current",
@@ -28,10 +27,10 @@ const standardMNode = Object.freeze({
 
 const standardLNode = Object.freeze({
   ...standardMNode,
-  id: "RU-002",
+  id: "UNIT-002",
   tasks: ["TASK-003"],
-  dependsOn: ["RU-001"],
-  sourceArtifact: "rollback-units",
+  dependsOn: ["UNIT-001"],
+  sourceArtifact: "implementation-plan",
 });
 
 test("fileScope patterns use one canonical safe relative-path contract", () => {
@@ -49,21 +48,21 @@ test("fileScope matching treats decomposed and composed Unicode as the same path
   assert.equal(rollback.pathWithinFileScope("src/其他.js", ["src/需求á.js"]), false);
 });
 
-test("implementationUnitForRollbackNode derives isomorphic pending units from standard M and L rollback nodes", () => {
+test("implementationUnitForNode derives pending units from implementation-unit nodes", () => {
   const basisHash = sha("d");
-  assert.deepEqual(rollback.implementationUnitForRollbackNode(standardMNode, basisHash), {
-    unitId: "RU-001",
+  assert.deepEqual(rollback.implementationUnitForNode(standardMNode, basisHash), {
+    unitId: "UNIT-001",
     status: "pending",
     basisHash,
   });
-  assert.deepEqual(rollback.implementationUnitForRollbackNode(standardLNode, basisHash), {
-    unitId: "RU-002",
+  assert.deepEqual(rollback.implementationUnitForNode(standardLNode, basisHash), {
+    unitId: "UNIT-002",
     status: "pending",
     basisHash,
   });
 });
 
-test("implementationUnitForRollbackNode rejects rollback nodes with missing required fields", () => {
+test("implementationUnitForNode rejects implementation units with missing required fields", () => {
   const basisHash = sha("d");
   const cases = [
     { ...standardMNode, id: undefined },
@@ -74,15 +73,13 @@ test("implementationUnitForRollbackNode rejects rollback nodes with missing requ
     { ...standardMNode, fileScope: [] },
     { ...standardMNode, forwardVerification: undefined },
     { ...standardMNode, forwardVerification: [] },
-    { ...standardMNode, rollbackVerification: undefined },
-    { ...standardMNode, rollbackVerification: [] },
     { ...standardMNode, status: "stale" },
     { ...standardMNode, status: "tombstoned" },
   ];
   for (const node of cases) {
-    assert.throws(() => rollback.implementationUnitForRollbackNode(node, basisHash), /ROLLBACK_PROTOCOL_INVALID/);
+    assert.throws(() => rollback.implementationUnitForNode(node, basisHash), /ROLLBACK_PROTOCOL_INVALID/);
   }
-  assert.throws(() => rollback.implementationUnitForRollbackNode(standardMNode, "not-a-hash"), /ROLLBACK_PROTOCOL_INVALID/);
+  assert.throws(() => rollback.implementationUnitForNode(standardMNode, "not-a-hash"), /ROLLBACK_PROTOCOL_INVALID/);
 });
 
 test("unit transition table permits the documented lifecycle and rejects skips", () => {
@@ -122,20 +119,20 @@ test("unit transition table permits the documented lifecycle and rejects skips",
 
 test("parseImplementationUnitState enforces closed shape and status-field consistency", () => {
   const basisHash = sha("d");
-  assert.deepEqual(rollback.parseImplementationUnitState({ unitId: "RU-001", status: "pending", basisHash }), {
-    unitId: "RU-001",
+  assert.deepEqual(rollback.parseImplementationUnitState({ unitId: "UNIT-001", status: "pending", basisHash }), {
+    unitId: "UNIT-001",
     status: "pending",
     basisHash,
   });
   // Pre-4A checkpointed unit: no beginNonce, still accepted.
   assert.deepEqual(rollback.parseImplementationUnitState({
-    unitId: "RU-001",
+    unitId: "UNIT-001",
     status: "checkpointed",
     basisHash,
     startedFingerprint: sha("e"),
     checkpointId: "CP-001",
   }), {
-    unitId: "RU-001",
+    unitId: "UNIT-001",
     status: "checkpointed",
     basisHash,
     startedFingerprint: sha("e"),
@@ -143,27 +140,27 @@ test("parseImplementationUnitState enforces closed shape and status-field consis
   });
   // 4A unit with beginNonce: preserved on round-trip.
   assert.deepEqual(rollback.parseImplementationUnitState({
-    unitId: "RU-001",
+    unitId: "UNIT-001",
     status: "active",
     basisHash,
     startedFingerprint: sha("e"),
     beginNonce: "nonce-1",
   }), {
-    unitId: "RU-001",
+    unitId: "UNIT-001",
     status: "active",
     basisHash,
     startedFingerprint: sha("e"),
     beginNonce: "nonce-1",
   });
   assert.deepEqual(rollback.parseImplementationUnitState({
-    unitId: "RU-001",
+    unitId: "UNIT-001",
     status: "checkpointed",
     basisHash,
     startedFingerprint: sha("e"),
     checkpointId: "CP-001",
     beginNonce: "nonce-2",
   }), {
-    unitId: "RU-001",
+    unitId: "UNIT-001",
     status: "checkpointed",
     basisHash,
     startedFingerprint: sha("e"),
@@ -173,25 +170,25 @@ test("parseImplementationUnitState enforces closed shape and status-field consis
 
   const invalid = [
     // extra caller-controlled fields
-    { unitId: "RU-001", status: "pending", basisHash, assuranceLevel: "verified" },
+    { unitId: "UNIT-001", status: "pending", basisHash, assuranceLevel: "verified" },
     // malformed identifiers and hashes
     { unitId: "TASK-001", status: "pending", basisHash },
-    { unitId: "RU-1", status: "pending", basisHash },
-    { unitId: "RU-001", status: "pending", basisHash: "short" },
-    { unitId: "RU-001", status: "approved", basisHash },
+    { unitId: "UNIT-1", status: "pending", basisHash },
+    { unitId: "UNIT-001", status: "pending", basisHash: "short" },
+    { unitId: "UNIT-001", status: "approved", basisHash },
     // status-field consistency
-    { unitId: "RU-001", status: "pending", basisHash, startedFingerprint: sha("e") },
-    { unitId: "RU-001", status: "pending", basisHash, checkpointId: "CP-001" },
-    { unitId: "RU-001", status: "pending", basisHash, beginNonce: "nonce" },
-    { unitId: "RU-001", status: "active", basisHash },
-    { unitId: "RU-001", status: "active", basisHash, startedFingerprint: sha("e"), checkpointId: "CP-001" },
-    { unitId: "RU-001", status: "verified", basisHash, checkpointId: "CP-001" },
-    { unitId: "RU-001", status: "checkpointed", basisHash, startedFingerprint: sha("e") },
-    { unitId: "RU-001", status: "checkpointed", basisHash, checkpointId: "CP-001" },
-    { unitId: "RU-001", status: "rolled_back", basisHash, startedFingerprint: sha("e") },
+    { unitId: "UNIT-001", status: "pending", basisHash, startedFingerprint: sha("e") },
+    { unitId: "UNIT-001", status: "pending", basisHash, checkpointId: "CP-001" },
+    { unitId: "UNIT-001", status: "pending", basisHash, beginNonce: "nonce" },
+    { unitId: "UNIT-001", status: "active", basisHash },
+    { unitId: "UNIT-001", status: "active", basisHash, startedFingerprint: sha("e"), checkpointId: "CP-001" },
+    { unitId: "UNIT-001", status: "verified", basisHash, checkpointId: "CP-001" },
+    { unitId: "UNIT-001", status: "checkpointed", basisHash, startedFingerprint: sha("e") },
+    { unitId: "UNIT-001", status: "checkpointed", basisHash, checkpointId: "CP-001" },
+    { unitId: "UNIT-001", status: "rolled_back", basisHash, startedFingerprint: sha("e") },
     // empty beginNonce is rejected
-    { unitId: "RU-001", status: "active", basisHash, startedFingerprint: sha("e"), beginNonce: "" },
-    { unitId: "RU-001", status: "active", basisHash, startedFingerprint: sha("e"), beginNonce: "   " },
+    { unitId: "UNIT-001", status: "active", basisHash, startedFingerprint: sha("e"), beginNonce: "" },
+    { unitId: "UNIT-001", status: "active", basisHash, startedFingerprint: sha("e"), beginNonce: "   " },
   ];
   for (const state of invalid) {
     assert.throws(() => rollback.parseImplementationUnitState(state), /ROLLBACK_PROTOCOL_INVALID/);
@@ -200,7 +197,7 @@ test("parseImplementationUnitState enforces closed shape and status-field consis
 
 test("parseImplementationUnits rejects duplicate unit IDs, duplicate checkpoint IDs, and unknown units", () => {
   const basisHash = sha("d");
-  const known = ["RU-001", "RU-002"];
+  const known = ["UNIT-001", "UNIT-002"];
   const pendingUnit = (unitId) => ({ unitId, status: "pending", basisHash });
   const checkpointedUnit = (unitId, checkpointId) => ({
     unitId,
@@ -210,21 +207,21 @@ test("parseImplementationUnits rejects duplicate unit IDs, duplicate checkpoint 
     checkpointId,
   });
 
-  assert.deepEqual(rollback.parseImplementationUnits([pendingUnit("RU-001"), checkpointedUnit("RU-002", "CP-002")], known), [
-    pendingUnit("RU-001"),
-    checkpointedUnit("RU-002", "CP-002"),
+  assert.deepEqual(rollback.parseImplementationUnits([pendingUnit("UNIT-001"), checkpointedUnit("UNIT-002", "CP-002")], known), [
+    pendingUnit("UNIT-001"),
+    checkpointedUnit("UNIT-002", "CP-002"),
   ]);
 
   assert.throws(
-    () => rollback.parseImplementationUnits([pendingUnit("RU-001"), pendingUnit("RU-001")], known),
+    () => rollback.parseImplementationUnits([pendingUnit("UNIT-001"), pendingUnit("UNIT-001")], known),
     /ROLLBACK_PROTOCOL_INVALID/,
   );
   assert.throws(
-    () => rollback.parseImplementationUnits([checkpointedUnit("RU-001", "CP-001"), checkpointedUnit("RU-002", "CP-001")], known),
+    () => rollback.parseImplementationUnits([checkpointedUnit("UNIT-001", "CP-001"), checkpointedUnit("UNIT-002", "CP-001")], known),
     /ROLLBACK_PROTOCOL_INVALID/,
   );
   assert.throws(
-    () => rollback.parseImplementationUnits([pendingUnit("RU-009")], known),
+    () => rollback.parseImplementationUnits([pendingUnit("UNIT-009")], known),
     /ROLLBACK_PROTOCOL_INVALID/,
   );
   assert.throws(() => rollback.parseImplementationUnits({}, known), /ROLLBACK_PROTOCOL_INVALID/);
@@ -234,7 +231,7 @@ function manifestFixture() {
   return {
     schemaVersion: 2,
     checkpointId: "CP-001",
-    unitId: "RU-001",
+    unitId: "UNIT-001",
     sequence: 1,
     basisHash: sha("d"),
     startedFingerprint: sha("e"),

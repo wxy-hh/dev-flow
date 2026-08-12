@@ -128,7 +128,7 @@ test("a recovered SessionStart asks Core to reconcile changed workspace automati
   }
 });
 
-test("Claude PermissionRequest 首次放行原生确认，成功后只在同 feature 返回 allow", async () => {
+test("Claude PermissionRequest 每次都放行原生确认：成功 PostToolUse 只留审计，相同命令再次执行仍 defer", async () => {
   const fixture = await startIntake();
   try {
     const hook = bundles.pathFor("claude-hook");
@@ -146,18 +146,14 @@ test("Claude PermissionRequest 首次放行原生确认，成功后只在同 fea
       tool_input: { command: "rm -rf src/generated" },
       tool_response: { success: true },
     });
+    // ADR-0004：授权不跨执行复用——相同命令再次执行仍回到宿主确认。
     const second = await invokeRaw(hook, fixture.root, {
       hook_event_name: "PermissionRequest",
       event_id: "claude-permission-2",
       tool_name: "Bash",
       tool_input: { command: "rm -rf src/generated" },
     });
-    const output = JSON.parse(second.stdout);
-    assert.deepEqual(output.hookSpecificOutput, {
-      hookEventName: "PermissionRequest",
-      decision: { behavior: "allow" },
-    });
-    assert.equal("continue" in output, false);
+    assert.equal(second.stdout, "");
   } finally {
     await fixture.dispose();
   }
@@ -211,7 +207,7 @@ test("Claude AskUserQuestion 的真实用户选择可直接消解已呈现的 wo
   }
 });
 
-test("Codex PermissionRequest 首次不代决，成功后使用 Codex allow 形状", async () => {
+test("Codex PermissionRequest 每次都不代决：成功 PostToolUse 只留审计，相同命令再次执行仍 defer", async () => {
   const fixture = await startIntake();
   try {
     const hook = bundles.pathFor("codex-hook");
@@ -229,14 +225,41 @@ test("Codex PermissionRequest 首次不代决，成功后使用 Codex allow 形�
       tool_input: { command: "git reset --hard HEAD" },
       tool_response: { success: true },
     });
+    // ADR-0004：授权不跨执行复用——相同命令再次执行仍回到宿主确认。
     const second = await invokeRaw(hook, fixture.root, {
       hook_event_name: "PermissionRequest",
       event_id: "codex-permission-2",
       tool_name: "Bash",
       tool_input: { command: "git reset --hard HEAD" },
     });
-    assert.deepEqual(JSON.parse(second.stdout), { decision: "allow" });
+    assert.equal(second.stdout, "");
   } finally {
     await fixture.dispose();
+  }
+});
+
+test("Claude and Codex adapters persist successful browser executions as verifiable tool events", async (t) => {
+  for (const host of ["claude", "codex"]) {
+    await t.test(host, async () => {
+      const fixture = await startIntake();
+      try {
+        await invokeRaw(bundles.pathFor(`${host}-hook`), fixture.root, {
+          hook_event_name: "PostToolUse",
+          event_id: `${host}-browser-result`,
+          tool_use_id: `${host}-browser-execution`,
+          tool_name: "browser_click",
+          tool_input: { selector: "#save" },
+          tool_response: { success: true, message: "button clicked" },
+        });
+        const events = await state.readFeatureEvents(fixture.root, "protocol");
+        const recorded = events.find((event) => event.type === "host-event" && event.data.eventId === `${host}-browser-result`);
+        assert.equal(recorded?.data.type, "tool");
+        assert.equal(recorded?.data.toolName, "browser_click");
+        assert.equal(recorded?.data.executionId, `${host}-browser-execution`);
+        assert.match(recorded?.data.resultSummary, /button clicked/);
+      } finally {
+        await fixture.dispose();
+      }
+    });
   }
 });

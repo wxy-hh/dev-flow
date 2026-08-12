@@ -197,8 +197,7 @@ export async function buildProgress(
     ...(requiredEvidence ? { requiredEvidence } : {}),
     verificationFreshness: await readVerificationFreshness(root, state),
     acceptanceAssist: {
-      suggested: state.classification.acceptanceAssistSuggested
-        ?? (state.classification as { manualAcceptanceRequired?: boolean }).manualAcceptanceRequired === true,
+      suggested: state.classification.acceptanceAssistSuggested === true,
       blocking: false,
     },
   };
@@ -219,7 +218,7 @@ async function implementationStatus(root: string, state: FeatureState, rollback:
     const ledger = await readTraceability(root, state);
     const byUnit = new Map((state.implementationUnits ?? []).map((unit) => [unit.unitId, unit.status]));
     remainingUnitIds = Object.values(ledger.nodes)
-      .filter((node): node is RollbackNode => node.kind === "rollback" && node.status === "current")
+      .filter((node): node is Extract<import("../policy/traceability.js").TraceNode, { kind: "implementation-unit" }> => node.kind === "implementation-unit" && node.status === "current")
       .map((node) => node.id)
       .filter((unitId) => byUnit.get(unitId) !== "checkpointed")
       .sort();

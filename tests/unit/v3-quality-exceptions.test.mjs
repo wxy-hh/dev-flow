@@ -20,8 +20,8 @@ test("quality exception requires one later host answer and records accepted risk
     });
     await store.recordHostEvent(fixture.root, { eventId: "quality-answer", type: "user-prompt", host: "codex", text: "接受风险：我已了解验证风险", at: new Date(Date.now() + 1000).toISOString() });
     const accepted = await quality.resolveQualityExceptionAnswer(fixture.root, "quality", presented.state.revision, presented.interactionId, "接受风险：我已了解验证风险", "codex");
-    assert.equal(accepted.qualityExceptions.length, 1);
-    assert.equal(accepted.qualityExceptions[0].status, "current");
+    assert.equal(accepted.governance.authorizations.length, 1);
+    assert.equal(accepted.governance.authorizations[0].authorizationType, "risk-acceptance");
   } finally {
     await fixture.dispose();
   }
@@ -39,10 +39,9 @@ test("elicitation accept records the risk with the form comment and resolves the
       riskSummary: "验证证据需要用户明确接受。",
     });
     const accepted = await quality.resolveQualityExceptionElicitation(fixture.root, "quality", presented.state.revision, presented.interactionId, "accept", "已了解验证风险", "codex");
-    assert.equal(accepted.qualityExceptions.length, 1);
-    assert.equal(accepted.qualityExceptions[0].status, "current");
-    assert.equal(accepted.qualityExceptions[0].userEvidence, "已了解验证风险");
-    assert.equal(accepted.pendingDecision, undefined);
+    assert.equal(accepted.governance.authorizations.length, 1);
+    assert.equal(accepted.governance.authorizations[0].target, "verification");
+    assert.equal(accepted.governance.credentials[0].rawText, "已了解验证风险");
     assert.equal(Object.values(accepted.interactions)[0].status, "resolved");
   } finally {
     await fixture.dispose();
@@ -65,7 +64,7 @@ test("elicitation accept without the required comment is rejected and stays pend
       (error) => error.code === "INTERACTION_COMMENT_REQUIRED",
     );
     const state = await store.readState(fixture.root, "quality");
-    assert.equal(decisions.pendingDecisionForState(state).kind, "quality-exception");
+    assert.equal(Object.values(state.interactions)[0].kind, "quality-exception");
     assert.equal(Object.values(state.interactions)[0].status, "pending");
   } finally {
     await fixture.dispose();
@@ -84,8 +83,7 @@ test("elicitation decline resolves the interaction without recording acceptance"
       riskSummary: "验证证据需要用户明确接受。",
     });
     const declined = await quality.resolveQualityExceptionElicitation(fixture.root, "quality", presented.state.revision, presented.interactionId, "decline", undefined, "codex");
-    assert.equal(declined.qualityExceptions.length, 0);
-    assert.equal(declined.pendingDecision, undefined);
+    assert.equal(declined.governance.authorizations.length, 0);
     assert.equal(Object.values(declined.interactions)[0].status, "resolved");
     assert.equal(Object.values(declined.interactions)[0].response.action, "decline");
   } finally {

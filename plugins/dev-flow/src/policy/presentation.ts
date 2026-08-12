@@ -41,7 +41,6 @@ const obligationLabels: Record<ObligationStatus, string> = {
 const assuranceLabels: Record<ReviewAssurance, string> = {
   "multi-perspective": "已完成多视角审查",
   "independent-sampling": "已完成独立抽样审查",
-  "multi-agent-attested": "已完成多代理佐证审查",
   "multi-agent-verified": "已完成多代理验证审查",
 };
 
@@ -86,7 +85,6 @@ export function reviewAssuranceLabel(assurance: ReviewAssurance): string {
   switch (assurance) {
     case "multi-perspective": return assuranceLabels["multi-perspective"];
     case "independent-sampling": return assuranceLabels["independent-sampling"];
-    case "multi-agent-attested": return assuranceLabels["multi-agent-attested"];
     case "multi-agent-verified": return assuranceLabels["multi-agent-verified"];
     default: return exhaustive(assurance);
   }

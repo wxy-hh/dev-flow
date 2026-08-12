@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
+import { execFileSync } from "node:child_process";
 import { build } from "esbuild";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
@@ -151,19 +152,35 @@ test("dev_flow_record_decision exposes a decisionId usable end-to-end (P5)", asy
       featureId: "decisions", objective: "澄清一个决策", host: "codex",
       scope: { inScope: ["src/counter.js"], outOfScope: [] },
     });
+    // v5 分类引用已登记的仓库事实记录（ADR-0018）：先登记事实并提交，再记录
+    // 依赖当前内容指纹的决定，最后用事实 recordId 锁定路线。
+    await writeFile(path.join(fixture.root, "src", "decision-fact.txt"), "single module evidence\n");
+    execFileSync("git", ["add", "src/decision-fact.txt"], { cwd: fixture.root });
+    execFileSync("git", ["commit", "-qm", "decision fact"], { cwd: fixture.root });
+    const withFact = await store.registerRepositoryFact(fixture.root, "decisions", state.control.expectedRevision, {
+      assertion: "只改一个模块",
+      location: { kind: "positive", path: "src/decision-fact.txt" },
+    }, "codex");
+    const factRef = withFact.governance.repositoryFacts[withFact.governance.repositoryFacts.length - 1].recordId;
     await store.recordHostEvent(fixture.root, { eventId: "known-conclusion", type: "user-prompt", host: "codex", text: "保留" });
     const recorded = await mcpCall(server, fixture.root, "dev_flow_record_decision", {
-      featureId: "decisions", expectedRevision: state.control.expectedRevision,
-      question: "是否保留兼容行为？", evidence: "用户已有明确结论", conclusion: "保留", factRefs: ["fact-1"], host: "codex",
+      featureId: "decisions", expectedRevision: withFact.revision,
+      question: "是否保留兼容行为？", evidence: "用户已有明确结论", conclusion: "保留", factRefs: [factRef], host: "codex",
     });
     assert.match(recorded.decisionId, /^DEC-[0-9a-f]{16}$/);
-    const pending = await mcpCall(server, fixture.root, "dev_flow_lock_classification", {
+    // issue 08：较早对话的决定需要用户追认后才能作为分类依据
+    await store.recordHostEvent(fixture.root, { eventId: "ratify-known", type: "user-prompt", host: "codex", text: "确认登记" });
+    const ratified = await mcpCall(server, fixture.root, "dev_flow_answer", {
       featureId: "decisions", expectedRevision: recorded.control.expectedRevision,
+      userReply: "确认登记", host: "codex",
+    });
+    const pending = await mcpCall(server, fixture.root, "dev_flow_lock_classification", {
+      featureId: "decisions", expectedRevision: ratified.state.revision,
       classification: {
         level: "M", topology: "local", requirements: "provided-confirmed",
         classificationBasis: {
-          scopeFacts: ["只改一个模块"], topologyFacts: ["没有共享契约"], uncertaintyFacts: [],
-          riskFacts: {}, decisionRefs: [recorded.decisionId],
+          scopeFactRefs: [factRef], topologyFactRefs: [factRef], uncertaintyFactRefs: [],
+          riskFactRefs: {}, decisionRefs: [recorded.decisionId],
           signals: { changeSurface: "multi-component", behaviorChange: "new-capability", topology: "local", unitCount: 1, requirements: "provided-confirmed", operationalRecovery: false, executableRollback: false },
         },
       },

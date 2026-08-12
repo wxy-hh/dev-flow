@@ -75,12 +75,12 @@ test("routed pending requirements can request grill directly and resolve interac
         { id: "answer", label: "保守处理", description: "保持当前边界。" },
         { id: "expand", label: "扩大范围", description: "纳入额外需求。" },
       ],
-      recommendation: { optionId: "answer", reason: "改动范围更可控。" },
+      recommendation: { optionId: "answer", reason: "改动范围更可控。", drawback: "会继续保留当前限制。", alternative: { optionId: "expand", condition: "如果后续需要覆盖更多场景" } },
       host: "codex",
     });
-    assert.equal(requested.state.decisionLedger.find((item) => item.id === "G-001").status, "open");
+    assert.equal(requested.state.interactions[requested.interactionId].status, "pending");
     const resolved = await grill.resolveGrillElicitation(root, state.featureId, requested.state.revision, requested.interactionId, "answer", undefined, "codex");
-    assert.equal(resolved.state.decisionLedger.find((item) => item.id === "G-001").status, "resolved");
+    assert.equal(resolved.state.governance.decisions.find((item) => item.recordId === "G-001").conclusion, "answer");
     assert.equal(resolved.state.interactions[requested.interactionId].status, "resolved");
   } finally {
     await rm(root, { recursive: true, force: true });
@@ -104,14 +104,15 @@ test("intake grill request reopens a previously resolved decision", async () => 
         { id: "yes", label: "确认", description: "按当前方案继续。" },
         { id: "no", label: "拒绝", description: "停止采用当前方案。" },
       ],
-      recommendation: { optionId: "yes", reason: "当前方案已经完成前置澄清。" },
+      recommendation: { optionId: "yes", reason: "当前方案已经完成前置澄清。", drawback: "会保留当前方案的维护成本。", alternative: { optionId: "no", condition: "如果确认应立即停止当前方案" } },
       host: "codex",
     };
     const first = await grill.requestGrillDecision(root, state.featureId, state.revision, input);
     const resolved = await grill.resolveGrillElicitation(root, state.featureId, first.state.revision, first.interactionId, "yes", undefined, "codex");
     const second = await grill.requestGrillDecision(root, state.featureId, resolved.state.revision, input);
     state = second.state;
-    assert.equal(state.decisionLedger.find((item) => item.id === "G-REOPEN").status, "open");
+    assert.equal(state.interactions[second.interactionId].status, "pending");
+    assert.equal(state.governance.decisions.find((item) => item.recordId === "G-REOPEN").conclusion, "yes");
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -134,7 +135,7 @@ test("intake grill token requires a matching host user-prompt event", async () =
         { id: "yes", label: "确认", description: "按当前方案继续。" },
         { id: "no", label: "拒绝", description: "停止采用当前方案。" },
       ],
-      recommendation: { optionId: "yes", reason: "当前方案已经完成前置澄清。" },
+      recommendation: { optionId: "yes", reason: "当前方案已经完成前置澄清。", drawback: "会保留当前方案的维护成本。", alternative: { optionId: "no", condition: "如果确认应立即停止当前方案" } },
       host: "codex",
     };
     const requested = await grill.requestGrillDecision(root, state.featureId, state.revision, input);

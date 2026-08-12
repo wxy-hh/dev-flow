@@ -54,7 +54,7 @@ function levelForBehavior(value: BehaviorChange): Level {
 }
 
 function riskLabelsOf(basis: ClassificationBasis): RiskLabel[] {
-  return Object.keys(basis.riskFacts).filter((label) => allowedRiskLabels.includes(label as RiskLabel)).sort() as RiskLabel[];
+  return Object.keys(basis.riskFactRefs).filter((label) => allowedRiskLabels.includes(label as RiskLabel)).sort() as RiskLabel[];
 }
 
 function highConsequence(labels: RiskLabel[]): boolean {
@@ -202,21 +202,24 @@ function actualType(value: unknown): string {
 }
 
 export function validateBasis(basis: ClassificationBasis, riskLabels: RiskLabel[]): void {
-  for (const key of ["scopeFacts", "topologyFacts", "uncertaintyFacts", "decisionRefs"] as const) {
+  if (["scopeFacts", "topologyFacts", "uncertaintyFacts", "riskFacts"].some((key) => Object.hasOwn(basis as object, key))) {
+    throw new PolicyError("CLASSIFICATION_BASIS_INVALID", "v5 classification accepts fact record references, not caller-authored fact prose", { path: "$.classificationBasis" });
+  }
+  for (const key of ["scopeFactRefs", "topologyFactRefs", "uncertaintyFactRefs", "decisionRefs"] as const) {
     if (!Array.isArray(basis[key]) || basis[key].some((item) => typeof item !== "string" || item.trim().length === 0)) {
-      throw new PolicyError("CLASSIFICATION_BASIS_INVALID", `${key} must be a list of non-empty fact strings`, { path: `$.classificationBasis.${key}`, actualType: actualType(basis[key]) });
+      throw new PolicyError("CLASSIFICATION_BASIS_INVALID", `${key} must be a list of non-empty record references`, { path: `$.classificationBasis.${key}`, actualType: actualType(basis[key]) });
     }
   }
-  if (!basis.riskFacts || typeof basis.riskFacts !== "object" || Array.isArray(basis.riskFacts)) {
-    throw new PolicyError("CLASSIFICATION_BASIS_INVALID", "riskFacts must be an object keyed by risk label", { path: "$.classificationBasis.riskFacts" });
+  if (!basis.riskFactRefs || typeof basis.riskFactRefs !== "object" || Array.isArray(basis.riskFactRefs)) {
+    throw new PolicyError("CLASSIFICATION_BASIS_INVALID", "riskFactRefs must be an object keyed by risk label", { path: "$.classificationBasis.riskFactRefs" });
   }
-  for (const [label, facts] of Object.entries(basis.riskFacts)) {
-    if (!allowedRiskLabels.includes(label as RiskLabel) || !Array.isArray(facts) || facts.length === 0 || facts.some((fact) => typeof fact !== "string" || !fact.trim())) {
-      throw new PolicyError("CLASSIFICATION_BASIS_INVALID", `riskFacts.${label} must be a non-empty known fact list`, { path: `$.classificationBasis.riskFacts.${label}`, actualType: actualType(facts) });
+  for (const [label, refs] of Object.entries(basis.riskFactRefs)) {
+    if (!allowedRiskLabels.includes(label as RiskLabel) || !Array.isArray(refs) || refs.length === 0 || refs.some((ref) => typeof ref !== "string" || !ref.trim())) {
+      throw new PolicyError("CLASSIFICATION_BASIS_INVALID", `riskFactRefs.${label} must be a non-empty known reference list`, { path: `$.classificationBasis.riskFactRefs.${label}`, actualType: actualType(refs) });
     }
   }
-  for (const label of riskLabels) if (!basis.riskFacts[label]?.length) {
-    throw new PolicyError("RISK_BASIS_REQUIRED", `risk label ${label} has no factual basis`, { path: `$.classificationBasis.riskFacts.${label}` });
+  for (const label of riskLabels) if (!basis.riskFactRefs[label]?.length) {
+    throw new PolicyError("RISK_BASIS_REQUIRED", `risk label ${label} has no factual basis`, { path: `$.classificationBasis.riskFactRefs.${label}` });
   }
   if (basis.controlEnhancements !== undefined) {
     const controls = basis.controlEnhancements as Record<string, unknown>;
@@ -290,7 +293,7 @@ export function recommendClassification(basis: ClassificationBasis): Classificat
     { field: "behaviorChange", value: signals.behaviorChange, basisPaths: ["$.classificationBasis.signals.behaviorChange"], message: `行为复杂度下限 ${levelForBehavior(signals.behaviorChange)}` },
     { field: "topology", value: signals.topology, basisPaths: ["$.classificationBasis.signals.topology"], message: `拓扑下限 ${minimumLevelForTopology(signals.topology)}` },
     { field: "level", value: level, basisPaths: ["$.classificationBasis.signals"], message: `Core 最低级别与有依据的向上加强合并为 ${level}` },
-    ...Object.entries(controls.reasons).map(([field, message]) => ({ field: `controls.${field}`, value: message, basisPaths: ["$.classificationBasis.signals", "$.classificationBasis.riskFacts"], message })),
+    ...Object.entries(controls.reasons).map(([field, message]) => ({ field: `controls.${field}`, value: message, basisPaths: ["$.classificationBasis.signals", "$.classificationBasis.riskFactRefs"], message })),
   ];
   const route = levelRoute[level];
   return { readyToLock: true, classification, route, obligations: deriveObligations(route, basis, controls), reasons, issues: [] };
@@ -298,10 +301,10 @@ export function recommendClassification(basis: ClassificationBasis): Classificat
 
 function defaultBasis(input: ClassificationInput): ClassificationBasis {
   return input.classificationBasis ?? {
-    scopeFacts: input.scope ? [...input.scope.inScope, ...input.scope.outOfScope] : [],
-    topologyFacts: input.topology ? [input.topology] : [],
-    uncertaintyFacts: [],
-    riskFacts: {},
+    scopeFactRefs: [],
+    topologyFactRefs: [],
+    uncertaintyFactRefs: [],
+    riskFactRefs: {},
     decisionRefs: [],
     ...(input.controlEnhancements ? { controlEnhancements: input.controlEnhancements } : {}),
   };
@@ -338,10 +341,10 @@ export function selectBaseRoute(input: ClassificationFacts): {
 } {
   const normalized = normalizeClassification(input);
   const basis: ClassificationBasis = {
-    scopeFacts: input.scopeFacts,
-    topologyFacts: input.topologyFacts,
-    uncertaintyFacts: input.uncertaintyFacts,
-    riskFacts: input.riskFacts,
+    scopeFactRefs: input.scopeFactRefs,
+    topologyFactRefs: input.topologyFactRefs,
+    uncertaintyFactRefs: input.uncertaintyFactRefs,
+    riskFactRefs: input.riskFactRefs,
     decisionRefs: input.decisionRefs,
     ...(input.signals ? { signals: input.signals } : {}),
     ...(input.controlEnhancements ? { controlEnhancements: input.controlEnhancements } : {}),
@@ -367,15 +370,43 @@ export function selectBaseRoute(input: ClassificationFacts): {
   return { classification, route, classificationBasis: basis, obligations: deriveObligations(route, basis, controls), contradictions: [] };
 }
 
-export function assertBoundaryAuditComplete(audit: unknown, decisionRefs: string[]): void {
+export interface BoundaryResolutionIndex {
+  decisionRefs: string[];
+  decisions: Array<{ recordId: string; currency?: "current" | "stale" | "unconfirmed"; supersededBy?: string }>;
+  repositoryFacts: Array<{ recordId: string; currency?: "current" | "stale" | "unconfirmed" }>;
+}
+
+export function assertBoundaryAuditComplete(
+  audit: unknown,
+  decisionRefsOrIndex: string[] | BoundaryResolutionIndex,
+  repositoryFacts: Array<{ recordId: string }> = [],
+): void {
+  const index: BoundaryResolutionIndex = Array.isArray(decisionRefsOrIndex)
+    ? { decisionRefs: decisionRefsOrIndex, decisions: decisionRefsOrIndex.map((recordId) => ({ recordId, currency: "current" })), repositoryFacts: repositoryFacts.map((record) => ({ recordId: record.recordId, currency: "current" })) }
+    : decisionRefsOrIndex;
   const value = audit as { scanned?: unknown; items?: unknown };
   if (!value || !Array.isArray(value.scanned) || requiredBoundaryKinds.some((kind) => !(value.scanned as unknown[]).includes(kind)) || !Array.isArray(value.items)) {
     throw new PolicyError("BOUNDARY_AUDIT_INCOMPLETE", "boundaryAudit must explicitly scan every boundary category", { required: requiredBoundaryKinds });
   }
   for (const item of value.items as Array<Record<string, unknown>>) {
-    const fact = item.disposition === "repository-fact" && typeof item.evidenceRef === "string" && item.evidenceRef.length > 0;
-    const decision = item.disposition === "resolved-decision" && typeof item.decisionRef === "string" && decisionRefs.includes(item.decisionRef);
-    if (!fact && !decision) throw new PolicyError("BOUNDARY_AUDIT_UNRESOLVED", "every boundary item needs repository evidence or a resolved decision", { itemId: item.id });
+    // ADR-0018：repository-fact 必须引用已登记的结构化事实（factRef）；
+    // 自由文本不再满足完成条件（evidenceRef 字段已随 issue 23 删除）。
+    const factRecord = typeof item.factRef === "string" ? index.repositoryFacts.find((record) => record.recordId === item.factRef) : undefined;
+    const fact = item.disposition === "repository-fact"
+      && typeof item.factRef === "string"
+      && factRecord !== undefined
+      && factRecord.currency === "current";
+    const decisionRecord = typeof item.decisionRef === "string" ? index.decisions.find((record) => record.recordId === item.decisionRef) : undefined;
+    const decision = item.disposition === "resolved-decision"
+      && typeof item.decisionRef === "string"
+      && index.decisionRefs.includes(item.decisionRef)
+      && decisionRecord !== undefined
+      && decisionRecord.currency === "current"
+      && decisionRecord.supersededBy === undefined;
+    if (!fact && !decision) {
+      const code = decisionRecord?.supersededBy ? "BOUNDARY_DECISION_SUPERSEDED" : "BOUNDARY_AUDIT_UNRESOLVED";
+      throw new PolicyError(code, "every boundary item needs a current repository fact or a current resolved decision", { itemId: item.id, ...(typeof item.decisionRef === "string" ? { decisionRef: item.decisionRef } : {}), ...(typeof item.factRef === "string" ? { factRef: item.factRef } : {}) });
+    }
   }
 }
 

@@ -80,7 +80,7 @@ test("abandoning the active unit unblocks the config-change deadlock", { timeout
     // H1 恢复路径 2：计划重登记不再被 quiescent 挡，trace 恢复 current 且命令哈希刷新
     state = (await artifacts.recordArtifactWithTrace(root, featureId, state.revision, "implementation-plan", traceDeltaFor("implementation-plan", "l"))).state;
     let ledger = await traceStore.readTraceability(root, state);
-    assert.equal(ledger.nodes["RU-001"].status, "current");
+    assert.equal(ledger.nodes["UNIT-001"].status, "current");
     assert.equal(ledger.nodes["TASK-001"].status, "current");
     assert.equal(ledger.nodes["TEST-001"].status, "current");
 

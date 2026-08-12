@@ -30,10 +30,10 @@
       "enum": ["prepared", "backing-up", "rolling-back", "verifying", "committed", "compensating", "compensated"]
     },
     "targetCheckpointId": { "type": "string", "pattern": "^CP-[0-9]{3,}$" },
-    "targetUnitId": { "type": "string", "pattern": "^RU-[0-9]{3,}$" },
+    "targetUnitId": { "type": "string", "pattern": "^UNIT-[0-9]{3,}$" },
     "undoOrder": {
       "type": "array",
-      "items": { "type": "string", "pattern": "^RU-[0-9]{3,}$" },
+      "items": { "type": "string", "pattern": "^UNIT-[0-9]{3,}$" },
       "minItems": 1
     },
     "undoCheckpoints": {

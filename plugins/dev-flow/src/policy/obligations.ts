@@ -58,7 +58,7 @@ export function deriveObligations(
   controls?: GovernanceControls,
 ): ClassificationObligation[] {
   const output = new Map<string, ClassificationObligation>();
-  const labels = Object.keys(classificationBasis.riskFacts) as RiskLabel[];
+  const labels = Object.keys(classificationBasis.riskFactRefs) as RiskLabel[];
 
   if (controls?.executionApproval) {
     add(output, "approval", "route", "该路线需要一次合并的执行确认", { route }, ["execution"]);
@@ -80,7 +80,7 @@ export function deriveObligations(
     const rule = riskRules[label];
     if (!rule) continue;
     for (const kind of rule.kinds) {
-      add(output, kind, "risk", `风险事实要求 ${kind} 义务`, { label, facts: classificationBasis.riskFacts[label] }, rule.roles, rule.verification);
+      add(output, kind, "risk", `风险事实要求 ${kind} 义务`, { label, factRefs: classificationBasis.riskFactRefs[label] }, rule.roles, rule.verification);
     }
   }
 

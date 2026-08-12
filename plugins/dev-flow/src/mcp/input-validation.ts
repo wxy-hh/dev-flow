@@ -140,8 +140,8 @@ function validate(value: unknown, schema: JsonSchema, path: string): InputValida
 
 function normalizeIssues(tool: string, issues: InputValidationIssue[]): InputValidationIssue[] {
   const normalized = tool === "dev_flow_classify"
-    ? issues.map((candidate) => candidate.unknownField === "riskFacts"
-      ? { ...candidate, path: "$.classificationBasis.riskFacts", message: "riskFacts belongs inside classificationBasis" }
+    ? issues.map((candidate) => candidate.unknownField === "riskFactRefs"
+      ? { ...candidate, path: "$.classificationBasis.riskFactRefs", message: "riskFactRefs belongs inside classificationBasis" }
       : candidate)
     : issues;
   return [...normalized].sort((left, right) => `${left.path}\0${left.keyword}`.localeCompare(`${right.path}\0${right.keyword}`));

@@ -1,15 +1,15 @@
-import type { RollbackId, RollbackNode, VerificationCommandRef } from "./traceability.js";
+import type { ImplementationUnitId, ImplementationUnitNode, RollbackId, RollbackNode, VerificationCommandRef } from "./traceability.js";
 
 /**
- * Phase-3 checkpoint domain: runtime lifecycle for rollback units plus the
- * content-addressed checkpoint manifest shape. RollbackNode stays the single
- * definition of an RU; these types never duplicate its fields.
+ * Phase-3 checkpoint domain: runtime lifecycle for implementation units plus
+ * the content-addressed checkpoint manifest shape. RollbackNode remains the
+ * separate definition used only by an explicit rollback artifact.
  */
 
 export type ImplementationUnitStatus = "pending" | "active" | "verified" | "checkpointed" | "rolled_back";
 
 export interface ImplementationUnitState {
-  unitId: RollbackId;
+  unitId: ImplementationUnitId;
   status: ImplementationUnitStatus;
   basisHash: string;
   startedFingerprint?: string;
@@ -21,6 +21,19 @@ export interface ImplementationUnitState {
    * begun before 4A.
    */
   beginNonce?: string;
+}
+
+/**
+ * 把已完成/进行中的单元重新打开为 pending（局部重做的共享形状，issue 17/
+ * 21/24 修正）：清除 begin/checkpoint 痕迹，重新 begin 时作为新化身重做。
+ * checkpoint manifest 留在磁盘作为不可变历史。pending 单元原样保留。
+ */
+export function reopenImplementationUnit(unit: ImplementationUnitState): void {
+  if (unit.status === "pending") return;
+  unit.status = "pending";
+  delete unit.startedFingerprint;
+  delete unit.beginNonce;
+  delete unit.checkpointId;
 }
 
 export type CheckpointFileChange = "added" | "modified" | "deleted" | "renamed" | "mode-changed";
@@ -61,7 +74,7 @@ export interface CheckpointVerificationCommand {
 export interface CheckpointManifest {
   schemaVersion: 2;
   checkpointId: string;
-  unitId: RollbackId;
+  unitId: ImplementationUnitId;
   sequence: number;
   basisHash: string;
   startedFingerprint: string;
@@ -101,7 +114,7 @@ const unitStatuses = ["pending", "active", "verified", "checkpointed", "rolled_b
 
 const fileChanges = ["added", "modified", "deleted", "renamed", "mode-changed"] as const satisfies readonly CheckpointFileChange[];
 
-const ROLLBACK_ID = /^RU-[0-9]{3,}$/;
+const IMPLEMENTATION_UNIT_ID = /^UNIT-[0-9]{3,}$/;
 const SHA256 = /^[0-9a-f]{64}$/;
 const FILE_MODE = /^[0-7]{3,4}$/;
 
@@ -180,8 +193,8 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function isRollbackId(value: unknown): value is RollbackId {
-  return typeof value === "string" && ROLLBACK_ID.test(value);
+function isImplementationUnitId(value: unknown): value is ImplementationUnitId {
+  return typeof value === "string" && IMPLEMENTATION_UNIT_ID.test(value);
 }
 
 function isSha256(value: unknown): value is string {
@@ -223,16 +236,15 @@ export function isValidUnitTransition(from: ImplementationUnitStatus, to: Implem
  * route uses the same frozen rollback-unit shape, so lifecycle code never
  * branches on the source artifact.
  */
-export function implementationUnitForRollbackNode(node: RollbackNode, basisHash: string): ImplementationUnitState {
+export function implementationUnitForNode(node: ImplementationUnitNode, basisHash: string): ImplementationUnitState {
   if (!isRecord(node)
-    || node.kind !== "rollback"
-    || !isRollbackId(node.id)
+    || node.kind !== "implementation-unit"
+    || !isImplementationUnitId(node.id)
     || !isNonEmptyStringArray(node.tasks)
     || !isNonEmptyStringArray(node.fileScope)
     || !isVerificationCommandArray(node.forwardVerification)
-    || !isVerificationCommandArray(node.rollbackVerification)
     || node.status !== "current") {
-    invalid("rollback node is missing fields required to open an implementation unit");
+    invalid("implementation unit node is missing fields required to open an implementation unit");
   }
   if (!isSha256(basisHash)) invalid("implementation unit basis hash must be a SHA-256 hex digest");
   return { unitId: node.id, status: "pending", basisHash };
@@ -241,7 +253,7 @@ export function implementationUnitForRollbackNode(node: RollbackNode, basisHash:
 export function parseImplementationUnitState(value: unknown): ImplementationUnitState {
   if (!isRecord(value)
     || !hasOnlyKeys(value, ["unitId", "status", "basisHash", "startedFingerprint", "checkpointId", "beginNonce"])
-    || !isRollbackId(value.unitId)
+    || !isImplementationUnitId(value.unitId)
     || typeof value.status !== "string"
     || !unitStatuses.includes(value.status as ImplementationUnitStatus)
     || !isSha256(value.basisHash)
@@ -273,9 +285,9 @@ export function parseImplementationUnitState(value: unknown): ImplementationUnit
 }
 
 /** Validate a persisted unit set against the feature's known RU IDs. */
-export function parseImplementationUnits(value: unknown, knownUnitIds: readonly RollbackId[]): ImplementationUnitState[] {
+export function parseImplementationUnits(value: unknown, knownUnitIds: readonly ImplementationUnitId[]): ImplementationUnitState[] {
   if (!Array.isArray(value)) invalid("implementation units must be an array");
-  const seenUnits = new Set<RollbackId>();
+  const seenUnits = new Set<ImplementationUnitId>();
   const seenCheckpoints = new Set<string>();
   return value.map((item, index) => {
     const unit = parseImplementationUnitState(item);
@@ -360,7 +372,7 @@ export function parseCheckpointManifest(value: unknown): CheckpointManifest {
     || !hasOnlyKeys(value, ["schemaVersion", "checkpointId", "unitId", "sequence", "basisHash", "startedFingerprint", "completedFingerprint", "startedAt", "completedAt", "files", "forwardPatchSha256", "reversePatchSha256", "verificationAttempts", "requirementsSha256", "planSha256", "traceabilitySha256", "approvalBasisHash", "projectConfigSha256", "verificationCommands", "verificationCommandHashes", "beginNonce"])
     || value.schemaVersion !== 2
     || !isNonEmptyString(value.checkpointId)
-    || !isRollbackId(value.unitId)
+    || !isImplementationUnitId(value.unitId)
     || typeof value.sequence !== "number" || !Number.isInteger(value.sequence) || value.sequence < 1
     || !isSha256(value.basisHash)
     || !isSha256(value.startedFingerprint)
@@ -372,13 +384,12 @@ export function parseCheckpointManifest(value: unknown): CheckpointManifest {
     || !isSha256(value.forwardPatchSha256)
     || !isSha256(value.reversePatchSha256)
     || !Array.isArray(value.verificationAttempts)
-    || !isSha256(value.requirementsSha256)
-    || !isSha256(value.planSha256)
-    || !isSha256(value.traceabilitySha256)
+    || (value.requirementsSha256 !== "" && !isSha256(value.requirementsSha256))
+    || (value.planSha256 !== "" && !isSha256(value.planSha256))
+    || (value.traceabilitySha256 !== "" && !isSha256(value.traceabilitySha256))
     || !isSha256(value.approvalBasisHash)
     || !isSha256(value.projectConfigSha256)
-    || !Array.isArray(value.verificationCommands)
-    || value.verificationCommands.length === 0) {
+    || !Array.isArray(value.verificationCommands)) {
     invalid("checkpoint manifest has an invalid shape");
   }
   const files = value.files.map((file, index) => parseFileRecord(file, index));

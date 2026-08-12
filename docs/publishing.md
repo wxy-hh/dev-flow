@@ -13,7 +13,7 @@ npm run test:host-e2e
 - **版本权威**：根目录 `package.json#version`。  
 - 改版本后执行 `npm run version:sync`，再 `npm run build`，把预构建的 `plugins/dev-flow/dist/` **与源码一并提交**。  
 - 消费方**从不**对插件包执行 `npm install`。
-- **每次发布必须原子发布**：Core、Skills、测试、文档、manifest 与预构建 `dist/` 必须属于同一发布候选，不得只升级 Skills 或只带旧 dist。5.0 使用 schema v4 硬切换，不提供旧状态运行时迁移执行器。
+- **每次发布必须原子发布**：Core、Skills、测试、文档、manifest 与预构建 `dist/` 必须属于同一发布候选，不得只升级 Skills 或只带旧 dist。5.0 的 FeatureState 运行态为 schema v5；仅当前 5.0 的 schema v4 active state 在加载入口转换，不迁移 4.x active state。
 - Claude、Codex 与双向跨宿主回放是 marketplace 发布阻断项；中间提交可以合入主分支，但不得单独发布。发布前必须以真实宿主输出填写对应的 2.0 回放记录；自动化 host-E2E 仅作佐证，不能代填人工/UI 回放。
 
 ## 用户安装（仅原生宿主）

@@ -12,9 +12,9 @@
     "checkpointManifest": { "$ref": "#/$defs/checkpointManifest" }
   },
   "$defs": {
-    "rollbackId": {
+    "implementationUnitId": {
       "type": "string",
-      "pattern": "^RU-[0-9]{3,}$"
+      "pattern": "^UNIT-[0-9]{3,}$"
     },
     "sha256": {
       "type": "string",
@@ -32,7 +32,7 @@
       "additionalProperties": false,
       "required": ["unitId", "status", "basisHash"],
       "properties": {
-        "unitId": { "$ref": "#/$defs/rollbackId" },
+        "unitId": { "$ref": "#/$defs/implementationUnitId" },
         "status": { "$ref": "#/$defs/implementationUnitStatus" },
         "basisHash": { "$ref": "#/$defs/sha256" },
         "startedFingerprint": { "$ref": "#/$defs/sha256" },

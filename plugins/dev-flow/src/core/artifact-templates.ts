@@ -27,13 +27,13 @@ function requirementsTemplate(context: ArtifactTemplateContext): string {
 
 function implementationPlanTemplate(context: ArtifactTemplateContext): string {
   const formal = context.controls?.plan === "formal" || ["m", "l"].includes(context.route);
-  const rollback = formal
-    ? "\n<!-- dev-flow:id=RU-001 kind=rollback -->\n### RU-001：回撤单元\n\n- tasks: [TASK-001]\n- depends_on: []\n- file_scope: []\n- covers: [REQ-001]\n- forward_verification: [unit]\n- rollback_verification: [unit]\n"
+  const implementationUnit = formal
+    ? "\n<!-- dev-flow:id=UNIT-001 kind=implementation-unit -->\n### UNIT-001：实现单元\n\n- tasks: [TASK-001]\n- depends_on: []\n- file_scope: []\n- covers: [REQ-001]\n- forward_verification: [unit]\n"
     : "";
   const test = formal
     ? "\n<!-- dev-flow:id=TEST-001 kind=test -->\n### TEST-001：验证场景（verifies: AC-001）\n\n- 验证方法：\n"
     : "";
-  return `${frontMatter(context, "implementation-plan")}# 实现计划\n\n<!-- dev-flow:id=TASK-001 kind=task -->\n### TASK-001：实现任务\n\n- covers: [REQ-001]\n- rollback_unit: RU-001\n${test}${rollback}`;
+  return `${frontMatter(context, "implementation-plan")}# 实现计划\n\n<!-- dev-flow:id=TASK-001 kind=task -->\n### TASK-001：实现任务\n\n- covers: [REQ-001]\n- implementation_unit: UNIT-001\n${test}${implementationUnit}`;
 }
 
 function coverageMatrixTemplate(context: ArtifactTemplateContext): string {

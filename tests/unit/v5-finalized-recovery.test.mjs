@@ -40,11 +40,11 @@ test("repair reconstructs a missing active pointer without rewriting primary evi
   try {
     await store.initProject(fixture.root, strictProjectConfig);
     const state = await store.startFeature(fixture.root, { featureId: "repair-pointer", host: "claude", level: "XS", topology: "local" });
-    const beforeLedger = structuredClone(state.decisionLedger);
+    const beforeGovernance = structuredClone(state.governance);
     await rm(path.join(fixture.root, ".dev-flow", "active.json"));
     const repaired = await store.repairFeature(fixture.root, state.featureId, state.revision, "claude");
     assert.equal((await store.readActive(fixture.root)).revision, repaired.revision);
-    assert.deepEqual(repaired.decisionLedger, beforeLedger);
+    assert.deepEqual(repaired.governance, beforeGovernance);
     assert.equal(repaired.currentStage, "locate");
   } finally {
     await fixture.dispose();

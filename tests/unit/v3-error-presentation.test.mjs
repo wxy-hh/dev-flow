@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { createTinyApp, strictProjectConfig } from "../helpers/fixture-repo.mjs";
 import { loadSource } from "../helpers/load-source.mjs";
 
 const errors = await loadSource("plugins/dev-flow/src/core/errors.ts");
@@ -44,31 +45,38 @@ test("lockClassification boundary mismatch yields an actionable failure instead 
   // Reproduces the reported incident: a scope item referencing a decisionRef
   // absent from the classification's decisionRefs used to surface as
   // INTERNAL_ERROR because PolicyError is not a DevFlowError.
-  const facts = {
-    level: "M",
-    topology: "local",
-    requirements: "missing-or-unclear",
-    scopeFacts: ["dev_flow_start intake scope"],
-    topologyFacts: ["single project"],
-    uncertaintyFacts: ["mechanism choice open"],
-    riskFacts: {},
-    decisionRefs: [],
-  };
-  const audit = {
-    scanned: ["assumption", "free-space", "tbd", "fallback", "scope", "acceptance"],
-    items: [
-      { id: "scope-1", kind: "scope", disposition: "resolved-decision", decisionRef: "dev_flow_start intake scope", summary: "intake scope" },
-    ],
-  };
-  let thrown;
+  const fixture = await createTinyApp();
   try {
-    await store.lockClassification("/tmp/dev-flow-error-presentation-root", "issue-23052-css-atimport-resolution", 1, facts, audit);
-  } catch (error) {
-    thrown = error;
+    await store.initProject(fixture.root, strictProjectConfig);
+    const started = await store.startFeature(fixture.root, { featureId: "issue-23052", host: "codex" });
+    const facts = {
+      level: "M",
+      topology: "local",
+      requirements: "missing-or-unclear",
+      scopeFactRefs: [],
+      topologyFactRefs: [],
+      uncertaintyFactRefs: [],
+      riskFactRefs: {},
+      decisionRefs: [],
+    };
+    const audit = {
+      scanned: ["assumption", "free-space", "tbd", "fallback", "scope", "acceptance"],
+      items: [
+        { id: "scope-1", kind: "scope", disposition: "resolved-decision", decisionRef: "dev_flow_start intake scope", summary: "intake scope" },
+      ],
+    };
+    let thrown;
+    try {
+      await store.lockClassification(fixture.root, "issue-23052", started.revision, facts, audit);
+    } catch (error) {
+      thrown = error;
+    }
+    assert.ok(thrown, "lockClassification must reject the unresolved boundary item");
+    const failure = errors.failureFrom(thrown);
+    assert.equal(failure.code, "BOUNDARY_AUDIT_UNRESOLVED");
+    assert.equal(failure.technical.itemId, "scope-1");
+    assert.notEqual(failure.code, "INTERNAL_ERROR");
+  } finally {
+    await fixture.dispose();
   }
-  assert.ok(thrown, "lockClassification must reject the unresolved boundary item");
-  const failure = errors.failureFrom(thrown);
-  assert.equal(failure.code, "BOUNDARY_AUDIT_UNRESOLVED");
-  assert.equal(failure.technical.itemId, "scope-1");
-  assert.notEqual(failure.code, "INTERNAL_ERROR");
 });

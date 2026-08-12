@@ -1,7 +1,7 @@
 import { randomUUID, createHash } from "node:crypto";
 import { access, mkdir, open, readFile, readlink, readdir, rename } from "node:fs/promises";
 import path from "node:path";
-import { checkpointsEnforcementRequired } from "../policy/contract.js";
+import { checkpointsEnforcementRequired, traceEnforcementRequired } from "../policy/contract.js";
 import {
   parseCheckpointManifest,
   RollbackProtocolError,
@@ -9,7 +9,7 @@ import {
   type CheckpointManifest,
   type CheckpointVerificationAttempt,
 } from "../policy/rollback.js";
-import type { RollbackNode } from "../policy/traceability.js";
+import type { ImplementationUnitNode } from "../policy/traceability.js";
 import type { VerificationCommandRef } from "../policy/traceability.js";
 import { DevFlowError } from "./errors.js";
 import { fingerprintGovernedRoots, snapshotGovernedRoots, type ProtectedFileSnapshot } from "./fingerprint.js";
@@ -21,6 +21,7 @@ import { currentOpenStep } from "./step-order.js";
 import { readProjectConfigSnapshot, readTraceability } from "./traceability-store.js";
 import { runVerificationCommand } from "./verification.js";
 import { readCheckpointManifest } from "./checkpoint-store.js";
+import { invalidateAffectedClaims, workspaceChangedError } from "./change-invalidation.js";
 
 const digest = (value: string | Buffer) => createHash("sha256").update(value).digest("hex");
 const featureDirectory = (root: string, featureId: string) => path.join(root, ".dev-flow", "features", featureId);
@@ -233,15 +234,15 @@ function commandSummary(command: VerificationCommand): string {
   return [command.command, ...command.args].join(" ");
 }
 
-function currentRollbackNode(state: FeatureState, nodes: RollbackNode[], unitId: string): RollbackNode {
+function currentImplementationNode(state: FeatureState, nodes: ImplementationUnitNode[], unitId: string): ImplementationUnitNode {
   const node = nodes.find((candidate) => candidate.id === unitId);
   if (!node) {
-    throw new DevFlowError("IMPLEMENTATION_UNIT_UNKNOWN", "rollback unit is not part of the current trace graph", { unitId });
+    throw new DevFlowError("IMPLEMENTATION_UNIT_UNKNOWN", "implementation unit is not part of the current trace graph", { unitId });
   }
   return node;
 }
 
-export function resolveVerificationCommands(config: ProjectConfig, node: RollbackNode): VerificationCommand[] {
+export function resolveVerificationCommands(config: ProjectConfig, node: ImplementationUnitNode): VerificationCommand[] {
   return node.forwardVerification.map((reference, index) => resolveVerificationCommand(config, node.id, reference, index));
 }
 
@@ -262,13 +263,13 @@ function resolveVerificationCommand(
   }
   const command = config.verification.commands.find((candidate) => candidate.id === reference);
   if (!command) {
-    throw new DevFlowError("TRACE_VERIFICATION_COMMAND_UNKNOWN", "rollback unit references an unknown verification command", {
+    throw new DevFlowError("TRACE_VERIFICATION_COMMAND_UNKNOWN", "implementation unit references an unknown verification command", {
       unitId,
       commandId: reference,
     });
   }
   if (!command.provides.includes("targeted")) {
-    throw new DevFlowError("TRACE_VERIFICATION_COMMAND_NOT_TARGETED", "RU 前向验证只能引用提供 targeted 保证的命令。", {
+    throw new DevFlowError("TRACE_VERIFICATION_COMMAND_NOT_TARGETED", "实现单元前向验证只能引用提供 targeted 保证的命令。", {
       commandId: reference,
       recoveryHint: "为该命令增加 targeted provides，或在 RU 中改用明确的 targeted 命令",
     });
@@ -324,7 +325,10 @@ export async function checkpointImplementationUnit(
   if (initial.revision !== expectedRevision) {
     throw new DevFlowError("STATE_REVISION_CONFLICT", "state revision changed", { currentRevision: initial.revision });
   }
-  if (!checkpointsEnforcementRequired(initial.route, initial.classification.controls)) {
+  const invalidated = await invalidateAffectedClaims(root, id, expectedRevision);
+  if (invalidated) throw workspaceChangedError(invalidated);
+  if (!checkpointsEnforcementRequired(initial.route, initial.classification.controls)
+    && initial.classification.controls.plan !== "formal") {
     throw new DevFlowError("IMPLEMENTATION_UNITS_NOT_ENFORCED", "当前动态路线未启用 unit-chain checkpoint 控制。");
   }
   if (currentOpenStep(initial) !== "implementation") {
@@ -332,32 +336,40 @@ export async function checkpointImplementationUnit(
   }
   await assertWorkspaceOwnershipComplete(root, initial, await readProjectConfig(root), "checkpoint");
   const unit = (initial.implementationUnits ?? []).find((candidate) => candidate.unitId === unitId);
-  if (!unit) throw new DevFlowError("IMPLEMENTATION_UNIT_UNKNOWN", "rollback unit has no implementation state", { unitId });
+  if (!unit) throw new DevFlowError("IMPLEMENTATION_UNIT_UNKNOWN", "implementation unit has no runtime state", { unitId });
   if (unit.status !== "active") {
-    throw new DevFlowError("IMPLEMENTATION_UNIT_NOT_ACTIVE", "checkpoint requires an active rollback unit", { unitId, status: unit.status });
+    throw new DevFlowError("IMPLEMENTATION_UNIT_NOT_ACTIVE", "checkpoint requires an active implementation unit", { unitId, status: unit.status });
   }
 
-  const ledger = await readTraceability(root, initial);
-  const node = currentRollbackNode(
-    initial,
-    Object.values(ledger.nodes).filter((candidate): candidate is RollbackNode => candidate.kind === "rollback" && candidate.status === "current"),
-    unitId,
-  );
-  const { config, sha256: projectConfigSha256 } = await readProjectConfigSnapshot(root);
-  const verificationRefs = [...node.forwardVerification, ...node.rollbackVerification];
-  const currentCommandHashes = verificationCommandHashesForRefs(config, verificationRefs);
-  const traceCommandHashes = ledger.verificationCommandHashes;
-  const commandSliceStale = traceCommandHashes
-    ? verificationCommandIdsForRefs(verificationRefs).some((id) => traceCommandHashes[id] !== currentCommandHashes[id])
-    : node.verificationConfigSha256 !== projectConfigSha256;
-  if (commandSliceStale) {
-    throw new DevFlowError("TRACE_SLICE_STALE", "rollback verification configuration is stale", {
+  const traceEnforced = traceEnforcementRequired(initial.route, initial.classification.controls);
+  let commands: import("./project-config.js").VerificationCommand[] = [];
+  let config = await readProjectConfig(root);
+  let currentCommandHashes: Record<string, string> = {};
+  if (traceEnforced) {
+    const ledger = await readTraceability(root, initial);
+    const node = currentImplementationNode(
+      initial,
+      Object.values(ledger.nodes).filter((candidate): candidate is ImplementationUnitNode => candidate.kind === "implementation-unit" && candidate.status === "current"),
       unitId,
-      recoveryHint: "验证命令定义已变更：先用 dev_flow_abandon_implementation_unit 取消当前单元，再重登记计划刷新 Trace 基线，然后重新开始该单元。",
-    });
+    );
+    const { config: configSnapshot, sha256: projectConfigSha256 } = await readProjectConfigSnapshot(root);
+    config = configSnapshot;
+    const verificationRefs = [...node.forwardVerification];
+    currentCommandHashes = verificationCommandHashesForRefs(config, verificationRefs);
+    const traceCommandHashes = ledger.verificationCommandHashes;
+    const commandSliceStale = traceCommandHashes
+      ? verificationCommandIdsForRefs(verificationRefs).some((id) => traceCommandHashes[id] !== currentCommandHashes[id])
+      : node.verificationConfigSha256 !== projectConfigSha256;
+    if (commandSliceStale) {
+      throw new DevFlowError("TRACE_SLICE_STALE", "rollback verification configuration is stale", {
+        unitId,
+        recoveryHint: "验证命令定义已变更：先用 dev_flow_abandon_implementation_unit 取消当前单元，再重登记计划刷新 Trace 基线，然后重新开始该单元。",
+      });
+    }
+    commands = resolveVerificationCommands(config, node);
   }
-  const commands = resolveVerificationCommands(config, node);
   const preflightCommands = resolvePreflightCommands(config);
+  const projectConfigSha256 = (await readProjectConfigSnapshot(root)).sha256;
 
   const baseline = await readCheckpointBaseline(root, id, unitId);
   const after = await snapshotGovernedRoots(root, config);
@@ -369,7 +381,7 @@ export async function checkpointImplementationUnit(
 
   const sequence = await nextCheckpointSequence(root, id);
   const checkpointId = `CP-${String(sequence).padStart(3, "0")}`;
-  const rollbackUnitId = unit.unitId;
+  const implementationUnitId = unit.unitId;
   const featureDir = featureDirectory(root, id);
 
   // Idempotent retry is decided BEFORE running any verification. Only a
@@ -403,12 +415,12 @@ export async function checkpointImplementationUnit(
     } catch (error) {
       throw new DevFlowError("ROLLBACK_CHECKPOINT_CORRUPT", "checkpoint manifest is unreadable or invalid", {
         checkpointFile: entry,
-        unitId: rollbackUnitId,
+        unitId: implementationUnitId,
         cause: error instanceof Error ? error.message : String(error),
         recoveryHint: "Do not hand-edit checkpoint manifests; repair or remove the corrupt file before retrying the checkpoint",
       });
     }
-    if (candidate.unitId === rollbackUnitId && candidate.beginNonce === unit.beginNonce) {
+    if (candidate.unitId === implementationUnitId && candidate.beginNonce === unit.beginNonce) {
       orphan = candidate;
       break;
     }
@@ -422,13 +434,13 @@ export async function checkpointImplementationUnit(
     if (!sameCheckpoint) {
       throw new DevFlowError("CHECKPOINT_CONFLICT", "an existing checkpoint manifest no longer matches this unit", {
         checkpointId: orphan.checkpointId,
-        unitId: rollbackUnitId,
+        unitId: implementationUnitId,
       });
     }
     const reused = await mutate(root, id, expectedRevision, "implementation-unit-checkpointed", (draft) => {
       const current = (draft.implementationUnits ?? []).find((candidate) => candidate.unitId === unitId);
       if (!current || current.status !== "active") {
-        throw new DevFlowError("IMPLEMENTATION_UNIT_NOT_ACTIVE", "checkpoint requires an active rollback unit", { unitId, status: current?.status });
+        throw new DevFlowError("IMPLEMENTATION_UNIT_NOT_ACTIVE", "checkpoint requires an active implementation unit", { unitId, status: current?.status });
       }
       current.status = "checkpointed";
       current.checkpointId = orphan.checkpointId;
@@ -491,12 +503,12 @@ export async function checkpointImplementationUnit(
     await writeBlobIfAbsent(root, id, bytes);
   }
 
-  const forwardPatch = canonicalReviewValueJson({ direction: "forward", checkpointId, unitId: rollbackUnitId, files: records });
-  const reversePatch = canonicalReviewValueJson({ direction: "reverse", checkpointId, unitId: rollbackUnitId, files: reverseRecords(records) });
+  const forwardPatch = canonicalReviewValueJson({ direction: "forward", checkpointId, unitId: implementationUnitId, files: records });
+  const reversePatch = canonicalReviewValueJson({ direction: "reverse", checkpointId, unitId: implementationUnitId, files: reverseRecords(records) });
   const manifest: CheckpointManifest = {
     schemaVersion: 2,
     checkpointId,
-    unitId: rollbackUnitId,
+    unitId: implementationUnitId,
     sequence,
     basisHash: unit.basisHash,
     startedFingerprint: unit.startedFingerprint!,
@@ -541,7 +553,7 @@ export async function checkpointImplementationUnit(
   const state = await mutate(root, id, expectedRevision, "implementation-unit-checkpointed", (draft) => {
     const current = (draft.implementationUnits ?? []).find((candidate) => candidate.unitId === unitId);
     if (!current || current.status !== "active") {
-      throw new DevFlowError("IMPLEMENTATION_UNIT_NOT_ACTIVE", "checkpoint requires an active rollback unit", { unitId, status: current?.status });
+      throw new DevFlowError("IMPLEMENTATION_UNIT_NOT_ACTIVE", "checkpoint requires an active implementation unit", { unitId, status: current?.status });
     }
     current.status = "checkpointed";
     current.checkpointId = checkpointId;

@@ -177,8 +177,8 @@ const rollbackJournal = (featureId, overrides = {}) => ({
   featureId,
   phase: "verifying",
   targetCheckpointId: "CP-001",
-  targetUnitId: "RU-001",
-  undoOrder: ["RU-002", "RU-001"],
+  targetUnitId: "UNIT-001",
+  undoOrder: ["UNIT-002", "UNIT-001"],
   previewBasisHash: "a".repeat(64),
   stateRevision: 3,
   backupDirectory: "checkpoints/recovery/txn-doctor-1",
@@ -209,7 +209,7 @@ test("doctor reports an open rollback transaction with its resume input", async 
     assert.equal(entry.featureId, "feature");
     assert.equal(entry.phase, "verifying");
     assert.equal(entry.blocked, false);
-    assert.deepEqual(entry.undoOrder, ["RU-002", "RU-001"]);
+    assert.deepEqual(entry.undoOrder, ["UNIT-002", "UNIT-001"]);
   } finally { await fixture.dispose(); }
 });
 

@@ -85,7 +85,7 @@ test("a referenced verification command change rebuilds only affected review rol
     const config = JSON.parse(raw);
     config.verification.commands[0].args = ["--test", "--changed"];
     const updated = await store.updateProjectConfig(root, config, createHash("sha256").update(raw).digest("hex"));
-    assert.deepEqual(updated.affectedEvidence.traceNodeIds, ["RU-001"]);
+    assert.deepEqual(updated.affectedEvidence.traceNodeIds, ["UNIT-001"]);
     assert.deepEqual(updated.affectedEvidence.reviewRoles, ["rollback-operability"]);
 
     await assert.rejects(
@@ -97,7 +97,7 @@ test("a referenced verification command change rebuilds only affected review rol
     assert.notEqual(rebuilt.batch.batchId, first.batch.batchId);
     const byRole = Object.fromEntries(rebuilt.batch.jobs.map((job) => [job.role, job]));
     assert.equal(byRole["requirements-coverage"].status, "reused");
-    assert.equal(byRole["architecture-testability"].status, "reused");
+    assert.equal(byRole["architecture-testability"].status, "pending");
     assert.equal(byRole["rollback-operability"].status, "pending");
   } finally {
     await rm(root, { recursive: true, force: true });
@@ -156,8 +156,8 @@ test("specialty roles re-review a related structured execution change", async ()
     state = (await completeReviewJobs(root, state.featureId, first.state, first.batch)).state;
 
     const traceDelta = traceDeltaFor("implementation-plan", "m");
-    const rollback = traceDelta.nodes.find((node) => node.kind === "rollback");
-    rollback.fileScope = ["src/security"];
+    const unit = traceDelta.nodes.find((node) => node.kind === "implementation-unit");
+    unit.fileScope = ["src/security"];
     state = await registerTraceFixture({
       root,
       featureId: state.featureId,

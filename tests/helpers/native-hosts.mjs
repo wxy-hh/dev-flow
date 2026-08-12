@@ -41,6 +41,10 @@ export async function installNativeHosts() {
   await run("git", ["config", "user.email", "release-smoke@dev-flow.invalid"], { cwd: marketplaceSource });
   await run("git", ["config", "user.name", "Dev Flow release smoke"], { cwd: marketplaceSource });
   await run("git", ["add", "."], { cwd: marketplaceSource });
+  // The repository intentionally ignores dot-prefixed host metadata. A
+  // temporary Git marketplace must still publish both marketplace manifests
+  // or Codex cannot discover the marketplace after cloning it.
+  await run("git", ["add", "-f", ".agents/plugins/marketplace.json", ".claude-plugin/marketplace.json"], { cwd: marketplaceSource });
   await run("git", ["commit", "-m", "marketplace snapshot"], { cwd: marketplaceSource });
   const bareName = "marketplace.git";
   const bareMarketplace = path.join(temp, bareName);

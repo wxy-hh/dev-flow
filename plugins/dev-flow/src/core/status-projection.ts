@@ -4,6 +4,7 @@ import { effectiveStage } from "../policy/stages.js";
 import { routeDefinitionForFeature } from "../policy/contract.js";
 import { lifecycleLabel, routeLabel, stageLabel } from "../policy/presentation.js";
 import { pendingDecisionForState, publicPendingDecision } from "./decision-interactions.js";
+import { currentRiskAuthorizations } from "./governance-state.js";
 import type { NextAction } from "../policy/types.js";
 
 export const STATUS_SCHEMA_VERSION = 1;
@@ -86,7 +87,7 @@ export async function readCompactStatus(root: string, featureId: string): Promis
   const publicDecision = decision ? publicPendingDecision(state)! : undefined;
   const content: CompactStatus = {
     statusSchemaVersion: STATUS_SCHEMA_VERSION,
-    状态: state.lifecycle === "finalized" && state.qualityExceptions.some((exception) => exception.status === "current")
+    状态: state.lifecycle === "finalized" && currentRiskAuthorizations(state, { contentFingerprint: state.businessFingerprint }).length > 0
       ? "已完成（用户接受风险）"
       : lifecycleLabel(state.lifecycle),
     路线: state.mode === "routed" ? routeLabel(state.route) : "路线尚未确定",

@@ -7,7 +7,9 @@ export type TraceAnchorKind =
   | "acceptance-criterion"
   | "task"
   | "test"
-  | "rollback";
+  | "implementation-unit"
+  | "rollback"
+  | "recovery";
 
 export interface TraceSourceBlock {
   id: TraceId;
@@ -16,13 +18,15 @@ export interface TraceSourceBlock {
   sourceBlockSha256: string;
 }
 
-const TRACE_ANCHOR = /<!-- dev-flow:id=(REQ|AC|TASK|TEST|RU)-([0-9]{3,}) kind=(requirement|acceptance-criterion|task|test|rollback) -->/g;
+const TRACE_ANCHOR = /<!-- dev-flow:id=(REQ|AC|TASK|TEST|UNIT|RU|REC)-([0-9]{3,}) kind=(requirement|acceptance-criterion|task|test|implementation-unit|rollback|recovery) -->/g;
 const expectedKind: Record<string, TraceAnchorKind> = {
   REQ: "requirement",
   AC: "acceptance-criterion",
   TASK: "task",
   TEST: "test",
+  UNIT: "implementation-unit",
   RU: "rollback",
+  REC: "recovery",
 };
 
 function invalidAnchor(message: string, details: Record<string, unknown> = {}): never {

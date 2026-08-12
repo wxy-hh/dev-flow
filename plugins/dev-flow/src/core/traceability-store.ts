@@ -167,7 +167,7 @@ export async function listOrphanTraceSnapshots(root: string, state: FeatureState
   return entries.filter((entry) => /^[a-f0-9]{64}\.json$/.test(entry) && entry !== active).sort();
 }
 
-export async function readProjectConfigSnapshot(root: string): Promise<{ config: ProjectConfig; sha256: string }> {
+export async function readProjectConfigSnapshot(root: string): Promise<{ config: ProjectConfig; sha256: string; contents: string }> {
   const file = path.join(root, ".dev-flow", "project.json");
   let raw: string;
   try { raw = await readFile(file, "utf8"); }
@@ -186,5 +186,5 @@ export async function readProjectConfigSnapshot(root: string): Promise<{ config:
     if (error instanceof DevFlowError) throw error;
     throw new DevFlowError("INVALID_PROJECT_CONFIG", "project configuration is unreadable");
   }
-  return { config: config as ProjectConfig, sha256: digest(raw) };
+  return { config: config as ProjectConfig, sha256: digest(raw), contents: raw };
 }

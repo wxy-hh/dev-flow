@@ -8,7 +8,7 @@
 
 消费方不要在插件目录运行 `npm install`。业务仓必须是具有有效 HEAD 的 Git 仓库，并用 `dev_flow_init_project` 创建 project schema v2 配置。
 
-5.0 使用 FeatureState v4、project/review/checkpoint v2，基础级别只有 XS/S/M/L。Core 从变更表面、行为复杂度、拓扑和风险事实派生动态控制与完整路线；不再有 light/standard、公开 feature-check、resolve-decision、approvalId 输入或 implementation files 输入。
+5.0 使用 FeatureState 运行态 schema v5（当前 5.0 的 schema v4 active state 只在加载入口确定转换）、project/review/checkpoint v2，基础级别只有 XS/S/M/L。Dev Flow 4.x active state、FeatureState schema v3 及更早状态不迁移。Core 从变更表面、行为复杂度、拓扑和风险事实派生动态控制与完整路线；不再有 light/standard、公开 feature-check、resolve-decision、approvalId 输入或 implementation files 输入。
 
 用户要求更严格治理时可用 `controlEnhancements` 单调追加控制；它不能关闭 Core 下限，executable rollback 仍要求真实可逆的仓库事实。
 
@@ -18,4 +18,4 @@
 
 受支持宿主分别记录 session、prompt 与 tool hook 能力。开始任务、实现推进、checkpoint 和 finalize 需要最近 15 分钟内的相应同宿主健康信号；缺失、局部断线或过期时 Core 返回可恢复阻塞。hook 在失联后重新出现时，Core 自动对账活动工作区；未知路径进入正式 ownership interaction，不要求用户先手工调用 reconcile。不要手工注入 host event 或编辑 `.dev-flow`。
 
-5.0 不迁移 4.x 数据。升级前用 4.x finalize/abandon，备份 `.dev-flow`，升级后重新初始化并运行 doctor。详见仓库根目录 [README.md](../../README.md) 和 [5.0 发布说明](../../docs/release-notes-5.0.0.md)。
+5.0 不迁移 Dev Flow 4.x 数据或 FeatureState schema v3 及更早状态。当前 5.0 的 FeatureState schema v4 active state 仅在加载入口转换为 v5。升级前用 4.x finalize/abandon，备份 `.dev-flow`，升级后重新初始化并运行 doctor。详见仓库根目录 [README.md](../../README.md) 和 [5.0 发布说明](../../docs/release-notes-5.0.0.md)。

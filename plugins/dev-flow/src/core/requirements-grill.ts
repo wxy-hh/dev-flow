@@ -1,10 +1,10 @@
 import { assertArtifactCurrent } from "./artifacts.js";
 import { DevFlowError } from "./errors.js";
 import { mutate, readFeatureEvents, readState, type FeatureState } from "./state-store.js";
-import { resolveDecision } from "./decision-ledger.js";
 import { decisionBasisHash } from "../policy/obligations.js";
 import { resolveInteractionPromptEvent } from "./interaction-provenance.js";
 import { pendingDecisionForState } from "./decision-interactions.js";
+import { EMPTY_GOVERNANCE_LEDGER } from "../policy/types.js";
 import {
   createInteraction,
   findInteractionForTarget,
@@ -46,6 +46,15 @@ export async function requestGrillDecision(
   input: GrillDecisionInput,
 ): Promise<GrillDecisionResult> {
   if (!input.question.trim()) throw new DevFlowError("GRILL_QUESTION_REQUIRED", "问题不能为空。", { userMessage: "当前问题没有内容。", recoveryKind: "retry", recoveryInstruction: "补充一个需要用户决定的问题后重试。", retryOriginal: true });
+  // Requirements decisions change the accepted scope or behavior. Core derives
+  // them as high-impact; callers cannot silently omit the drawback/alternative
+  // reminder to make the prompt shorter.
+  if (!input.recommendation.drawback?.trim() || !input.recommendation.alternative?.condition.trim()) {
+    throw new DevFlowError("GRILL_HIGH_IMPACT_REMINDER_REQUIRED", "需求决策属于高影响交互，必须说明推荐方案的主要缺点和替代条件。", {
+      recoveryHint: "补充 drawback 与 alternative.condition，并让 alternative.optionId 指向非推荐选项后重试。",
+      retryOriginal: true,
+    });
+  }
   const initial = await readState(root, id);
   if (initial.revision !== expectedRevision) throw new DevFlowError("STATE_REVISION_CONFLICT", "state revision changed", { currentRevision: initial.revision });
   if (initial.mode !== "intake") await currentRequirements(root, id, initial);
@@ -62,11 +71,6 @@ export async function requestGrillDecision(
       options: input.options,
       recommendation: input.recommendation,
     });
-    const ledger = draft.decisionLedger ?? [];
-    const index = ledger.findIndex((decision) => decision.id === input.questionId);
-    if (index >= 0) ledger[index] = { ...ledger[index], question: input.question, status: "open", evidence: undefined, conclusion: undefined, source: "grill" };
-    else ledger.push({ id: input.questionId, question: input.question, status: "open", source: "grill" });
-    draft.decisionLedger = ledger;
     draft.lastUpdatedBy = { host: input.host, pluginVersion: __DEV_FLOW_VERSION__ };
   }, () => ({ questionId: input.questionId, mode: "decision", presentationEventId: interaction?.presentationEventId }));
   if (!interaction) throw new DevFlowError("INTERACTION_NOT_CREATED", target);
@@ -102,11 +106,42 @@ async function resolveGrillDecision(
       ? resolveNativeInteraction(draft, interactionId, input.action, input.comment, host)
       : resolveTextInteraction(draft, interactionId, promptText ?? input.userReply, host, { promptEventId });
     const decisionId = interaction.target.slice("grill:".length);
-    const index = (draft.decisionLedger ?? []).findIndex((decision) => decision.id === decisionId);
-    if (index >= 0 && response) {
-      const next = [...(draft.decisionLedger ?? [])];
-      next[index] = resolveDecision(next[index], input.source === "elicitation" ? (input.comment ?? "用户选择") : input.userReply, response.action);
-      draft.decisionLedger = next;
+    if (response) {
+      const existingGovernance = draft.governance ?? EMPTY_GOVERNANCE_LEDGER;
+      const previous = existingGovernance.decisions.find((candidate) => candidate.recordId === decisionId && !candidate.supersededBy);
+      const recordId = previous ? `${decisionId}-${interaction.id}` : decisionId;
+      const decisions = [...existingGovernance.decisions];
+      if (previous) {
+        const previousIndex = decisions.findIndex((candidate) => candidate.recordId === previous.recordId);
+        if (previousIndex >= 0) decisions[previousIndex] = { ...previous, supersededBy: recordId };
+      }
+      const credentials = [...existingGovernance.credentials];
+      const credentialId = `CRED-grill-${interaction.id}`;
+      if (!credentials.some((credential) => credential.recordId === credentialId)) {
+        credentials.push({
+          recordId: credentialId,
+          kind: "credential",
+          source: input.source === "elicitation" ? "native-form" : "text",
+          host,
+          interactionId,
+          ...(response.selectedOptionId ? { optionId: response.selectedOptionId } : {}),
+          ...(response.rawReply ? { rawText: response.rawReply } : {}),
+          ...(input.source === "text" && promptEventId ? { basis: { kind: "event", eventId: promptEventId } } : {}),
+          recordedAt: response.respondedAt,
+        });
+      }
+      if (!decisions.some((candidate) => candidate.recordId === recordId)) {
+        decisions.push({
+          recordId,
+          kind: "decision",
+          question: interaction.question ?? decisionId,
+          conclusion: response.action,
+          credentialId,
+          ...(input.source === "text" && promptEventId ? { basis: { kind: "event", eventId: promptEventId } } : {}),
+          recordedAt: response.respondedAt,
+        });
+      }
+      draft.governance = { ...existingGovernance, decisions, credentials };
     }
     draft.lastUpdatedBy = { host, pluginVersion: __DEV_FLOW_VERSION__ };
   }, { interactionId, mode: "decision" });
@@ -131,6 +166,4 @@ export async function assertRequirementsGrillSatisfied(root: string, id: string,
     return interaction.kind === "grill" && interaction.status === "pending";
   }) || pendingDecisionForState(state)?.kind === "grill";
   if (pending) throw new DevFlowError("GRILL_INCOMPLETE", "还有一个需求问题等待回答。", { userMessage: "需求澄清还没有完成。", cause: "决策账本仍有待回答的 grill 问题。", impact: "当前路线不能进入下一步。", recoveryKind: "retry", recoveryInstruction: "先回答当前唯一问题，再继续当前步骤。", retryOriginal: true });
-  const openDecision = (state.decisionLedger ?? []).find((decision) => decision.source === "grill" && decision.status === "open");
-  if (openDecision) throw new DevFlowError("GRILL_INCOMPLETE", "需求决策账本仍有未收敛问题。", { userMessage: "需求澄清还没有完成。", cause: "决策账本中存在 open grill decision。", impact: "系统不会从 Markdown 字段猜测完成态。", recoveryKind: "retry", recoveryInstruction: "回答当前问题后重新登记真实需求内容。", retryOriginal: true });
 }

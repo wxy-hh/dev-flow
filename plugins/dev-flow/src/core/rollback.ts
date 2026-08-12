@@ -2,14 +2,14 @@ import { createHash, randomUUID } from "node:crypto";
 import { access, chmod, lstat, mkdir, open, readFile, readlink, rename, rm, symlink } from "node:fs/promises";
 import path from "node:path";
 import { checkpointsEnforcementRequired, reviewEnforcementRequired, rollbackExecutionAllowed } from "../policy/contract.js";
-import type { RollbackNode, TraceabilityLedger } from "../policy/traceability.js";
+import type { ImplementationUnitNode, TraceabilityLedger } from "../policy/traceability.js";
 import { canonicalReviewValueJson, prepareReviewInvalidation } from "./review-store.js";
 import { blobPath, checkpointChain, readCheckpoint, readCheckpointBaseline } from "./checkpoints.js";
 import type { CheckpointManifest } from "../policy/rollback.js";
 import { DevFlowError } from "./errors.js";
 import { snapshotGovernedRoots, type ProtectedFileSnapshot } from "./fingerprint.js";
 import { verificationCommandHashesForRefs, type ProjectConfig, type VerificationCommand } from "./project-config.js";
-import { implementationUnitForRollbackNode, pathWithinFileScope } from "../policy/rollback.js";
+import { implementationUnitForNode, pathWithinFileScope } from "../policy/rollback.js";
 import { implementationUnitBasisHash } from "./implementation-units.js";
 import {
   appendFeatureEvent,
@@ -98,10 +98,10 @@ export interface RollbackChainView {
   };
 }
 
-function rollbackNodes(nodes: TraceabilityLedger["nodes"]): RollbackNode[] {
-  // Only current definitions may legitimize a rollback plan: stale or
-  // tombstoned RUs mean the plan changed after the checkpoints were recorded.
-  return Object.values(nodes).filter((node): node is RollbackNode => node.kind === "rollback" && node.status === "current");
+function rollbackNodes(nodes: TraceabilityLedger["nodes"]): ImplementationUnitNode[] {
+  // Only current implementation-unit definitions may legitimize a rollback
+  // plan: stale or tombstoned units mean the plan changed after checkpoints.
+  return Object.values(nodes).filter((node): node is ImplementationUnitNode => node.kind === "implementation-unit" && node.status === "current");
 }
 
 /**
@@ -181,7 +181,7 @@ export function detectChainConflicts(
   return conflicts.sort((a, b) => a.path.localeCompare(b.path));
 }
 
-function assertChainIntegrity(chain: CheckpointManifest[], nodes: RollbackNode[]): void {
+function assertChainIntegrity(chain: CheckpointManifest[], nodes: ImplementationUnitNode[]): void {
   const checkpointedUnits = new Set(chain.map((manifest) => manifest.unitId));
   for (const [index, manifest] of chain.entries()) {
     const node = nodes.find((candidate) => candidate.id === manifest.unitId);
@@ -211,7 +211,7 @@ function assertChainIntegrity(chain: CheckpointManifest[], nodes: RollbackNode[]
 interface PreviewContext {
   state: FeatureState;
   chain: CheckpointManifest[];
-  nodes: RollbackNode[];
+  nodes: ImplementationUnitNode[];
   config: ProjectConfig;
   projectConfigSha256: string;
   verificationCommandHashes: Record<string, string>;
@@ -298,7 +298,7 @@ export async function previewRollback(root: string, featureId: string, targetChe
   const verificationCommands: RollbackVerificationCommand[] = [];
   for (const manifest of undoManifests) {
     const node = nodes.find((candidate) => candidate.id === manifest.unitId);
-    for (const [index, reference] of (node?.rollbackVerification ?? []).entries()) {
+    for (const [index, reference] of (node?.forwardVerification ?? []).entries()) {
       const command = typeof reference === "string"
         ? config.verification.commands.find((candidate) => candidate.id === reference)
         : {
@@ -420,7 +420,7 @@ export async function rollbackChainView(root: string, state: FeatureState): Prom
     // doctor; StatusView stays fail-soft.
   }
 
-  let nodes: RollbackNode[];
+  let nodes: ImplementationUnitNode[];
   try {
     nodes = rollbackNodes((await readTraceability(root, state)).nodes);
   } catch {
@@ -1135,7 +1135,7 @@ async function transactionVerificationCommands(
     if (!node) {
       throw new DevFlowError("ROLLBACK_CHAIN_INVALID", "undo unit is not current in the trace graph", { unitId });
     }
-    for (const [index, reference] of node.rollbackVerification.entries()) {
+    for (const [index, reference] of node.forwardVerification.entries()) {
       const command = typeof reference === "string"
         ? config.verification.commands.find((candidate) => candidate.id === reference)
         : {
@@ -1439,7 +1439,7 @@ async function commitRollbackState(root: string, featureId: string, journal: Rol
         const basisHash = implementationUnitBasisHash(draft);
         for (const node of nodes) {
           if (!units.some((candidate) => candidate.unitId === node.id)) {
-            units.push(implementationUnitForRollbackNode(node, basisHash));
+            units.push(implementationUnitForNode(node, basisHash));
           }
         }
         draft.implementationUnits = units;

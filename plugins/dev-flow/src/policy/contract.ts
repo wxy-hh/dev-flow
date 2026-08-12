@@ -162,6 +162,15 @@ export function reviewEnforcementRequired(
     : normalizeWorkflowCapabilities(controlsOrCapabilities).review === 1 && (route === "m" || route === "l");
 }
 
+export function reviewLedgerRequired(
+  route: RouteId,
+  controlsOrCapabilities: GovernanceControls | WorkflowCapabilities | undefined,
+): boolean {
+  return controlsOrCapabilities && "plan" in controlsOrCapabilities
+    ? controlsOrCapabilities.planReview || controlsOrCapabilities.codeReview !== "none"
+    : reviewEnforcementRequired(route, controlsOrCapabilities);
+}
+
 export function checkpointsEnforcementRequired(
   route: RouteId,
   controlsOrCapabilities: GovernanceControls | WorkflowCapabilities | undefined,

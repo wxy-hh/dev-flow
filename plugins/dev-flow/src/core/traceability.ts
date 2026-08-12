@@ -1,6 +1,7 @@
 import type { RouteId } from "../policy/types.js";
 import type {
   AcceptanceCriterionId,
+  ImplementationUnitId,
   RequirementId,
   RollbackId,
   RollbackNode,
@@ -15,6 +16,7 @@ import type {
   TraceSummary,
   TraceabilityLedger,
   VerificationCommandRef,
+  VerificationDisposition,
 } from "../policy/traceability.js";
 import type { TraceSourceBlock } from "./traceability-anchors.js";
 import { DevFlowError } from "./errors.js";
@@ -24,9 +26,8 @@ import { normalizeProjectPath, normalizeUnicode } from "./path-normalization.js"
 export const ALLOWED_TRACE_KINDS = {
   requirements: ["requirement", "acceptance-criterion"],
   // The implementation plan is the single editable source for the execution
-  // graph. Coverage and rollback projections are derived from these nodes;
-  // they are not additional user-maintained route documents.
-  "implementation-plan": ["task", "test", "rollback"],
+  // graph. Recovery is explicit and never implied by an implementation unit.
+  "implementation-plan": ["task", "test", "implementation-unit", "recovery"],
   "coverage-matrix": ["test"],
   "rollback-units": ["rollback"],
 } as const;
@@ -54,17 +55,21 @@ export interface TraceGraphValidationOptions {
 
 const inputKeys: Record<TraceNodeInput["kind"], readonly string[]> = {
   requirement: ["kind", "id"],
-  "acceptance-criterion": ["kind", "id", "parentRequirement"],
-  task: ["kind", "id", "covers", "rollbackUnit"],
+  "acceptance-criterion": ["kind", "id", "parentRequirement", "verificationDisposition"],
+  task: ["kind", "id", "covers", "implementationUnit", "tdd"],
   test: ["kind", "id", "verifies"],
   rollback: ["kind", "id", "tasks", "dependsOn", "fileScope", "covers", "forwardVerification", "rollbackVerification"],
+  "implementation-unit": ["kind", "id", "tasks", "dependsOn", "fileScope", "covers", "forwardVerification"],
+  recovery: ["kind", "id", "stepRef", "recoveryKind", "method", "riskRef"],
 };
 const idPrefix: Record<TraceNodeInput["kind"], string> = {
   requirement: "REQ",
   "acceptance-criterion": "AC",
   task: "TASK",
   test: "TEST",
+  "implementation-unit": "UNIT",
   rollback: "RU",
+  recovery: "REC",
 };
 
 function invalid(message: string, details: Record<string, unknown> = {}): never {
@@ -128,17 +133,42 @@ function assertSafeFileScope(fileScope: string[], id: string, persisted = false)
   }
 }
 
+const dispositionKinds = new Set(["behavior-test", "type-check", "rule-check", "file-check", "human-acceptance"]);
+
+function validateVerificationDisposition(value: unknown, id: string): asserts value is VerificationDisposition {
+  if (!isRecord(value) || Object.keys(value).some((key) => !["kind", "reason", "target"].includes(key))
+    || typeof value.kind !== "string" || !dispositionKinds.has(value.kind)) {
+    invalid("acceptance-criterion verificationDisposition is invalid", { id });
+  }
+  if (value.kind !== "behavior-test") {
+    if (typeof value.reason !== "string" || !value.reason.trim()) {
+      invalid("non-behavior verification disposition requires a non-empty reason", { id });
+    }
+    if (value.target !== undefined && (typeof value.target !== "string" || !value.target.trim())) {
+      invalid("verification disposition target must be a non-empty string", { id });
+    }
+  } else if (value.reason !== undefined && typeof value.reason !== "string") {
+    invalid("verification disposition reason must be a string", { id });
+  }
+}
+
 function validateNodeInput(value: unknown): asserts value is TraceNodeInput {
   if (!isRecord(value) || typeof value.kind !== "string" || !(value.kind in inputKeys)) invalid("node input has an unknown kind");
   const kind = value.kind as TraceNodeInput["kind"];
   const keys = Object.keys(value);
   if (keys.some((key) => !inputKeys[kind].includes(key))) invalid("node input contains Core-owned or unknown fields", { kind, keys });
   assertId(kind, value.id);
-  if (kind === "acceptance-criterion") assertId("requirement", value.parentRequirement);
+  if (kind === "acceptance-criterion") {
+    assertId("requirement", value.parentRequirement);
+    if (value.verificationDisposition !== undefined) validateVerificationDisposition(value.verificationDisposition, value.id as string);
+  }
   if (kind === "task") {
     if (!isStringArray(value.covers)) invalid("task covers must be a non-empty string array", { id: value.id });
     assertNoDuplicate(value.covers, "covers", value.id as string);
-    assertId("rollback", value.rollbackUnit);
+    assertId("implementation-unit", value.implementationUnit);
+    if (value.tdd !== undefined && value.tdd !== "test-first" && value.tdd !== "direct") {
+      invalid("task tdd must be test-first or direct", { id: value.id });
+    }
   }
   if (kind === "test") {
     if (!isStringArray(value.verifies)) invalid("test verifies must be a non-empty string array", { id: value.id });
@@ -163,6 +193,34 @@ function validateNodeInput(value: unknown): asserts value is TraceNodeInput {
     for (const id of rollback.tasks) assertId("task", id);
     for (const id of rollback.dependsOn) assertId("rollback", id);
     assertSafeFileScope(rollback.fileScope, value.id as string);
+  }
+  if (kind === "implementation-unit") {
+    const unit = value as unknown as Extract<TraceNodeInput, { kind: "implementation-unit" }>;
+    for (const [field, allowEmpty] of [["tasks", false], ["dependsOn", true], ["fileScope", false], ["covers", false]] as const) {
+      const relationship = unit[field];
+      if (!isStringArray(relationship, allowEmpty)) invalid("implementation unit relationship must be a string array", { field, id: value.id });
+      assertNoDuplicate(relationship, field, value.id as string);
+    }
+    if (!isVerificationCommandArray(unit.forwardVerification)) invalid("implementation unit forwardVerification must be a non-empty command array", { id: value.id });
+    assertNoDuplicate(unit.forwardVerification.map(verificationCommandKey), "forwardVerification", value.id as string);
+    for (const id of unit.tasks) assertId("task", id);
+    for (const id of unit.dependsOn) assertId("implementation-unit", id);
+    assertSafeFileScope(unit.fileScope, value.id as string);
+  }
+  if (kind === "recovery") {
+    const recovery = value as unknown as Extract<TraceNodeInput, { kind: "recovery" }>;
+    if (recovery.recoveryKind !== "rollback" && recovery.recoveryKind !== "compensation") {
+      invalid("recovery recoveryKind must be rollback or compensation", { id: value.id });
+    }
+    if (typeof recovery.method !== "string" || !recovery.method.trim()) {
+      invalid("recovery method must be a non-empty string", { id: value.id });
+    }
+    if (typeof recovery.riskRef !== "string" || !recovery.riskRef.trim()) {
+      invalid("recovery riskRef must be a non-empty string", { id: value.id });
+    }
+    if (typeof recovery.stepRef !== "string" || !/^(?:UNIT|TASK)-[0-9]{3,}$/.test(recovery.stepRef)) {
+      invalid("recovery stepRef must reference an implementation unit or task", { id: value.id, stepRef: recovery.stepRef });
+    }
   }
 }
 
@@ -218,8 +276,21 @@ function sourceFor(input: ApplyTraceDeltaInput, node: TraceNodeInput, source: Tr
   };
   switch (node.kind) {
     case "requirement": return { ...common, kind: node.kind, id: node.id };
-    case "acceptance-criterion": return { ...common, kind: node.kind, id: node.id, parentRequirement: node.parentRequirement };
-    case "task": return { ...common, kind: node.kind, id: node.id, covers: [...node.covers], rollbackUnit: node.rollbackUnit };
+    case "acceptance-criterion": return {
+      ...common,
+      kind: node.kind,
+      id: node.id,
+      parentRequirement: node.parentRequirement,
+      ...(node.verificationDisposition ? { verificationDisposition: { ...node.verificationDisposition } } : {}),
+    };
+    case "task": return {
+      ...common,
+      kind: node.kind,
+      id: node.id,
+      covers: [...node.covers],
+      implementationUnit: node.implementationUnit,
+      ...(node.tdd ? { tdd: node.tdd } : {}),
+    };
     case "test": return { ...common, kind: node.kind, id: node.id, verifies: [...node.verifies] };
     case "rollback": return {
       ...common,
@@ -231,8 +302,29 @@ function sourceFor(input: ApplyTraceDeltaInput, node: TraceNodeInput, source: Tr
       covers: [...node.covers],
        forwardVerification: node.forwardVerification.map(normalizeVerificationCommandRef),
        rollbackVerification: node.rollbackVerification.map(normalizeVerificationCommandRef),
-      sourceArtifact: input.artifactKind as "implementation-plan" | "rollback-units",
+      sourceArtifact: "rollback-units",
       verificationConfigSha256: input.projectConfigSha256,
+    };
+    case "implementation-unit": return {
+      ...common,
+      kind: node.kind,
+      id: node.id,
+      tasks: [...node.tasks],
+      dependsOn: [...node.dependsOn],
+      fileScope: node.fileScope.map(normalizeUnicode),
+      covers: [...node.covers],
+      forwardVerification: node.forwardVerification.map(normalizeVerificationCommandRef),
+      sourceArtifact: "implementation-plan",
+      verificationConfigSha256: input.projectConfigSha256,
+    };
+    case "recovery": return {
+      ...common,
+      kind: node.kind,
+      id: node.id,
+      stepRef: node.stepRef,
+      recoveryKind: node.recoveryKind,
+      method: node.method,
+      riskRef: node.riskRef,
     };
   }
 }
@@ -244,10 +336,12 @@ function inputMeaning(node: TraceNodeInput): string {
 function nodeMeaning(node: TraceNode): string {
   switch (node.kind) {
     case "requirement": return JSON.stringify({ kind: node.kind, id: node.id });
-    case "acceptance-criterion": return JSON.stringify({ kind: node.kind, id: node.id, parentRequirement: node.parentRequirement });
-    case "task": return JSON.stringify({ kind: node.kind, id: node.id, covers: node.covers, rollbackUnit: node.rollbackUnit });
+    case "acceptance-criterion": return JSON.stringify({ kind: node.kind, id: node.id, parentRequirement: node.parentRequirement, ...(node.verificationDisposition ? { verificationDisposition: node.verificationDisposition } : {}) });
+    case "task": return JSON.stringify({ kind: node.kind, id: node.id, covers: node.covers, implementationUnit: node.implementationUnit, ...(node.tdd ? { tdd: node.tdd } : {}) });
     case "test": return JSON.stringify({ kind: node.kind, id: node.id, verifies: node.verifies });
     case "rollback": return JSON.stringify({ kind: node.kind, id: node.id, tasks: node.tasks, dependsOn: node.dependsOn, fileScope: node.fileScope, covers: node.covers, forwardVerification: node.forwardVerification, rollbackVerification: node.rollbackVerification });
+    case "implementation-unit": return JSON.stringify({ kind: node.kind, id: node.id, tasks: node.tasks, dependsOn: node.dependsOn, fileScope: node.fileScope, covers: node.covers, forwardVerification: node.forwardVerification });
+    case "recovery": return JSON.stringify({ kind: node.kind, id: node.id, stepRef: node.stepRef, recoveryKind: node.recoveryKind, method: node.method, riskRef: node.riskRef });
   }
 }
 
@@ -273,16 +367,20 @@ function assertArtifactDeltaContract(input: ApplyTraceDeltaInput): void {
   const allowed = ALLOWED_TRACE_KINDS[input.artifactKind];
   if (input.delta.nodes.some((node) => !allowed.includes(node.kind as never))) invalid("delta kind is not allowed for its artifact", { artifactKind: input.artifactKind });
   const has = (kind: TraceNodeInput["kind"]) => input.delta.nodes.some((node) => node.kind === kind);
-  if (input.artifactKind === "implementation-plan" && input.route === "m" && (!has("task") || !has("rollback"))) {
-    invalid("启用 Trace 的动态实施计划必须同时包含 task 和 rollback unit");
+  if (input.artifactKind === "implementation-plan" && input.route !== "xs" && (!has("task") || !has("implementation-unit"))) {
+    invalid("启用 Trace 的实施计划必须同时包含 task 和 implementation unit");
   }
   if (input.artifactKind === "rollback-units" && input.route !== "l") invalid("独立 rollback-units 工件只适用于 L 级路线");
   for (const node of input.delta.nodes) {
-    if (node.kind !== "rollback") continue;
-    if (!["implementation-plan", "rollback-units"].includes(input.artifactKind)) invalid("rollback node has an invalid source artifact");
-    if ([...node.forwardVerification, ...node.rollbackVerification].some((ref) =>
+    if (node.kind !== "rollback" && node.kind !== "implementation-unit") continue;
+    if (node.kind === "rollback" && !["rollback-units"].includes(input.artifactKind)) invalid("rollback node has an invalid source artifact");
+    if (node.kind === "implementation-unit" && input.artifactKind !== "implementation-plan") invalid("implementation unit has an invalid source artifact");
+    const verification = node.kind === "rollback"
+      ? [...node.forwardVerification, ...node.rollbackVerification]
+      : node.forwardVerification;
+    if (verification.some((ref) =>
       typeof ref === "string" && !input.verificationCommandIds.includes(ref))) {
-      invalid("rollback verification references an unknown command ID", { id: node.id });
+      invalid("implementation verification references an unknown command ID", { id: node.id });
     }
   }
 }
@@ -293,10 +391,15 @@ export function deriveTraceEdges(nodes: Record<string, TraceNode>): TraceEdge[] 
     if (node.kind === "acceptance-criterion") edges.push({ from: node.id, type: "parent", to: node.parentRequirement });
     if (node.kind === "task") {
       for (const target of node.covers) edges.push({ from: node.id, type: "covers", to: target });
-      edges.push({ from: node.id, type: "rollback-unit", to: node.rollbackUnit });
+      edges.push({ from: node.id, type: "implementation-unit", to: node.implementationUnit });
     }
     if (node.kind === "test") for (const target of node.verifies) edges.push({ from: node.id, type: "verifies", to: target });
     if (node.kind === "rollback") {
+      for (const target of node.tasks) edges.push({ from: node.id, type: "contains-task", to: target });
+      for (const target of node.dependsOn) edges.push({ from: node.id, type: "depends-on", to: target });
+      for (const target of node.covers) edges.push({ from: node.id, type: "covers", to: target });
+    }
+    if (node.kind === "implementation-unit") {
       for (const target of node.tasks) edges.push({ from: node.id, type: "contains-task", to: target });
       for (const target of node.dependsOn) edges.push({ from: node.id, type: "depends-on", to: target });
       for (const target of node.covers) edges.push({ from: node.id, type: "covers", to: target });
@@ -333,6 +436,20 @@ function assertRollbackDag(nodes: Record<string, TraceNode>): void {
     visiting.delete(id); visited.add(id);
   };
   for (const node of currentNodes(nodes)) if (node.kind === "rollback") visit(node.id);
+}
+
+function assertImplementationDag(nodes: Record<string, TraceNode>): void {
+  const visiting = new Set<string>();
+  const visited = new Set<string>();
+  const visit = (id: string) => {
+    if (visited.has(id)) return;
+    if (visiting.has(id)) invalid("implementation unit dependency graph contains a cycle", { id });
+    visiting.add(id);
+    const node = nodeById(nodes, id);
+    if (node?.kind === "implementation-unit") for (const dependency of node.dependsOn) visit(dependency);
+    visiting.delete(id); visited.add(id);
+  };
+  for (const node of currentNodes(nodes)) if (node.kind === "implementation-unit") visit(node.id);
 }
 
 function sameEdges(left: TraceEdge[], right: TraceEdge[]): boolean {
@@ -376,13 +493,25 @@ function assertPersistedNode(
   if (typeof value.sourceBlockSha256 !== "string" || !hex64.test(value.sourceBlockSha256)) {
     invalid("persisted node has an invalid sourceBlockSha256", { id: recordId });
   }
-  if (kind === "acceptance-criterion") assertId("requirement", value.parentRequirement);
+  if (kind === "acceptance-criterion") {
+    assertId("requirement", value.parentRequirement);
+    if (value.verificationDisposition !== undefined) validateVerificationDisposition(value.verificationDisposition, recordId);
+  }
   if (kind === "task") {
     if (!isStringArray(value.covers)) invalid("persisted task covers is invalid", { id: recordId });
-    assertId("rollback", value.rollbackUnit);
+    assertId("implementation-unit", value.implementationUnit);
+    if (value.tdd !== undefined && value.tdd !== "test-first" && value.tdd !== "direct") {
+      invalid("persisted task tdd is invalid", { id: recordId });
+    }
   }
   if (kind === "test") {
     if (!isStringArray(value.verifies)) invalid("persisted test verifies is invalid", { id: recordId });
+  }
+  if (kind === "recovery") {
+    if (typeof value.stepRef !== "string" || !/^(?:UNIT|TASK)-[0-9]{3,}$/.test(value.stepRef)) invalid("persisted recovery stepRef is invalid", { id: recordId });
+    if (value.recoveryKind !== "rollback" && value.recoveryKind !== "compensation") invalid("persisted recovery recoveryKind is invalid", { id: recordId });
+    if (typeof value.method !== "string" || !value.method.trim()) invalid("persisted recovery method is invalid", { id: recordId });
+    if (typeof value.riskRef !== "string" || !value.riskRef.trim()) invalid("persisted recovery riskRef is invalid", { id: recordId });
   }
   if (kind === "rollback") {
     for (const [field, allowEmpty] of [["tasks", false], ["dependsOn", true], ["fileScope", false], ["covers", false], ["forwardVerification", false], ["rollbackVerification", false]] as const) {
@@ -404,6 +533,27 @@ function assertPersistedNode(
       assertSafeFileScope(value.fileScope as string[], recordId, true);
     }
   }
+  if (kind === "implementation-unit") {
+    if (!isStringArray(value.tasks) || !isStringArray(value.dependsOn, true) || !isStringArray(value.fileScope) || !isStringArray(value.covers) || !isVerificationCommandArray(value.forwardVerification)) {
+      invalid("persisted implementation unit fields are invalid", { id: recordId });
+    }
+    for (const taskId of value.tasks as string[]) assertId("task", taskId);
+    for (const dependency of value.dependsOn as string[]) assertId("implementation-unit", dependency);
+    assertSafeFileScope(value.fileScope as string[], recordId, true);
+    if (typeof value.verificationConfigSha256 !== "string" || !hex64.test(value.verificationConfigSha256)) invalid("persisted implementation unit verification configuration is invalid", { id: recordId });
+  }
+}
+
+/** 一条 AC 是否具有有效验证覆盖：被当前 TEST verifies，或携带非行为验证处置。 */
+export function acceptanceCriterionCovered(
+  nodes: Record<string, TraceNode>,
+  node: Extract<TraceNode, { kind: "acceptance-criterion" }>,
+): boolean {
+  if (currentNodes(nodes).some((candidate) => candidate.kind === "test" && candidate.verifies.includes(node.id))) return true;
+  const disposition = node.verificationDisposition;
+  if (!disposition) return false;
+  if (disposition.kind === "behavior-test") return false; // 行为测试必须有真实 TEST 节点
+  return Boolean(disposition.reason?.trim());
 }
 
 function assertPersistedLedgerShape(ledger: TraceabilityLedger, options: TraceGraphValidationOptions): void {
@@ -434,34 +584,51 @@ export function validateTraceGraph(
     if (node.kind === "task") {
       if (node.covers.length === 0) invalid("task cannot be orphaned", { id: node.id });
       for (const covered of node.covers) assertReference(nodes, covered, ["requirement", "acceptance-criterion"], { from: node.id });
-      const rollback = nodeById(nodes, node.rollbackUnit);
-      if (!rollback && !(route === "l" && mode === "partial")) invalid("task references a missing rollback unit", { id: node.id, rollbackUnit: node.rollbackUnit });
-      if (rollback && rollback.kind !== "rollback") invalid("task rollback unit has the wrong kind", { id: node.id });
-      if (rollback?.kind === "rollback" && !rollback.tasks.includes(node.id)) {
-        invalid("task rollback unit must list the task", { id: node.id, rollbackUnit: node.rollbackUnit });
+      const unit = nodeById(nodes, node.implementationUnit);
+      if (!unit && !(route === "l" && mode === "partial")) invalid("task references a missing implementation unit", { id: node.id, implementationUnit: node.implementationUnit });
+      if (unit && unit.kind !== "implementation-unit") invalid("task implementation unit has the wrong kind", { id: node.id });
+      if (unit?.kind === "implementation-unit" && !unit.tasks.includes(node.id)) {
+        invalid("implementation unit must list the task", { id: node.id, implementationUnit: node.implementationUnit });
       }
     }
     if (node.kind === "test") for (const verified of node.verifies) assertReference(nodes, verified, ["acceptance-criterion"], { from: node.id });
     if (node.kind === "rollback") {
       for (const taskId of node.tasks) {
         const task = assertReference(nodes, taskId, ["task"], { from: node.id });
-        if (task.kind !== "task" || task.rollbackUnit !== node.id) invalid("rollback unit tasks must be symmetric with task rollbackUnit", { id: node.id, taskId });
+        if (task.kind !== "task") invalid("rollback arrangement task reference is invalid", { id: node.id, taskId });
       }
       for (const dependency of node.dependsOn) assertReference(nodes, dependency, ["rollback"], { from: node.id });
       for (const covered of node.covers) assertReference(nodes, covered, ["requirement", "acceptance-criterion"], { from: node.id });
     }
+    if (node.kind === "implementation-unit") {
+      for (const taskId of node.tasks) {
+        const task = assertReference(nodes, taskId, ["task"], { from: node.id });
+        if (task.kind !== "task" || task.implementationUnit !== node.id) invalid("implementation unit tasks must be symmetric with task implementationUnit", { id: node.id, taskId });
+      }
+      for (const dependency of node.dependsOn) assertReference(nodes, dependency, ["implementation-unit"], { from: node.id });
+      for (const covered of node.covers) assertReference(nodes, covered, ["requirement", "acceptance-criterion"], { from: node.id });
+    }
+    if (node.kind === "recovery") {
+      // 恢复安排必须引用存在的高风险步骤；恢复安排本身不提供工作范围或回撤执行。
+      assertReference(nodes, node.stepRef, ["implementation-unit", "task"], { from: node.id });
+    }
   }
   assertRollbackDag(nodes);
+  assertImplementationDag(nodes);
   const edges = deriveTraceEdges(nodes);
   if (!sameEdges(ledger.edges, edges)) invalid("ledger edges do not match nodes");
   if (!sameSummary(ledger.summary, traceSummary(nodes))) invalid("ledger summary does not match nodes");
   if (mode === "complete") {
     const kinds = new Set(currentNodes(nodes).map((node) => node.kind));
-    for (const kind of ["requirement", "acceptance-criterion", "task", "test", "rollback"] as const) if (!kinds.has(kind)) invalid("complete graph is missing a required node kind", { kind });
+    // TEST 不是完整图的必需节点（ADR-0011）：验证处置可以是行为测试之外的类型/
+    // 规则检查、文件核对或人工验收，纯文档/配置/机械任务不需要形式 TEST。需要
+    // 行为测试覆盖的 AC 由下方逐项验收条件检查强制（无处置或 behavior-test 处置
+    // 必须被真实 TEST 节点 verifies），不依赖节点种类存在性。
+    for (const kind of ["requirement", "acceptance-criterion", "task", "implementation-unit"] as const) if (!kinds.has(kind)) invalid("complete graph is missing a required node kind", { kind });
     if (currentNodes(nodes).some((node) => node.status !== "current")) invalid("complete graph cannot contain stale nodes");
     for (const node of currentNodes(nodes)) {
-      if (node.kind === "acceptance-criterion" && !currentNodes(nodes).some((candidate) => candidate.kind === "test" && candidate.verifies.includes(node.id))) {
-        invalid("every acceptance criterion requires a test", { id: node.id });
+      if (node.kind === "acceptance-criterion" && !acceptanceCriterionCovered(nodes, node)) {
+        invalid("every acceptance criterion requires a test or an explicit verification disposition", { id: node.id });
       }
     }
   }
@@ -495,7 +662,7 @@ export function emptyTraceabilityLedger(featureId: string, stateRevision: number
   return { schemaVersion: 1, featureId, revision: 0, stateRevision, projectConfigSha256, nodes: {}, edges: [], summary: { total: 0, current: 0, stale: 0, tombstoned: 0 } };
 }
 
-export function applyTraceDelta(input: ApplyTraceDeltaInput): TraceabilityLedger {
+export function applyTraceDelta(input: ApplyTraceDeltaInput, options: { validateGraph?: boolean } = {}): TraceabilityLedger {
   const effectiveInput = { ...input, delta: normalizeTraceDelta(input.delta) };
   validateTraceDelta(effectiveInput.delta);
   assertArtifactDeltaContract(effectiveInput);
@@ -529,7 +696,10 @@ export function applyTraceDelta(input: ApplyTraceDeltaInput): TraceabilityLedger
     edges: deriveTraceEdges(nodes),
     summary: traceSummary(nodes),
   };
-  validateTraceGraph(ledger, effectiveInput.route, "partial");
+  // 图校验默认在 delta 归约内部执行；计划编译需要聚合全部诊断（图错误不能
+  // 阻止收集未覆盖 AC 与恢复安排问题），通过 options.validateGraph=false 推迟，
+  // 由调用方在收集其他诊断后统一校验并去重。
+  if (options.validateGraph !== false) validateTraceGraph(ledger, effectiveInput.route, "partial");
   return ledger;
 }
 
@@ -537,8 +707,11 @@ function assertConfigCurrent(ledger: TraceabilityLedger, currentProjectConfigSha
   if (ledger.verificationCommandHashes && currentCommandHashes) {
     const referenced = new Set<string>();
     for (const node of currentNodes(ledger.nodes)) {
-      if (node.kind !== "rollback") continue;
-      for (const ref of [...node.forwardVerification, ...node.rollbackVerification]) if (typeof ref === "string") referenced.add(ref);
+      if (node.kind === "implementation-unit") {
+        for (const ref of node.forwardVerification) if (typeof ref === "string") referenced.add(ref);
+      } else if (node.kind === "rollback") {
+        for (const ref of [...node.forwardVerification, ...node.rollbackVerification]) if (typeof ref === "string") referenced.add(ref);
+      }
     }
     for (const id of referenced) {
       if (ledger.verificationCommandHashes[id] !== currentCommandHashes[id]) sliceError("TRACE_SLICE_STALE", "referenced verification command changed", { commandId: id });
@@ -547,7 +720,7 @@ function assertConfigCurrent(ledger: TraceabilityLedger, currentProjectConfigSha
     sliceError("TRACE_SLICE_STALE", "project configuration changed since Trace registration");
   }
   for (const node of currentNodes(ledger.nodes)) {
-    if (node.kind === "rollback" && !ledger.verificationCommandHashes && node.verificationConfigSha256 !== currentProjectConfigSha256) {
+    if ((node.kind === "rollback" || node.kind === "implementation-unit") && !ledger.verificationCommandHashes && node.verificationConfigSha256 !== currentProjectConfigSha256) {
       sliceError("TRACE_SLICE_STALE", "rollback verification configuration is stale", { id: node.id });
     }
   }
@@ -570,6 +743,15 @@ export function assertTraceabilityComplete(ledger: TraceabilityLedger, route: Ro
   catch (error) { if (error instanceof DevFlowError) sliceError("TRACE_SLICE_INCOMPLETE", error.message, error.details); throw error; }
 }
 
+/** 收集所有没有有效验证覆盖的当前 AC（TEST 或显式非行为处置），用于预检的完整诊断。 */
+export function collectUncoveredAcceptanceCriteria(ledger: TraceabilityLedger): Array<{ id: string; parentRequirement: string }> {
+  const nodes = ledger.nodes as Record<string, TraceNode>;
+  return currentNodes(nodes)
+    .filter((node) => node.kind === "acceptance-criterion")
+    .filter((node) => !acceptanceCriterionCovered(nodes, node))
+    .map((node) => ({ id: node.id, parentRequirement: node.parentRequirement }));
+}
+
 export function assertTraceSliceCurrent(ledger: TraceabilityLedger, route: RouteId, step: string, currentProjectConfigSha256: string, currentCommandHashes?: Record<string, string>): void {
   assertConfigCurrent(ledger, currentProjectConfigSha256, currentCommandHashes);
   const completeSteps = new Set(["planning", "implementation", "finalize"]);
@@ -582,19 +764,19 @@ export function assertTraceSliceCurrent(ledger: TraceabilityLedger, route: Route
     return;
   }
   const kinds: TraceNode["kind"][] = step === "implementation_plan"
-    ? [...requirements, "task", ...(route === "m" ? ["rollback"] as TraceNode["kind"][] : [])]
+    ? [...requirements, "task", "implementation-unit"]
     : step === "coverage_review"
       ? [...requirements, "task", "test"]
       : step === "rollback_unit"
         ? [...requirements, "task", "test", "rollback"]
-        : [...requirements, "task", "test", "rollback"] as TraceNode["kind"][];
+        : [...requirements, "task", "test", "implementation-unit"] as TraceNode["kind"][];
   requireCurrentKinds(ledger, kinds);
   try {
     validateTraceGraph(ledger, route, step === "rollback_unit" ? "complete" : "partial");
     if (step === "coverage_review") {
       for (const node of currentNodes(ledger.nodes)) if (node.kind === "acceptance-criterion"
-        && !currentNodes(ledger.nodes).some((candidate) => candidate.kind === "test" && candidate.verifies.includes(node.id))) {
-        sliceError("TRACE_SLICE_INCOMPLETE", "coverage review requires a test for every acceptance criterion", { id: node.id });
+        && !acceptanceCriterionCovered(ledger.nodes as Record<string, TraceNode>, node)) {
+        sliceError("TRACE_SLICE_INCOMPLETE", "coverage review requires a test or an explicit verification disposition for every acceptance criterion", { id: node.id });
       }
     }
   } catch (error) {

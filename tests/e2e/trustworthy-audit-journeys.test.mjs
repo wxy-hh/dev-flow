@@ -25,18 +25,39 @@ const routeInput = {
   decisionRefs: [],
 };
 
-const classificationFacts = {
-  ...routeInput,
-  signals: {
-    changeSurface: "multi-component",
-    behaviorChange: "new-capability",
+/** 登记一条绑定既有受管文件的仓库事实（v5 分类引用事实记录，ADR-0018）。 */
+async function registerFixtureFact(root, featureId, revision, host) {
+  const withFact = await store.registerRepositoryFact(root, featureId, revision, {
+    assertion: "多个受治理文件",
+    location: { kind: "positive", path: "src/counter.js" },
+  }, host);
+  return {
+    factRef: withFact.governance.repositoryFacts[withFact.governance.repositoryFacts.length - 1].recordId,
+    revision: withFact.revision,
+  };
+}
+
+function classificationFactsWith(factRef) {
+  return {
+    level: "M",
     topology: "shared-contract",
-    unitCount: 1,
     requirements: "provided-confirmed",
-    operationalRecovery: true,
-    executableRollback: false,
-  },
-};
+    scopeFactRefs: [factRef],
+    topologyFactRefs: [factRef],
+    uncertaintyFactRefs: [],
+    riskFactRefs: {},
+    decisionRefs: [],
+    signals: {
+      changeSurface: "multi-component",
+      behaviorChange: "new-capability",
+      topology: "shared-contract",
+      unitCount: 1,
+      requirements: "provided-confirmed",
+      operationalRecovery: true,
+      executableRollback: false,
+    },
+  };
+}
 
 const boundaryAudit = { scanned: ["assumption", "free-space", "tbd", "fallback", "scope", "acceptance"], items: [] };
 
@@ -52,8 +73,8 @@ async function answerOwnership(hook, root, state, text, eventId) {
   return (await store.resolveWorkspaceOwnershipText(root, state.featureId, state.revision, interaction.id, text, "codex")).state;
 }
 
-async function lockAndConfirmRoute(hook, root, state, host = "codex") {
-  let current = await store.lockClassification(root, state.featureId, state.revision, classificationFacts, boundaryAudit);
+async function lockAndConfirmRoute(hook, root, state, factRef, expectedRevision, host = "codex") {
+  let current = await store.lockClassification(root, state.featureId, expectedRevision, classificationFactsWith(factRef), boundaryAudit);
   const route = Object.values(current.interactions ?? {}).find((interaction) => interaction.status === "pending" && interaction.kind === "route-confirmation");
   if (route) {
     await invokeHook(hook, root, { hook_event_name: "UserPromptSubmit", event_id: `route-${current.revision}`, prompt: "路线没问题" });
@@ -97,7 +118,8 @@ test("audit journey 1: revision-0 ownership, hook recovery, stable control finge
     state = await store.readState(fixture.root, state.featureId);
     assert.deepEqual(state.workspace.unownedPaths, ["src/during-gap-a.js", "src/during-gap-b.js"]);
     state = await answerOwnership(hook, fixture.root, state, "全部纳入", "recovered-batch-answer");
-    state = await lockAndConfirmRoute(hook, fixture.root, state);
+    const { factRef, revision: afterFact } = await registerFixtureFact(fixture.root, state.featureId, state.revision, "codex");
+    state = await lockAndConfirmRoute(hook, fixture.root, state, factRef, afterFact);
 
     const ready = await driveUntil(fixture.root, state.featureId, state, {
       input: routeInput,
@@ -158,8 +180,9 @@ test("audit journey 2: guarantee repair is scoped and semantic approval is reuse
     await store.initProject(fixture.root, incomplete);
     await store.recordHostHealth(fixture.root, { host: "claude", kind: "session-start", eventId: "journey-two-health" });
     let state = await store.startFeature(fixture.root, { featureId: "guarantee-gap", objective: "重放保证缺口", host: "claude" });
+    const { factRef, revision: afterFact } = await registerFixtureFact(fixture.root, state.featureId, state.revision, "claude");
     await assert.rejects(
-      () => store.lockClassification(fixture.root, state.featureId, state.revision, classificationFacts, boundaryAudit),
+      () => store.lockClassification(fixture.root, state.featureId, afterFact, classificationFactsWith(factRef), boundaryAudit),
       (error) => error.code === "VERIFICATION_GUARANTEE_UNCONFIGURED",
     );
     const raw = await readFile(path.join(fixture.root, ".dev-flow", "project.json"));
@@ -170,7 +193,7 @@ test("audit journey 2: guarantee repair is scoped and semantic approval is reuse
     const updated = await store.updateProjectConfig(fixture.root, repairedConfig, createHash("sha256").update(raw).digest("hex"));
     assert.deepEqual(updated.affectedEvidence.traceNodeIds, []);
 
-    state = await store.lockClassification(fixture.root, state.featureId, state.revision, classificationFacts, boundaryAudit);
+    state = await store.lockClassification(fixture.root, state.featureId, afterFact, classificationFactsWith(factRef), boundaryAudit);
     pendingInteraction(state, "route-confirmation");
     await store.recordHostEvent(fixture.root, { eventId: "route-two", type: "user-prompt", host: "claude", text: "确认路线" });
     state = await store.confirmRouteClassification(fixture.root, state.featureId, state.revision, "确认路线", "claude");
@@ -207,13 +230,13 @@ test("audit journey 2: guarantee repair is scoped and semantic approval is reuse
       state,
       kind: "implementation-plan",
       delta: traceDeltaFor("implementation-plan", "m"),
-      edit: (markdown) => `${markdown}\n说明：只调整文字，不改变 TASK、TEST、RU 或文件范围。\n`,
+      edit: (markdown) => `${markdown}\n说明：只调整文字，不改变 TASK、TEST、UNIT 或文件范围。\n`,
     });
     assert.equal(state.humanGates[approvalId].status, "confirmed");
     assert.equal(state.humanGates[approvalId].basisHash, gateBefore.basisHash);
     assert.equal(state.obligations.find((item) => item.id === approvalId).status, "satisfied");
     const recoveredTrace = await traceStore.readTraceability(fixture.root, state);
-    assert.equal(recoveredTrace.nodes["RU-001"].status, "current");
+    assert.equal(recoveredTrace.nodes["UNIT-001"].status, "current");
     assert.equal(recoveredTrace.nodes["REQ-001"].status, "current");
   } finally {
     await fixture.dispose();

@@ -6,11 +6,26 @@ import { createTinyApp, strictProjectConfig } from "../helpers/fixture-repo.mjs"
 import { hostE2EEnabled, invokeHook, mcpCall } from "../helpers/host-runner.mjs";
 import { installNativeHosts } from "../helpers/native-hosts.mjs";
 import { buildTestBundles } from "../helpers/test-bundle.mjs";
+import { loadSource } from "../helpers/load-source.mjs";
+
+const store = await loadSource("plugins/dev-flow/src/core/state-store.ts");
 
 const boundaryAudit = {
   scanned: ["assumption", "free-space", "tbd", "fallback", "scope", "acceptance"],
   items: [],
 };
+
+/** 登记一条绑定既有受管文件的仓库事实（v5 分类引用事实记录，ADR-0018）。 */
+async function registerFixtureFact(root, featureId, revision, host) {
+  const state = await store.registerRepositoryFact(root, featureId, revision, {
+    assertion: "计数器组件及其测试",
+    location: { kind: "positive", path: "src/counter.js" },
+  }, host);
+  return {
+    factRef: state.governance.repositoryFacts[state.governance.repositoryFacts.length - 1].recordId,
+    revision: state.revision,
+  };
+}
 
 async function trustedEdit(hook, root, file, transform, eventId) {
   const event = { event_id: eventId, tool_name: "Edit", tool_input: { file_path: file } };
@@ -28,23 +43,19 @@ async function finishS(startServer, startHook, finishServer, finishHook, starter
       featureId: "handoff", objective: "调整本地计数规则", host: starter,
       scope: { inScope: ["src/counter.js", "test/counter.test.js"], outOfScope: [] },
     }, { requireRealHostHealth: true });
+    const { factRef, revision: afterFact } = await registerFixtureFact(fixture.root, "handoff", state.revision, starter);
     state = await mcpCall(finishServer, fixture.root, "dev_flow_lock_classification", {
       featureId: "handoff",
-      expectedRevision: state.revision,
+      expectedRevision: afterFact,
       classification: {
         level: "S",
         topology: "local",
         requirements: "provided-confirmed",
-        scopeFacts: ["计数器组件及其测试"],
-        topologyFacts: ["没有共享契约"],
-        uncertaintyFacts: [],
-        riskFacts: {},
-        decisionRefs: [],
         classificationBasis: {
-          scopeFacts: ["计数器组件及其测试"],
-          topologyFacts: ["没有共享契约"],
-          uncertaintyFacts: [],
-          riskFacts: {},
+          scopeFactRefs: [factRef],
+          topologyFactRefs: [factRef],
+          uncertaintyFactRefs: [],
+          riskFactRefs: {},
           decisionRefs: [],
           signals: {
             changeSurface: "single-component",
@@ -70,8 +81,32 @@ async function finishS(startServer, startHook, finishServer, finishHook, starter
     state = await mcpCall(finishServer, fixture.root, "dev_flow_record_step", {
       featureId: "handoff", expectedRevision: afterWrites.control.expectedRevision, step: "implementation", evidence: {},
     });
+    // 独立代码审查（ADR-0017）：S 路线 focused 审查先创建并完成 code 批次
+    // （无隔离要求），再登记 code_review 步骤证据。
+    const created = await mcpCall(finishServer, fixture.root, "dev_flow_create_review_batch", {
+      featureId: "handoff", expectedRevision: state.revision,
+    });
+    assert.equal(created.batch.phase, "code");
+    let reviewState = created;
+    for (const job of created.batch.jobs) {
+      const claimRequestId = `claim-${job.jobId}`;
+      const claimed = await mcpCall(finishServer, fixture.root, "dev_flow_claim_review_job", {
+        featureId: "handoff", expectedRevision: reviewState.state.revision,
+        batchId: created.batch.batchId, jobId: job.jobId, claimRequestId,
+      });
+      reviewState = await mcpCall(finishServer, fixture.root, "dev_flow_submit_review_job", {
+        featureId: "handoff", expectedRevision: claimed.state.revision,
+        batchId: created.batch.batchId, jobId: job.jobId, capability: claimed.capability,
+        completion: { coverageSummary: `${job.role} cross-host review complete`, findings: [] },
+      });
+    }
     state = await mcpCall(finishServer, fixture.root, "dev_flow_record_step", {
-      featureId: "handoff", expectedRevision: state.revision, step: "code_review", evidence: { reviewType: "code" },
+      featureId: "handoff", expectedRevision: reviewState.state.revision, step: "code_review",
+      evidence: {
+        reviewType: "code",
+        coverage: ["quality", "fidelity"],
+        findings: [],
+      },
     });
     state = await mcpCall(finishServer, fixture.root, "dev_flow_verify", {
       featureId: "handoff", expectedRevision: state.revision, commandIds: ["unit"], host: finisher,

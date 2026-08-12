@@ -24,6 +24,27 @@ export interface HookEvent {
   tool_result?: unknown;
 }
 
+export interface HostToolExecutionDetails {
+  toolName: string;
+  executionId: string;
+  result: "success" | "failure";
+  resultSummary: string;
+}
+
+/** Build the safe, verifiable subset persisted for a native PostToolUse event. */
+export function hostToolExecutionDetails(event: HookEvent, succeeded: boolean, fallbackEventId: string): HostToolExecutionDetails {
+  const response = event.tool_response ?? event.tool_result;
+  const record = response && typeof response === "object" && !Array.isArray(response) ? response as Record<string, unknown> : undefined;
+  const message = [record?.summary, record?.message, record?.text]
+    .find((value): value is string => typeof value === "string" && value.trim().length > 0);
+  return {
+    toolName: String(event.tool_name ?? "unknown"),
+    executionId: event.tool_use_id ?? event.event_id ?? fallbackEventId,
+    result: succeeded ? "success" : "failure",
+    resultSummary: (message?.trim() ?? (succeeded ? "工具执行成功" : "工具执行失败")).slice(0, 512),
+  };
+}
+
 export type PreToolBlockCode =
   | "DEV_FLOW_GIT_GUARD"
   | "DEV_FLOW_IMPLEMENTATION_APPROVAL_REQUIRED"
@@ -637,11 +658,11 @@ function classifyTarget(
     if (unitBlock?.code === "IMPLEMENTATION_UNIT_REQUIRED") {
       return createPreToolBlock(
         "DEV_FLOW_IMPLEMENTATION_UNIT_REQUIRED",
-        `目标 ${projectRelative(root, target)} 已通过实现批准，但当前没有活动的 rollback unit`,
+        `目标 ${projectRelative(root, target)} 已通过实现批准，但当前没有活动的 implementation unit`,
         "原写入未执行；governed 目标保持不变",
         {
           mode: "automatic",
-          action: "调用 dev_flow_begin_implementation_unit 准备当前 rollback unit；成功后自动重试原写入",
+          action: "调用 dev_flow_begin_implementation_unit 准备当前 implementation unit；成功后自动重试原写入",
           retryOriginal: true,
         },
       );
@@ -649,7 +670,7 @@ function classifyTarget(
     if (unitBlock?.code === "IMPLEMENTATION_UNIT_OUT_OF_SCOPE") {
       return createPreToolBlock(
         "DEV_FLOW_IMPLEMENTATION_UNIT_OUT_OF_SCOPE",
-        `当前 rollback unit 在 Trace 中已失效，无法证明目标 ${projectRelative(root, target)} 属于当前实现依据`,
+        `当前 implementation unit 在 Trace 中已失效，无法证明目标 ${projectRelative(root, target)} 属于当前实现依据`,
         "原写入未执行；目标文件和 Trace 状态未改变",
         {
           mode: "user-decision",
@@ -668,11 +689,11 @@ function classifyTarget(
     if (block?.code === "IMPLEMENTATION_UNIT_REQUIRED") {
       return createPreToolBlock(
         "DEV_FLOW_IMPLEMENTATION_UNIT_REQUIRED",
-        `目标 ${relative} 位于 governed root，但没有活动的 rollback unit`,
+        `目标 ${relative} 位于 governed root，但没有活动的 implementation unit`,
         "原写入未执行；目标文件保持不变",
         {
           mode: "automatic",
-          action: "调用 dev_flow_begin_implementation_unit 开始下一个 rollback unit；成功后自动重试原写入",
+          action: "调用 dev_flow_begin_implementation_unit 开始下一个 implementation unit；成功后自动重试原写入",
           retryOriginal: true,
         },
       );
@@ -680,7 +701,7 @@ function classifyTarget(
     if (block?.code === "IMPLEMENTATION_UNIT_OUT_OF_SCOPE") {
       return createPreToolBlock(
         "DEV_FLOW_IMPLEMENTATION_UNIT_OUT_OF_SCOPE",
-        `当前 rollback unit 在 Trace 中已失效，无法证明目标 ${relative} 属于当前实现依据`,
+        `当前 implementation unit 在 Trace 中已失效，无法证明目标 ${relative} 属于当前实现依据`,
         "原写入未执行；目标文件和 Trace 状态未改变",
         {
           mode: "user-decision",
@@ -788,7 +809,7 @@ async function augmentApprovalBlock(
 
 function annotatePreparationFailure(block: PreToolBlock, diagnostic: string | undefined): PreToolBlock {
   if (!diagnostic || (block.code !== "DEV_FLOW_IMPLEMENTATION_UNIT_REQUIRED" && block.code !== "DEV_FLOW_IMPLEMENTATION_UNIT_OUT_OF_SCOPE")) return block;
-  const reason = `${block.reason} Core 自动准备 rollback unit 失败：${diagnostic}`;
+  const reason = `${block.reason} Core 自动准备 implementation unit 失败：${diagnostic}`;
   const action = `${block.recovery.action}；不要把该 Core 错误解释为 workflow state unreadable`;
   return { ...block, reason, recovery: { ...block.recovery, action }, recoveryHint: action };
 }
@@ -895,7 +916,7 @@ async function evaluatePreToolUseInternal(
   let { workflow } = loaded;
   const command = typeof event.tool_input?.command === "string" ? event.tool_input.command : "";
 
-  // Starting the first internal rollback unit is safe to do lazily at the
+  // Starting the first internal implementation unit is safe to do lazily at the
   // write boundary. It keeps the unit/checkpoint contract intact while
   // avoiding a user-visible failure for a model that proceeds directly from
   // approval to its first ordinary file write.

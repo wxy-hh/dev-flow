@@ -23,7 +23,7 @@ test("tracked in-repository symlink survives checkpoint and is atomically restor
     await run("git", ["-c", "user.name=Dev Flow Tests", "-c", "user.email=tests@example.invalid", "commit", "--quiet", "-m", "symlink baseline"], { cwd: fixture.root });
     await store.initProject(fixture.root, routeFlowConfig);
     const classificationBasis = {
-      scopeFacts: ["src/one.ts and src/two.ts"], topologyFacts: ["two rollback units"], uncertaintyFacts: [], riskFacts: {}, decisionRefs: [],
+      scopeFacts: ["src/one.ts and src/two.ts"], topologyFacts: ["two implementation units"], uncertaintyFacts: [], riskFacts: {}, decisionRefs: [],
       signals: {
         changeSurface: "multi-component", behaviorChange: "bounded-rule", topology: "local", unitCount: 2,
         requirements: "provided-confirmed", operationalRecovery: false, executableRollback: true, upwardLevel: "M",
@@ -37,17 +37,18 @@ test("tracked in-repository symlink survives checkpoint and is atomically restor
       input: { requirements: "provided-confirmed" },
       twoClosures: true,
       unitWriter: async (root, current, unitId) => {
-        const file = unitId === "RU-001" ? "src/one.ts" : "src/two.ts";
+        const file = unitId === "UNIT-001" ? "src/one.ts" : "src/two.ts";
         await store.recordTrustedWriteIntent(root, [file], "codex", `trusted-${unitId}`);
-        if (unitId === "RU-001") await writeFile(path.join(root, "src", "one.ts"), "export const one = 1;\n");
-        if (unitId === "RU-002") {
+        if (unitId === "UNIT-001") await writeFile(path.join(root, "src", "one.ts"), "export const one = 1;\n");
+        if (unitId === "UNIT-002") {
           await rm(path.join(root, "src", "two.ts"));
           await symlink("../target-b.js", path.join(root, "src", "two.ts"));
         }
         await store.recordTrustedWriteOwnership(root, [file], "codex", `trusted-${unitId}`);
         current = await store.readState(root, current.featureId);
         current = await store.reconcileWorkspace(root, current.featureId, current.revision, "codex");
-        assert.equal(current.evidenceFreshness.checkpoint, "current");
+        // 写入后 checkpoint freshness 暂时失效；下一次 driveUntil 循环会立即执行 checkpoint。
+        assert.equal(current.evidenceFreshness.checkpoint, "stale");
         return current;
       },
       stopAt: (_action, current) => current.implementationUnits?.length === 2

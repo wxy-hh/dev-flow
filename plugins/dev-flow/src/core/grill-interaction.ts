@@ -12,6 +12,13 @@ export interface GrillOption {
 export interface GrillRecommendation {
   optionId: string;
   reason: string;
+  /**
+   * 高影响提醒（CONTEXT.md"推荐提醒"）：推荐方案的主要缺点。
+   * 与 alternative 成对出现：提供其一就必须提供另一个，否则拒绝登记。
+   */
+  drawback?: string;
+  /** 高影响提醒：某个替代方案更适用的条件，让用户能判断推荐前提是否成立。 */
+  alternative?: { optionId: string; condition: string };
 }
 
 export interface GrillPresentationOption extends GrillOption {
@@ -69,6 +76,23 @@ export function buildGrillPresentation(input: {
   const recommendedIndex = input.options.findIndex((option) => option.id === input.recommendation.optionId);
   if (recommendedIndex < 0) invalid("recommendation must reference one current option");
 
+  // 推荐提醒（高影响交互）：推荐一旦携带缺点或替代条件之一，就必须两者
+  // 齐全且替代项引用当前的非推荐选项；普通低影响问题不携带这些字段，
+  // 呈现保持简短。
+  const drawback = input.recommendation.drawback?.trim();
+  const alternative = input.recommendation.alternative;
+  const hasReminder = drawback !== undefined || alternative !== undefined;
+  if (hasReminder) {
+    if (!drawback || !alternative || !alternative.condition.trim()) {
+      invalid("high-impact recommendation requires both a drawback and an alternative condition");
+    }
+    if (alternative.optionId === input.recommendation.optionId) {
+      invalid("alternative must reference a non-recommended option");
+    }
+    const alternativeIndex = input.options.findIndex((option) => option.id === alternative.optionId);
+    if (alternativeIndex < 0) invalid("alternative must reference one current option");
+  }
+
   const options = input.options.map((option, index): GrillPresentationOption => ({
     ...option,
     answerCode: answerCodes[index],
@@ -79,6 +103,12 @@ export function buildGrillPresentation(input: {
     lines.push("");
     lines.push(`${option.answerCode}. ${option.label}${option.recommended ? "（推荐）" : ""}`);
     lines.push(`   ${option.recommended ? reason : option.description!.trim()}`);
+  }
+  if (hasReminder) {
+    const alternativeOption = options.find((option) => option.id === alternative!.optionId)!;
+    lines.push("");
+    lines.push(`提醒：推荐方案的主要缺点是 ${drawback}。`);
+    lines.push(`如果 ${alternative!.condition.trim()}，选项 ${alternativeOption.answerCode}（${alternativeOption.label}）可能更合适。`);
   }
   lines.push("");
   const codes = options.map((option) => option.answerCode);

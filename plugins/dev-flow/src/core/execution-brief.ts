@@ -26,6 +26,7 @@ export function buildFeatureMutationSummary(state: FeatureState): FeatureMutatio
   const obligations = state.obligations ?? [];
   const units = state.implementationUnits ?? [];
   const interactions = Object.values(state.interactions ?? {});
+  const snapshot = state.deliverySnapshot as { excludedChangedPaths?: string[] } | undefined;
   return {
     featureId: state.featureId,
     revision: state.revision,
@@ -46,6 +47,8 @@ export function buildFeatureMutationSummary(state: FeatureState): FeatureMutatio
       openInteractions: interactions.filter((interaction) => (interaction as { status?: unknown }).status === "pending").length,
       blockingFindings: state.blockingFindings.filter((finding) => finding.blocking).length,
     },
+    // finalize 透明性：已排除但仍有变化的路径不阻塞完成，只在响应中提醒。
+    ...(snapshot?.excludedChangedPaths?.length ? { excludedChangedPaths: snapshot.excludedChangedPaths } : {}),
   };
 }
 
