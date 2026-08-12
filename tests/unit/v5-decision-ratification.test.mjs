@@ -129,3 +129,22 @@ test("replayed identical answers are ambiguous and cannot ratify", async () => {
     await rm(root, { recursive: true, force: true });
   }
 });
+
+test("native form answer ratifies even when the displayed question is reformulated and the agent passes a paraphrase", async () => {
+  const { root, state } = await setup("dev-flow-ratify-reform-");
+  try {
+    // 展示问题被 agent 精简/改写（不再是交互问题的前缀），且 agent 按
+    //「选中即信任」转述 userReply：结构化事件仍应以事件内容归属落账。
+    const presented = await store.recordDecision(root, "f", state.revision, "本任务的交付物范围是什么？", "本任务交付物仅为实施计划文档（不写 Rust 代码、不改生产代码）", "仅产出计划", [], "codex");
+    await store.recordHostEvent(root, {
+      eventId: "ratify-reform", type: "user-prompt", host: "codex",
+      text: "确认登记", question: "将“仅产出计划”登记为当前决定吗？",
+    });
+    const ratified = await store.resolveRatificationAnswer(root, "f", presented.state.revision, presented.interactionId, "就按这个登记", "codex");
+    assert.equal(ratified.state.governance.decisions.length, 1);
+    assert.equal(ratified.state.governance.decisions[0].conclusion, "仅产出计划");
+    assert.equal(ratified.state.governance.decisions[0].basis.eventId, "ratify-reform");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});

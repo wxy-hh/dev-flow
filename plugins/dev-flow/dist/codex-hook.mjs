@@ -1,4 +1,4 @@
-/* dev-flow 5.0.6; built from source, deterministic build */
+/* dev-flow 5.0.7; built from source, deterministic build */
 
 // plugins/dev-flow/src/core/state-store.ts
 import { randomUUID as randomUUID6, createHash as createHash11 } from "node:crypto";
@@ -355,8 +355,8 @@ var IMPLEMENTATION_UNIT_TRANSITIONS = Object.freeze({
   checkpointed: Object.freeze(["rolled_back"]),
   rolled_back: Object.freeze(["active"])
 });
-function pathWithinFileScope(path15, fileScope) {
-  return fileScope.some((pattern) => scopePatternMatches(pattern.normalize("NFC"), path15.normalize("NFC")));
+function pathWithinFileScope(path16, fileScope) {
+  return fileScope.some((pattern) => scopePatternMatches(pattern.normalize("NFC"), path16.normalize("NFC")));
 }
 function isSafeFileScopePattern(value) {
   if (typeof value !== "string" || !value || value.trim() !== value) return false;
@@ -409,8 +409,8 @@ function controlPath(relative) {
 function configFor(input) {
   return Array.isArray(input) ? { governedRoots: input } : input;
 }
-async function collect(root, relative, files, excludes) {
-  const absolute = path2.join(root, relative);
+async function collect(root2, relative, files, excludes) {
+  const absolute = path2.join(root2, relative);
   let entries;
   try {
     entries = await readdir(absolute, { withFileTypes: true });
@@ -422,15 +422,15 @@ async function collect(root, relative, files, excludes) {
     if (ignored.has(entry.name)) continue;
     const child = normalizeProjectPath(path2.join(relative, entry.name));
     if (excludes?.some((pattern) => pathWithinFileScope(child, [pattern]))) continue;
-    const target = path2.join(root, child);
+    const target = path2.join(root2, child);
     const metadata = await lstat(target);
     if (metadata.isSymbolicLink()) throw new DevFlowError("UNSAFE_PROTECTED_ROOT", `symbolic link is not allowed: ${child}`);
-    if (metadata.isDirectory()) await collect(root, child, files, excludes);
+    if (metadata.isDirectory()) await collect(root2, child, files, excludes);
     else if (metadata.isFile()) files.push(child);
   }
 }
-async function hasGitMetadata(root) {
-  let current = path2.resolve(root);
+async function hasGitMetadata(root2) {
+  let current = path2.resolve(root2);
   while (true) {
     try {
       await lstat(path2.join(current, ".git"));
@@ -443,9 +443,9 @@ async function hasGitMetadata(root) {
     current = parent;
   }
 }
-async function gitOutput(root, args) {
+async function gitOutput(root2, args) {
   try {
-    const result = await runFile("git", args, { cwd: root, encoding: "utf8", maxBuffer: 8 * 1024 * 1024 });
+    const result = await runFile("git", args, { cwd: root2, encoding: "utf8", maxBuffer: 8 * 1024 * 1024 });
     return String(result.stdout);
   } catch (error) {
     throw new DevFlowError("PROTECTED_ROOT_ENUMERATION_FAILED", "Git \u65E0\u6CD5\u679A\u4E3E governed roots\u3002", {
@@ -454,33 +454,33 @@ async function gitOutput(root, args) {
     });
   }
 }
-async function gitFiles(root, governedRoots) {
-  const hasMetadata = await hasGitMetadata(root);
+async function gitFiles(root2, governedRoots) {
+  const hasMetadata = await hasGitMetadata(root2);
   let insideWorktree = false;
   try {
-    insideWorktree = (await gitOutput(root, ["rev-parse", "--is-inside-work-tree"])).trim() === "true";
+    insideWorktree = (await gitOutput(root2, ["rev-parse", "--is-inside-work-tree"])).trim() === "true";
   } catch (error) {
     if (!hasMetadata) return void 0;
     throw error;
   }
   if (!insideWorktree) return void 0;
-  const output = await gitOutput(root, ["ls-files", "--cached", "--others", "--exclude-standard", "-z", "--", ...governedRoots]);
+  const output = await gitOutput(root2, ["ls-files", "--cached", "--others", "--exclude-standard", "-z", "--", ...governedRoots]);
   return output.split("\0").filter(Boolean).map(normalizeProjectPath);
 }
-async function gitTrackedFiles(root, governedRoots) {
-  const output = await gitOutput(root, ["ls-files", "--cached", "-z", "--", ...governedRoots]);
+async function gitTrackedFiles(root2, governedRoots) {
+  const output = await gitOutput(root2, ["ls-files", "--cached", "-z", "--", ...governedRoots]);
   return new Set(output.split("\0").filter(Boolean).map(normalizeProjectPath));
 }
 function withinConfiguredRoot(file, governedRoots) {
-  return governedRoots.some((root) => root === "." || file === root || file.startsWith(`${root}/`));
+  return governedRoots.some((root2) => root2 === "." || file === root2 || file.startsWith(`${root2}/`));
 }
 function applyExcludes(files, excludes) {
   return files.filter((file) => !excludes?.some((pattern) => pathWithinFileScope(file, [pattern])));
 }
-async function assertGovernedRootsSafe(root, governedRoots) {
+async function assertGovernedRootsSafe(root2, governedRoots) {
   for (const relative of governedRoots) {
     try {
-      const metadata = await lstat(path2.join(root, relative));
+      const metadata = await lstat(path2.join(root2, relative));
       if (metadata.isSymbolicLink()) throw new DevFlowError("UNSAFE_PROTECTED_ROOT", `symbolic link is not allowed: ${relative}`);
     } catch (error) {
       if (error instanceof DevFlowError) throw error;
@@ -488,43 +488,43 @@ async function assertGovernedRootsSafe(root, governedRoots) {
     }
   }
 }
-async function enumerateProtectedFiles(root, input) {
+async function enumerateProtectedFiles(root2, input) {
   const config = configFor(input);
   const governedRoots = [...new Set(config.governedRoots.map(normalizeProjectPath))].sort();
-  const fromGit = await gitFiles(root, governedRoots);
+  const fromGit = await gitFiles(root2, governedRoots);
   if (!fromGit) {
     const rootsToValidate = governedRoots.filter((entry) => !config.governedRootsExclude?.some((pattern) => pathWithinFileScope(entry, [pattern])));
-    await assertGovernedRootsSafe(root, rootsToValidate);
+    await assertGovernedRootsSafe(root2, rootsToValidate);
   }
   const files = fromGit ?? (() => {
     const collected = [];
-    return Promise.all(governedRoots.map((item) => collect(root, item, collected, config.governedRootsExclude))).then(() => collected);
+    return Promise.all(governedRoots.map((item) => collect(root2, item, collected, config.governedRootsExclude))).then(() => collected);
   })();
   const resolved = await files;
   const unique = applyExcludes([...new Set(resolved.map(normalizeProjectPath).filter((file) => !controlPath(file)).filter((file) => withinConfiguredRoot(file, governedRoots)))].sort(), config.governedRootsExclude);
-  const tracked = fromGit ? await gitTrackedFiles(root, governedRoots) : /* @__PURE__ */ new Set();
+  const tracked = fromGit ? await gitTrackedFiles(root2, governedRoots) : /* @__PURE__ */ new Set();
   for (const relative of unique) {
     let metadata;
     try {
-      metadata = await lstat(path2.join(root, relative));
+      metadata = await lstat(path2.join(root2, relative));
     } catch (error) {
       if (error.code === "ENOENT") continue;
       throw error;
     }
     if (metadata.isSymbolicLink()) {
       if (!tracked.has(relative)) throw new DevFlowError("UNSAFE_GOVERNED_SYMLINK", `symlink must be Git-tracked: ${relative}`, { path: relative, recoveryHint: "\u8DDF\u8E2A\u8BE5\u4ED3\u5185\u94FE\u63A5\uFF0C\u6216\u5C06\u5176\u6392\u9664\u5728 governedRoots \u4E4B\u5916" });
-      const resolvedTarget = await realpath(path2.join(root, relative));
-      const rootPath = await realpath(root);
+      const resolvedTarget = await realpath(path2.join(root2, relative));
+      const rootPath = await realpath(root2);
       const targetRelative = normalizeProjectPath(path2.relative(rootPath, resolvedTarget));
       if (!targetRelative || targetRelative === ".." || targetRelative.startsWith("../") || path2.isAbsolute(targetRelative) || targetRelative === ".git" || targetRelative.startsWith(".git/") || targetRelative === ".dev-flow" || targetRelative.startsWith(".dev-flow/")) {
-        throw new DevFlowError("UNSAFE_GOVERNED_SYMLINK", `symlink target escapes governed safety boundary: ${relative}`, { path: relative, linkTarget: await readlink(path2.join(root, relative)) });
+        throw new DevFlowError("UNSAFE_GOVERNED_SYMLINK", `symlink target escapes governed safety boundary: ${relative}`, { path: relative, linkTarget: await readlink(path2.join(root2, relative)) });
       }
     }
   }
   const present = [];
   for (const relative of unique) {
     try {
-      await lstat(path2.join(root, relative));
+      await lstat(path2.join(root2, relative));
       present.push(relative);
     } catch (error) {
       if (error.code !== "ENOENT") throw error;
@@ -532,11 +532,11 @@ async function enumerateProtectedFiles(root, input) {
   }
   return present;
 }
-async function fingerprintGovernedRoots(root, input) {
-  const files = await enumerateProtectedFiles(root, input);
+async function fingerprintGovernedRoots(root2, input) {
+  const files = await enumerateProtectedFiles(root2, input);
   const digest7 = createHash2("sha256");
   for (const relative of files) {
-    const absolute = path2.join(root, relative);
+    const absolute = path2.join(root2, relative);
     const metadata = await lstat(absolute);
     digest7.update(relative);
     digest7.update("\0");
@@ -551,11 +551,11 @@ async function fingerprintGovernedRoots(root, input) {
   }
   return digest7.digest("hex");
 }
-async function snapshotGovernedRoots(root, input) {
-  const files = await enumerateProtectedFiles(root, input);
+async function snapshotGovernedRoots(root2, input) {
+  const files = await enumerateProtectedFiles(root2, input);
   const snapshots = [];
   for (const relative of files) {
-    const absolute = path2.join(root, relative);
+    const absolute = path2.join(root2, relative);
     const metadata = await lstat(absolute);
     const symbolic = metadata.isSymbolicLink();
     const bytes = symbolic ? Buffer.from(await readlink(absolute)) : await readFile(absolute);
@@ -612,7 +612,7 @@ function validateProjectConfig(value) {
     throw new DevFlowError("INVALID_PROJECT_CONFIG", "governedRoots must contain project-relative files or directories outside .dev-flow");
   }
   const governedRoots = config.governedRoots.map(normalizedRelativeDirectory);
-  if (governedRoots.some((root) => !root || root === ".git" || root.startsWith(".git/") || root === ".dev-flow" || root.startsWith(".dev-flow/"))) {
+  if (governedRoots.some((root2) => !root2 || root2 === ".git" || root2.startsWith(".git/") || root2 === ".dev-flow" || root2.startsWith(".dev-flow/"))) {
     throw new DevFlowError("INVALID_PROJECT_CONFIG", "governedRoots must contain project-relative files or directories outside control paths");
   }
   config.governedRoots = governedRoots;
@@ -1045,11 +1045,11 @@ function sameEdges2(left, right) {
     return edge.from === candidate?.from && edge.type === candidate.type && edge.to === candidate.to;
   });
 }
-async function readTraceabilityWithOptions(root, state, options = {}) {
+async function readTraceabilityWithOptions(root2, state, options = {}) {
   if (!state.traceability) integrity("Trace pointer is missing", { featureId: state.featureId });
   const pointer = state.traceability;
   const relative = safeSnapshotPath(pointer);
-  const file = path4.join(root, ".dev-flow", "features", state.featureId, relative);
+  const file = path4.join(root2, ".dev-flow", "features", state.featureId, relative);
   let contents;
   try {
     contents = await readFile2(file, "utf8");
@@ -1076,11 +1076,11 @@ async function readTraceabilityWithOptions(root, state, options = {}) {
   }
   return ledger;
 }
-async function readTraceability(root, state) {
-  return readTraceabilityWithOptions(root, state);
+async function readTraceability(root2, state) {
+  return readTraceabilityWithOptions(root2, state);
 }
-async function readProjectConfigSnapshot(root) {
-  const file = path4.join(root, ".dev-flow", "project.json");
+async function readProjectConfigSnapshot(root2) {
+  const file = path4.join(root2, ".dev-flow", "project.json");
   let raw;
   try {
     raw = await readFile2(file, "utf8");
@@ -1133,13 +1133,13 @@ function blockerFor(step, error) {
     }
   };
 }
-async function inspectTraceGate(root, state, step) {
+async function inspectTraceGate(root2, state, step) {
   if (!traceIsEnforced(state)) return { enforced: false };
   const traceStep = traceSliceForWorkflowStep(step);
   let ledger;
   try {
-    ledger = await readTraceability(root, state);
-    const { config, sha256 } = await readProjectConfigSnapshot(root);
+    ledger = await readTraceability(root2, state);
+    const { config, sha256 } = await readProjectConfigSnapshot(root2);
     assertTraceSliceCurrent(ledger, state.route, traceStep, sha256, verificationCommandHashes(config));
     return { enforced: true, ledger, effectiveSummary: ledger.summary };
   } catch (error) {
@@ -1150,13 +1150,13 @@ async function inspectTraceGate(root, state, step) {
     };
   }
 }
-async function inspectCurrentTrace(root, state) {
+async function inspectCurrentTrace(root2, state) {
   if (!traceIsEnforced(state)) return { enforced: false };
   const step = currentOpenStep(state);
-  return step ? inspectTraceGate(root, state, step) : { enforced: true };
+  return step ? inspectTraceGate(root2, state, step) : { enforced: true };
 }
-async function assertTraceGateCurrent(root, state, step) {
-  const inspection = await inspectTraceGate(root, state, step);
+async function assertTraceGateCurrent(root2, state, step) {
+  const inspection = await inspectTraceGate(root2, state, step);
   if (!inspection.blocker) return inspection.ledger;
   throw new DevFlowError(
     inspection.blocker.code,
@@ -1384,13 +1384,13 @@ function safeSnapshotPath2(pointer) {
   if (!/^review\/snapshots\/[a-f0-9]{64}\.json$/.test(pointer.path) || pointer.path !== `review/snapshots/${pointer.sha256}.json`) integrity2("review pointer path is invalid");
   return pointer.path;
 }
-async function readReviewLedger(root, state) {
+async function readReviewLedger(root2, state) {
   if (!state.review) integrity2("review pointer is missing", { featureId: state.featureId });
   const pointer = state.review;
   const relative = safeSnapshotPath2(pointer);
   let contents;
   try {
-    contents = await readFile3(path5.join(root, ".dev-flow", "features", state.featureId, relative), "utf8");
+    contents = await readFile3(path5.join(root2, ".dev-flow", "features", state.featureId, relative), "utf8");
   } catch {
     integrity2("review snapshot cannot be read", { featureId: state.featureId, path: relative });
   }
@@ -1412,8 +1412,8 @@ async function readReviewLedger(root, state) {
 import { lstat as lstat2, readFile as readFile4, readlink as readlink2 } from "node:fs/promises";
 import path6 from "node:path";
 import { createHash as createHash6 } from "node:crypto";
-async function trustedWriteSummary(root, file) {
-  const target = path6.join(root, file);
+async function trustedWriteSummary(root2, file) {
+  const target = path6.join(root2, file);
   try {
     const metadata = await lstat2(target);
     const bytes = metadata.isSymbolicLink() ? Buffer.from(await readlink2(target)) : await readFile4(target);
@@ -1599,8 +1599,8 @@ function renderReviewProjection(model) {
   return `${lines.join("\n")}
 `;
 }
-function projectionDirectory(root, featureId) {
-  return path7.join(root, ".dev-flow", "features", featureId, "review", "projections");
+function projectionDirectory(root2, featureId) {
+  return path7.join(root2, ".dev-flow", "features", featureId, "review", "projections");
 }
 async function fsyncDirectory(directory) {
   const handle = await open3(directory, "r");
@@ -1610,9 +1610,9 @@ async function fsyncDirectory(directory) {
     await handle.close();
   }
 }
-async function writeProjection(root, featureId, markdown) {
+async function writeProjection(root2, featureId, markdown) {
   const sha256 = digest3(markdown);
-  const directory = projectionDirectory(root, featureId);
+  const directory = projectionDirectory(root2, featureId);
   const target = path7.join(directory, `${sha256}.md`);
   await mkdir3(directory, { recursive: true });
   try {
@@ -1638,38 +1638,38 @@ async function writeProjection(root, featureId, markdown) {
   }
   return { path: `review/projections/${sha256}.md`, sha256 };
 }
-async function prepareReviewProjection(root, state) {
+async function prepareReviewProjection(root2, state) {
   if (state.mode !== "routed" || !state.route || !state.classification) return;
   if (!reviewEnforcementRequired(state.route, state.classification.controls)) return;
   if (!state.review) projectionError("review-enabled feature has no review pointer", { featureId: state.featureId });
-  const ledger = await readReviewLedger(root, state);
+  const ledger = await readReviewLedger(root2, state);
   const model = reviewProjectionModel(state, ledger);
-  const artifact = await writeProjection(root, state.featureId, renderReviewProjection(model));
+  const artifact = await writeProjection(root2, state.featureId, renderReviewProjection(model));
   state.artifacts["plan-review"] = artifact;
 }
 function validProjectionArtifact(artifact) {
   return Boolean(artifact) && /^review\/projections\/[a-f0-9]{64}\.md$/.test(artifact.path) && /^[a-f0-9]{64}$/.test(artifact.sha256) && artifact.path === `review/projections/${artifact.sha256}.md`;
 }
-async function readReviewProjection(root, state) {
+async function readReviewProjection(root2, state) {
   if (state.mode !== "routed" || !state.route || !state.classification) return void 0;
   if (!reviewEnforcementRequired(state.route, state.classification.controls)) return void 0;
   const artifact = state.artifacts["plan-review"];
   if (!validProjectionArtifact(artifact)) projectionError("review projection artifact pointer is missing or invalid", { featureId: state.featureId });
   let markdown;
   try {
-    markdown = await readFile5(path7.join(root, ".dev-flow", "features", state.featureId, artifact.path), "utf8");
+    markdown = await readFile5(path7.join(root2, ".dev-flow", "features", state.featureId, artifact.path), "utf8");
   } catch {
     projectionError("review projection artifact cannot be read", { featureId: state.featureId, path: artifact.path });
   }
   if (digest3(markdown) !== artifact.sha256) projectionError("review projection digest does not match artifact pointer", { featureId: state.featureId });
-  const ledger = await readReviewLedger(root, state);
+  const ledger = await readReviewLedger(root2, state);
   const model = reviewProjectionModel(state, ledger);
   const expected = renderReviewProjection(model);
   if (markdown !== expected) projectionError("review projection does not match the current review ledger", { featureId: state.featureId });
   return { artifact, model, markdown: expected };
 }
-async function assertCurrentReviewProjection(root, state) {
-  await readReviewProjection(root, state);
+async function assertCurrentReviewProjection(root2, state) {
+  await readReviewProjection(root2, state);
 }
 
 // plugins/dev-flow/src/core/git-reconciliation.ts
@@ -1679,9 +1679,9 @@ import { lstat as lstat3, readFile as readFile6 } from "node:fs/promises";
 import path8 from "node:path";
 import { promisify as promisify2 } from "node:util";
 var run = promisify2(execFile2);
-async function git(root, args, allowExitOne = false) {
+async function git(root2, args, allowExitOne = false) {
   try {
-    const result = await run("git", args, { cwd: root, encoding: "buffer", maxBuffer: 8 * 1024 * 1024 });
+    const result = await run("git", args, { cwd: root2, encoding: "buffer", maxBuffer: 8 * 1024 * 1024 });
     return Buffer.from(result.stdout).toString("utf8");
   } catch (error) {
     const failure = error;
@@ -1709,17 +1709,17 @@ function statusKind(code) {
   if (code[0] !== " " && code[1] === " ") return "staged";
   return "unstaged";
 }
-async function contentHash(root, relative) {
+async function contentHash(root2, relative) {
   try {
-    const metadata = await lstat3(path8.join(root, relative));
+    const metadata = await lstat3(path8.join(root2, relative));
     if (!metadata.isFile()) return void 0;
-    return createHash8("sha256").update(await readFile6(path8.join(root, relative))).digest("hex");
+    return createHash8("sha256").update(await readFile6(path8.join(root2, relative))).digest("hex");
   } catch {
     return void 0;
   }
 }
-async function dirtyPaths(root, config) {
-  const output = await git(root, ["status", "--porcelain=v1", "-z", "--untracked-files=all", "--", ...config.governedRoots]);
+async function dirtyPaths(root2, config) {
+  const output = await git(root2, ["status", "--porcelain=v1", "-z", "--untracked-files=all", "--", ...config.governedRoots]);
   const items = output.split("\0").filter(Boolean);
   const result = {};
   for (let index = 0; index < items.length; index += 1) {
@@ -1737,7 +1737,7 @@ async function dirtyPaths(root, config) {
     }
     const entry = {
       status: statusKind(code),
-      ...await contentHash(root, current) ? { sha256: await contentHash(root, current) } : {}
+      ...await contentHash(root2, current) ? { sha256: await contentHash(root2, current) } : {}
     };
     if (code.includes("R") && items[index + 1]) {
       entry.renamedFrom = normalizePath(items[index + 1]);
@@ -1747,29 +1747,29 @@ async function dirtyPaths(root, config) {
   }
   return result;
 }
-async function branchName(root) {
-  return (await git(root, ["branch", "--show-current"])).trim();
+async function branchName(root2) {
+  return (await git(root2, ["branch", "--show-current"])).trim();
 }
-async function head(root) {
-  return (await git(root, ["rev-parse", "HEAD"])).trim();
+async function head(root2) {
+  return (await git(root2, ["rev-parse", "HEAD"])).trim();
 }
-async function fingerprint(root, config) {
-  return fingerprintGovernedRoots(root, config);
+async function fingerprint(root2, config) {
+  return fingerprintGovernedRoots(root2, config);
 }
-async function pathFingerprints(root, config) {
-  return Object.fromEntries((await snapshotGovernedRoots(root, config)).map((file) => [
+async function pathFingerprints(root2, config) {
+  return Object.fromEntries((await snapshotGovernedRoots(root2, config)).map((file) => [
     file.path,
     `${file.kind ?? "file"}:${file.sha256}:${file.mode}`
   ]));
 }
-async function captureObservedCommits(root, baseHead, observedHead) {
+async function captureObservedCommits(root2, baseHead, observedHead) {
   if (!baseHead || !observedHead || baseHead === observedHead) return [];
-  const output = await git(root, ["log", "--format=%H%x00%P", `${baseHead}..${observedHead}`]);
+  const output = await git(root2, ["log", "--format=%H%x00%P", `${baseHead}..${observedHead}`]);
   const commits = [];
   for (const line of output.split("\n").filter(Boolean)) {
     const [hash2, parents = ""] = line.split("\0");
     if (!hash2) continue;
-    const paths = await git(root, ["show", "--format=", "--name-only", "--pretty=", hash2]);
+    const paths = await git(root2, ["show", "--format=", "--name-only", "--pretty=", hash2]);
     commits.push({
       hash: hash2,
       parentHashes: parents.split(" ").filter(Boolean),
@@ -1780,16 +1780,16 @@ async function captureObservedCommits(root, baseHead, observedHead) {
   }
   return commits;
 }
-async function changedPathsBetween(root, baseHead, observedHead) {
+async function changedPathsBetween(root2, baseHead, observedHead) {
   if (!baseHead || !observedHead || baseHead === observedHead) return [];
-  const output = await git(root, ["diff", "--name-only", "-z", baseHead, observedHead]);
+  const output = await git(root2, ["diff", "--name-only", "-z", baseHead, observedHead]);
   return output.split("\0").filter(Boolean).map(normalizePath).filter((file) => !builtInControlPath(file)).sort();
 }
-async function gitBranchAndHead(root) {
-  return { branch: await branchName(root), head: await head(root) };
+async function gitBranchAndHead(root2) {
+  return { branch: await branchName(root2), head: await head(root2) };
 }
-async function reconcileWorkspaceLineage(root, lineage, config) {
-  const current = await gitBranchAndHead(root);
+async function reconcileWorkspaceLineage(root2, lineage, config) {
+  const current = await gitBranchAndHead(root2);
   if (lineage.baseBranch && current.branch !== lineage.baseBranch) {
     throw new DevFlowError("GIT_BRANCH_CHANGED", "\u5F53\u524D\u5206\u652F\u5DF2\u5207\u6362\uFF0C\u4E0D\u80FD\u81EA\u52A8\u5047\u5B9A\u63D0\u4EA4\u5F52\u5C5E\u3002", {
       userMessage: "\u68C0\u6D4B\u5230\u5F53\u524D\u5206\u652F\u53D1\u751F\u53D8\u5316\uFF0C\u6D41\u7A0B\u5DF2\u5B89\u5168\u505C\u6B62\u3002",
@@ -1803,7 +1803,7 @@ async function reconcileWorkspaceLineage(root, lineage, config) {
       currentBranch: current.branch
     });
   }
-  if (lineage.baseHead && !await isAncestor(root, lineage.baseHead, current.head)) {
+  if (lineage.baseHead && !await isAncestor(root2, lineage.baseHead, current.head)) {
     throw new DevFlowError("GIT_HISTORY_REWRITE", "\u5F53\u524D HEAD \u4E0D\u662F\u542F\u52A8\u57FA\u7EBF\u7684\u540E\u4EE3\u3002", {
       userMessage: "\u68C0\u6D4B\u5230 Git \u5386\u53F2\u65E0\u6CD5\u8BC1\u660E\u8FDE\u7EED\uFF0C\u6D41\u7A0B\u5DF2\u5B89\u5168\u505C\u6B62\u3002",
       cause: "\u542F\u52A8\u57FA\u7EBF\u4E0D\u662F\u5F53\u524D HEAD \u7684\u7956\u5148\u3002",
@@ -1815,21 +1815,21 @@ async function reconcileWorkspaceLineage(root, lineage, config) {
       currentHead: current.head
     });
   }
-  const observedCommits = await captureObservedCommits(root, lineage.baseHead, current.head);
+  const observedCommits = await captureObservedCommits(root2, lineage.baseHead, current.head);
   const knownCommits = new Set(lineage.observedCommits.map((commit) => commit.hash));
   return {
     ...lineage,
     observedHead: current.head,
     observedCommits: [...lineage.observedCommits, ...observedCommits.filter((commit) => !knownCommits.has(commit.hash))],
-    observedPathFingerprints: await pathFingerprints(root, config),
-    lastWorkspaceFingerprint: await fingerprint(root, config),
+    observedPathFingerprints: await pathFingerprints(root2, config),
+    lastWorkspaceFingerprint: await fingerprint(root2, config),
     reconciliationStatus: "current"
   };
 }
-async function isAncestor(root, ancestor, descendant) {
+async function isAncestor(root2, ancestor, descendant) {
   if (!ancestor || !descendant) return false;
   try {
-    await git(root, ["merge-base", "--is-ancestor", ancestor, descendant]);
+    await git(root2, ["merge-base", "--is-ancestor", ancestor, descendant]);
     return true;
   } catch (error) {
     const failure = error;
@@ -1837,10 +1837,10 @@ async function isAncestor(root, ancestor, descendant) {
     throw error;
   }
 }
-async function reconcileWorkspaceForFeature(root, state, config) {
+async function reconcileWorkspaceForFeature(root2, state, config) {
   const previouslyObservedHead = state.workspace.observedHead;
-  let workspace = await reconcileWorkspaceLineage(root, state.workspace, config);
-  const committedPaths = await changedPathsBetween(root, previouslyObservedHead, workspace.observedHead);
+  let workspace = await reconcileWorkspaceLineage(root2, state.workspace, config);
+  const committedPaths = await changedPathsBetween(root2, previouslyObservedHead, workspace.observedHead);
   const ownership = { ...workspace.ownership };
   const ownershipSource = { ...workspace.ownershipSource };
   for (const file of committedPaths) {
@@ -1849,7 +1849,7 @@ async function reconcileWorkspaceForFeature(root, state, config) {
     }
   }
   workspace = { ...workspace, ownership, ownershipSource };
-  const dirty = Object.keys(await dirtyPaths(root, config));
+  const dirty = Object.keys(await dirtyPaths(root2, config));
   const previousPaths = state.workspace.observedPathFingerprints ?? {};
   const currentPaths = workspace.observedPathFingerprints;
   const candidates = /* @__PURE__ */ new Set([...Object.keys(previousPaths), ...Object.keys(currentPaths), ...committedPaths, ...dirty]);
@@ -2045,10 +2045,10 @@ function pendingDecisionForState(state) {
 import { mkdir as mkdir4, open as open4, readFile as readFile7 } from "node:fs/promises";
 import path9 from "node:path";
 var healthWindowMs = 15 * 60 * 1e3;
-var hostHealthPath = (root) => path9.join(root, ".dev-flow", "host-health.jsonl");
-async function readHostHealth(root) {
+var hostHealthPath = (root2) => path9.join(root2, ".dev-flow", "host-health.jsonl");
+async function readHostHealth(root2) {
   try {
-    const raw = await readFile7(hostHealthPath(root), "utf8");
+    const raw = await readFile7(hostHealthPath(root2), "utf8");
     return raw.split("\n").filter(Boolean).flatMap((line) => {
       try {
         const signal = JSON.parse(line);
@@ -2062,12 +2062,12 @@ async function readHostHealth(root) {
     throw error;
   }
 }
-async function recordHostHealth(root, signal) {
-  const before = await readHostHealth(root);
+async function recordHostHealth(root2, signal) {
+  const before = await readHostHealth(root2);
   const latest = [...before].reverse().find((entry) => entry.host === signal.host);
   const now = signal.at ?? (/* @__PURE__ */ new Date()).toISOString();
-  await mkdir4(path9.dirname(hostHealthPath(root)), { recursive: true });
-  const handle = await open4(hostHealthPath(root), "a");
+  await mkdir4(path9.dirname(hostHealthPath(root2)), { recursive: true });
+  const handle = await open4(hostHealthPath(root2), "a");
   try {
     await handle.writeFile(`${JSON.stringify({ ...signal, at: now })}
 `);
@@ -2077,8 +2077,8 @@ async function recordHostHealth(root, signal) {
   }
   return { recovered: Boolean(latest && Date.parse(now) - Date.parse(latest.at) > healthWindowMs), latest };
 }
-async function assertHostHealth(root, host, operation) {
-  const latest = [...await readHostHealth(root)].reverse().find((signal) => signal.host === host);
+async function assertHostHealth(root2, host, operation) {
+  const latest = [...await readHostHealth(root2)].reverse().find((signal) => signal.host === host);
   const ageMs = latest ? Date.now() - Date.parse(latest.at) : Number.POSITIVE_INFINITY;
   if (!latest) {
     throw new DevFlowError("HOOK_HEALTH_REQUIRED", `${host} hook health is required before ${operation}`, {
@@ -2155,20 +2155,20 @@ function presentWorkspaceOwnership(state, paths, options = {}) {
   });
   return { interaction, presentationEventId };
 }
-async function reconcileWorkspace(root, id, expectedRevision, host) {
-  const state = await readState(root, id);
-  const config = await readProjectConfig(root);
-  const { workspace, contentChanged, changedPaths } = await reconcileWorkspaceForFeature(root, state, config);
-  const legalCheckpointPaths = contentChanged ? await legalActiveUnitChanges(root, state, changedPaths) : /* @__PURE__ */ new Set();
-  const active = state.lifecycle === "finalized" && contentChanged ? await readActive(root) : void 0;
+async function reconcileWorkspace(root2, id, expectedRevision, host) {
+  const state = await readState(root2, id);
+  const config = await readProjectConfig(root2);
+  const { workspace, contentChanged, changedPaths } = await reconcileWorkspaceForFeature(root2, state, config);
+  const legalCheckpointPaths = contentChanged ? await legalActiveUnitChanges(root2, state, changedPaths) : /* @__PURE__ */ new Set();
+  const active = state.lifecycle === "finalized" && contentChanged ? await readActive(root2) : void 0;
   const reopenedLifecycle = state.lifecycle === "finalized" && contentChanged ? !active || active.featureId === id ? "active" : "paused" : void 0;
   const checkpointAffected = contentChanged ? checkpointAffectedByPaths(state, changedPaths, legalCheckpointPaths) : false;
   let presentationEventId;
-  return mutate(root, id, expectedRevision, "workspace-reconciled", (draft) => {
+  return mutate(root2, id, expectedRevision, "workspace-reconciled", (draft) => {
     draft.workspace = workspace;
     if (contentChanged) markAffectedEvidenceStale(draft, changedPaths, reopenedLifecycle, legalCheckpointPaths);
     presentationEventId = queueNextOwnershipDecision(draft);
-    draft.lastUpdatedBy = { host, pluginVersion: "5.0.6" };
+    draft.lastUpdatedBy = { host, pluginVersion: "5.0.7" };
   }, () => ({
     observedHead: workspace.observedHead,
     commitCount: workspace.observedCommits.length,
@@ -2219,13 +2219,13 @@ function checkpointAffectedByPaths(state, changedPaths, legalCheckpointPaths) {
   const externallyChangedPaths = changedPaths.filter((file) => !legalCheckpointPaths.has(file));
   return state.checkpoints?.some((checkpoint) => checkpoint.files.some((file) => externallyChangedPaths.includes(file))) ?? false;
 }
-async function legalActiveUnitChanges(root, state, changedPaths) {
+async function legalActiveUnitChanges(root2, state, changedPaths) {
   const activeUnit = state.implementationUnits?.find((unit) => unit.status === "active" || unit.status === "verified");
   if (!activeUnit || !state.traceability || !state.checkpoints?.length) return /* @__PURE__ */ new Set();
-  const trace = await readTraceability(root, state);
+  const trace = await readTraceability(root2, state);
   const node = trace.nodes[activeUnit.unitId];
   if (!node || node.kind !== "rollback" || node.status !== "current") return /* @__PURE__ */ new Set();
-  const events = await readFeatureEvents(root, state.featureId);
+  const events = await readFeatureEvents(root2, state.featureId);
   let lastCheckpointEventIndex = -1;
   for (let index = events.length - 1; index >= 0; index -= 1) {
     if (events[index].type === "automatic-checkpoint-captured") {
@@ -2247,7 +2247,7 @@ async function legalActiveUnitChanges(root, state, changedPaths) {
     }
     if (!event2) continue;
     const expected = event2.data.after[file];
-    if (expected === await trustedWriteSummary(root, file)) legal.add(file);
+    if (expected === await trustedWriteSummary(root2, file)) legal.add(file);
   }
   return legal;
 }
@@ -2323,11 +2323,11 @@ function parsePlanBlocks(markdown) {
 
 // plugins/dev-flow/src/core/artifacts.ts
 var hash = (value) => createHash10("sha256").update(value).digest("hex");
-var featureDirectory = (root, id) => path10.join(root, ".dev-flow", "features", id);
-async function assertArtifactCurrent(root, id, state, kind) {
+var featureDirectory = (root2, id) => path10.join(root2, ".dev-flow", "features", id);
+async function assertArtifactCurrent(root2, id, state, kind) {
   const artifact = state.artifacts[kind];
   if (!artifact) throw new DevFlowError("MISSING_REQUIRED_ARTIFACT", kind);
-  const contents = await readFile8(path10.join(featureDirectory(root, id), normalizeUnicode(artifact.path)), "utf8");
+  const contents = await readFile8(path10.join(featureDirectory(root2, id), normalizeUnicode(artifact.path)), "utf8");
   if (hash(contents) !== artifact.sha256) throw new DevFlowError("ARTIFACT_INTEGRITY_FAILED", kind);
   return contents;
 }
@@ -2578,16 +2578,16 @@ function validateGovernanceLedger(ledger) {
   }
 }
 var delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-var devFlow = (root) => path11.join(root, ".dev-flow");
-var features = (root) => path11.join(devFlow(root), "features");
-var statePath = (root, id) => path11.join(features(root), id, "state.json");
-var eventPath = (root, id) => path11.join(features(root), id, "events.jsonl");
-var activePath = (root) => path11.join(devFlow(root), "active.json");
-var recoveryTxnPath = (root) => path11.join(devFlow(root), "recovery-transaction.json");
-var rollbackTxnPath = (root, featureId) => path11.join(features(root), featureId, "rollback-transaction.json");
-async function readProjectConfig(root) {
+var devFlow = (root2) => path11.join(root2, ".dev-flow");
+var features = (root2) => path11.join(devFlow(root2), "features");
+var statePath = (root2, id) => path11.join(features(root2), id, "state.json");
+var eventPath = (root2, id) => path11.join(features(root2), id, "events.jsonl");
+var activePath = (root2) => path11.join(devFlow(root2), "active.json");
+var recoveryTxnPath = (root2) => path11.join(devFlow(root2), "recovery-transaction.json");
+var rollbackTxnPath = (root2, featureId) => path11.join(features(root2), featureId, "rollback-transaction.json");
+async function readProjectConfig(root2) {
   try {
-    const raw = await readFile9(path11.join(devFlow(root), "project.json"), "utf8");
+    const raw = await readFile9(path11.join(devFlow(root2), "project.json"), "utf8");
     const value = JSON.parse(raw);
     validateProjectConfig(value);
     return value;
@@ -2639,7 +2639,7 @@ async function writeAtomic(file, value) {
     await directory.close();
   }
 }
-async function prepareStatusProjection(root, state, revision) {
+async function prepareStatusProjection(root2, state, revision) {
   const status = state.artifacts.status;
   if (!status) return;
   if (state.mode !== "routed" || !state.route || !state.classification) {
@@ -2661,13 +2661,13 @@ async function prepareStatusProjection(root, state, revision) {
       "",
       ...pending?.kind === "route-confirmation" ? ["## Pending", "", `- ${pending.question}`, ""] : []
     ].join("\n");
-    const file2 = path11.join(features(root), state.featureId, status.path);
+    const file2 = path11.join(features(root2), state.featureId, status.path);
     state.artifacts.status = { ...status, sha256: createHash11("sha256").update(contents2).digest("hex") };
     return async () => {
       await writeFile2(file2, contents2);
     };
   }
-  const trace = await inspectCurrentTrace(root, state);
+  const trace = await inspectCurrentTrace(root2, state);
   const summary = trace.effectiveSummary;
   const traceLines = [
     "## Trace",
@@ -2703,16 +2703,16 @@ async function prepareStatusProjection(root, state, revision) {
   ].join("\n");
   const contents = `${projection}
 `;
-  const file = path11.join(features(root), state.featureId, status.path);
+  const file = path11.join(features(root2), state.featureId, status.path);
   state.artifacts.status = { ...status, sha256: createHash11("sha256").update(contents).digest("hex") };
   return async () => {
     await writeFile2(file, contents);
   };
 }
-async function lock(root, featureId, operation) {
-  const directory = path11.join(devFlow(root), ".lock");
+async function lock(root2, featureId, operation) {
+  const directory = path11.join(devFlow(root2), ".lock");
   const started = Date.now();
-  await mkdir5(devFlow(root), { recursive: true });
+  await mkdir5(devFlow(root2), { recursive: true });
   while (true) {
     try {
       await mkdir5(directory);
@@ -2744,9 +2744,9 @@ async function lock(root, featureId, operation) {
     }
   }
 }
-async function readState(root, featureId) {
+async function readState(root2, featureId) {
   try {
-    const raw = JSON.parse(await readFile9(statePath(root, featureId), "utf8"));
+    const raw = JSON.parse(await readFile9(statePath(root2, featureId), "utf8"));
     validateFeatureState(raw);
     const state = migrateFeatureState(raw);
     if (state.featureId !== featureId) throw new DevFlowError("INVALID_STATE_SCHEMA", "state feature id does not match its path");
@@ -2767,10 +2767,10 @@ async function readState(root, featureId) {
     });
   }
 }
-async function readActive(root) {
+async function readActive(root2) {
   let raw;
   try {
-    raw = await readFile9(activePath(root), "utf8");
+    raw = await readFile9(activePath(root2), "utf8");
   } catch (error) {
     if (error.code === "ENOENT") return void 0;
     throw new DevFlowError("ACTIVE_POINTER_UNREADABLE", "active.json cannot be read", { recoveryHint: "Run dev_flow_doctor and use recovery; do not start a new feature" });
@@ -2785,8 +2785,8 @@ async function readActive(root) {
     throw new DevFlowError("ACTIVE_POINTER_UNREADABLE", "active.json is invalid", { recoveryHint: "Run dev_flow_doctor and use recovery; do not start a new feature" });
   }
 }
-async function appendEvent(root, id, revision, type, data) {
-  const handle = await open5(eventPath(root, id), "a");
+async function appendEvent(root2, id, revision, type, data) {
+  const handle = await open5(eventPath(root2, id), "a");
   try {
     await handle.writeFile(`${JSON.stringify({ revision, type, at: (/* @__PURE__ */ new Date()).toISOString(), data })}
 `);
@@ -2795,8 +2795,8 @@ async function appendEvent(root, id, revision, type, data) {
     await handle.close();
   }
 }
-async function assertWorkspaceOwnershipComplete(root, state, config, operation) {
-  const reconciled = await reconcileWorkspaceForFeature(root, state, config);
+async function assertWorkspaceOwnershipComplete(root2, state, config, operation) {
+  const reconciled = await reconcileWorkspaceForFeature(root2, state, config);
   const unownedPaths = reconciled.workspace.unownedPaths ?? [];
   if (unownedPaths.length) {
     throw new DevFlowError("WORKSPACE_OWNERSHIP_REQUIRED", `unknown workspace ownership before ${operation}`, {
@@ -2812,113 +2812,113 @@ async function assertWorkspaceOwnershipComplete(root, state, config, operation) 
   }
   return reconciled.workspace;
 }
-async function recordHostEvent(root, hostEvent) {
+async function recordHostEvent(root2, hostEvent) {
   if (hostEvent.type === "review-execution") {
     throw new DevFlowError("REVIEW_EXECUTION_EVENT_INVALID", "review execution proofs must use the dedicated adapter seam");
   }
-  const active = await readActive(root);
+  const active = await readActive(root2);
   if (!active) return;
-  const release = await lock(root, active.featureId, "host-event");
+  const release = await lock(root2, active.featureId, "host-event");
   try {
-    const state = await readState(root, active.featureId);
-    const events = await readFeatureEvents(root, active.featureId);
+    const state = await readState(root2, active.featureId);
+    const events = await readFeatureEvents(root2, active.featureId);
     const duplicate = events.some((item) => {
       const recorded = item.data;
       return item.type === "host-event" && recorded.host === hostEvent.host && recorded.eventId === hostEvent.eventId;
     });
-    if (!duplicate) await appendEvent(root, active.featureId, state.revision, "host-event", { ...hostEvent, at: hostEvent.at ?? (/* @__PURE__ */ new Date()).toISOString() });
+    if (!duplicate) await appendEvent(root2, active.featureId, state.revision, "host-event", { ...hostEvent, at: hostEvent.at ?? (/* @__PURE__ */ new Date()).toISOString() });
   } finally {
     await release();
   }
 }
-async function recordTrustedWriteIntent(root, paths, host, eventId2) {
-  const active = await readActive(root);
+async function recordTrustedWriteIntent(root2, paths, host, eventId2) {
+  const active = await readActive(root2);
   if (!active || paths.length === 0) return;
-  const state = await readState(root, active.featureId);
+  const state = await readState(root2, active.featureId);
   if (state.mode !== "routed" || state.lifecycle !== "active" || state.currentStage !== "implementation") return;
-  const config = await readProjectConfig(root);
+  const config = await readProjectConfig(root2);
   const governed = paths.filter((file) => config.governedRoots.some((entry) => entry === "." || file === entry || file.startsWith(`${entry}/`)));
   if (!governed.length) return;
-  const before = Object.fromEntries(await Promise.all(governed.map(async (file) => [file, await trustedWriteSummary(root, file)])));
-  await appendFeatureEvent(root, state.featureId, state.revision, "trusted-write-before", { eventId: eventId2, host, paths: governed, before });
+  const before = Object.fromEntries(await Promise.all(governed.map(async (file) => [file, await trustedWriteSummary(root2, file)])));
+  await appendFeatureEvent(root2, state.featureId, state.revision, "trusted-write-before", { eventId: eventId2, host, paths: governed, before });
 }
-async function recordTrustedWriteOwnership(root, paths, host, eventId2) {
-  const active = await readActive(root);
+async function recordTrustedWriteOwnership(root2, paths, host, eventId2) {
+  const active = await readActive(root2);
   if (!active || paths.length === 0) return;
-  const state = await readState(root, active.featureId);
+  const state = await readState(root2, active.featureId);
   if (state.mode !== "routed" || state.lifecycle !== "active" || state.currentStage !== "implementation") return;
-  const config = await readProjectConfig(root);
+  const config = await readProjectConfig(root2);
   const governed = paths.filter((file) => config.governedRoots.some((entry) => entry === "." || file === entry || file.startsWith(`${entry}/`)));
   if (!governed.length) return;
-  const after = Object.fromEntries(await Promise.all(governed.map(async (file) => [file, await trustedWriteSummary(root, file)])));
-  await mutate(root, state.featureId, state.revision, "trusted-write-owned", (draft) => {
+  const after = Object.fromEntries(await Promise.all(governed.map(async (file) => [file, await trustedWriteSummary(root2, file)])));
+  await mutate(root2, state.featureId, state.revision, "trusted-write-owned", (draft) => {
     for (const file of governed) {
       draft.workspace.ownership[file] = "feature";
       draft.workspace.ownershipSource[file] = "trusted-hook";
     }
     draft.workspace.unownedPaths = (draft.workspace.unownedPaths ?? []).filter((file) => !governed.includes(file));
-    draft.lastUpdatedBy = { host, pluginVersion: "5.0.6" };
+    draft.lastUpdatedBy = { host, pluginVersion: "5.0.7" };
   }, { eventId: eventId2, host, paths: governed, after });
 }
-async function recordHostAuthorizationEvent(root, type, record) {
-  const active = await readActive(root);
+async function recordHostAuthorizationEvent(root2, type, record) {
+  const active = await readActive(root2);
   if (!active || active.featureId !== record.featureId) return;
-  const release = await lock(root, active.featureId, "host-authorization");
+  const release = await lock(root2, active.featureId, "host-authorization");
   try {
-    const current = await readActive(root);
+    const current = await readActive(root2);
     if (!current || current.featureId !== record.featureId || current.revision !== active.revision) return;
-    const state = await readState(root, record.featureId);
+    const state = await readState(root2, record.featureId);
     if (state.lifecycle !== "active" || state.revision !== current.revision) return;
-    const events = await readFeatureEvents(root, record.featureId);
+    const events = await readFeatureEvents(root2, record.featureId);
     const duplicate = events.some((event2) => {
       if (event2.type !== type) return false;
       const value = event2.data;
       return value.host === record.host && value.featureId === record.featureId && value.riskClass === record.riskClass && value.commandFingerprint === record.commandFingerprint && value.sourceToolEvent === record.sourceToolEvent;
     });
-    if (!duplicate) await appendEvent(root, record.featureId, state.revision, type, record);
+    if (!duplicate) await appendEvent(root2, record.featureId, state.revision, type, record);
   } finally {
     await release();
   }
 }
-async function readHostAuthorizationEvents(root, featureId) {
-  const events = await readFeatureEvents(root, featureId);
+async function readHostAuthorizationEvents(root2, featureId) {
+  const events = await readFeatureEvents(root2, featureId);
   return events.flatMap((event2) => {
     if (event2.type !== "host-authorization-pending" && event2.type !== "host-authorization-granted") return [];
     return [{ type: event2.type, data: event2.data }];
   });
 }
-async function readFeatureEvents(root, id) {
+async function readFeatureEvents(root2, id) {
   try {
-    return (await readFile9(eventPath(root, id), "utf8")).split("\n").filter(Boolean).map((line) => JSON.parse(line));
+    return (await readFile9(eventPath(root2, id), "utf8")).split("\n").filter(Boolean).map((line) => JSON.parse(line));
   } catch (error) {
     if (error.code === "ENOENT") return [];
     throw error;
   }
 }
-async function mutate(root, id, expectedRevision, operation, mutator, eventData = {}) {
-  return mutatePrepared(root, id, expectedRevision, operation, async () => ({ mutate: mutator, eventData }));
+async function mutate(root2, id, expectedRevision, operation, mutator, eventData = {}) {
+  return mutatePrepared(root2, id, expectedRevision, operation, async () => ({ mutate: mutator, eventData }));
 }
-async function mutatePrepared(root, id, expectedRevision, operation, prepare, options = {}) {
-  const release = await lock(root, id, operation);
+async function mutatePrepared(root2, id, expectedRevision, operation, prepare, options = {}) {
+  const release = await lock(root2, id, operation);
   try {
-    return await mutatePreparedLocked(root, id, expectedRevision, operation, prepare, options);
+    return await mutatePreparedLocked(root2, id, expectedRevision, operation, prepare, options);
   } finally {
     await release();
   }
 }
-async function mutatePreparedLocked(root, id, expectedRevision, operation, prepare, options = {}) {
-  const state = await readState(root, id);
-  await assertNoOpenRollbackTransaction(root, { featureId: id, transactionId: options.allowRollbackTransaction });
+async function mutatePreparedLocked(root2, id, expectedRevision, operation, prepare, options = {}) {
+  const state = await readState(root2, id);
+  await assertNoOpenRollbackTransaction(root2, { featureId: id, transactionId: options.allowRollbackTransaction });
   if (state.revision !== expectedRevision) throw new DevFlowError("STATE_REVISION_CONFLICT", "state revision changed", { currentRevision: state.revision });
   const prepared = await prepare(state, state.revision + 1);
   if (prepared.unchanged) return state;
   await prepared.mutate(state);
   state.revision += 1;
-  await prepareReviewProjection(root, state);
+  await prepareReviewProjection(root2, state);
   validateFeatureState(state);
-  const writeStatus = await prepareStatusProjection(root, state, state.revision);
+  const writeStatus = await prepareStatusProjection(root2, state, state.revision);
   await options.fault?.("before-state-commit");
-  await writeAtomic(statePath(root, id), state);
+  await writeAtomic(statePath(root2, id), state);
   const failures = [];
   try {
     await options.fault?.("after-state-commit");
@@ -2932,14 +2932,14 @@ async function mutatePreparedLocked(root, id, expectedRevision, operation, prepa
   }
   try {
     const data = typeof prepared.eventData === "function" ? prepared.eventData() : prepared.eventData ?? {};
-    await appendEvent(root, id, state.revision, operation, data);
+    await appendEvent(root2, id, state.revision, operation, data);
   } catch {
     failures.push("event");
   }
   try {
-    const active = await readActive(root);
-    if (active?.featureId === id && (state.lifecycle === "finalized" || state.lifecycle === "abandoned" || state.lifecycle === "paused")) await rm(activePath(root), { force: true });
-    else if (state.lifecycle === "active" && (active?.featureId === id || !active && ["feature-resumed", "workspace-reconciled", "feature-derived-state-repaired"].includes(operation))) await writeAtomic(activePath(root), { featureId: id, revision: state.revision, updatedAt: (/* @__PURE__ */ new Date()).toISOString() });
+    const active = await readActive(root2);
+    if (active?.featureId === id && (state.lifecycle === "finalized" || state.lifecycle === "abandoned" || state.lifecycle === "paused")) await rm(activePath(root2), { force: true });
+    else if (state.lifecycle === "active" && (active?.featureId === id || !active && ["feature-resumed", "workspace-reconciled", "feature-derived-state-repaired"].includes(operation))) await writeAtomic(activePath(root2), { featureId: id, revision: state.revision, updatedAt: (/* @__PURE__ */ new Date()).toISOString() });
   } catch {
     failures.push("active");
   }
@@ -2966,8 +2966,8 @@ function validateRecoveryTransaction(value) {
     throw new DevFlowError("RECOVERY_TRANSACTION_UNREADABLE", "recovery journal has an unsafe feature id", { recoveryHint: "Run dev_flow_doctor; recovery remains fail-closed" });
   }
 }
-function validateRecoveryLocation(root, transaction) {
-  const recoveredRoot = path11.join(devFlow(root), "recovered");
+function validateRecoveryLocation(root2, transaction) {
+  const recoveredRoot = path11.join(devFlow(root2), "recovered");
   const relative = path11.relative(recoveredRoot, transaction.recoveredTo);
   if (!relative || relative.startsWith("..") || path11.isAbsolute(relative) || path11.basename(relative) !== relative) {
     throw new DevFlowError("RECOVERY_TRANSACTION_UNREADABLE", "recovery journal points outside the recovered directory", {
@@ -2975,10 +2975,10 @@ function validateRecoveryLocation(root, transaction) {
     });
   }
 }
-async function readRecoveryTransaction(root) {
+async function readRecoveryTransaction(root2) {
   let raw;
   try {
-    raw = await readFile9(recoveryTxnPath(root), "utf8");
+    raw = await readFile9(recoveryTxnPath(root2), "utf8");
   } catch (error) {
     if (error.code === "ENOENT") return void 0;
     throw new DevFlowError("RECOVERY_TRANSACTION_UNREADABLE", "recovery journal cannot be read", { recoveryHint: "Run dev_flow_doctor; do not start a new feature" });
@@ -2986,7 +2986,7 @@ async function readRecoveryTransaction(root) {
   try {
     const transaction = JSON.parse(raw);
     validateRecoveryTransaction(transaction);
-    validateRecoveryLocation(root, transaction);
+    validateRecoveryLocation(root2, transaction);
     return transaction;
   } catch (error) {
     if (error instanceof DevFlowError) throw error;
@@ -3017,10 +3017,10 @@ function validateRollbackTransaction(value) {
 function rollbackTransactionFinished(transaction) {
   return (transaction.phase === "committed" || transaction.phase === "compensated") && typeof transaction.completedAt === "string";
 }
-async function readRollbackTransaction(root, featureId) {
+async function readRollbackTransaction(root2, featureId) {
   let raw;
   try {
-    raw = await readFile9(rollbackTxnPath(root, featureId), "utf8");
+    raw = await readFile9(rollbackTxnPath(root2, featureId), "utf8");
   } catch (error) {
     if (error.code === "ENOENT") return void 0;
     throw new DevFlowError("ROLLBACK_TRANSACTION_UNREADABLE", "rollback transaction journal cannot be read", {
@@ -3043,17 +3043,17 @@ async function readRollbackTransaction(root, featureId) {
   }
   return parsed;
 }
-async function assertNoOpenRollbackTransaction(root, allow) {
+async function assertNoOpenRollbackTransaction(root2, allow) {
   let entries;
   try {
-    entries = await readdir4(features(root), { withFileTypes: true });
+    entries = await readdir4(features(root2), { withFileTypes: true });
   } catch (error) {
     if (error.code === "ENOENT") return;
     throw error;
   }
   for (const entry of entries) {
     if (!entry.isDirectory()) continue;
-    const transaction = await readRollbackTransaction(root, entry.name);
+    const transaction = await readRollbackTransaction(root2, entry.name);
     if (!transaction || rollbackTransactionFinished(transaction)) continue;
     if (allow?.featureId === entry.name && allow.transactionId !== void 0 && allow.transactionId === transaction.transactionId) continue;
     throw new DevFlowError("ROLLBACK_TRANSACTION_OPEN", "a rollback transaction is open", {
@@ -3064,8 +3064,8 @@ async function assertNoOpenRollbackTransaction(root, allow) {
     });
   }
 }
-async function appendFeatureEvent(root, id, revision, type, data) {
-  await appendEvent(root, id, revision, type, data);
+async function appendFeatureEvent(root2, id, revision, type, data) {
+  await appendEvent(root2, id, revision, type, data);
 }
 
 // plugins/dev-flow/src/hosts/adapter-policy.ts
@@ -3131,7 +3131,7 @@ var DEFAULT_COMMAND_MAX_OUTPUT_BYTES = 1024 * 1024;
 
 // plugins/dev-flow/src/core/checkpoints.ts
 var digest4 = (value) => createHash12("sha256").update(value).digest("hex");
-var featureDirectory2 = (root, featureId) => path12.join(root, ".dev-flow", "features", featureId);
+var featureDirectory2 = (root2, featureId) => path12.join(root2, ".dev-flow", "features", featureId);
 function blobPath(sha256) {
   return `checkpoints/blobs/${sha256}`;
 }
@@ -3163,21 +3163,21 @@ async function pathExists(file) {
     return false;
   }
 }
-async function writeBlobIfAbsent(root, featureId, bytes) {
+async function writeBlobIfAbsent(root2, featureId, bytes) {
   const sha256 = digest4(bytes);
-  const file = path12.join(featureDirectory2(root, featureId), blobPath(sha256));
+  const file = path12.join(featureDirectory2(root2, featureId), blobPath(sha256));
   if (await pathExists(file)) return sha256;
   await mkdir6(path12.dirname(file), { recursive: true });
   await writeAtomic2(file, bytes);
   return sha256;
 }
-async function captureUnitBaseline(root, featureId, unitId, snapshot) {
+async function captureUnitBaseline(root2, featureId, unitId, snapshot) {
   for (const file2 of snapshot) {
-    const bytes = file2.kind === "symlink" ? Buffer.from(await readlink3(path12.join(root, file2.path))) : await readFile10(path12.join(root, file2.path));
+    const bytes = file2.kind === "symlink" ? Buffer.from(await readlink3(path12.join(root2, file2.path))) : await readFile10(path12.join(root2, file2.path));
     if (digest4(bytes) !== file2.sha256) {
       throw new DevFlowError("CHECKPOINT_HASH_MISMATCH", "\u6355\u83B7\u5355\u5143\u57FA\u7EBF\u65F6 governed \u6587\u4EF6\u53D1\u751F\u53D8\u5316\u3002", { path: file2.path });
     }
-    await writeBlobIfAbsent(root, featureId, bytes);
+    await writeBlobIfAbsent(root2, featureId, bytes);
   }
   const baseline = {
     schemaVersion: 2,
@@ -3186,7 +3186,7 @@ async function captureUnitBaseline(root, featureId, unitId, snapshot) {
     capturedAt: (/* @__PURE__ */ new Date()).toISOString(),
     files: snapshot
   };
-  const file = path12.join(featureDirectory2(root, featureId), baselinePath(unitId));
+  const file = path12.join(featureDirectory2(root2, featureId), baselinePath(unitId));
   await mkdir6(path12.dirname(file), { recursive: true });
   await writeAtomic2(file, `${JSON.stringify(baseline, null, 2)}
 `);
@@ -3241,15 +3241,15 @@ function invalid3(code, message, details = {}) {
 function reviewArtifactKinds(state) {
   return basisArtifactKinds.filter((kind) => Boolean(state.artifacts[kind]));
 }
-async function deriveReviewInput(root, state) {
-  const trace = state.traceability ? await readTraceability(root, state) : void 0;
-  const { config, sha256: projectConfigSha256 } = await readProjectConfigSnapshot(root);
+async function deriveReviewInput(root2, state) {
+  const trace = state.traceability ? await readTraceability(root2, state) : void 0;
+  const { config, sha256: projectConfigSha256 } = await readProjectConfigSnapshot(root2);
   const frozenArtifacts = await Promise.all(reviewArtifactKinds(state).map(async (kind) => {
     const artifact = state.artifacts[kind];
     if (!artifact) invalid3("REVIEW_BASIS_ARTIFACT_MISSING", `review basis artifact is missing: ${kind}`, { kind });
     let contents;
     try {
-      contents = await assertArtifactCurrent(root, state.featureId, state, kind);
+      contents = await assertArtifactCurrent(root2, state.featureId, state, kind);
     } catch (error) {
       if (error instanceof DevFlowError && error.code === "ARTIFACT_INTEGRITY_FAILED") throw error;
       invalid3("REVIEW_BASIS_ARTIFACT_MISSING", `review basis artifact cannot be read: ${kind}`, { kind });
@@ -3262,7 +3262,7 @@ async function deriveReviewInput(root, state) {
     }
     return { kind, path: artifact.path, sha256: artifact.sha256, contents };
   }));
-  const projectContents = (await readProjectConfigSnapshot(root)).contents;
+  const projectContents = (await readProjectConfigSnapshot(root2)).contents;
   if (digest5(projectContents) !== projectConfigSha256) {
     invalid3("REVIEW_BASIS_UNAVAILABLE", "project configuration changed while review basis was being captured");
   }
@@ -3277,7 +3277,7 @@ async function deriveReviewInput(root, state) {
       return scopes;
     }, []).sort((left, right) => left.id.localeCompare(right.id))
   };
-  const governedRootsFingerprint = await fingerprintGovernedRoots(root, config);
+  const governedRootsFingerprint = await fingerprintGovernedRoots(root2, config);
   const basis = {
     featureId: state.featureId,
     route: state.route,
@@ -3394,12 +3394,12 @@ function planReviewBoundToBatch(state, batch) {
   const evidence = state.steps.planning?.evidence;
   return state.steps.planning?.status === "satisfied" && evidence?.batchId === batch.batchId && evidence?.basisHash === batch.basisHash;
 }
-async function currentBatchWithBasis(root, state, options = {}) {
-  const ledger = await readReviewLedger(root, state);
+async function currentBatchWithBasis(root2, state, options = {}) {
+  const ledger = await readReviewLedger(root2, state);
   const batch = ledger.batches.find((candidate) => candidate.validity === "current");
   if (!batch) invalid3("REVIEW_BATCH_REQUIRED", "a current review batch is required");
   const requireLiveBasis = options.requireLiveBasis ?? !planReviewBoundToBatch(state, batch);
-  const reviewInput = await deriveReviewInput(root, state);
+  const reviewInput = await deriveReviewInput(root2, state);
   if (requireLiveBasis) {
     if (basisHash(reviewInput.basis) !== batch.basisHash) {
       invalid3("REVIEW_BASIS_STALE", "review batch basis no longer matches current feature state", {
@@ -3454,8 +3454,8 @@ function currentUnresolvedBlocking(ledger, batch, state) {
     return !successor || !resolutionJob || !sourceJob || resolutionJob.role !== sourceJob.role || !resolutionJob.submission?.resolutions.some((resolution) => resolution.findingId === finding.findingId);
   });
 }
-async function assertReviewComplete(root, state) {
-  const { ledger, batch } = await currentBatchWithBasis(root, state);
+async function assertReviewComplete(root2, state) {
+  const { ledger, batch } = await currentBatchWithBasis(root2, state);
   const expectedPhase = currentOpenStep(state) === "code_review" ? "code" : "plan";
   if ((batch.phase ?? "plan") !== expectedPhase) invalid3("REVIEW_BATCH_REQUIRED", `a current ${expectedPhase} review batch is required`, { expectedPhase });
   if (batch.progress !== "complete") invalid3("REVIEW_BATCH_INCOMPLETE", "all required review jobs must be submitted", { batchId: batch.batchId });
@@ -3477,7 +3477,7 @@ async function assertReviewComplete(root, state) {
     findingIds: unresolved.map((finding) => finding.findingId)
   });
   if (reviewEnforcementRequired(state.route, state.classification.controls)) {
-    await assertCurrentReviewProjection(root, state);
+    await assertCurrentReviewProjection(root2, state);
   }
   return { batchId: batch.batchId, basisHash: batch.basisHash, assuranceLevel: batch.assuranceLevel };
 }
@@ -3503,14 +3503,14 @@ function planImplementationUnitDefs(planMarkdown) {
   }
   return defs.sort((left, right) => left.id.localeCompare(right.id));
 }
-async function ensureActiveImplementationUnit(root, id, state) {
+async function ensureActiveImplementationUnit(root2, id, state) {
   if (!checkpointsEnforcementRequired(state.route, state.classification.controls) || currentOpenStep(state) !== "implementation" || !confirmedApproval(state) || (state.implementationUnits ?? []).some((unit) => unit.status === "active")) return state;
-  const ledger = await readTraceability(root, state);
+  const ledger = await readTraceability(root2, state);
   const nodes = currentImplementationNodes(ledger).sort((a, b) => a.id.localeCompare(b.id));
   const statusByUnit = new Map((state.implementationUnits ?? []).map((unit) => [unit.unitId, unit.status]));
   const ready = nodes.find((node) => statusByUnit.get(node.id) !== "checkpointed" && node.dependsOn.every((dependency) => statusByUnit.get(dependency) === "checkpointed"));
   if (!ready) return state;
-  return beginImplementationUnit(root, id, state.revision, ready.id);
+  return beginImplementationUnit(root2, id, state.revision, ready.id);
 }
 function implementationUnitBasisHash(state) {
   return digest6(canonicalReviewValueJson({
@@ -3538,10 +3538,10 @@ function implementationUnitWriteBlock(state, ledger, _relativePath) {
   }
   return void 0;
 }
-async function beginImplementationUnit(root, id, expectedRevision, unitId) {
-  return mutate(root, id, expectedRevision, "implementation-unit-begun", async (state) => {
-    await assertHostHealth(root, state.lastUpdatedBy.host, "implementation unit");
-    await assertWorkspaceOwnershipComplete(root, state, await readProjectConfig(root), "implementation unit");
+async function beginImplementationUnit(root2, id, expectedRevision, unitId) {
+  return mutate(root2, id, expectedRevision, "implementation-unit-begun", async (state) => {
+    await assertHostHealth(root2, state.lastUpdatedBy.host, "implementation unit");
+    await assertWorkspaceOwnershipComplete(root2, state, await readProjectConfig(root2), "implementation unit");
     if (!checkpointsEnforcementRequired(state.route, state.classification.controls) && state.classification.controls.plan !== "formal") {
       throw new DevFlowError("IMPLEMENTATION_UNITS_NOT_ENFORCED", "\u5F53\u524D\u52A8\u6001\u8DEF\u7EBF\u672A\u542F\u7528 unit-chain checkpoint \u63A7\u5236\u3002");
     }
@@ -3565,18 +3565,18 @@ async function beginImplementationUnit(root, id, expectedRevision, unitId) {
     const traceEnforced = traceEnforcementRequired(state.route, state.classification.controls);
     let nodes;
     if (traceEnforced) {
-      const ledger = await assertTraceGateCurrent(root, state, "implementation");
+      const ledger = await assertTraceGateCurrent(root2, state, "implementation");
       for (const kind of ["requirements", "implementation-plan"]) {
-        await assertArtifactCurrent(root, id, state, kind);
+        await assertArtifactCurrent(root2, id, state, kind);
       }
       if (reviewEnforcementRequired(state.route, state.classification.controls)) {
-        await assertReviewComplete(root, state);
+        await assertReviewComplete(root2, state);
       }
       nodes = currentImplementationNodes(ledger);
     } else {
       const plan = state.artifacts["implementation-plan"];
       if (!plan) throw new DevFlowError("MISSING_REQUIRED_ARTIFACT", "implementation-plan");
-      const contents = await assertArtifactCurrent(root, id, state, "implementation-plan");
+      const contents = await assertArtifactCurrent(root2, id, state, "implementation-plan");
       nodes = planImplementationUnitDefs(contents);
     }
     const node = nodes.find((candidate) => candidate.id === unitId);
@@ -3619,14 +3619,14 @@ async function beginImplementationUnit(root, id, expectedRevision, unitId) {
     if (target.status !== "pending" && target.status !== "rolled_back") {
       throw new DevFlowError("IMPLEMENTATION_UNIT_NOT_PENDING", "implementation unit cannot begin from its current status", { unitId, status: target.status });
     }
-    const project = await readProjectConfig(root);
-    const snapshot = await snapshotGovernedRoots(root, project);
-    await captureUnitBaseline(root, id, unitId, snapshot);
+    const project = await readProjectConfig(root2);
+    const snapshot = await snapshotGovernedRoots(root2, project);
+    await captureUnitBaseline(root2, id, unitId, snapshot);
     delete target.checkpointId;
     target.basisHash = basisHash2;
     target.beginNonce = randomUUID9();
     target.status = "active";
-    target.startedFingerprint = await fingerprintGovernedRoots(root, project);
+    target.startedFingerprint = await fingerprintGovernedRoots(root2, project);
     state.implementationUnits = merged;
   }, { unitId });
 }
@@ -3697,14 +3697,14 @@ function isRelevantPreToolUse(event2) {
   const name = toolName(event2);
   return name === "bash" || directWriteTools.has(name);
 }
-function projectRelative(root, target) {
-  const absolute = path13.resolve(root, target);
-  const relative = path13.relative(root, absolute);
+function projectRelative(root2, target) {
+  const absolute = path13.resolve(root2, target);
+  const relative = path13.relative(root2, absolute);
   if (relative === "" || relative.startsWith("..") || path13.isAbsolute(relative)) return void 0;
   return relative.split(path13.sep).join("/").normalize("NFC");
 }
-function isGoverned(root, target, governedRoots) {
-  const relative = projectRelative(root, target);
+function isGoverned(root2, target, governedRoots) {
+  const relative = projectRelative(root2, target);
   if (!relative) return false;
   return governedRoots.some((item) => relative === item || relative.startsWith(`${item}/`));
 }
@@ -3741,12 +3741,12 @@ function directTargets(event2) {
   for (const key of ["patch", "diff", "input"]) targets.push(...patchTargets(input[key]));
   return targets;
 }
-function trustedWriteTargets(root, event2) {
+function trustedWriteTargets(root2, event2) {
   const targets = toolName(event2) === "bash" ? (() => {
     const analysis = analyzeBashWriteTargets(String(event2.tool_input?.command ?? ""));
     return analysis.kind === "resolved" ? analysis.targets : [];
   })() : directTargets(event2);
-  return [...new Set(targets.map((target) => projectRelative(root, target)).filter((value) => Boolean(value)))].sort();
+  return [...new Set(targets.map((target) => projectRelative(root2, target)).filter((value) => Boolean(value)))].sort();
 }
 function knownWriteTargets(event2) {
   if (toolName(event2) === "bash") {
@@ -3985,21 +3985,21 @@ function analyzeBashWriteTargets(command) {
       const words = commandWords(withoutEnv.slice(teeIndex), "tee");
       const paths = words && collectPathOperands(words, 0);
       if (!paths) return { kind: "unresolved", syntax: "tee-args" };
-      for (const path15 of paths) collect2(path15);
+      for (const path16 of paths) collect2(path16);
     }
     const simple = withoutEnv.match(/^(touch|mkdir|rm)\b/);
     if (simple) {
       const words = commandWords(withoutEnv, simple[1]);
       const paths = words && collectPathOperands(words, 0);
       if (!paths) return { kind: "unresolved", syntax: "simple-args" };
-      for (const path15 of paths) collect2(path15);
+      for (const path16 of paths) collect2(path16);
     }
     const moveCopy = withoutEnv.match(/^(mv|cp)\b/);
     if (moveCopy) {
       const words = commandWords(withoutEnv, moveCopy[1]);
       const paths = words && collectPathOperands(words, 0);
       if (!paths || paths.length < 2) return { kind: "unresolved", syntax: "mv-cp-args" };
-      if (moveCopy[1] === "mv") for (const path15 of paths) collect2(path15);
+      if (moveCopy[1] === "mv") for (const path16 of paths) collect2(path16);
       else collect2(paths.at(-1));
     }
     const sed = withoutEnv.match(/^sed\s+(-i\S*)\s+([\s\S]*)$/);
@@ -4007,7 +4007,7 @@ function analyzeBashWriteTargets(command) {
       const words = shellWords(sed[2]);
       const paths = words && collectPathOperands(words, 1);
       if (!paths) return { kind: "unresolved", syntax: "sed-args" };
-      for (const path15 of paths) collect2(path15);
+      for (const path16 of paths) collect2(path16);
     }
     const perl = withoutEnv.match(/^perl\s+(-pi\S*)\s+([\s\S]*)$/);
     if (perl) {
@@ -4015,7 +4015,7 @@ function analyzeBashWriteTargets(command) {
       const firstPath = words?.[0] === "-e" ? 2 : 0;
       const paths = words && collectPathOperands(words, firstPath);
       if (!paths) return { kind: "unresolved", syntax: "perl-args" };
-      for (const path15 of paths) collect2(path15);
+      for (const path16 of paths) collect2(path16);
     }
   }
   if (targets.length === 0) {
@@ -4024,12 +4024,12 @@ function analyzeBashWriteTargets(command) {
   }
   return { kind: "resolved", targets };
 }
-async function loadActiveWorkflow(root) {
+async function loadActiveWorkflow(root2) {
   try {
-    const recovery = await readRecoveryTransaction(root);
+    const recovery = await readRecoveryTransaction(root2);
     if (recovery) {
       try {
-        const project2 = await readProjectConfig(root);
+        const project2 = await readProjectConfig(root2);
         return { kind: "unreadable", reason: `recovery journal open for ${recovery.featureId}`, governedRoots: project2.governedRoots, blockAllWrites: false };
       } catch {
         return { kind: "unreadable", reason: "project.json invalid while recovery journal is open", blockAllWrites: true };
@@ -4040,10 +4040,10 @@ async function loadActiveWorkflow(root) {
   }
   let active;
   try {
-    active = await readActive(root);
+    active = await readActive(root2);
   } catch {
     try {
-      const project2 = await readProjectConfig(root);
+      const project2 = await readProjectConfig(root2);
       return { kind: "unreadable", reason: "active.json unreadable", governedRoots: project2.governedRoots, blockAllWrites: false };
     } catch {
       return { kind: "unreadable", reason: "project.json invalid while active.json is unreadable", blockAllWrites: true };
@@ -4052,28 +4052,28 @@ async function loadActiveWorkflow(root) {
   if (!active) return { kind: "none" };
   let project;
   try {
-    project = await readProjectConfig(root);
+    project = await readProjectConfig(root2);
   } catch {
     return { kind: "unreadable", reason: "project.json invalid", blockAllWrites: true };
   }
   let state;
   let ledger;
   try {
-    state = await readState(root, active.featureId);
+    state = await readState(root2, active.featureId);
   } catch {
     return { kind: "unreadable", reason: "state invalid", governedRoots: project.governedRoots, blockAllWrites: false };
   }
   if (state.lifecycle !== "active" || active.revision !== state.revision) return { kind: "unreadable", reason: "active pointer revision mismatch", governedRoots: project.governedRoots, blockAllWrites: false };
   if (state.traceability) {
     try {
-      ledger = await readTraceability(root, state);
+      ledger = await readTraceability(root2, state);
     } catch {
       return { kind: "unreadable", reason: "traceability snapshot invalid", governedRoots: project.governedRoots, blockAllWrites: false };
     }
   }
   if (state.review) {
     try {
-      await readReviewLedger(root, state);
+      await readReviewLedger(root2, state);
     } catch {
       return { kind: "unreadable", reason: "review snapshot invalid", governedRoots: project.governedRoots, blockAllWrites: false };
     }
@@ -4103,8 +4103,8 @@ async function loadActiveWorkflow(root) {
     }
   };
 }
-function classifyTarget(root, target, workflow) {
-  const relative = projectRelative(root, target);
+function classifyTarget(root2, target, workflow) {
+  const relative = projectRelative(root2, target);
   if (!relative) return void 0;
   if (isControlPath(relative)) return controlMutationBlock(relative);
   if (isDevFlowPath(relative)) {
@@ -4135,7 +4135,7 @@ function classifyTarget(root, target, workflow) {
     );
   }
   if (workflow.state?.mode === "intake") {
-    const decision = judgeWrite({ mode: "intake", controlPath: false, governedPath: isGoverned(root, target, workflow.governedRoots), impactResolved: false });
+    const decision = judgeWrite({ mode: "intake", controlPath: false, governedPath: isGoverned(root2, target, workflow.governedRoots), impactResolved: false });
     if (decision.decision === "block") {
       return createPreToolBlock(
         "DEV_FLOW_IMPLEMENTATION_APPROVAL_REQUIRED",
@@ -4149,12 +4149,12 @@ function classifyTarget(root, target, workflow) {
       );
     }
   }
-  if (workflow.state?.mode === "routed" && currentOpenStep(workflow.state) === "implementation" && isGoverned(root, target, workflow.governedRoots)) {
+  if (workflow.state?.mode === "routed" && currentOpenStep(workflow.state) === "implementation" && isGoverned(root2, target, workflow.governedRoots)) {
     const approvalPending = workflow.state.obligations?.some((obligation) => obligation.kind === "approval" && obligation.status !== "satisfied") ?? false;
     if (approvalPending && !workflow.approvalConfirmed) {
       return createPreToolBlock(
         "DEV_FLOW_IMPLEMENTATION_APPROVAL_REQUIRED",
-        `\u5F53\u524D open step \u662F implementation\uFF0C\u4F46\u76EE\u6807 ${projectRelative(root, target)} \u4F4D\u4E8E governed root\uFF0C\u6267\u884C\u6279\u51C6\u4E49\u52A1\u5C1A\u672A\u6EE1\u8DB3`,
+        `\u5F53\u524D open step \u662F implementation\uFF0C\u4F46\u76EE\u6807 ${projectRelative(root2, target)} \u4F4D\u4E8E governed root\uFF0C\u6267\u884C\u6279\u51C6\u4E49\u52A1\u5C1A\u672A\u6EE1\u8DB3`,
         "\u539F\u5199\u5165\u672A\u6267\u884C\uFF1B\u76EE\u6807\u6587\u4EF6\u548C\u5F53\u524D feature \u72B6\u6001\u672A\u6539\u53D8",
         {
           mode: "user-decision",
@@ -4163,11 +4163,11 @@ function classifyTarget(root, target, workflow) {
         }
       );
     }
-    const unitBlock = implementationUnitWriteBlock(workflow.state, workflow.ledger, projectRelative(root, target));
+    const unitBlock = implementationUnitWriteBlock(workflow.state, workflow.ledger, projectRelative(root2, target));
     if (unitBlock?.code === "IMPLEMENTATION_UNIT_REQUIRED") {
       return createPreToolBlock(
         "DEV_FLOW_IMPLEMENTATION_UNIT_REQUIRED",
-        `\u76EE\u6807 ${projectRelative(root, target)} \u5DF2\u901A\u8FC7\u5B9E\u73B0\u6279\u51C6\uFF0C\u4F46\u5F53\u524D\u6CA1\u6709\u6D3B\u52A8\u7684 implementation unit`,
+        `\u76EE\u6807 ${projectRelative(root2, target)} \u5DF2\u901A\u8FC7\u5B9E\u73B0\u6279\u51C6\uFF0C\u4F46\u5F53\u524D\u6CA1\u6709\u6D3B\u52A8\u7684 implementation unit`,
         "\u539F\u5199\u5165\u672A\u6267\u884C\uFF1Bgoverned \u76EE\u6807\u4FDD\u6301\u4E0D\u53D8",
         {
           mode: "automatic",
@@ -4179,7 +4179,7 @@ function classifyTarget(root, target, workflow) {
     if (unitBlock?.code === "IMPLEMENTATION_UNIT_OUT_OF_SCOPE") {
       return createPreToolBlock(
         "DEV_FLOW_IMPLEMENTATION_UNIT_OUT_OF_SCOPE",
-        `\u5F53\u524D implementation unit \u5728 Trace \u4E2D\u5DF2\u5931\u6548\uFF0C\u65E0\u6CD5\u8BC1\u660E\u76EE\u6807 ${projectRelative(root, target)} \u5C5E\u4E8E\u5F53\u524D\u5B9E\u73B0\u4F9D\u636E`,
+        `\u5F53\u524D implementation unit \u5728 Trace \u4E2D\u5DF2\u5931\u6548\uFF0C\u65E0\u6CD5\u8BC1\u660E\u76EE\u6807 ${projectRelative(root2, target)} \u5C5E\u4E8E\u5F53\u524D\u5B9E\u73B0\u4F9D\u636E`,
         "\u539F\u5199\u5165\u672A\u6267\u884C\uFF1B\u76EE\u6807\u6587\u4EF6\u548C Trace \u72B6\u6001\u672A\u6539\u53D8",
         {
           mode: "user-decision",
@@ -4191,8 +4191,8 @@ function classifyTarget(root, target, workflow) {
     const decision = judgeWrite({ mode: "routed", stage: "implementation", controlPath: false, governedPath: true, impactResolved: true });
     if (decision.decision !== "block") return void 0;
   }
-  if (workflow.state && isGoverned(root, target, workflow.governedRoots)) {
-    const relative2 = projectRelative(root, target);
+  if (workflow.state && isGoverned(root2, target, workflow.governedRoots)) {
+    const relative2 = projectRelative(root2, target);
     const block = implementationUnitWriteBlock(workflow.state, workflow.ledger, relative2);
     if (block?.code === "IMPLEMENTATION_UNIT_REQUIRED") {
       return createPreToolBlock(
@@ -4221,14 +4221,14 @@ function classifyTarget(root, target, workflow) {
   }
   return void 0;
 }
-async function stagedGitPaths(root) {
-  const result = await runGit("git", ["diff", "--cached", "--name-only", "-z"], { cwd: root, encoding: "utf8" });
+async function stagedGitPaths(root2) {
+  const result = await runGit("git", ["diff", "--cached", "--name-only", "-z"], { cwd: root2, encoding: "utf8" });
   return String(result.stdout).split("\0").filter(Boolean).map((value) => value.replaceAll("\\", "/").normalize("NFC"));
 }
 function inFeatureScope(relative, state) {
   return state.scope.inScope.some((scope) => scope === "." || relative === scope || relative.startsWith(`${scope}/`));
 }
-function gitPathPolicy(command, root, workflow, paths) {
+function gitPathPolicy(command, root2, workflow, paths) {
   const state = workflow.state;
   if (!state) return void 0;
   const excluded = paths.filter((relative) => state.workspace.ownership[relative] === "excluded");
@@ -4246,7 +4246,7 @@ function gitPathPolicy(command, root, workflow, paths) {
     );
   }
   void command;
-  void root;
+  void root2;
   return void 0;
 }
 function controlMutationBlock(relative) {
@@ -4261,8 +4261,8 @@ function controlMutationBlock(relative) {
     }
   );
 }
-async function revokedImplementationApprovalHint(root, featureId) {
-  const events = await readFeatureEvents(root, featureId);
+async function revokedImplementationApprovalHint(root2, featureId) {
+  const events = await readFeatureEvents(root2, featureId);
   let lastConfirmedIndex = -1;
   for (let index = events.length - 1; index >= 0; index--) {
     const event2 = events[index];
@@ -4282,11 +4282,11 @@ async function revokedImplementationApprovalHint(root, featureId) {
   }
   return void 0;
 }
-async function augmentApprovalBlock(root, workflow, block) {
+async function augmentApprovalBlock(root2, workflow, block) {
   if (block.code !== "DEV_FLOW_IMPLEMENTATION_APPROVAL_REQUIRED") return block;
   let revokedKind;
   try {
-    revokedKind = await revokedImplementationApprovalHint(root, workflow.featureId);
+    revokedKind = await revokedImplementationApprovalHint(root2, workflow.featureId);
   } catch {
     return unreadableBlock("events.jsonl invalid or unreadable");
   }
@@ -4317,19 +4317,19 @@ function unreadableBlock(reason) {
     }
   );
 }
-function unreadableTargetBlock(root, target, workflow) {
-  const relative = projectRelative(root, target);
+function unreadableTargetBlock(root2, target, workflow) {
+  const relative = projectRelative(root2, target);
   if (!relative) return void 0;
   if (isControlPath(relative)) return controlMutationBlock(relative);
   if (workflow.blockAllWrites) return unreadableBlock(workflow.reason);
-  if (isDevFlowPath(relative) || isGoverned(root, target, workflow.governedRoots ?? [])) return unreadableBlock(workflow.reason);
+  if (isDevFlowPath(relative) || isGoverned(root2, target, workflow.governedRoots ?? [])) return unreadableBlock(workflow.reason);
   return void 0;
 }
-async function evaluatePreToolUse(root, event2) {
+async function evaluatePreToolUse(root2, event2) {
   if (!isRelevantPreToolUse(event2)) return { kind: "allow" };
   const advisoryOut = {};
   try {
-    const block = await evaluatePreToolUseInternal(root, event2, advisoryOut);
+    const block = await evaluatePreToolUseInternal(root2, event2, advisoryOut);
     if (block) return { kind: "block", block };
     return advisoryOut.advisory ? { kind: "allow", advisory: advisoryOut.advisory } : { kind: "allow" };
   } catch (error) {
@@ -4343,16 +4343,16 @@ async function evaluatePreToolUse(root, event2) {
     };
   }
 }
-async function evaluatePreToolUseInternal(root, event2, advisoryOut = {}) {
+async function evaluatePreToolUseInternal(root2, event2, advisoryOut = {}) {
   if (!isRelevantPreToolUse(event2)) return void 0;
   const knownTargets = knownWriteTargets(event2);
   if (knownTargets) {
     for (const target of knownTargets) {
-      const relative = projectRelative(root, target);
+      const relative = projectRelative(root2, target);
       if (relative && isControlPath(relative)) return controlMutationBlock(relative);
     }
   }
-  const loaded = await loadActiveWorkflow(root);
+  const loaded = await loadActiveWorkflow(root2);
   if (loaded.kind === "none") {
     return void 0;
   }
@@ -4364,7 +4364,7 @@ async function evaluatePreToolUseInternal(root, event2, advisoryOut = {}) {
       if (analysis.kind === "read-only") return void 0;
       if (analysis.kind === "unresolved") return void 0;
       for (const target of analysis.targets) {
-        const block = unreadableTargetBlock(root, target, loaded);
+        const block = unreadableTargetBlock(root2, target, loaded);
         if (block) return block;
       }
       return void 0;
@@ -4372,7 +4372,7 @@ async function evaluatePreToolUseInternal(root, event2, advisoryOut = {}) {
     const targets2 = directTargets(event2);
     if (!targets2.length) return void 0;
     for (const target of targets2) {
-      const block = unreadableTargetBlock(root, target, loaded);
+      const block = unreadableTargetBlock(root2, target, loaded);
       if (block) return block;
     }
     return void 0;
@@ -4380,11 +4380,11 @@ async function evaluatePreToolUseInternal(root, event2, advisoryOut = {}) {
   let { workflow } = loaded;
   const command = typeof event2.tool_input?.command === "string" ? event2.tool_input.command : "";
   const prepareImplementationWrite = async (targets2) => {
-    if (workflow.state?.mode !== "routed" || currentOpenStep(workflow.state) !== "implementation" || !targets2.some((target) => isGoverned(root, target, workflow.governedRoots))) return void 0;
+    if (workflow.state?.mode !== "routed" || currentOpenStep(workflow.state) !== "implementation" || !targets2.some((target) => isGoverned(root2, target, workflow.governedRoots))) return void 0;
     try {
-      const prepared = await ensureActiveImplementationUnit(root, workflow.featureId, workflow.state);
+      const prepared = await ensureActiveImplementationUnit(root2, workflow.featureId, workflow.state);
       if (prepared.revision !== workflow.state.revision) {
-        const refreshed = await loadActiveWorkflow(root);
+        const refreshed = await loadActiveWorkflow(root2);
         if (refreshed.kind === "ready") workflow = refreshed.workflow;
         else return "active workflow refresh after implementation-unit preparation did not produce a readable state";
       }
@@ -4400,8 +4400,8 @@ async function evaluatePreToolUseInternal(root, event2, advisoryOut = {}) {
     const unsafePathForm = localCommit && /\bgit\s+add\s+(?:-A|--all|\.|-u\b)|\bgit\s+commit\s+[^\n]*\s-a(?:\s|$)/.test(command);
     if (localCommit && workflow.state?.lifecycle === "active" && (workflow.logicComplete || implementationReady) && !unsafePathForm) {
       const addMatch = command.match(/\bgit\s+add\s+([^;&|\n]+)/);
-      const explicitPaths = addMatch ? addMatch[1].split(/\s+/).filter((value) => value && !value.startsWith("-")) : await stagedGitPaths(root);
-      const pathBlock = gitPathPolicy(command, root, workflow, explicitPaths.map((value) => projectRelative(root, value) ?? value));
+      const explicitPaths = addMatch ? addMatch[1].split(/\s+/).filter((value) => value && !value.startsWith("-")) : await stagedGitPaths(root2);
+      const pathBlock = gitPathPolicy(command, root2, workflow, explicitPaths.map((value) => projectRelative(root2, value) ?? value));
       if (!pathBlock) return void 0;
       return pathBlock;
     }
@@ -4428,8 +4428,8 @@ async function evaluatePreToolUseInternal(root, event2, advisoryOut = {}) {
     }
     const preparationDiagnostic2 = await prepareImplementationWrite(analysis.targets);
     for (const target of analysis.targets) {
-      const block = classifyTarget(root, target, workflow);
-      if (block) return augmentApprovalBlock(root, workflow, annotatePreparationFailure(block, preparationDiagnostic2));
+      const block = classifyTarget(root2, target, workflow);
+      if (block) return augmentApprovalBlock(root2, workflow, annotatePreparationFailure(block, preparationDiagnostic2));
     }
     return void 0;
   }
@@ -4437,8 +4437,8 @@ async function evaluatePreToolUseInternal(root, event2, advisoryOut = {}) {
   if (!targets.length) return void 0;
   const preparationDiagnostic = await prepareImplementationWrite(targets);
   for (const target of targets) {
-    const block = classifyTarget(root, target, workflow);
-    if (block) return augmentApprovalBlock(root, workflow, annotatePreparationFailure(block, preparationDiagnostic));
+    const block = classifyTarget(root2, target, workflow);
+    if (block) return augmentApprovalBlock(root2, workflow, annotatePreparationFailure(block, preparationDiagnostic));
   }
   return void 0;
 }
@@ -4456,12 +4456,12 @@ function commandFor(input) {
   if (typeof command === "string") return command.trim().replace(/\s+/g, " ");
   return canonical(input.toolInput ?? {});
 }
-function targetScope(command, root) {
+function targetScope(command, root2) {
   if (/[$`*?{]/.test(command) || /(?:^|\s)~(?:\/|\s|$)/.test(command)) return "unknown";
   const candidates = [...command.matchAll(/(?:^|[\s"'=])((?:\/|(?:\.\.\/)+)[^\s'"`;|&]*)/g)].map((match) => match[1]);
   for (const target of candidates) {
-    const absolute = path14.resolve(root, target);
-    const relative = path14.relative(root, absolute);
+    const absolute = path14.resolve(root2, target);
+    const relative = path14.relative(root2, absolute);
     if (relative.startsWith("..") || path14.isAbsolute(relative)) return "outside";
   }
   return "inside";
@@ -4469,7 +4469,7 @@ function targetScope(command, root) {
 function fingerprint2(input, riskClass, category, command) {
   return createHash15("sha256").update(canonical({ riskClass, category, toolName: String(input.toolName ?? ""), command })).digest("hex");
 }
-function classifyRisk(input, root) {
+function classifyRisk(input, root2) {
   const toolName2 = String(input.toolName ?? "").toLowerCase();
   const command = commandFor(input);
   if (!command && !toolName2) return void 0;
@@ -4483,7 +4483,7 @@ function classifyRisk(input, root) {
   }
   const destructive = /\brm\s+(?:-[^\s]*r[^\s]*|--recursive)\b/i.test(command) || /\bgit\s+(?:reset\s+--hard|clean\s+[^\n]*-[^\n]*f|(?:checkout|restore)\s+--|rebase)\b/i.test(command) || /\b(?:delete|remove)\b/i.test(toolName2);
   if (!destructive) return void 0;
-  const scope = targetScope(command, root);
+  const scope = targetScope(command, root2);
   if (scope !== "inside") {
     return {
       riskClass: "always-confirm",
@@ -4508,29 +4508,29 @@ function executionKey(event2) {
   const value = event2;
   return [value.tool_use_id, value.permission_request_id, value.event_id].find((candidate) => typeof candidate === "string" && candidate.length > 0);
 }
-async function activeFeature(root) {
-  const active = await readActive(root);
+async function activeFeature(root2) {
+  const active = await readActive(root2);
   if (!active) return void 0;
-  const state = await readState(root, active.featureId);
+  const state = await readState(root2, active.featureId);
   if (state.lifecycle !== "active" || state.revision !== active.revision) return void 0;
   return { featureId: active.featureId, revision: active.revision };
 }
 function sameRequest(record, host, featureId, assessment) {
   return record.host === host && record.featureId === featureId && record.riskClass === assessment.riskClass && record.commandFingerprint === assessment.commandFingerprint;
 }
-async function evaluatePermissionRequest(root, event2, host) {
+async function evaluatePermissionRequest(root2, event2, host) {
   if (event2.hook_event_name !== "PermissionRequest") return void 0;
-  const assessment = classifyRisk({ toolName: event2.tool_name, toolInput: event2.tool_input }, root);
+  const assessment = classifyRisk({ toolName: event2.tool_name, toolInput: event2.tool_input }, root2);
   if (!assessment) return void 0;
-  const feature = await activeFeature(root);
+  const feature = await activeFeature(root2);
   if (!feature) return void 0;
-  const events = await readHostAuthorizationEvents(root, feature.featureId);
+  const events = await readHostAuthorizationEvents(root2, feature.featureId);
   const key = executionKey(event2);
   if (key !== void 0 && events.some((item) => item.type === "host-authorization-pending" && item.data.executionKey === key)) {
     return void 0;
   }
   const sourceToolEvent = eventId(event2, assessment, "permission-request");
-  await recordHostAuthorizationEvent(root, "host-authorization-pending", {
+  await recordHostAuthorizationEvent(root2, "host-authorization-pending", {
     host,
     featureId: feature.featureId,
     riskClass: assessment.riskClass,
@@ -4551,13 +4551,13 @@ function postToolSucceeded(event2) {
   }
   return true;
 }
-async function recordPermissionPostToolUse(root, event2, host) {
+async function recordPermissionPostToolUse(root2, event2, host) {
   if (event2.hook_event_name !== "PostToolUse" || !postToolSucceeded(event2)) return;
-  const assessment = classifyRisk({ toolName: event2.tool_name, toolInput: event2.tool_input }, root);
+  const assessment = classifyRisk({ toolName: event2.tool_name, toolInput: event2.tool_input }, root2);
   if (!assessment || assessment.riskClass !== "task-reusable") return;
-  const feature = await activeFeature(root);
+  const feature = await activeFeature(root2);
   if (!feature) return;
-  const events = await readHostAuthorizationEvents(root, feature.featureId);
+  const events = await readHostAuthorizationEvents(root2, feature.featureId);
   const key = executionKey(event2);
   const pending = [...events].reverse().find((item) => {
     if (item.type !== "host-authorization-pending") return false;
@@ -4567,7 +4567,7 @@ async function recordPermissionPostToolUse(root, event2, host) {
     return sameRequest(item.data, host, feature.featureId, assessment);
   });
   if (!pending) return;
-  await recordHostAuthorizationEvent(root, "host-authorization-granted", {
+  await recordHostAuthorizationEvent(root2, "host-authorization-granted", {
     host,
     featureId: feature.featureId,
     riskClass: assessment.riskClass,
@@ -4579,22 +4579,22 @@ async function recordPermissionPostToolUse(root, event2, host) {
 }
 
 // plugins/dev-flow/src/core/host-recovery.ts
-async function observeHostRecovery(root, signal) {
-  const health = await recordHostHealth(root, signal);
+async function observeHostRecovery(root2, signal) {
+  const health = await recordHostHealth(root2, signal);
   if (!health.recovered) return;
-  const active = await readActive(root);
+  const active = await readActive(root2);
   if (!active) return;
-  const state = await readState(root, active.featureId);
+  const state = await readState(root2, active.featureId);
   if (state.lifecycle !== "active" && state.lifecycle !== "finalized") return;
-  await reconcileWorkspace(root, active.featureId, state.revision, signal.host);
+  await reconcileWorkspace(root2, active.featureId, state.revision, signal.host);
 }
 
 // plugins/dev-flow/src/hosts/host-health-adapter.ts
-async function recordAdapterHealth(root, event2, host) {
+async function recordAdapterHealth(root2, event2, host) {
   const kind = event2.hook_event_name === "SessionStart" ? "session-start" : event2.hook_event_name === "UserPromptSubmit" ? "user-prompt-submit" : event2.hook_event_name === "Stop" ? "turn-boundary" : event2.hook_event_name === "PreToolUse" || event2.hook_event_name === "PostToolUse" ? "tool" : void 0;
   if (!kind) return;
   try {
-    await observeHostRecovery(root, {
+    await observeHostRecovery(root2, {
       host,
       kind,
       eventId: event2.event_id ?? `${event2.hook_event_name}-${Date.now()}`
@@ -4603,15 +4603,39 @@ async function recordAdapterHealth(root, event2, host) {
   }
 }
 
+// plugins/dev-flow/src/hosts/project-root.ts
+import { access as access3 } from "node:fs/promises";
+import path15 from "node:path";
+async function hasDevFlowMarker(directory) {
+  for (const marker of ["project.json", "active.json"]) {
+    try {
+      await access3(path15.join(directory, ".dev-flow", marker));
+      return true;
+    } catch {
+    }
+  }
+  return false;
+}
+async function resolveDevFlowRoot(cwd) {
+  const original = path15.resolve(cwd);
+  let current = original;
+  for (; ; ) {
+    if (await hasDevFlowMarker(current)) return current;
+    const parent = path15.dirname(current);
+    if (parent === current) return original;
+    current = parent;
+  }
+}
+
 // plugins/dev-flow/src/hosts/codex-adapter.ts
 var chunks = [];
 for await (const chunk of process.stdin) chunks.push(Buffer.from(chunk));
 var event = JSON.parse(Buffer.concat(chunks).toString("utf8") || "{}");
-var cwd = event.cwd ?? process.cwd();
-await recordAdapterHealth(cwd, event, "codex");
+var root = await resolveDevFlowRoot(event.cwd ?? process.cwd());
+await recordAdapterHealth(root, event, "codex");
 if (event.hook_event_name === "PermissionRequest") {
   try {
-    const outcome = await evaluatePermissionRequest(cwd, event, "codex");
+    const outcome = await evaluatePermissionRequest(root, event, "codex");
     if (outcome?.kind === "allow") process.stdout.write(JSON.stringify({ decision: "allow" }) + "\n");
   } catch (error) {
     process.stderr.write(`Dev Flow Codex permission evaluation failed: ${String(error)}
@@ -4620,13 +4644,13 @@ if (event.hook_event_name === "PermissionRequest") {
 }
 if (event.hook_event_name === "PreToolUse") {
   try {
-    const outcome = await evaluatePreToolUse(cwd, event);
+    const outcome = await evaluatePreToolUse(root, event);
     if (outcome.kind === "block") {
       process.stdout.write(JSON.stringify({ decision: "block", reason: formatPreToolBlock(outcome.block) }) + "\n");
     } else if (outcome.advisory) {
       process.stdout.write(JSON.stringify({ hookSpecificOutput: { additionalContext: outcome.advisory.message } }) + "\n");
     } else {
-      await recordTrustedWriteIntent(cwd, trustedWriteTargets(cwd, event), "codex", event.event_id ?? event.tool_use_id ?? `pre-${Date.now()}`);
+      await recordTrustedWriteIntent(root, trustedWriteTargets(root, event), "codex", event.event_id ?? event.tool_use_id ?? `pre-${Date.now()}`);
     }
   } catch (error) {
     process.stderr.write(`Dev Flow Codex hook evaluation failed: ${String(error)}
@@ -4636,12 +4660,12 @@ if (event.hook_event_name === "PreToolUse") {
 if (event.hook_event_name === "UserPromptSubmit" || event.hook_event_name === "Stop" || event.hook_event_name === "PostToolUse") {
   if (event.hook_event_name === "PostToolUse") {
     try {
-      await recordPermissionPostToolUse(cwd, event, "codex");
+      await recordPermissionPostToolUse(root, event, "codex");
     } catch {
     }
     if (postToolSucceeded(event)) {
       try {
-        await recordTrustedWriteOwnership(cwd, trustedWriteTargets(cwd, event), "codex", event.event_id ?? event.tool_use_id ?? `post-${Date.now()}`);
+        await recordTrustedWriteOwnership(root, trustedWriteTargets(root, event), "codex", event.event_id ?? event.tool_use_id ?? `post-${Date.now()}`);
       } catch {
       }
     }
@@ -4649,7 +4673,7 @@ if (event.hook_event_name === "UserPromptSubmit" || event.hook_event_name === "S
   try {
     const text = event.prompt ?? event.user_prompt ?? event.tool_input?.prompt;
     const eventId2 = event.event_id ?? `${event.hook_event_name}-${Date.now()}`;
-    await recordHostEvent(cwd, {
+    await recordHostEvent(root, {
       eventId: eventId2,
       type: event.hook_event_name === "UserPromptSubmit" ? "user-prompt" : event.hook_event_name === "Stop" ? "turn-boundary" : "tool",
       host: "codex",

@@ -91,13 +91,18 @@ export function resolvePromptEvent(
       actualHost: otherHost[0].host,
     });
   }
-  const matches = events.flatMap((record, index) => {
+  // 候选先经文本兼容匹配（可区分多问题表单的各自回答）；没有文本匹配时，
+  // 信任带结构化问题字段的原生表单事件——选中即信任，展示问题的改写/精简
+  // 不改变归属。文本匹配优先，避免多问题表单中非当前问题的回答误归属。
+  const candidates = events.flatMap((record, index) => {
     const prompt = promptFrom(record);
     if (!prompt || prompt.host !== input.host || consumed.has(prompt.eventId)) return [];
     if (!isAfterPresentation(record, index)) return [];
-    if (!eventMatchesPrompt(prompt, input)) return [];
-    return [{ eventId: prompt.eventId, revision: record.revision, at: prompt.at, text: prompt.text, host: prompt.host }];
+    return [{ prompt, record, index }];
   });
+  const textMatches = candidates.filter(({ prompt }) => textCompatible(prompt.text, input.userReply));
+  const matches = (textMatches.length ? textMatches : candidates.filter(({ prompt }) => Boolean(prompt.question)))
+    .map(({ prompt, record }) => ({ eventId: prompt.eventId, revision: record.revision, at: prompt.at, text: prompt.text, host: prompt.host }));
   if (matches.length === 0) {
     throw new DevFlowError("INTERACTION_PROVENANCE_UNAVAILABLE", "没有找到呈现问题之后、来自当前宿主的唯一用户回答。", {
       userMessage: "没有确认到这次回答属于当前问题。",

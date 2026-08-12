@@ -2,17 +2,19 @@ import { recordHostEvent, recordTrustedWriteIntent, recordTrustedWriteOwnership 
 import { evaluatePreToolUse, formatPreToolBlock, hostToolExecutionDetails, trustedWriteTargets } from "./adapter-policy.js";
 import { evaluatePermissionRequest, postToolSucceeded, recordPermissionPostToolUse } from "./host-authorization.js";
 import { recordAdapterHealth } from "./host-health-adapter.js";
+import { resolveDevFlowRoot } from "./project-root.js";
 
 const chunks: Buffer[] = [];
 for await (const chunk of process.stdin) chunks.push(Buffer.from(chunk));
 const event = JSON.parse(Buffer.concat(chunks).toString("utf8") || "{}");
-const cwd = event.cwd ?? process.cwd();
+// event.cwd 跟随 agent 的 shell cd 变化；宿主事件必须写入项目根账本。
+const root = await resolveDevFlowRoot(event.cwd ?? process.cwd());
 
-await recordAdapterHealth(cwd, event, "codex");
+await recordAdapterHealth(root, event, "codex");
 
 if (event.hook_event_name === "PermissionRequest") {
   try {
-    const outcome = await evaluatePermissionRequest(cwd, event, "codex");
+    const outcome = await evaluatePermissionRequest(root, event, "codex");
     if (outcome?.kind === "allow") process.stdout.write(JSON.stringify({ decision: "allow" }) + "\n");
   } catch (error) {
     // A failed grant lookup must not replace the host's native confirmation flow.
@@ -22,13 +24,13 @@ if (event.hook_event_name === "PermissionRequest") {
 
 if (event.hook_event_name === "PreToolUse") {
   try {
-    const outcome = await evaluatePreToolUse(cwd, event);
+    const outcome = await evaluatePreToolUse(root, event);
     if (outcome.kind === "block") {
       process.stdout.write(JSON.stringify({ decision: "block", reason: formatPreToolBlock(outcome.block) }) + "\n");
     } else if (outcome.advisory) {
       process.stdout.write(JSON.stringify({ hookSpecificOutput: { additionalContext: outcome.advisory.message } }) + "\n");
     } else {
-      await recordTrustedWriteIntent(cwd, trustedWriteTargets(cwd, event), "codex", event.event_id ?? event.tool_use_id ?? `pre-${Date.now()}`);
+      await recordTrustedWriteIntent(root, trustedWriteTargets(root, event), "codex", event.event_id ?? event.tool_use_id ?? `pre-${Date.now()}`);
     }
   } catch (error) {
     // An unexpected adapter failure is diagnostic only; host permissions remain authoritative.
@@ -38,17 +40,17 @@ if (event.hook_event_name === "PreToolUse") {
 
 if (event.hook_event_name === "UserPromptSubmit" || event.hook_event_name === "Stop" || event.hook_event_name === "PostToolUse") {
   if (event.hook_event_name === "PostToolUse") {
-    try { await recordPermissionPostToolUse(cwd, event, "codex"); }
+    try { await recordPermissionPostToolUse(root, event, "codex"); }
     catch { /* authorization memory must not suppress the audit event */ }
     if (postToolSucceeded(event)) {
-      try { await recordTrustedWriteOwnership(cwd, trustedWriteTargets(cwd, event), "codex", event.event_id ?? event.tool_use_id ?? `post-${Date.now()}`); }
+      try { await recordTrustedWriteOwnership(root, trustedWriteTargets(root, event), "codex", event.event_id ?? event.tool_use_id ?? `post-${Date.now()}`); }
       catch { /* ownership can be recovered by reconcile */ }
     }
   }
   try {
     const text = event.prompt ?? event.user_prompt ?? event.tool_input?.prompt;
     const eventId = event.event_id ?? `${event.hook_event_name}-${Date.now()}`;
-    await recordHostEvent(cwd, {
+    await recordHostEvent(root, {
       eventId,
       type: event.hook_event_name === "UserPromptSubmit" ? "user-prompt" : event.hook_event_name === "Stop" ? "turn-boundary" : "tool",
       host: "codex",
