@@ -1,16 +1,5 @@
 import type { ClassificationObligation, RouteId, StageCapabilityView } from "./types.js";
 
-export const routeStages: Readonly<Record<RouteId, readonly string[]>> = Object.freeze({
-  xs: ["locate", "implementation", "verification", "finalize"],
-  s: ["boundary", "implementation", "verification", "finalize"],
-  m: ["planning", "implementation", "code_review", "verification", "finalize"],
-  l: ["requirements_alignment", "planning", "plan_review", "execution_approval", "implementation", "code_review", "verification", "finalize"],
-});
-
-export function stagesForRoute(route: RouteId): readonly string[] {
-  return routeStages[route];
-}
-
 /** Derive the user-visible stage from lifecycle and route evidence. */
 export function effectiveStage(state: {
   route?: RouteId;
@@ -22,18 +11,18 @@ export function effectiveStage(state: {
 }): string {
   if (state.mode === "intake" || !state.route) return "intake";
   if (state.lifecycle === "finalized") return "complete";
-  // orderedRoute is the full user preview and may contain Core-owned gates
-  // (plan review / execution approval) that are not recordable state steps.
-  // The persisted steps object is compiled in execution order and is therefore
-  // the authoritative stage sequence.
-  const stages = state.steps && Object.keys(state.steps).length > 0
-    ? Object.keys(state.steps)
-    : stagesForRoute(state.route);
+  // 已 routed 只信账本里的 steps / currentStage。手写阶段表已删除
+  // （ADR-0020）；空 steps 视为异常，不会回落成含 plan_review /
+  // execution_approval 的假 L 序列——编译出的可 record 步骤才是权威阶段序列。
   if (state.steps) {
-    const pending = stages.find((stage) => state.steps?.[stage]?.status !== "satisfied");
-    if (pending) return pending;
+    const keys = Object.keys(state.steps);
+    if (keys.length > 0) {
+      const pending = keys.find((stage) => state.steps?.[stage]?.status !== "satisfied");
+      if (pending) return pending;
+      return keys[0];
+    }
   }
-  return state.currentStage ?? stages[0];
+  return state.currentStage ?? "unknown";
 }
 
 export function deriveStageCapabilities(state: {

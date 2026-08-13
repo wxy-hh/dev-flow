@@ -95,14 +95,14 @@ test("revising the plan during implementation pauses the step, shows the impact,
 
     // 取消：不改变任何状态
     await store.recordHostEvent(root, { eventId: "cancel", type: "user-prompt", host: "codex", text: "取消" });
-    const cancelled = await store.resolvePlanRevisionAnswer(root, id, preview.state.revision, preview.interactionId, "取消", "codex");
+    const cancelled = await store.answer({ root, featureId: id, expectedRevision: preview.state.revision, host: "codex", credential: { source: "text", userReply: "取消" } });
     assert.equal(cancelled.state.implementationUnits.find((u) => u.unitId === "UNIT-001").status, "checkpointed");
     assert.deepEqual(cancelled.state.review, cp.state.review);
 
     // 重新发起修订并确认：计划失效（需重新登记），UNIT-001 回 pending（重做），UNIT-002 保留
     const preview2 = await store.revisePlanDuringImplementation(root, id, cancelled.state.revision, revisedDelta, "codex");
     await store.recordHostEvent(root, { eventId: "confirm", type: "user-prompt", host: "codex", text: "确认修订" });
-    const revised = await store.resolvePlanRevisionAnswer(root, id, preview2.state.revision, preview2.interactionId, "确认修订", "codex");
+    const revised = await store.answer({ root, featureId: id, expectedRevision: preview2.state.revision, host: "codex", credential: { source: "text", userReply: "确认修订" } });
     assert.equal(revised.state.implementationUnits.find((u) => u.unitId === "UNIT-001").status, "pending");
     assert.equal(revised.state.implementationUnits.find((u) => u.unitId === "UNIT-002").status, "pending");
     assert.equal(revised.state.currentStage, "planning");
@@ -140,7 +140,7 @@ test("side-effect units are flagged, kept, and only re-run after explicit user c
 
     // 确认修订：副作用单元保持 checkpointed，不自动重跑；出现人工决定交互
     await store.recordHostEvent(root, { eventId: "confirm-side", type: "user-prompt", host: "codex", text: "确认修订" });
-    const revised = await store.resolvePlanRevisionAnswer(root, id, preview.state.revision, preview.interactionId, "确认修订", "codex");
+    const revised = await store.answer({ root, featureId: id, expectedRevision: preview.state.revision, host: "codex", credential: { source: "text", userReply: "确认修订" } });
     assert.equal(revised.state.implementationUnits.find((u) => u.unitId === "UNIT-001").status, "checkpointed");
     assert.equal(decisions.pendingDecisionForState(revised.state).kind, "side-effect-rerun");
     const rerun = Object.values(revised.state.interactions).find((value) => value.kind === "side-effect-rerun" && value.status === "pending");
@@ -157,7 +157,7 @@ test("side-effect units are flagged, kept, and only re-run after explicit user c
 
     // 拒绝重跑：单元保持 checkpointed（保留原结果），交互解决，不能 begin 已完成单元
     await store.recordHostEvent(root, { eventId: "keep-side", type: "user-prompt", host: "codex", text: "不重跑，保留原结果" });
-    const kept = await store.resolveSideEffectRerunAnswer(root, id, reRegistered.revision, rerun.id, "不重跑，保留原结果", "codex");
+    const kept = await store.answer({ root, featureId: id, expectedRevision: reRegistered.revision, host: "codex", credential: { source: "text", userReply: "不重跑，保留原结果" } });
     assert.equal(kept.state.implementationUnits.find((u) => u.unitId === "UNIT-001").status, "checkpointed");
     assert.equal(decisions.pendingDecisionForState(kept.state), undefined);
     await assert.rejects(
@@ -171,13 +171,13 @@ test("side-effect units are flagged, kept, and only re-run after explicit user c
     const currentState2 = await store.readState(root, id);
     const preview2 = await store.revisePlanDuringImplementation(root, id, currentState2.revision, revisedDelta2, "codex");
     await store.recordHostEvent(root, { eventId: "confirm-side-2", type: "user-prompt", host: "codex", text: "确认修订" });
-    const revised2 = await store.resolvePlanRevisionAnswer(root, id, preview2.state.revision, preview2.interactionId, "确认修订", "codex");
+    const revised2 = await store.answer({ root, featureId: id, expectedRevision: preview2.state.revision, host: "codex", credential: { source: "text", userReply: "确认修订" } });
     const rerun2 = Object.values(revised2.state.interactions).find((value) => value.kind === "side-effect-rerun" && value.status === "pending");
     assert.ok(rerun2);
     let reRegistered2 = (await artifacts.recordArtifactWithTrace(root, id, revised2.state.revision, "implementation-plan", revisedDelta2)).state;
     reRegistered2 = await steps.recordStep(root, id, reRegistered2.revision, "planning", { reviewType: "plan" });
     await store.recordHostEvent(root, { eventId: "rerun-side", type: "user-prompt", host: "codex", text: "确认重跑" });
-    const rerunConfirmed = await store.resolveSideEffectRerunAnswer(root, id, reRegistered2.revision, rerun2.id, "确认重跑", "codex");
+    const rerunConfirmed = await store.answer({ root, featureId: id, expectedRevision: reRegistered2.revision, host: "codex", credential: { source: "text", userReply: "确认重跑" } });
     assert.equal(rerunConfirmed.state.implementationUnits.find((u) => u.unitId === "UNIT-001").status, "pending");
     assert.equal(rerunConfirmed.state.steps.implementation, undefined);
     const rebegun = await units.beginImplementationUnit(root, id, rerunConfirmed.state.revision, "UNIT-001");
@@ -207,7 +207,7 @@ test("plan revision confirmation rejects a preview whose plan file changed witho
     // IDE edits do not change feature revision; confirmation must still detect the changed basis.
     await writeFile(planPath, `${planMarkdown.replace("file_scope: src/a.ts", "file_scope: src/a.ts, src/c.ts")}\n<!-- changed after preview -->\n`);
     await assert.rejects(
-      () => store.resolvePlanRevisionElicitation(root, id, preview.state.revision, preview.interactionId, "confirm", undefined, "codex"),
+      () => store.answer({ root, featureId: id, expectedRevision: preview.state.revision, host: "codex", credential: { source: "elicitation", action: "confirm" } }),
       (error) => error.code === "PLAN_REVISION_STALE",
     );
     const unchanged = await store.readState(root, id);

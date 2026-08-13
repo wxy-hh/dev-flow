@@ -54,7 +54,7 @@ test("路线确认依据偏移时拒绝落账并提示重新呈现（依据偏�
 
     await store.recordHostEvent(fixture.root, { eventId: "drift-answer", type: "user-prompt", host: "claude", text: "确认这条路线" });
     await assert.rejects(
-      () => store.confirmRouteClassification(fixture.root, "drift-route", pending.revision, "确认这条路线", "claude"),
+      () => store.answer({ root: fixture.root, featureId: "drift-route", expectedRevision: pending.revision, host: "claude", credential: { source: "text", userReply: "确认这条路线" } }),
       (error) => {
         assert.equal(error.code, "ROUTE_CONFIRMATION_STALE");
         assert.match(error.message, /依据已变化/);

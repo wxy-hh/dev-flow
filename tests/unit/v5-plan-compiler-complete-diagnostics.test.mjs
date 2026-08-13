@@ -57,7 +57,7 @@ async function setup() {
     },
   }, { scanned: ["assumption", "free-space", "tbd", "fallback", "scope", "acceptance"], items: [] });
   await stateStore.recordHostEvent(root, { eventId: `route-${state.revision}`, type: "user-prompt", host: "claude", text: "确认这条路线" });
-  state = await stateStore.confirmRouteClassification(root, "diag", state.revision, "确认这条路线", "claude");
+  state = (await stateStore.answer({ root, featureId: "diag", expectedRevision: state.revision, host: "claude", credential: { source: "text", userReply: "确认这条路线" } })).state;
   state = await registerTraceFixture({
     root, featureId: "diag", state, kind: "requirements",
     delta: twoClosureTraceDeltaFor("requirements", "m"),

@@ -443,7 +443,12 @@ export type NextAction =
       kind: "review-jobs-pending";
       step: "planning";
       batchId: string;
-      jobs: Array<{ jobId: string; role: ReviewRole; reviewDepth: ReviewDepth; status: "pending" | "claimed" | "sampling" | "submitted" | "reused" }>;
+      /** jobs-open: the pending work queue, straight from the review gate. */
+      jobs?: Array<{ jobId: string; role: ReviewRole; reviewDepth: ReviewDepth; status: "pending" | "claimed" | "sampling" | "submitted" | "reused" }>;
+      /** blocking: unresolved blocking finding ids, straight from the gate result. */
+      findingIds?: string[];
+      /** isolation: submitted jobs missing an isolation proof, straight from the gate result. */
+      jobIds?: string[];
     }
   | {
       kind: "repair-trace";

@@ -10,10 +10,11 @@ import { emptyTraceabilityLedger } from "./traceability.js";
 import { readProjectConfigSnapshot, writeTraceSnapshot } from "./traceability-store.js";
 import { emptyReviewLedger, prepareReviewInvalidation, writeReviewSnapshot } from "./review-store.js";
 import { deriveCurrency } from "./basis-state.js";
-import { createInteraction, resolveNativeInteraction, resolveTextInteraction, type UserInteraction } from "./user-interactions.js";
-import { matchDecisionReply, pendingDecisionForState, pendingInteractionForDecision } from "./decision-interactions.js";
+import { createInteraction, resolveResponseForAnswer } from "./user-interactions.js";
+import { matchDecisionReply, pendingDecisionForState } from "./decision-interactions.js";
 import { resolveInteractionPromptEvent, resolvePromptEvent } from "./interaction-provenance.js";
-import { mutate, mutatePrepared, readFeatureEvents, readProjectConfig, readState, type FeatureState } from "./state-store.js";
+import { mutatePrepared, readFeatureEvents, readProjectConfig, readState, type FeatureState, type PreparedFeatureMutation } from "./state-store.js";
+import type { AnswerResolveContext, AnswerResolveResult } from "./interaction-answer.js";
 
 export async function lockClassification(
   root: string,
@@ -123,11 +124,10 @@ export async function lockClassification(
       retryOriginal: true,
     });
   }
-  const capabilities = normalizeWorkflowCapabilities(SUPPORTED_WORKFLOW_CAPABILITIES);
   if (selected.classification.routeConfirmationRequired) {
     let presentationEventId: string | undefined;
     return mutatePrepared(root, id, expectedRevision, "route-confirmation-presented", async () => ({ mutate: (draft) => {
-      const basisHash = createHash("sha256").update(JSON.stringify({ facts, route: selected.classification.orderedRoute, controls: selected.classification.controls })).digest("hex");
+      const basisHash = confirmationBasisHash(facts, selected);
       presentationEventId = randomUUID();
       draft.routeConfirmation = { facts, basisHash };
       createInteraction(draft, {
@@ -148,77 +148,7 @@ export async function lockClassification(
       ...(presentationEventId ? { presentationEventId } : {}),
     }) }));
   }
-  return mutatePrepared(root, id, expectedRevision, "classification-locked", async (_current, nextRevision) => {
-    const definition = routeDefinitionForFeature(selected.route, selected.classification.controls);
-    const traceability = traceEnforcementRequired(selected.route, selected.classification.controls)
-      ? await writeTraceSnapshot(root, emptyTraceabilityLedger(id, nextRevision, (await readProjectConfigSnapshot(root)).sha256))
-      : undefined;
-    const review = reviewLedgerRequired(selected.route, selected.classification.controls)
-      ? await writeReviewSnapshot(root, emptyReviewLedger(id, nextRevision))
-      : undefined;
-    return { mutate: (draft) => {
-      draft.schemaVersion = 5;
-      draft.mode = "routed";
-      draft.route = selected.route;
-      draft.classification = selected.classification;
-      draft.classificationBasis = selected.classificationBasis;
-      draft.obligations = selected.obligations;
-      draft.currentStage = definition.orderedSteps[0];
-      draft.workflowCapabilities = capabilities;
-      draft.steps = Object.fromEntries(definition.orderedSteps.map((step) => [step, { status: "pending" as const }]));
-      draft.humanGates = {};
-      draft.artifacts = {};
-      draft.verification = { attempts: [] };
-      draft.logicComplete = false;
-      if (traceability) draft.traceability = traceability;
-      if (review) draft.review = review;
-      void project;
-    } };
-  });
-}
-
-export async function confirmRouteClassification(
-  root: string,
-  id: string,
-  expectedRevision: number,
-  userReply: string,
-  host: "claude" | "codex",
-): Promise<FeatureState> {
-  const current = await readState(root, id);
-  const pending = pendingDecisionForState(current);
-  if (pending?.kind !== "route-confirmation" || !current.routeConfirmation) throw new DevFlowError("ROUTE_CONFIRMATION_NOT_PENDING", "当前没有待确认路线。");
-  const currentInteraction = pendingInteractionForDecision(current, pending);
-  const events = await readFeatureEvents(root, id);
-  const prompt = currentInteraction
-    ? resolveInteractionPromptEvent(events, current, currentInteraction, { host, userReply })
-    : resolvePromptEvent(events, { host, userReply, presentedAt: pending.presentedAt, presentedRevision: pending.presentedRevision, ...(pending.presentationEventId ? { presentationEventId: pending.presentationEventId } : {}) });
-  const matched = matchDecisionReply(pending, prompt.text);
-  if (matched.option.id !== "confirm") throw new DevFlowError("ROUTE_CONFIRMATION_CORRECTION_REQUIRED", "路线需要修正，不能按当前分类锁定。", { comment: matched.comment });
-  const selected = selectBaseRoute(current.routeConfirmation.facts);
-  await assertRouteExecutable(root, selected);
-  const definition = routeDefinitionForFeature(selected.route, selected.classification.controls);
-  const traceability = traceEnforcementRequired(selected.route, selected.classification.controls)
-    ? await writeTraceSnapshot(root, emptyTraceabilityLedger(id, expectedRevision + 1, (await readProjectConfigSnapshot(root)).sha256)) : undefined;
-  const review = reviewLedgerRequired(selected.route, selected.classification.controls)
-    ? await writeReviewSnapshot(root, emptyReviewLedger(id, expectedRevision + 1)) : undefined;
-  return mutate(root, id, expectedRevision, "route-confirmation-accepted", (draft) => {
-    if (pendingDecisionForState(draft)?.basisHash !== pending.basisHash || draft.routeConfirmation?.basisHash !== pending.basisHash) throw new DevFlowError("ROUTE_CONFIRMATION_STALE", "路线确认依据已变化。");
-    const interaction = Object.values(draft.interactions ?? {}).find((value) => (value as { target?: unknown; status?: unknown }).target === "route-confirmation" && (value as { status?: unknown }).status === "pending") as UserInteraction | undefined;
-    if (interaction) resolveTextInteraction(draft, interaction.id, prompt.text, host, { promptEventId: prompt.eventId });
-    draft.mode = "routed";
-    draft.route = selected.route;
-    draft.classification = selected.classification;
-    draft.classificationBasis = selected.classificationBasis;
-    draft.obligations = selected.obligations;
-    draft.currentStage = definition.orderedSteps[0];
-    draft.workflowCapabilities = normalizeWorkflowCapabilities(SUPPORTED_WORKFLOW_CAPABILITIES);
-    draft.steps = Object.fromEntries(definition.orderedSteps.map((step) => [step, { status: "pending" as const }]));
-    if (traceability) draft.traceability = traceability;
-    if (review) draft.review = review;
-    delete draft.pendingDecision;
-    delete draft.routeConfirmation;
-    draft.lastUpdatedBy = { host, pluginVersion: __DEV_FLOW_VERSION__ };
-  }, { promptEventId: prompt.eventId, level: selected.classification.level, orderedRoute: selected.classification.orderedRoute });
+  return mutatePrepared(root, id, expectedRevision, "classification-locked", applyLock({ root, facts, basisHash: confirmationBasisHash(facts, selected) }));
 }
 
 export async function assertRouteExecutable(root: string, selected: { classification: Classification }): Promise<void> {
@@ -237,43 +167,244 @@ export async function assertRouteExecutable(root: string, selected: { classifica
   }
 }
 
-export async function resolveRouteClassificationElicitation(
+/**
+ * 确认依据只覆盖事实、可见路线与 controls（ADR-0015）；呈现、重呈现与
+ * applyLock 重算共用同一公式，保证确认身份与锁定写入一致。
+ */
+function confirmationBasisHash(facts: ClassificationFacts, selected: ReturnType<typeof selectBaseRoute>): string {
+  return createHash("sha256").update(JSON.stringify({
+    facts,
+    route: selected.classification.orderedRoute,
+    controls: selected.classification.controls,
+  })).digest("hex");
+}
+
+/**
+ * 重分类转换的快照准备（保留已满足步骤、作废审查）：首次锁定不经过这里，
+ * 直锁与路线确认都只走 applyLock。重分类（含已 routed 的重呈现确认）共用。
+ */
+async function prepareRouteTransitionPointers(
   root: string,
-  id: string,
-  expectedRevision: number,
-  interactionId: string,
-  action: string,
-  comment: string | undefined,
-  host: "claude" | "codex",
-): Promise<FeatureState> {
-  if (action !== "confirm") throw new DevFlowError("DECISION_REPLY_NOT_RECOGNIZED", "请确认当前路线，或关闭表单后补充分类事实。");
-  const current = await readState(root, id);
-  const pending = pendingDecisionForState(current);
-  const interaction = current.interactions?.[interactionId] as UserInteraction | undefined;
-  if (pending?.kind !== "route-confirmation" || !current.routeConfirmation || !interaction || interaction.status !== "pending") throw new DevFlowError("ROUTE_CONFIRMATION_NOT_PENDING", "当前没有待确认路线。");
-  const selected = selectBaseRoute(current.routeConfirmation.facts);
-  await assertRouteExecutable(root, selected);
-  const definition = routeDefinitionForFeature(selected.route, selected.classification.controls);
-  const traceability = traceEnforcementRequired(selected.route, selected.classification.controls)
-    ? await writeTraceSnapshot(root, emptyTraceabilityLedger(id, expectedRevision + 1, (await readProjectConfigSnapshot(root)).sha256)) : undefined;
-  const review = reviewLedgerRequired(selected.route, selected.classification.controls)
-    ? await writeReviewSnapshot(root, emptyReviewLedger(id, expectedRevision + 1)) : undefined;
-  return mutate(root, id, expectedRevision, "route-confirmation-accepted", (draft) => {
-    if (pendingDecisionForState(draft)?.basisHash !== pending.basisHash || draft.routeConfirmation?.basisHash !== pending.basisHash) throw new DevFlowError("ROUTE_CONFIRMATION_STALE", "路线确认依据已变化。");
-    resolveNativeInteraction(draft, interactionId, action, comment, host);
-    draft.mode = "routed";
-    draft.route = selected.route;
-    draft.classification = selected.classification;
-    draft.classificationBasis = selected.classificationBasis;
-    draft.obligations = selected.obligations;
-    draft.currentStage = definition.orderedSteps[0];
-    draft.workflowCapabilities = normalizeWorkflowCapabilities(SUPPORTED_WORKFLOW_CAPABILITIES);
-    draft.steps = Object.fromEntries(definition.orderedSteps.map((step) => [step, { status: "pending" as const }]));
-    if (traceability) draft.traceability = traceability;
-    if (review) draft.review = review;
-    delete draft.routeConfirmation;
-    draft.lastUpdatedBy = { host, pluginVersion: __DEV_FLOW_VERSION__ };
-  }, { interactionId, action, level: selected.classification.level, orderedRoute: selected.classification.orderedRoute });
+  featureId: string,
+  selected: ReturnType<typeof selectBaseRoute>,
+  current: Readonly<FeatureState>,
+  nextRevision: number,
+): Promise<{
+  preparedTraceability?: NonNullable<FeatureState["traceability"]>;
+  preparedReview?: NonNullable<FeatureState["review"]>;
+  reviewInvalidation?: NonNullable<FeatureState["review"]>;
+}> {
+  const preparedTraceability = traceEnforcementRequired(selected.route, selected.classification.controls) && !current.traceability
+    ? await writeTraceSnapshot(root, emptyTraceabilityLedger(featureId, nextRevision, (await readProjectConfigSnapshot(root)).sha256)) : undefined;
+  const preparedReview = reviewLedgerRequired(selected.route, selected.classification.controls) && !current.review
+    ? await writeReviewSnapshot(root, emptyReviewLedger(featureId, nextRevision)) : undefined;
+  const reviewInvalidation = current.review && (selected.route !== current.route || JSON.stringify(selected.classification) !== JSON.stringify(current.classification))
+    ? await prepareReviewInvalidation(root, current, nextRevision) : undefined;
+  return { preparedTraceability, preparedReview, reviewInvalidation };
+}
+
+/**
+ * 首次锁定的唯一写入 seam（ADR-0020）。
+ *
+ * 不自己开 CAS：返回调用方已有 mutatePrepared 的 prepare 身体，调用方决定
+ * operation 并交给自己的那一笔事务。输入是已审计的分类事实与确认依据 hash；
+ * 写入时再 select、再算 hash，对不上则依据过期。无门禁直锁与路线确认的
+ * kind.apply 都只走这一处字段赋值。
+ */
+export function applyLock(
+  input: { root: string; facts: ClassificationFacts; basisHash: string },
+): (current: Readonly<FeatureState>, nextRevision: number) => Promise<PreparedFeatureMutation> {
+  const { root, facts, basisHash } = input;
+  return async (current, nextRevision) => {
+    if (current.mode !== "intake") throw new DevFlowError("CLASSIFICATION_ALREADY_LOCKED", "classification is already locked");
+    const selected = selectBaseRoute(facts);
+    if (selected.contradictions.length) {
+      throw new DevFlowError("CLASSIFICATION_CONTRADICTION", "classification facts contain unresolved contradictions", {
+        contradictions: selected.contradictions,
+        userMessage: "分类参数存在冲突或缺失，无法锁定路线。",
+        cause: `分类事实存在 ${selected.contradictions.length} 处矛盾：${selected.contradictions.join("；")}`,
+        impact: "路线不会锁定，仍停留在 intake 阶段。",
+        recoveryKind: "retry",
+        recoveryInstruction: "修正分类参数后重新锁定分类。",
+        retryOriginal: true,
+        requiresUserDecision: false,
+      });
+    }
+    if (confirmationBasisHash(facts, selected) !== basisHash) {
+      throw new DevFlowError("ROUTE_CONFIRMATION_STALE", "路线确认依据已变化。", {
+        userMessage: "确认依据已变化，需要重新确认当前路线。",
+        cause: "写入时从已审计事实重算的确认 hash 与呈现时的依据不一致。",
+        impact: "路线不会锁定；确认身份保留，重新呈现后再确认。",
+        recoveryKind: "refresh",
+        recoveryInstruction: "重新呈现当前路线并确认。",
+        retryOriginal: false,
+      });
+    }
+    if (selected.classification.routeConfirmationRequired) {
+      const pending = pendingDecisionForState(current);
+      const gateMatches = pending?.kind === "route-confirmation"
+        && pending.basisHash === basisHash
+        && current.routeConfirmation?.basisHash === basisHash;
+      if (!gateMatches) {
+        throw new DevFlowError("ROUTE_CONFIRMATION_REQUIRED", "该路线需要用户确认，不能无门禁锁定。", {
+          userMessage: "这条路线需要先确认；当前没有 hash 一致的待确认路线。",
+          cause: "applyLock 收到需要路线确认的分类，但状态里没有匹配的待确认路线。",
+          impact: "路线不会锁定。",
+          recoveryKind: "retry",
+          recoveryInstruction: "由 lockClassification 呈现路线确认，经 answer 确认后锁定。",
+          retryOriginal: false,
+        });
+      }
+    }
+    await assertRouteExecutable(root, selected);
+    const definition = routeDefinitionForFeature(selected.route, selected.classification.controls);
+    const traceability = traceEnforcementRequired(selected.route, selected.classification.controls)
+      ? await writeTraceSnapshot(root, emptyTraceabilityLedger(current.featureId, nextRevision, (await readProjectConfigSnapshot(root)).sha256)) : undefined;
+    const review = reviewLedgerRequired(selected.route, selected.classification.controls)
+      ? await writeReviewSnapshot(root, emptyReviewLedger(current.featureId, nextRevision)) : undefined;
+    return {
+      mutate: (draft) => {
+        draft.schemaVersion = 5;
+        draft.mode = "routed";
+        draft.route = selected.route;
+        draft.classification = selected.classification;
+        draft.classificationBasis = selected.classificationBasis;
+        draft.obligations = selected.obligations;
+        draft.currentStage = definition.orderedSteps[0];
+        draft.workflowCapabilities = normalizeWorkflowCapabilities(SUPPORTED_WORKFLOW_CAPABILITIES);
+        draft.steps = Object.fromEntries(definition.orderedSteps.map((step) => [step, { status: "pending" as const }]));
+        draft.humanGates = {};
+        draft.artifacts = {};
+        draft.verification = { attempts: [] };
+        draft.logicComplete = false;
+        if (traceability) draft.traceability = traceability;
+        if (review) draft.review = review;
+        delete draft.routeConfirmation;
+      },
+    };
+  };
+}
+
+/** 路线确认经统一回答入口落账（ADR-0019）：一次锁定用户可见步骤，追溯与审查 pointer 同 revision。 */
+export async function resolveRouteConfirmationForAnswer(ctx: AnswerResolveContext): Promise<AnswerResolveResult> {
+  const { root, featureId, expectedRevision, host, credential, interaction, state } = ctx;
+  const pending = pendingDecisionForState(state);
+  if (pending?.kind !== "route-confirmation" || !state.routeConfirmation) {
+    throw new DevFlowError("ROUTE_CONFIRMATION_NOT_PENDING", "当前没有待确认路线。");
+  }
+  let promptEventId: string | undefined;
+  let promptText: string | undefined;
+  if (credential.source === "text") {
+    const events = await readFeatureEvents(root, featureId);
+    const prompt = interaction
+      ? resolveInteractionPromptEvent(events, state, interaction, { host, userReply: credential.userReply })
+      : resolvePromptEvent(events, { host, userReply: credential.userReply, presentedAt: pending.presentedAt, presentedRevision: pending.presentedRevision, ...(pending.presentationEventId ? { presentationEventId: pending.presentationEventId } : {}) });
+    promptEventId = prompt.eventId;
+    promptText = prompt.text;
+  }
+  const matched = credential.source === "elicitation"
+    ? { optionId: credential.action, comment: credential.comment }
+    : (() => {
+      const m = matchDecisionReply(pending, promptText ?? credential.userReply);
+      return { optionId: m.option.id, comment: m.comment };
+    })();
+  if (matched.optionId !== "confirm") {
+    if (credential.source === "elicitation") {
+      throw new DevFlowError("DECISION_REPLY_NOT_RECOGNIZED", "请确认当前路线，或关闭表单后补充分类事实。");
+    }
+    throw new DevFlowError("ROUTE_CONFIRMATION_CORRECTION_REQUIRED", "路线需要修正，不能按当前分类锁定。", { comment: matched.comment });
+  }
+  const confirmation = state.routeConfirmation;
+  let response: import("./user-interactions.js").InteractionResponse | undefined;
+  let transitionData: { previousRoute?: string; invalidatedSteps?: string[]; invalidatedArtifacts?: string[] } | undefined;
+
+  if (state.mode === "intake") {
+    // 首次锁定（intake → routed）只走 applyLock：写入时重算确认依据、检查
+    // 路线可执行并挂快照 pointer；确认路径只追加凭证解析、消费 pending 与
+    // 事件数据，不再有第二份字段赋值。
+    const prepare = applyLock({ root, facts: confirmation.facts, basisHash: confirmation.basisHash });
+    let confirmedLevel: string | undefined;
+    let confirmedRoute: string[] | undefined;
+    const next = await mutatePrepared(root, featureId, expectedRevision, "route-confirmation-accepted", async (current, nextStateRevision) => {
+      const prepared = await prepare(current, nextStateRevision);
+      const applyMutate = prepared.mutate;
+      return {
+        ...prepared,
+        mutate: (draft) => {
+          applyMutate(draft);
+          confirmedLevel = draft.classification.level;
+          confirmedRoute = draft.classification.orderedRoute;
+          response = resolveResponseForAnswer(draft, interaction, {
+            source: credential.source,
+            action: credential.source === "elicitation" ? credential.action : undefined,
+            comment: credential.source === "elicitation" ? credential.comment : undefined,
+            userReply: credential.source === "text" ? credential.userReply : undefined,
+            promptText,
+            promptEventId,
+            host,
+          });
+          delete draft.pendingDecision;
+          draft.lastUpdatedBy = { host, pluginVersion: __DEV_FLOW_VERSION__ };
+        },
+        eventData: () => ({
+          promptEventId,
+          level: confirmedLevel,
+          orderedRoute: confirmedRoute,
+        }),
+      };
+    });
+    if (!response) throw new DevFlowError("INTERACTION_NOT_RESOLVED", interaction.id);
+    return { state: next, action: "confirm" };
+  }
+
+  // 已 routed 的重分类重呈现确认：走重分类转换（保留已满足步骤、作废审查），
+  // 不是首次锁定，不调用 applyLock（ADR-0020）。
+  let selectedForEvent: ReturnType<typeof selectBaseRoute> | undefined;
+  const next = await mutatePrepared(root, featureId, expectedRevision, "route-confirmation-accepted", async (current, nextStateRevision) => {
+    const selected = selectBaseRoute(confirmation.facts);
+    if (confirmationBasisHash(confirmation.facts, selected) !== confirmation.basisHash) {
+      throw new DevFlowError("ROUTE_CONFIRMATION_STALE", "路线确认依据已变化。", {
+        userMessage: "确认依据已变化，需要重新呈现当前路线。",
+        impact: "路线不会变化；确认身份保留，重新呈现后再确认。",
+        recoveryKind: "refresh",
+        recoveryInstruction: "重新呈现当前路线并确认。",
+        retryOriginal: false,
+      });
+    }
+    await assertRouteExecutable(root, selected);
+    const { preparedTraceability, preparedReview, reviewInvalidation } = await prepareRouteTransitionPointers(root, featureId, selected, current, nextStateRevision);
+    selectedForEvent = selected;
+    return {
+      mutate: (draft) => {
+        if (preparedTraceability) draft.traceability = preparedTraceability;
+        if (preparedReview) draft.review = preparedReview;
+        if (reviewInvalidation) draft.review = reviewInvalidation;
+        // 先解析凭证（交互仍在 interactions 中），再做重分类转换（会清空交互）。
+        response = resolveResponseForAnswer(draft, interaction, {
+          source: credential.source,
+          action: credential.source === "elicitation" ? credential.action : undefined,
+          comment: credential.source === "elicitation" ? credential.comment : undefined,
+          userReply: credential.source === "text" ? credential.userReply : undefined,
+          promptText,
+          promptEventId,
+          host,
+        });
+        const transition = applyRouteTransition(draft, selected);
+        transitionData = { previousRoute: transition.previousRoute, invalidatedSteps: transition.invalidatedSteps, invalidatedArtifacts: transition.invalidatedArtifacts };
+        delete draft.pendingDecision;
+        delete draft.routeConfirmation;
+        draft.lastUpdatedBy = { host, pluginVersion: __DEV_FLOW_VERSION__ };
+      },
+      eventData: () => ({
+        promptEventId,
+        level: selectedForEvent?.classification.level,
+        orderedRoute: selectedForEvent?.classification.orderedRoute,
+        ...(transitionData ? { previousRoute: transitionData.previousRoute, invalidatedSteps: transitionData.invalidatedSteps, invalidatedArtifacts: transitionData.invalidatedArtifacts } : {}),
+      }),
+    };
+  });
+  if (!response) throw new DevFlowError("INTERACTION_NOT_RESOLVED", interaction.id);
+  return { state: next, action: "confirm" };
 }
 
 const levelRank: Record<string, number> = { XS: 0, S: 1, M: 2, L: 3 };
@@ -369,7 +500,7 @@ export async function reclassifyFeature(
     } as ClassificationFacts;
     let presentationEventId: string | undefined;
     return mutatePrepared(root, id, expectedRevision, "route-confirmation-represented", async () => ({ mutate: (draft) => {
-      const basisHash = createHash("sha256").update(JSON.stringify({ facts, controls: selectedAtLock.classification.controls, reason })).digest("hex");
+      const basisHash = confirmationBasisHash(facts, selectedAtLock);
       draft.routeConfirmation = { facts, basisHash };
       const interaction = createInteraction(draft, {
         kind: "route-confirmation",
@@ -384,12 +515,7 @@ export async function reclassifyFeature(
   let notice: string | undefined;
   let eventData: unknown = { reason };
   const state = await mutatePrepared(root, id, expectedRevision, "reclassified", async (current, nextStateRevision) => {
-    const preparedTraceability = traceEnforcementRequired(selectedAtLock.route, selectedAtLock.classification.controls) && !current.traceability
-      ? await writeTraceSnapshot(root, emptyTraceabilityLedger(id, nextStateRevision, (await readProjectConfigSnapshot(root)).sha256)) : undefined;
-    const preparedReview = reviewLedgerRequired(selectedAtLock.route, selectedAtLock.classification.controls) && !current.review
-      ? await writeReviewSnapshot(root, emptyReviewLedger(id, nextStateRevision)) : undefined;
-    const reviewInvalidation = current.review && (selectedAtLock.route !== current.route || JSON.stringify(selectedAtLock.classification) !== JSON.stringify(current.classification))
-      ? await prepareReviewInvalidation(root, current, nextStateRevision) : undefined;
+    const { preparedTraceability, preparedReview, reviewInvalidation } = await prepareRouteTransitionPointers(root, id, selectedAtLock, current, nextStateRevision);
     return { mutate: async (draft) => {
       if (draft.lifecycle !== "active") throw new DevFlowError("INVALID_LIFECYCLE", "only an active feature can be reclassified");
       const selected = selectRoute(next);

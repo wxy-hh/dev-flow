@@ -1,0 +1,317 @@
+import assert from "node:assert/strict";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
+import test from "node:test";
+import { loadSource } from "../helpers/load-source.mjs";
+
+// ADR-0019：交互只经 `answer` 落账。测试只打「凭证进、账本出」：
+// 一份宿主凭证进去之后，交互是否 resolved、kind 的领域账本结果、
+// 是否出现下一题 pending、失败是否 revision 不变且事件未消费。
+
+const store = await loadSource("plugins/dev-flow/src/core/state-store.ts");
+const decisions = await loadSource("plugins/dev-flow/src/core/decision-interactions.ts");
+const grill = await loadSource("plugins/dev-flow/src/core/requirements-grill.ts");
+
+const config = {
+  schemaVersion: 2,
+  verification: { commands: [{ id: "unit", command: process.execPath, args: ["-e", "process.exit(0)"], cwd: ".", provides: ["targeted", "behavior", "integration", "full"] }] },
+  enforcement: { mode: "strict", gitWriteRequiresLogicComplete: true, oneActiveFeature: true, requireExplicitHumanReply: true },
+  governedRoots: ["src"],
+};
+
+async function setup(prefix) {
+  const root = await mkdtemp(path.join(os.tmpdir(), prefix));
+  await mkdir(path.join(root, "src"));
+  await store.initProject(root, config);
+  const started = await store.startFeature(root, { featureId: "f", host: "codex" });
+  return { root, state: started };
+}
+
+test("结构化凭证（表单选中）即信任：追认经 answer 落账，凭证按 native-form 记录", async () => {
+  const { root, state } = await setup("dev-flow-answer-native-");
+  try {
+    const presented = await store.recordDecision(root, "f", state.revision, "是否保留兼容行为？", "历史兼容测试仍存在", "保留兼容行为", [], "codex");
+    const result = await store.answer({
+      root, featureId: "f", expectedRevision: presented.state.revision, host: "codex",
+      credential: { source: "elicitation", action: "confirm" },
+    });
+    assert.equal(result.action, "confirm");
+    assert.equal(result.state.governance.decisions.length, 1);
+    assert.equal(result.state.governance.decisions[0].conclusion, "保留兼容行为");
+    assert.equal(result.state.governance.credentials[0].source, "native-form");
+    assert.equal(result.state.governance.credentials[0].optionId, "confirm");
+    assert.equal(decisions.pendingDecisionForState(result.state), undefined);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("文本凭证绑定失败时不写任何东西：revision 不变、事件未消费、问题仍 pending", async () => {
+  const { root, state } = await setup("dev-flow-answer-nobind-");
+  try {
+    const presented = await store.recordDecision(root, "f", state.revision, "是否保留兼容行为？", "历史兼容测试仍存在", "保留兼容行为", [], "codex");
+    // 呈现之后没有匹配的宿主事件。
+    await assert.rejects(
+      () => store.answer({
+        root, featureId: "f", expectedRevision: presented.state.revision, host: "codex",
+        credential: { source: "text", userReply: "确认登记" },
+      }),
+      (error) => error.code === "INTERACTION_PROVENANCE_UNAVAILABLE",
+    );
+    const unchanged = await store.readState(root, "f");
+    assert.equal(unchanged.revision, presented.state.revision, "失败不得推进 revision");
+    assert.equal(unchanged.governance.decisions.length, 0, "失败不得写入账本");
+    assert.equal(decisions.pendingDecisionForState(unchanged).kind, "decision-ratification");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("文本凭证经 answer 绑定事件原文落账；凭证 basis 指向事件", async () => {
+  const { root, state } = await setup("dev-flow-answer-text-");
+  try {
+    const presented = await store.recordDecision(root, "f", state.revision, "是否保留兼容行为？", "历史兼容测试仍存在", "保留兼容行为", [], "codex");
+    await store.recordHostEvent(root, { eventId: "ratify-ok", type: "user-prompt", host: "codex", text: "确认登记" });
+    const result = await store.answer({
+      root, featureId: "f", expectedRevision: presented.state.revision, host: "codex",
+      credential: { source: "text", userReply: "确认登记" },
+    });
+    assert.equal(result.state.governance.decisions.length, 1);
+    assert.equal(result.state.governance.decisions[0].conclusion, "保留兼容行为");
+    assert.equal(result.state.governance.decisions[0].basis.eventId, "ratify-ok");
+    assert.equal(result.state.governance.decisions[0].credentialId, result.state.governance.credentials[0].recordId);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("没有正式交互时 answer 失败关闭，不锁定或改写任何状态", async () => {
+  const { root, state } = await setup("dev-flow-answer-nopending-");
+  try {
+    await assert.rejects(
+      () => store.answer({
+        root, featureId: "f", expectedRevision: state.revision, host: "codex",
+        credential: { source: "text", userReply: "确认" },
+      }),
+      (error) => error.code === "INTERACTION_NOT_PENDING",
+    );
+    const unchanged = await store.readState(root, "f");
+    assert.equal(unchanged.revision, state.revision);
+    assert.equal(unchanged.mode, "intake");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("CAS 冲突时整笔不写：revision 不变、事件未消费、问题仍 pending", async () => {
+  const { root, state } = await setup("dev-flow-answer-cas-");
+  try {
+    const presented = await store.recordDecision(root, "f", state.revision, "是否保留兼容行为？", "历史兼容测试仍存在", "保留兼容行为", [], "codex");
+    // 在呈现后推进一个 revision（例如登记一条宿主事件之外的变更）。
+    const bumped = await store.mutate(root, "f", presented.state.revision, "test-bump", (draft) => { draft.objective = "bumped"; });
+    await store.recordHostEvent(root, { eventId: "ratify-cas", type: "user-prompt", host: "codex", text: "确认登记" });
+    await assert.rejects(
+      () => store.answer({
+        root, featureId: "f", expectedRevision: presented.state.revision, host: "codex",
+        credential: { source: "text", userReply: "确认登记" },
+      }),
+      (error) => error.code === "STATE_REVISION_CONFLICT",
+    );
+    const unchanged = await store.readState(root, "f");
+    assert.equal(unchanged.revision, bumped.revision);
+    assert.equal(unchanged.governance.decisions.length, 0);
+    assert.equal(decisions.pendingDecisionForState(unchanged).kind, "decision-ratification");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("grill 带理由的 other 经 answer 写入决定；缺理由时不写且不消费", async () => {
+  const { root, state } = await setup("dev-flow-answer-grill-");
+  try {
+    const requested = await grill.requestGrillDecision(root, "f", state.revision, {
+      questionId: "G-001",
+      question: "如何处理需求边界？",
+      options: [
+        { id: "keep", label: "保留现有行为", description: "保持当前边界。" },
+        { id: "remove", label: "移除现有行为", description: "扩大范围。" },
+      ],
+      recommendation: { optionId: "keep", reason: "改动范围更可控。", drawback: "会保留当前限制。", alternative: { optionId: "remove", condition: "如果后续需要覆盖更多场景" } },
+      host: "codex",
+    });
+    const reply = "其他：先做一个最小实验，再依据结果决定是否保留。";
+    await store.recordHostEvent(root, { eventId: "grill-other", type: "user-prompt", host: "codex", text: reply });
+    const result = await store.answer({
+      root, featureId: "f", expectedRevision: requested.state.revision, host: "codex",
+      credential: { source: "text", userReply: reply },
+    });
+    assert.equal(result.action, "other");
+    assert.equal(result.state.governance.decisions.find((item) => item.recordId === "G-001").conclusion, "other");
+
+    // 其他选项无实质方案：拒绝且 revision 不变。
+    const root2 = await mkdtemp(path.join(os.tmpdir(), "dev-flow-answer-grill-noother-"));
+    try {
+      await mkdir(path.join(root2, "src"));
+      await store.initProject(root2, config);
+      const started = await store.startFeature(root2, { featureId: "g", host: "codex" });
+      const second = await grill.requestGrillDecision(root2, "g", started.revision, {
+        questionId: "G-002",
+        question: "选择方案",
+        options: [
+          { id: "keep", label: "保留", description: "保持现状。" },
+          { id: "remove", label: "移除", description: "删除。" },
+        ],
+        recommendation: { optionId: "keep", reason: "更稳。", drawback: "会有维护成本。", alternative: { optionId: "remove", condition: "如果确认应立即移除" } },
+        host: "codex",
+      });
+      await store.recordHostEvent(root2, { eventId: "grill-empty-other", type: "user-prompt", host: "codex", text: "其他：" });
+      await assert.rejects(
+        () => store.answer({
+          root: root2, featureId: "g", expectedRevision: second.state.revision, host: "codex",
+          credential: { source: "text", userReply: "其他：" },
+        }),
+        (error) => error.code === "DECISION_REPLY_NOT_RECOGNIZED",
+      );
+      const unchanged = await store.readState(root2, "g");
+      assert.equal(unchanged.revision, second.state.revision);
+      assert.equal(unchanged.governance.decisions.length, 0);
+    } finally {
+      await rm(root2, { recursive: true, force: true });
+    }
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("「确认」不能命中归属的 adopt/exclude（多意图问题语义边界）", async () => {
+  const { root, state } = await setup("dev-flow-answer-own-confirm-");
+  try {
+    await writeFile(path.join(root, "src/extra.js"), "export const e = 1;\n", "utf8");
+    const pending = await store.reconcileWorkspace(root, "f", state.revision, "codex");
+    await store.recordHostEvent(root, { eventId: "own-confirm", type: "user-prompt", host: "codex", text: "确认" });
+    await assert.rejects(
+      () => store.answer({
+        root, featureId: "f", expectedRevision: pending.revision, host: "codex",
+        credential: { source: "text", userReply: "确认" },
+      }),
+      (error) => error.code === "DECISION_REPLY_NOT_RECOGNIZED",
+    );
+    const unchanged = await store.readState(root, "f");
+    assert.equal(unchanged.revision, pending.revision);
+    assert.equal(unchanged.workspace.ownership["src/extra.js"], undefined, "「确认」不得把路径纳入当前任务");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("归属逐个确认后 answer 返回下一题 pending；下一次 answer 只处理剩余路径", async () => {
+  const { root, state } = await setup("dev-flow-answer-own-pending-");
+  try {
+    await writeFile(path.join(root, "src/a.js"), "export const a = 1;\n", "utf8");
+    await writeFile(path.join(root, "src/b.js"), "export const b = 2;\n", "utf8");
+    const pending = await store.reconcileWorkspace(root, "f", state.revision, "codex");
+    await store.recordHostEvent(root, { eventId: "own-1by1", type: "user-prompt", host: "codex", text: "逐个确认" });
+    const first = await store.answer({
+      root, featureId: "f", expectedRevision: pending.revision, host: "codex",
+      credential: { source: "text", userReply: "逐个确认" },
+    });
+    assert.equal(first.action, "one-by-one");
+    assert.ok(first.pending, "apply 呈现下一题时返回 pending");
+    assert.equal(first.pending.kind, "workspace-ownership");
+    const firstPath = first.pending.options && first.state.interactions
+      ? Object.values(first.state.interactions).find((item) => item.status === "pending")?.workspacePaths?.[0]
+      : undefined;
+    await store.recordHostEvent(root, { eventId: "own-adopt", type: "user-prompt", host: "codex", text: "纳入当前任务" });
+    const second = await store.answer({
+      root, featureId: "f", expectedRevision: first.state.revision, host: "codex",
+      credential: { source: "text", userReply: "纳入当前任务" },
+    });
+    const afterFirst = second.state;
+    const remainingPath = Object.values(afterFirst.interactions).find((item) => item.status === "pending")?.workspacePaths?.[0];
+    assert.ok(firstPath && remainingPath && firstPath !== remainingPath, "逐个确认后只问剩余路径");
+    await store.recordHostEvent(root, { eventId: "own-exclude", type: "user-prompt", host: "codex", text: "排除并先处理" });
+    const third = await store.answer({
+      root, featureId: "f", expectedRevision: second.state.revision, host: "codex",
+      credential: { source: "text", userReply: "排除并先处理" },
+    });
+    assert.equal(third.state.workspace.ownership[firstPath], "feature");
+    assert.equal(third.state.workspace.ownership[remainingPath], "excluded");
+    assert.equal(decisions.pendingDecisionForState(third.state), undefined);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("路线确认经 answer 一次锁定；追溯与审查 pointer 落在同一 revision", async () => {
+  const { root, state } = await setup("dev-flow-answer-route-");
+  try {
+    const facts = {
+      level: "M", topology: "local", requirements: "provided-confirmed",
+      scopeFactRefs: [], topologyFactRefs: [], uncertaintyFactRefs: [], riskFactRefs: {}, decisionRefs: [],
+      signals: { changeSurface: "multi-component", behaviorChange: "new-capability", topology: "local", unitCount: 1, requirements: "provided-confirmed", operationalRecovery: false, executableRollback: false },
+    };
+    const boundaryAudit = { scanned: ["assumption", "free-space", "tbd", "fallback", "scope", "acceptance"], items: [] };
+    const locked = await store.lockClassification(root, "f", state.revision, facts, boundaryAudit);
+    assert.equal(decisions.pendingDecisionForState(locked).kind, "route-confirmation");
+    await store.recordHostEvent(root, { eventId: "route-ok", type: "user-prompt", host: "codex", text: "确认这条路线" });
+    const result = await store.answer({
+      root, featureId: "f", expectedRevision: locked.revision, host: "codex",
+      credential: { source: "text", userReply: "确认这条路线" },
+    });
+    assert.equal(result.action, "confirm");
+    assert.equal(result.state.mode, "routed");
+    assert.equal(result.state.route, "m");
+    assert.equal(decisions.pendingDecisionForState(result.state), undefined);
+    // 路线锁定与追溯/审查快照在同一笔事务原子落账：revision 只推进一步，
+    // 快照指针已随锁定写入（pointer 的 revision 是快照内部版本，非状态 revision）。
+    assert.equal(result.state.revision, locked.revision + 1);
+    if (result.state.traceability) assert.equal(typeof result.state.traceability.sha256, "string");
+    if (result.state.review) assert.equal(typeof result.state.review.sha256, "string");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("未接入 answer 的 kind 失败关闭（DECISION_KIND_UNSUPPORTED），不改任何状态", async () => {
+  // 用未注册 kind 的 pending 交互直接构造状态，验证 fail-closed。
+  const { root, state } = await setup("dev-flow-answer-unsupported-");
+  try {
+    const staged = await store.mutate(root, "f", state.revision, "stage-unsupported", (draft) => {
+      draft.interactions = {
+        "legacy-pending": {
+          id: "legacy-pending",
+          kind: "acceptance-confirmation",
+          target: "acceptance:legacy",
+          basisHash: "0".repeat(64),
+          options: [{ id: "confirm", label: "确认" }, { id: "reject", label: "拒绝" }],
+          presentedAt: new Date().toISOString(),
+          status: "pending",
+        },
+      };
+      draft.pendingDecision = {
+        kind: "acceptance-confirmation",
+        question: "确认当前验收结果？",
+        options: [{ id: "confirm", label: "确认" }, { id: "reject", label: "拒绝" }],
+        basisHash: "0".repeat(64),
+        presentedAt: new Date().toISOString(),
+        presentedRevision: state.revision,
+        target: "acceptance:legacy",
+        source: "core",
+      };
+    });
+    await store.recordHostEvent(root, { eventId: "unsupported-answer", type: "user-prompt", host: "codex", text: "确认" });
+    await assert.rejects(
+      () => store.answer({
+        root, featureId: "f", expectedRevision: staged.revision, host: "codex",
+        credential: { source: "text", userReply: "确认" },
+      }),
+      (error) => error.code === "DECISION_KIND_UNSUPPORTED",
+    );
+    const unchanged = await store.readState(root, "f");
+    assert.equal(unchanged.revision, staged.revision);
+    assert.equal(decisions.pendingDecisionForState(unchanged).kind, "acceptance-confirmation");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});

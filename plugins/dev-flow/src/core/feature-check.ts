@@ -22,7 +22,7 @@ import { assertWorkspaceOwnershipComplete, mutate, readProjectConfig, readState,
 import { assertCurrentStep, currentOpenStep, routeDefinitionForState } from "./step-order.js";
 import { assertTraceGateCurrent } from "./traceability-gates.js";
 import { readTraceability } from "./traceability-store.js";
-import { assertReviewComplete } from "./review-jobs.js";
+import { requireReviewReady } from "./review-jobs.js";
 import { captureAutomaticCheckpoint } from "./auto-checkpoint.js";
 import { satisfyObligations } from "../policy/obligations.js";
 import { hasCurrentQualityException, qualityExceptionCoversStep } from "./quality-exceptions.js";
@@ -126,7 +126,8 @@ export async function recordStep(
     );
     if (required.fields.reviewBatch || step === "code_review") {
       // batch/basis/assurance are Core-owned; callers cannot provide substitutes.
-      normalizedEvidence = await assertReviewComplete(root, state);
+      // 登记 plan 问 plan、登记 code_review 显式问 code，与 status 听到同一句“过/不过”。
+      normalizedEvidence = await requireReviewReady(root, state, { phase: step === "code_review" ? "code" : "plan" });
     } else {
       assertRequiredEvidence(step, required, normalizedEvidence);
     }

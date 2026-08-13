@@ -71,7 +71,7 @@ function pendingInteraction(state, kind) {
 async function answerOwnership(hook, root, state, text, eventId) {
   const interaction = pendingInteraction(state, "workspace-ownership");
   await invokeHook(hook, root, { hook_event_name: "UserPromptSubmit", event_id: eventId, prompt: text });
-  return (await store.resolveWorkspaceOwnershipText(root, state.featureId, state.revision, interaction.id, text, "codex")).state;
+  return (await store.answer({ root, featureId: state.featureId, expectedRevision: state.revision, host: "codex", credential: { source: "text", userReply: text } })).state;
 }
 
 async function lockAndConfirmRoute(hook, root, state, factRef, expectedRevision, host = "codex") {
@@ -79,7 +79,7 @@ async function lockAndConfirmRoute(hook, root, state, factRef, expectedRevision,
   const route = Object.values(current.interactions ?? {}).find((interaction) => interaction.status === "pending" && interaction.kind === "route-confirmation");
   if (route) {
     await invokeHook(hook, root, { hook_event_name: "UserPromptSubmit", event_id: `route-${current.revision}`, prompt: "路线没问题" });
-    current = await store.confirmRouteClassification(root, current.featureId, current.revision, "路线没问题", host);
+    current = (await store.answer({ root, featureId: current.featureId, expectedRevision: current.revision, host, credential: { source: "text", userReply: "路线没问题" } })).state;
   }
   return current;
 }
@@ -199,7 +199,7 @@ test("audit journey 2: guarantee repair is scoped and semantic approval is reuse
     state = await store.lockClassification(fixture.root, state.featureId, afterFact, classificationFactsWith(factRef), boundaryAudit);
     pendingInteraction(state, "route-confirmation");
     await store.recordHostEvent(fixture.root, { eventId: "route-two", type: "user-prompt", host: "claude", text: "确认路线" });
-    state = await store.confirmRouteClassification(fixture.root, state.featureId, state.revision, "确认路线", "claude");
+    state = (await store.answer({ root: fixture.root, featureId: state.featureId, expectedRevision: state.revision, host: "claude", credential: { source: "text", userReply: "确认路线" } })).state;
     const toApproval = await driveUntil(fixture.root, state.featureId, state, {
       input: routeInput,
       host: "claude",

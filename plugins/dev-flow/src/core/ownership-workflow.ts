@@ -2,14 +2,15 @@ import { createHash, randomUUID } from "node:crypto";
 import { DevFlowError } from "./errors.js";
 import { matchDecisionReply, pendingDecisionForState, pendingInteractionForDecision } from "./decision-interactions.js";
 import { resolveInteractionPromptEvent } from "./interaction-provenance.js";
-import { resolveTextInteraction, createInteraction, type UserInteraction } from "./user-interactions.js";
+import { resolveResponseForAnswer, resolveTextInteraction, createInteraction, type UserInteraction } from "./user-interactions.js";
 import type { FeatureState } from "./state-store.js";
-import { mutate, readActive, readFeatureEvents, readProjectConfig, readState } from "./state-store.js";
+import { mutate, mutatePrepared, readActive, readFeatureEvents, readProjectConfig, readState } from "./state-store.js";
 import { reconcileWorkspaceForFeature } from "./git-reconciliation.js";
 import { reopenObligations } from "../policy/obligations.js";
 import { pathWithinFileScope } from "../policy/rollback.js";
 import { readTraceability } from "./traceability-store.js";
 import { trustedWriteSummary } from "./workspace-store.js";
+import type { AnswerResolveContext, AnswerResolveResult } from "./interaction-answer.js";
 
 export function objectiveForSwitch(input: { objective?: string }): string {
   return typeof input.objective === "string" ? input.objective.trim() : "未命名需求";
@@ -65,23 +66,25 @@ export function presentWorkspaceOwnership(
   return { interaction, presentationEventId };
 }
 
-export async function resolveWorkspaceOwnershipText(
-  root: string,
-  id: string,
-  expectedRevision: number,
-  interactionId: string,
-  userReply: string,
-  host: "claude" | "codex",
-): Promise<{ state: FeatureState; action: string }> {
-  const current = await readState(root, id);
-  const decision = pendingDecisionForState(current);
-  const interaction = current.interactions?.[interactionId] as UserInteraction | undefined;
-  if (decision?.kind !== "workspace-ownership" || !interaction || interaction.status !== "pending") {
+export { unknownOwnershipPaths };
+
+/** 工作区归属经统一回答入口落账（ADR-0019）：纳入 / 排除 / 逐个确认。 */
+export async function resolveOwnershipForAnswer(ctx: AnswerResolveContext): Promise<AnswerResolveResult> {
+  const { root, featureId, expectedRevision, host, credential, interaction, state } = ctx;
+  const decision = pendingDecisionForState(state);
+  if (decision?.kind !== "workspace-ownership" || interaction.status !== "pending") {
     throw new DevFlowError("WORKSPACE_OWNERSHIP_NOT_PENDING", "当前没有待确认的工作区归属问题。");
   }
-  const prompt = resolveInteractionPromptEvent(await readFeatureEvents(root, id), current, interaction, { host, userReply });
+  let promptEventId: string | undefined;
+  let promptText: string | undefined;
+  if (credential.source === "text") {
+    const events = await readFeatureEvents(root, featureId);
+    const prompt = resolveInteractionPromptEvent(events, state, interaction, { host, userReply: credential.userReply });
+    promptEventId = prompt.eventId;
+    promptText = prompt.text;
+  }
   const presentedPaths = presentedOwnershipPaths(interaction);
-  const currentPaths = unknownOwnershipPaths(current);
+  const currentPaths = unknownOwnershipPaths(state);
   if (JSON.stringify(presentedPaths) !== JSON.stringify(currentPaths)) {
     throw new DevFlowError("WORKSPACE_OWNERSHIP_STALE", "待确认路径清单已变化，请重新对账后回答。", {
       userMessage: "工作区路径清单已变化，旧回答不会被套用。",
@@ -93,15 +96,17 @@ export async function resolveWorkspaceOwnershipText(
       paths: presentedPaths,
     });
   }
-  const matched = matchDecisionReply(decision, prompt.text);
+  const matchedId = credential.source === "elicitation"
+    ? credential.action
+    : matchDecisionReply(decision, promptText ?? credential.userReply).option.id;
   let nextPresentationEventId: string | undefined;
-  const state = await mutate(root, id, expectedRevision, "workspace-ownership-answered", async (draft) => {
-    const draftInteraction = draft.interactions?.[interactionId] as UserInteraction | undefined;
-    if (!draftInteraction || draftInteraction.status !== "pending" || pendingDecisionForState(draft)?.basisHash !== decision.basisHash) {
+  const next = await mutatePrepared(root, featureId, expectedRevision, "workspace-ownership-answered", async (current) => {
+    const draftInteraction = current.interactions?.[interaction.id] as UserInteraction | undefined;
+    if (!draftInteraction || draftInteraction.status !== "pending" || pendingDecisionForState(current)?.basisHash !== decision.basisHash) {
       throw new DevFlowError("WORKSPACE_OWNERSHIP_STALE", "工作区归属问题的依据已变化，请重新对账后回答。");
     }
     const batchPaths = presentedOwnershipPaths(draftInteraction);
-    const unknown = unknownOwnershipPaths(draft);
+    const unknown = unknownOwnershipPaths(current);
     if (JSON.stringify(batchPaths) !== JSON.stringify(unknown)) {
       throw new DevFlowError("WORKSPACE_OWNERSHIP_STALE", "待确认路径清单已变化，请重新对账后回答。", {
         userMessage: "工作区路径清单已变化，旧回答不会被套用。",
@@ -113,38 +118,50 @@ export async function resolveWorkspaceOwnershipText(
         paths: batchPaths,
       });
     }
-    resolveTextInteraction(draft, interactionId, prompt.text, host, { promptEventId: prompt.eventId });
-    const currentPaths = draftInteraction.workspacePaths ?? batchPaths;
-    if (matched.option.id === "adopt-all" || matched.option.id === "adopt" || matched.option.id === "include") {
-      for (const file of matched.option.id === "adopt" || matched.option.id === "include" ? currentPaths : batchPaths) {
-        draft.workspace.ownership[file] = "feature";
-        draft.workspace.ownershipSource[file] = "user-adopted";
-      }
-    } else if (matched.option.id === "exclude-all" || matched.option.id === "exclude") {
-      for (const file of matched.option.id === "exclude" ? currentPaths : batchPaths) {
-        draft.workspace.ownership[file] = "excluded";
-      }
-    }
-    draft.workspace.unownedPaths = (draft.workspace.unownedPaths ?? []).filter((file) => draft.workspace.ownership[file] === undefined);
-    if (matched.option.id === "one-by-one") {
-      const first = batchPaths[0];
-      const next = presentWorkspaceOwnership(draft, [first], { batchPaths, remainingPaths: batchPaths.slice(1), single: true });
-      nextPresentationEventId = next.presentationEventId;
-    } else if ((matched.option.id === "adopt" || matched.option.id === "include" || matched.option.id === "exclude") && draftInteraction.workspaceRemainingPaths?.length) {
-      const remaining = draftInteraction.workspaceRemainingPaths;
-      const next = presentWorkspaceOwnership(draft, [remaining[0]], { batchPaths: remaining, remainingPaths: remaining.slice(1), single: true });
-      nextPresentationEventId = next.presentationEventId;
-    }
-    draft.lastUpdatedBy = { host, pluginVersion: __DEV_FLOW_VERSION__ };
-  }, () => ({
-    promptEventId: prompt.eventId,
-    action: matched.option.id,
-    ...(nextPresentationEventId ? { presentationEventId: nextPresentationEventId } : {}),
-  }));
-  return { state, action: matched.option.id };
+    return {
+      mutate: (draft) => {
+        const response = resolveResponseForAnswer(draft, interaction, {
+          source: credential.source,
+          action: credential.source === "elicitation" ? credential.action : undefined,
+          comment: credential.source === "elicitation" ? credential.comment : undefined,
+          userReply: credential.source === "text" ? credential.userReply : undefined,
+          promptText,
+          promptEventId,
+          host,
+        });
+        void response;
+        const livePaths = draftInteraction.workspacePaths ?? batchPaths;
+        if (matchedId === "adopt-all" || matchedId === "adopt" || matchedId === "include") {
+          for (const file of matchedId === "adopt" || matchedId === "include" ? livePaths : batchPaths) {
+            draft.workspace.ownership[file] = "feature";
+            draft.workspace.ownershipSource[file] = "user-adopted";
+          }
+        } else if (matchedId === "exclude-all" || matchedId === "exclude") {
+          for (const file of matchedId === "exclude" ? livePaths : batchPaths) {
+            draft.workspace.ownership[file] = "excluded";
+          }
+        }
+        draft.workspace.unownedPaths = (draft.workspace.unownedPaths ?? []).filter((file) => draft.workspace.ownership[file] === undefined);
+        if (matchedId === "one-by-one") {
+          const first = batchPaths[0];
+          const nextInteraction = presentWorkspaceOwnership(draft, [first], { batchPaths, remainingPaths: batchPaths.slice(1), single: true });
+          nextPresentationEventId = nextInteraction.presentationEventId;
+        } else if ((matchedId === "adopt" || matchedId === "include" || matchedId === "exclude") && draftInteraction.workspaceRemainingPaths?.length) {
+          const remaining = draftInteraction.workspaceRemainingPaths;
+          const nextInteraction = presentWorkspaceOwnership(draft, [remaining[0]], { batchPaths: remaining, remainingPaths: remaining.slice(1), single: true });
+          nextPresentationEventId = nextInteraction.presentationEventId;
+        }
+        draft.lastUpdatedBy = { host, pluginVersion: __DEV_FLOW_VERSION__ };
+      },
+      eventData: () => ({
+        promptEventId,
+        action: matchedId,
+        ...(nextPresentationEventId ? { presentationEventId: nextPresentationEventId } : {}),
+      }),
+    };
+  });
+  return { state: next, action: matchedId };
 }
-
-export { unknownOwnershipPaths };
 
 /** Resolve the active-feature switch question through the same interaction contract. */
 export async function resolveTaskSwitchAnswer(

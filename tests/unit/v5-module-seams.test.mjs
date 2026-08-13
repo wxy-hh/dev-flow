@@ -26,15 +26,18 @@ test("治理领域模块通过 store seam 访问文件系统", async () => {
     );
   }
   const stateStore = await readFile("plugins/dev-flow/src/core/state-store.ts", "utf8");
+  assert.match(
+    stateStore,
+    /export \{ answer \} from "\.\/interaction-answer\.js";/u,
+    "state-store must own the answer seam",
+  );
   for (const name of [
     "recordDecision",
     "reviseDecision",
     "revisePlanDuringImplementation",
     "lockClassification",
-    "confirmRouteClassification",
     "reclassifyFeature",
     "presentWorkspaceOwnership",
-    "resolveWorkspaceOwnershipText",
     "reconcileWorkspace",
     "registerRepositoryFact",
     "registerRepositoryFacts",

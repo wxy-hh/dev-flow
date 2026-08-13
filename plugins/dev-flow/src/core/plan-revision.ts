@@ -9,11 +9,12 @@ import { parseTraceSourceBlocks } from "./traceability-anchors.js";
 import { readProjectConfigSnapshot, readTraceabilityForArtifactReplacement } from "./traceability-store.js";
 import { verificationCommandHashes } from "./project-config.js";
 import { currentOpenStep } from "./step-order.js";
-import { createInteraction, getInteraction, toPublicInteraction, type PublicInteraction, type UserInteraction } from "./user-interactions.js";
-import { resolveInteractionDecision } from "./decision-workflow.js";
+import { createInteraction, resolveResponseForAnswer, toPublicInteraction, type PublicInteraction, type UserInteraction } from "./user-interactions.js";
+import { resolveInteractionPromptEvent } from "./interaction-provenance.js";
 import { matchDecisionReply, pendingDecisionForState } from "./decision-interactions.js";
-import { mutate, readState, type FeatureState } from "./state-store.js";
+import { mutate, mutatePrepared, readFeatureEvents, readState, type FeatureState } from "./state-store.js";
 import { prepareReviewInvalidation } from "./review-store.js";
+import type { AnswerResolveContext, AnswerResolveResult } from "./interaction-answer.js";
 
 export interface PlanRevisionResult {
   state: FeatureState;
@@ -140,7 +141,7 @@ export async function revisePlanDuringImplementation(
 }
 
 /** 修订落账：重登记计划并传播失效；未受影响且依据仍当前的单元与 checkpoint 保留。 */
-function applyPlanRevision(draft: FeatureState, interaction: UserInteraction, host: "claude" | "codex"): void {
+export function applyPlanRevision(draft: FeatureState, interaction: UserInteraction, host: "claude" | "codex"): void {
   const revision = interaction.planRevision;
   if (!revision) throw new DevFlowError("INTERACTION_INVALID", "plan-revision interaction is missing its revision content", { interactionId: interaction.id });
   const units = draft.implementationUnits ?? [];
@@ -166,85 +167,6 @@ function applyPlanRevision(draft: FeatureState, interaction: UserInteraction, ho
   draft.lastUpdatedBy = { host, pluginVersion: __DEV_FLOW_VERSION__ };
 }
 
-async function resolvePlanRevisionDecision(
-  root: string,
-  id: string,
-  expectedRevision: number,
-  interactionId: string,
-  host: "claude" | "codex",
-  input: { source: "elicitation"; action: string; comment?: string } | { source: "text"; userReply: string },
-): Promise<PlanRevisionResult> {
-  const initial = await readState(root, id);
-  if (initial.revision !== expectedRevision) throw new DevFlowError("STATE_REVISION_CONFLICT", "state revision changed", { currentRevision: initial.revision });
-  const pending = getInteraction(initial, interactionId);
-  const pendingDecision = pendingDecisionForState(initial);
-  const confirms = input.source === "elicitation"
-    ? input.action === "confirm"
-    : pendingDecision !== undefined && matchDecisionReply(pendingDecision, input.userReply).option.id === "confirm";
-  if (confirms) {
-    const basis = pending.planRevisionBasis;
-    const artifact = initial.artifacts["implementation-plan"];
-    if (!basis || !artifact) throw new DevFlowError("PLAN_REVISION_STALE", "计划修订预览缺少当前依据，请重新生成。", { retryOriginal: true });
-    const contents = await readArtifactText(root, id, artifact.path);
-    const currentArtifactSha256 = createHash("sha256").update(contents).digest("hex");
-    const currentConfigSha256 = (await readProjectConfigSnapshot(root)).sha256;
-    const currentTraceabilitySha256 = initial.traceability?.sha256 ?? "none";
-    if (currentArtifactSha256 !== basis.artifactSha256 || currentConfigSha256 !== basis.projectConfigSha256 || currentTraceabilitySha256 !== basis.traceabilitySha256) {
-      throw new DevFlowError("PLAN_REVISION_STALE", "计划、项目配置或 Trace 已在预览后变化，请重新生成影响预览。", {
-        retryOriginal: true,
-        changed: [
-          ...(currentArtifactSha256 !== basis.artifactSha256 ? ["implementation-plan"] : []),
-          ...(currentConfigSha256 !== basis.projectConfigSha256 ? ["project-config"] : []),
-          ...(currentTraceabilitySha256 !== basis.traceabilitySha256 ? ["traceability"] : []),
-        ],
-      });
-    }
-  }
-  // 确认修订：先按当前 basis 准备审查失效指针（标记旧批次 stale，快照内容
-  // 寻址保留）；applyPlanRevision 保留指针，避免 review 控制的路线丢失
-  // 必需指针而违反状态 schema。仅在确认路径准备，取消不写任何快照。
-  const reviewInvalidation = confirms && initial.review
-    ? await prepareReviewInvalidation(root, initial, expectedRevision + 1)
-    : undefined;
-  const { state } = await resolveInteractionDecision(root, id, expectedRevision, interactionId, host, input, {
-    kind: "plan-revision",
-    notPendingMessage: "当前没有待处理的计划修订。",
-    confirmReply: "确认修订",
-    declineReply: "取消",
-    confirmOperation: "plan-revised",
-    declineOperation: "plan-revision-cancelled",
-    apply: (draft, live, response, promptEventId) => {
-      applyPlanRevision(draft, live, host);
-      if (reviewInvalidation) draft.review = reviewInvalidation;
-      // spec §179：有外部副作用的已完成单元在计划修订后绝不自动重跑，
-      // 保持 checkpointed 并标为需要人工决定的恢复项，由新交互展示具体风险。
-      const sideEffects = live.planRevision?.sideEffectUnits ?? [];
-      if (sideEffects.length) {
-        createInteraction(draft, {
-          kind: "side-effect-rerun",
-          target: `side-effect-rerun:${[...sideEffects].sort().join(",")}`,
-          basisHash: createHash("sha256").update(`${id}\n${[...sideEffects].sort().join("\n")}`).digest("hex"),
-          question: `以下已完成实现单元包含有副作用的操作（删除/迁移/发布等），计划修订后不会自动重跑：${[...sideEffects].sort().join("、")}。确认重跑这些单元吗？重跑前请确认当前状态安全。`,
-          options: [
-            { id: "confirm", label: "确认重跑" },
-            { id: "keep", label: "不重跑，保留原结果" },
-          ],
-          sideEffectRerun: { units: [...sideEffects].sort() },
-        });
-      }
-    },
-  });
-  return { state, interaction: toPublicInteraction(getInteraction(state, interactionId)), interactionId };
-}
-
-export async function resolvePlanRevisionAnswer(root: string, id: string, expectedRevision: number, interactionId: string, userReply: string, host: "claude" | "codex"): Promise<PlanRevisionResult> {
-  return resolvePlanRevisionDecision(root, id, expectedRevision, interactionId, host, { source: "text", userReply });
-}
-
-export async function resolvePlanRevisionElicitation(root: string, id: string, expectedRevision: number, interactionId: string, action: string, comment: string | undefined, host: "claude" | "codex"): Promise<PlanRevisionResult> {
-  return resolvePlanRevisionDecision(root, id, expectedRevision, interactionId, host, { source: "elicitation", action, comment });
-}
-
 export interface SideEffectRerunResult {
   state: FeatureState;
   interaction: PublicInteraction;
@@ -256,50 +178,131 @@ export interface SideEffectRerunResult {
  * 保持 checkpointed 且不会自动重跑；用户确认重跑才回 pending 重新执行，
  * 拒绝则保留原结果。
  */
-async function resolveSideEffectRerunDecision(
-  root: string,
-  id: string,
-  expectedRevision: number,
-  interactionId: string,
-  host: "claude" | "codex",
-  input: { source: "elicitation"; action: string; comment?: string } | { source: "text"; userReply: string },
-): Promise<SideEffectRerunResult> {
-  const { state } = await resolveInteractionDecision(root, id, expectedRevision, interactionId, host, input, {
-    kind: "side-effect-rerun",
-    notPendingMessage: "当前没有待处理的副作用单元确认。",
-    confirmReply: "确认重跑",
-    declineReply: "不重跑，保留原结果",
-    confirmOperation: "side-effect-rerun-confirmed",
-    declineOperation: "side-effect-rerun-kept",
-    apply: (draft, live, response, promptEventId) => {
-      // 用户确认重跑：受影响副作用单元回 pending，重新 begin 时重做。
-      const units = draft.implementationUnits ?? [];
-      let reopened = false;
-      for (const unit of units) {
-        if (!live.sideEffectRerun?.units.includes(unit.unitId)) continue;
-        if (unit.status !== "checkpointed") continue;
-        reopenImplementationUnit(unit);
-        reopened = true;
+/** 计划修订经统一回答入口落账（ADR-0019）：确认修订 / 取消。 */
+export async function resolvePlanRevisionForAnswer(ctx: AnswerResolveContext): Promise<AnswerResolveResult> {
+  const { root, featureId, expectedRevision, host, credential, interaction, state } = ctx;
+  if (interaction.kind !== "plan-revision" || interaction.status !== "pending") {
+    throw new DevFlowError("INTERACTION_NOT_PENDING", "当前没有待处理的计划修订。", { interactionId: interaction.id });
+  }
+  let promptEventId: string | undefined;
+  let promptText: string | undefined;
+  if (credential.source === "text") {
+    const events = await readFeatureEvents(root, featureId);
+    const match = resolveInteractionPromptEvent(events, state, interaction, { host, userReply: credential.userReply });
+    promptEventId = match.eventId;
+    promptText = match.text;
+  }
+  const pending = pendingDecisionForState(state);
+  const matchedId = credential.source === "elicitation"
+    ? credential.action
+    : matchDecisionReply(pending!, promptText ?? credential.userReply).option.id;
+  const confirms = matchedId === "confirm";
+  let reviewInvalidation: ReturnType<typeof prepareReviewInvalidation> extends Promise<infer T> ? T : never;
+  let response: import("./user-interactions.js").InteractionResponse | undefined;
+  const next = await mutatePrepared(root, featureId, expectedRevision, confirms ? "plan-revised" : "plan-revision-cancelled", async (current, nextStateRevision) => {
+    if (confirms) {
+      const live = current.interactions?.[interaction.id] as UserInteraction | undefined;
+      const basis = live?.planRevisionBasis;
+      const artifact = current.artifacts["implementation-plan"];
+      if (!basis || !artifact) throw new DevFlowError("PLAN_REVISION_STALE", "计划修订预览缺少当前依据，请重新生成。", { retryOriginal: true });
+      const contents = await readArtifactText(root, featureId, artifact.path);
+      const currentArtifactSha256 = createHash("sha256").update(contents).digest("hex");
+      const currentConfigSha256 = (await readProjectConfigSnapshot(root)).sha256;
+      const currentTraceabilitySha256 = current.traceability?.sha256 ?? "none";
+      if (currentArtifactSha256 !== basis.artifactSha256 || currentConfigSha256 !== basis.projectConfigSha256 || currentTraceabilitySha256 !== basis.traceabilitySha256) {
+        throw new DevFlowError("PLAN_REVISION_STALE", "计划、项目配置或 Trace 已在预览后变化，请重新生成影响预览。", {
+          retryOriginal: true,
+          changed: [
+            ...(currentArtifactSha256 !== basis.artifactSha256 ? ["implementation-plan"] : []),
+            ...(currentConfigSha256 !== basis.projectConfigSha256 ? ["project-config"] : []),
+            ...(currentTraceabilitySha256 !== basis.traceabilitySha256 ? ["traceability"] : []),
+          ],
+        });
       }
-      if (reopened) {
-        delete draft.steps.implementation;
-        draft.logicComplete = false;
-        delete draft.steps.finalize;
-        const definition = routeDefinitionForFeature(draft.route, draft.classification.controls);
-        draft.currentStage = definition.orderedSteps.find((step) => draft.steps[step]?.status !== "satisfied")
-          ?? definition.orderedSteps[0];
-      }
-    },
+      if (current.review) reviewInvalidation = await prepareReviewInvalidation(root, current, nextStateRevision);
+    }
+    return {
+      mutate: (draft) => {
+        response = resolveResponseForAnswer(draft, interaction, { source: credential.source, action: credential.source === "elicitation" ? credential.action : undefined, comment: credential.source === "elicitation" ? credential.comment : undefined, userReply: credential.source === "text" ? credential.userReply : undefined, promptText, promptEventId, host });
+        if (confirms) {
+          const live = draft.interactions![interaction.id] as UserInteraction;
+          applyPlanRevision(draft, live, host);
+          if (reviewInvalidation) draft.review = reviewInvalidation;
+          // spec §179：有外部副作用的已完成单元在计划修订后绝不自动重跑，
+          // 保持 checkpointed 并标为需要人工决定的恢复项，由新交互展示具体风险。
+          const sideEffects = live.planRevision?.sideEffectUnits ?? [];
+          if (sideEffects.length) {
+            createInteraction(draft, {
+              kind: "side-effect-rerun",
+              target: `side-effect-rerun:${[...sideEffects].sort().join(",")}`,
+              basisHash: createHash("sha256").update(`${featureId}\n${[...sideEffects].sort().join("\n")}`).digest("hex"),
+              question: `以下已完成实现单元包含有副作用的操作（删除/迁移/发布等），计划修订后不会自动重跑：${[...sideEffects].sort().join("、")}。确认重跑这些单元吗？重跑前请确认当前状态安全。`,
+              options: [
+                { id: "confirm", label: "确认重跑" },
+                { id: "keep", label: "不重跑，保留原结果" },
+              ],
+              sideEffectRerun: { units: [...sideEffects].sort() },
+            });
+          }
+        }
+        draft.lastUpdatedBy = { host, pluginVersion: __DEV_FLOW_VERSION__ };
+      },
+      eventData: () => ({ interactionId: interaction.id, action: matchedId }),
+    };
   });
-  return { state, interaction: toPublicInteraction(getInteraction(state, interactionId)), interactionId };
+  if (!response) throw new DevFlowError("INTERACTION_NOT_RESOLVED", interaction.id);
+  return { state: next, action: response.action, ...(response.comment ? { comment: response.comment } : {}) };
 }
 
-export async function resolveSideEffectRerunAnswer(root: string, id: string, expectedRevision: number, interactionId: string, userReply: string, host: "claude" | "codex"): Promise<SideEffectRerunResult> {
-  return resolveSideEffectRerunDecision(root, id, expectedRevision, interactionId, host, { source: "text", userReply });
-}
-
-export async function resolveSideEffectRerunElicitation(root: string, id: string, expectedRevision: number, interactionId: string, action: string, comment: string | undefined, host: "claude" | "codex"): Promise<SideEffectRerunResult> {
-  return resolveSideEffectRerunDecision(root, id, expectedRevision, interactionId, host, { source: "elicitation", action, comment });
+/** 副作用单元重跑确认经统一回答入口落账（ADR-0019）：确认重跑 / 保留原结果。 */
+export async function resolveSideEffectRerunForAnswer(ctx: AnswerResolveContext): Promise<AnswerResolveResult> {
+  const { root, featureId, expectedRevision, host, credential, interaction, state } = ctx;
+  if (interaction.kind !== "side-effect-rerun" || interaction.status !== "pending") {
+    throw new DevFlowError("INTERACTION_NOT_PENDING", "当前没有待处理的副作用单元确认。", { interactionId: interaction.id });
+  }
+  let promptEventId: string | undefined;
+  let promptText: string | undefined;
+  if (credential.source === "text") {
+    const events = await readFeatureEvents(root, featureId);
+    const match = resolveInteractionPromptEvent(events, state, interaction, { host, userReply: credential.userReply });
+    promptEventId = match.eventId;
+    promptText = match.text;
+  }
+  const pending = pendingDecisionForState(state);
+  const matchedId = credential.source === "elicitation"
+    ? credential.action
+    : matchDecisionReply(pending!, promptText ?? credential.userReply).option.id;
+  const confirms = matchedId === "confirm";
+  let response: import("./user-interactions.js").InteractionResponse | undefined;
+  const next = await mutatePrepared(root, featureId, expectedRevision, confirms ? "side-effect-rerun-confirmed" : "side-effect-rerun-kept", async () => ({
+    mutate: (draft) => {
+      response = resolveResponseForAnswer(draft, interaction, { source: credential.source, action: credential.source === "elicitation" ? credential.action : undefined, comment: credential.source === "elicitation" ? credential.comment : undefined, userReply: credential.source === "text" ? credential.userReply : undefined, promptText, promptEventId, host });
+      if (confirms) {
+        const live = draft.interactions![interaction.id] as UserInteraction;
+        // 用户确认重跑：受影响副作用单元回 pending，重新 begin 时重做。
+        const units = draft.implementationUnits ?? [];
+        let reopened = false;
+        for (const unit of units) {
+          if (!live.sideEffectRerun?.units.includes(unit.unitId)) continue;
+          if (unit.status !== "checkpointed") continue;
+          reopenImplementationUnit(unit);
+          reopened = true;
+        }
+        if (reopened) {
+          delete draft.steps.implementation;
+          draft.logicComplete = false;
+          delete draft.steps.finalize;
+          const definition = routeDefinitionForFeature(draft.route, draft.classification.controls);
+          draft.currentStage = definition.orderedSteps.find((step) => draft.steps[step]?.status !== "satisfied")
+            ?? definition.orderedSteps[0];
+        }
+      }
+      draft.lastUpdatedBy = { host, pluginVersion: __DEV_FLOW_VERSION__ };
+    },
+    eventData: () => ({ interactionId: interaction.id, action: matchedId }),
+  }));
+  if (!response) throw new DevFlowError("INTERACTION_NOT_RESOLVED", interaction.id);
+  return { state: next, action: response.action, ...(response.comment ? { comment: response.comment } : {}) };
 }
 
 export interface PlanRevisionImpact {

@@ -27,7 +27,7 @@ test("grillme in intake records and resolves a decision without a requirements d
     ], recommendation: { optionId: "keep", reason: "避免在当前任务中引入额外破坏。", drawback: "会继续保留维护成本。", alternative: { optionId: "remove", condition: "如果后续版本允许破坏兼容行为" } }, host: "codex",
   });
   assert.equal(presented.state.mode, "intake");
-  const resolved = await grill.resolveGrillElicitation(root, "f", presented.state.revision, presented.interactionId, "keep", undefined, "codex");
+  const resolved = await state.answer({ root, featureId: "f", expectedRevision: presented.state.revision, host: "codex", credential: { source: "elicitation", action: "keep" } });
   assert.equal(resolved.state.governance.decisions[0].recordId, "DEC-001");
 });
 
@@ -61,7 +61,7 @@ test("recordDecision exposes the content-addressed decisionId and ratifies after
 
   // 新的可信回答确认后落账；事件在呈现之后。
   await state.recordHostEvent(root, { eventId: "ratify-answer", type: "user-prompt", host: "codex", text: "确认登记" });
-  const ratified = await state.resolveRatificationAnswer(root, "f", recorded.state.revision, recorded.interactionId, "确认登记", "codex");
+  const ratified = await state.answer({ root, featureId: "f", expectedRevision: recorded.state.revision, host: "codex", credential: { source: "text", userReply: "确认登记" } });
   assert.equal(ratified.state.governance.decisions[0].recordId, recorded.decisionId);
   assert.equal(ratified.state.governance.decisions[0].credentialId, `CRED-ratify-${recorded.interactionId}`);
   assert.equal(ratified.state.governance.credentials[0].basis.eventId, "ratify-answer");

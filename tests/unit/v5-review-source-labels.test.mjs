@@ -43,11 +43,13 @@ test("free-text attestations without source proof never produce a multi-agent la
       completions,
       jobHosts: Object.fromEntries(roles.map((role, index) => [role, `host-${index}`])),
     });
-    // 无 attestation：多视角，正常推进。
+    // 无 attestation：多视角，正常推进——gate 就绪并带同一 stamp。
     const ledger = await (await loadSource("plugins/dev-flow/src/core/review-store.ts")).readReviewLedger(root, completed.state);
     const current = ledger.batches.find((batch) => batch.validity === "current");
     assert.equal(current.assuranceLevel, "multi-perspective");
-    await jobs.assertReviewComplete(root, completed.state);
+    const gate = await jobs.reviewGate(root, completed.state);
+    assert.equal(gate.status, "ready");
+    assert.equal(gate.stamp.assuranceLevel, "multi-perspective");
   } finally {
     await rm(root, { recursive: true, force: true });
   }

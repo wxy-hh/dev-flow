@@ -1,12 +1,12 @@
-/* dev-flow 5.0.8; built from source, deterministic build */
+/* dev-flow 5.0.9; built from source, deterministic build */
 
 // plugins/dev-flow/src/mcp/server.ts
 import readline from "node:readline";
 import { fileURLToPath } from "node:url";
-import path22 from "node:path";
+import path23 from "node:path";
 
 // plugins/dev-flow/src/core/artifacts.ts
-import { createHash as createHash19 } from "node:crypto";
+import { createHash as createHash20 } from "node:crypto";
 import { readFile as readFile11, writeFile as writeFile2 } from "node:fs/promises";
 import path13 from "node:path";
 
@@ -420,8 +420,8 @@ function confirmedApproval(state) {
 }
 
 // plugins/dev-flow/src/core/state-store.ts
-import { randomUUID as randomUUID7, createHash as createHash18 } from "node:crypto";
-import { access, mkdir as mkdir5, open as open5, readdir as readdir5, readFile as readFile10, rename as rename4, rm, rmdir, writeFile } from "node:fs/promises";
+import { randomUUID as randomUUID7, createHash as createHash19 } from "node:crypto";
+import { access, mkdir as mkdir5, open as open5, readdir as readdir5, readFile as readFile10, rename as rename4, rm, writeFile } from "node:fs/promises";
 import { hostname } from "node:os";
 import path12 from "node:path";
 
@@ -773,7 +773,7 @@ function applyRepositoryFacts(draft, records, host) {
     }
   }
   draft.governance = { ...ledger, repositoryFacts: facts };
-  draft.lastUpdatedBy = { host, pluginVersion: "5.0.8" };
+  draft.lastUpdatedBy = { host, pluginVersion: "5.0.9" };
   return { created, existing };
 }
 async function registerRepositoryFact(root2, id, expectedRevision, input, host) {
@@ -831,8 +831,8 @@ var fileChanges = ["added", "modified", "deleted", "renamed", "mode-changed"];
 var IMPLEMENTATION_UNIT_ID = /^UNIT-[0-9]{3,}$/;
 var SHA256 = /^[0-9a-f]{64}$/;
 var FILE_MODE = /^[0-7]{3,4}$/;
-function pathWithinFileScope(path23, fileScope) {
-  return fileScope.some((pattern) => scopePatternMatches(pattern.normalize("NFC"), path23.normalize("NFC")));
+function pathWithinFileScope(path24, fileScope) {
+  return fileScope.some((pattern) => scopePatternMatches(pattern.normalize("NFC"), path24.normalize("NFC")));
 }
 function isSafeFileScopePattern(value) {
   if (typeof value !== "string" || !value || value.trim() !== value) return false;
@@ -3569,6 +3569,23 @@ function resolveTextInteraction(state, interactionId, userReply, host, provenanc
   if (state.pendingDecision?.target === interaction.target) delete state.pendingDecision;
   return response;
 }
+function resolveResponseForAnswer(draft, interaction, input) {
+  const live = draft.interactions?.[interaction.id];
+  if (!live || live.status !== "pending") {
+    throw new DevFlowError("INTERACTION_ALREADY_RESOLVED", interaction.id);
+  }
+  if (input.source === "elicitation") {
+    return resolveNativeInteraction(draft, interaction.id, input.action, input.comment, input.host);
+  }
+  return resolveTextInteraction(
+    draft,
+    interaction.id,
+    input.promptText ?? input.userReply,
+    input.host,
+    { promptEventId: input.promptEventId },
+    input.phraseAction
+  );
+}
 function toPublicInteraction(interaction) {
   if (interaction.kind === "grill") {
     if (!interaction.recommendation) throw new DevFlowError("GRILL_RECOMMENDATION_REQUIRED", interaction.id);
@@ -4091,16 +4108,22 @@ function presentWorkspaceOwnership(state, paths, options = {}) {
   });
   return { interaction, presentationEventId };
 }
-async function resolveWorkspaceOwnershipText(root2, id, expectedRevision, interactionId, userReply, host) {
-  const current = await readState(root2, id);
-  const decision = pendingDecisionForState(current);
-  const interaction = current.interactions?.[interactionId];
-  if (decision?.kind !== "workspace-ownership" || !interaction || interaction.status !== "pending") {
+async function resolveOwnershipForAnswer(ctx) {
+  const { root: root2, featureId, expectedRevision, host, credential, interaction, state } = ctx;
+  const decision = pendingDecisionForState(state);
+  if (decision?.kind !== "workspace-ownership" || interaction.status !== "pending") {
     throw new DevFlowError("WORKSPACE_OWNERSHIP_NOT_PENDING", "\u5F53\u524D\u6CA1\u6709\u5F85\u786E\u8BA4\u7684\u5DE5\u4F5C\u533A\u5F52\u5C5E\u95EE\u9898\u3002");
   }
-  const prompt = resolveInteractionPromptEvent(await readFeatureEvents(root2, id), current, interaction, { host, userReply });
+  let promptEventId;
+  let promptText;
+  if (credential.source === "text") {
+    const events = await readFeatureEvents(root2, featureId);
+    const prompt = resolveInteractionPromptEvent(events, state, interaction, { host, userReply: credential.userReply });
+    promptEventId = prompt.eventId;
+    promptText = prompt.text;
+  }
   const presentedPaths = presentedOwnershipPaths(interaction);
-  const currentPaths = unknownOwnershipPaths(current);
+  const currentPaths = unknownOwnershipPaths(state);
   if (JSON.stringify(presentedPaths) !== JSON.stringify(currentPaths)) {
     throw new DevFlowError("WORKSPACE_OWNERSHIP_STALE", "\u5F85\u786E\u8BA4\u8DEF\u5F84\u6E05\u5355\u5DF2\u53D8\u5316\uFF0C\u8BF7\u91CD\u65B0\u5BF9\u8D26\u540E\u56DE\u7B54\u3002", {
       userMessage: "\u5DE5\u4F5C\u533A\u8DEF\u5F84\u6E05\u5355\u5DF2\u53D8\u5316\uFF0C\u65E7\u56DE\u7B54\u4E0D\u4F1A\u88AB\u5957\u7528\u3002",
@@ -4112,15 +4135,15 @@ async function resolveWorkspaceOwnershipText(root2, id, expectedRevision, intera
       paths: presentedPaths
     });
   }
-  const matched = matchDecisionReply(decision, prompt.text);
+  const matchedId = credential.source === "elicitation" ? credential.action : matchDecisionReply(decision, promptText ?? credential.userReply).option.id;
   let nextPresentationEventId;
-  const state = await mutate(root2, id, expectedRevision, "workspace-ownership-answered", async (draft) => {
-    const draftInteraction = draft.interactions?.[interactionId];
-    if (!draftInteraction || draftInteraction.status !== "pending" || pendingDecisionForState(draft)?.basisHash !== decision.basisHash) {
+  const next = await mutatePrepared(root2, featureId, expectedRevision, "workspace-ownership-answered", async (current) => {
+    const draftInteraction = current.interactions?.[interaction.id];
+    if (!draftInteraction || draftInteraction.status !== "pending" || pendingDecisionForState(current)?.basisHash !== decision.basisHash) {
       throw new DevFlowError("WORKSPACE_OWNERSHIP_STALE", "\u5DE5\u4F5C\u533A\u5F52\u5C5E\u95EE\u9898\u7684\u4F9D\u636E\u5DF2\u53D8\u5316\uFF0C\u8BF7\u91CD\u65B0\u5BF9\u8D26\u540E\u56DE\u7B54\u3002");
     }
     const batchPaths = presentedOwnershipPaths(draftInteraction);
-    const unknown = unknownOwnershipPaths(draft);
+    const unknown = unknownOwnershipPaths(current);
     if (JSON.stringify(batchPaths) !== JSON.stringify(unknown)) {
       throw new DevFlowError("WORKSPACE_OWNERSHIP_STALE", "\u5F85\u786E\u8BA4\u8DEF\u5F84\u6E05\u5355\u5DF2\u53D8\u5316\uFF0C\u8BF7\u91CD\u65B0\u5BF9\u8D26\u540E\u56DE\u7B54\u3002", {
         userMessage: "\u5DE5\u4F5C\u533A\u8DEF\u5F84\u6E05\u5355\u5DF2\u53D8\u5316\uFF0C\u65E7\u56DE\u7B54\u4E0D\u4F1A\u88AB\u5957\u7528\u3002",
@@ -4132,55 +4155,49 @@ async function resolveWorkspaceOwnershipText(root2, id, expectedRevision, intera
         paths: batchPaths
       });
     }
-    resolveTextInteraction(draft, interactionId, prompt.text, host, { promptEventId: prompt.eventId });
-    const currentPaths2 = draftInteraction.workspacePaths ?? batchPaths;
-    if (matched.option.id === "adopt-all" || matched.option.id === "adopt" || matched.option.id === "include") {
-      for (const file of matched.option.id === "adopt" || matched.option.id === "include" ? currentPaths2 : batchPaths) {
-        draft.workspace.ownership[file] = "feature";
-        draft.workspace.ownershipSource[file] = "user-adopted";
-      }
-    } else if (matched.option.id === "exclude-all" || matched.option.id === "exclude") {
-      for (const file of matched.option.id === "exclude" ? currentPaths2 : batchPaths) {
-        draft.workspace.ownership[file] = "excluded";
-      }
-    }
-    draft.workspace.unownedPaths = (draft.workspace.unownedPaths ?? []).filter((file) => draft.workspace.ownership[file] === void 0);
-    if (matched.option.id === "one-by-one") {
-      const first = batchPaths[0];
-      const next = presentWorkspaceOwnership(draft, [first], { batchPaths, remainingPaths: batchPaths.slice(1), single: true });
-      nextPresentationEventId = next.presentationEventId;
-    } else if ((matched.option.id === "adopt" || matched.option.id === "include" || matched.option.id === "exclude") && draftInteraction.workspaceRemainingPaths?.length) {
-      const remaining = draftInteraction.workspaceRemainingPaths;
-      const next = presentWorkspaceOwnership(draft, [remaining[0]], { batchPaths: remaining, remainingPaths: remaining.slice(1), single: true });
-      nextPresentationEventId = next.presentationEventId;
-    }
-    draft.lastUpdatedBy = { host, pluginVersion: "5.0.8" };
-  }, () => ({
-    promptEventId: prompt.eventId,
-    action: matched.option.id,
-    ...nextPresentationEventId ? { presentationEventId: nextPresentationEventId } : {}
-  }));
-  return { state, action: matched.option.id };
-}
-async function resolveTaskSwitchAnswer(root2, id, expectedRevision, userReply, host) {
-  const current = await readState(root2, id);
-  const decision = pendingDecisionForState(current);
-  const interaction = decision ? pendingInteractionForDecision(current, decision) : void 0;
-  if (decision?.kind !== "task-switch" || !interaction || interaction.status !== "pending") {
-    throw new DevFlowError("TASK_SWITCH_NOT_PENDING", "\u5F53\u524D\u6CA1\u6709\u5F85\u5904\u7406\u7684\u4EFB\u52A1\u5207\u6362\u95EE\u9898\u3002", { recoveryHint: "\u5237\u65B0\u72B6\u6001\u540E\u7EE7\u7EED\u5F53\u524D\u4EFB\u52A1" });
-  }
-  const prompt = resolveInteractionPromptEvent(await readFeatureEvents(root2, id), current, interaction, { host, userReply });
-  const match = matchDecisionReply(decision, prompt.text);
-  const state = await mutate(root2, id, expectedRevision, "task-switch-answered", (draft) => {
-    const live = draft.interactions?.[interaction.id];
-    if (!live || live.status !== "pending") throw new DevFlowError("INTERACTION_ALREADY_RESOLVED", interaction.id);
-    resolveTextInteraction(draft, interaction.id, prompt.text, host, { promptEventId: prompt.eventId });
-    if (match.option.id === "pause-old") {
-      draft.lifecycle = "paused";
-      draft.resumeSummary = "\u65E7\u4EFB\u52A1\u5DF2\u6682\u505C\uFF1B\u6062\u590D\u65F6\u4F1A\u81EA\u52A8\u5BF9\u8D26\u5DE5\u4F5C\u533A\u3002";
-    }
-  }, () => ({ targetFeatureId: interaction.target.slice("task-switch:".length), action: match.option.id, promptEventId: prompt.eventId }));
-  return { state, action: match.option.id };
+    return {
+      mutate: (draft) => {
+        const response = resolveResponseForAnswer(draft, interaction, {
+          source: credential.source,
+          action: credential.source === "elicitation" ? credential.action : void 0,
+          comment: credential.source === "elicitation" ? credential.comment : void 0,
+          userReply: credential.source === "text" ? credential.userReply : void 0,
+          promptText,
+          promptEventId,
+          host
+        });
+        void response;
+        const livePaths = draftInteraction.workspacePaths ?? batchPaths;
+        if (matchedId === "adopt-all" || matchedId === "adopt" || matchedId === "include") {
+          for (const file of matchedId === "adopt" || matchedId === "include" ? livePaths : batchPaths) {
+            draft.workspace.ownership[file] = "feature";
+            draft.workspace.ownershipSource[file] = "user-adopted";
+          }
+        } else if (matchedId === "exclude-all" || matchedId === "exclude") {
+          for (const file of matchedId === "exclude" ? livePaths : batchPaths) {
+            draft.workspace.ownership[file] = "excluded";
+          }
+        }
+        draft.workspace.unownedPaths = (draft.workspace.unownedPaths ?? []).filter((file) => draft.workspace.ownership[file] === void 0);
+        if (matchedId === "one-by-one") {
+          const first = batchPaths[0];
+          const nextInteraction = presentWorkspaceOwnership(draft, [first], { batchPaths, remainingPaths: batchPaths.slice(1), single: true });
+          nextPresentationEventId = nextInteraction.presentationEventId;
+        } else if ((matchedId === "adopt" || matchedId === "include" || matchedId === "exclude") && draftInteraction.workspaceRemainingPaths?.length) {
+          const remaining = draftInteraction.workspaceRemainingPaths;
+          const nextInteraction = presentWorkspaceOwnership(draft, [remaining[0]], { batchPaths: remaining, remainingPaths: remaining.slice(1), single: true });
+          nextPresentationEventId = nextInteraction.presentationEventId;
+        }
+        draft.lastUpdatedBy = { host, pluginVersion: "5.0.9" };
+      },
+      eventData: () => ({
+        promptEventId,
+        action: matchedId,
+        ...nextPresentationEventId ? { presentationEventId: nextPresentationEventId } : {}
+      })
+    };
+  });
+  return { state: next, action: matchedId };
 }
 async function reconcileWorkspace(root2, id, expectedRevision, host) {
   const state = await readState(root2, id);
@@ -4195,7 +4212,7 @@ async function reconcileWorkspace(root2, id, expectedRevision, host) {
     draft.workspace = workspace;
     if (contentChanged) markAffectedEvidenceStale(draft, changedPaths2, reopenedLifecycle, legalCheckpointPaths);
     presentationEventId = queueNextOwnershipDecision(draft);
-    draft.lastUpdatedBy = { host, pluginVersion: "5.0.8" };
+    draft.lastUpdatedBy = { host, pluginVersion: "5.0.9" };
   }, () => ({
     observedHead: workspace.observedHead,
     commitCount: workspace.observedCommits.length,
@@ -4528,8 +4545,8 @@ function validateBasis(basis, riskLabels) {
     }
   }
 }
-function issue(code, path23, message, recoveryHint) {
-  return { code, path: path23, message, recoveryHint };
+function issue(code, path24, message, recoveryHint) {
+  return { code, path: path24, message, recoveryHint };
 }
 function validateSignals(signals) {
   if (!signals || typeof signals !== "object" || Array.isArray(signals)) return [issue("CLASSIFICATION_SIGNALS_REQUIRED", "$.classificationBasis.signals", "signals is required", "\u8C03\u67E5\u4ED3\u5E93\u540E\u63D0\u4F9B\u5B8C\u6574\u7ED3\u6784\u5316\u4FE1\u53F7")];
@@ -4807,11 +4824,10 @@ async function lockClassification(root2, id, expectedRevision, facts, boundaryAu
       retryOriginal: true
     });
   }
-  const capabilities = normalizeWorkflowCapabilities(SUPPORTED_WORKFLOW_CAPABILITIES);
   if (selected.classification.routeConfirmationRequired) {
     let presentationEventId;
     return mutatePrepared(root2, id, expectedRevision, "route-confirmation-presented", async () => ({ mutate: (draft) => {
-      const basisHash2 = createHash13("sha256").update(JSON.stringify({ facts, route: selected.classification.orderedRoute, controls: selected.classification.controls })).digest("hex");
+      const basisHash2 = confirmationBasisHash(facts, selected);
       presentationEventId = randomUUID6();
       draft.routeConfirmation = { facts, basisHash: basisHash2 };
       createInteraction(draft, {
@@ -4832,62 +4848,7 @@ async function lockClassification(root2, id, expectedRevision, facts, boundaryAu
       ...presentationEventId ? { presentationEventId } : {}
     }) }));
   }
-  return mutatePrepared(root2, id, expectedRevision, "classification-locked", async (_current, nextRevision) => {
-    const definition = routeDefinitionForFeature(selected.route, selected.classification.controls);
-    const traceability = traceEnforcementRequired(selected.route, selected.classification.controls) ? await writeTraceSnapshot(root2, emptyTraceabilityLedger(id, nextRevision, (await readProjectConfigSnapshot(root2)).sha256)) : void 0;
-    const review2 = reviewLedgerRequired(selected.route, selected.classification.controls) ? await writeReviewSnapshot(root2, emptyReviewLedger(id, nextRevision)) : void 0;
-    return { mutate: (draft) => {
-      draft.schemaVersion = 5;
-      draft.mode = "routed";
-      draft.route = selected.route;
-      draft.classification = selected.classification;
-      draft.classificationBasis = selected.classificationBasis;
-      draft.obligations = selected.obligations;
-      draft.currentStage = definition.orderedSteps[0];
-      draft.workflowCapabilities = capabilities;
-      draft.steps = Object.fromEntries(definition.orderedSteps.map((step) => [step, { status: "pending" }]));
-      draft.humanGates = {};
-      draft.artifacts = {};
-      draft.verification = { attempts: [] };
-      draft.logicComplete = false;
-      if (traceability) draft.traceability = traceability;
-      if (review2) draft.review = review2;
-      void project;
-    } };
-  });
-}
-async function confirmRouteClassification(root2, id, expectedRevision, userReply, host) {
-  const current = await readState(root2, id);
-  const pending = pendingDecisionForState(current);
-  if (pending?.kind !== "route-confirmation" || !current.routeConfirmation) throw new DevFlowError("ROUTE_CONFIRMATION_NOT_PENDING", "\u5F53\u524D\u6CA1\u6709\u5F85\u786E\u8BA4\u8DEF\u7EBF\u3002");
-  const currentInteraction = pendingInteractionForDecision(current, pending);
-  const events = await readFeatureEvents(root2, id);
-  const prompt = currentInteraction ? resolveInteractionPromptEvent(events, current, currentInteraction, { host, userReply }) : resolvePromptEvent(events, { host, userReply, presentedAt: pending.presentedAt, presentedRevision: pending.presentedRevision, ...pending.presentationEventId ? { presentationEventId: pending.presentationEventId } : {} });
-  const matched = matchDecisionReply(pending, prompt.text);
-  if (matched.option.id !== "confirm") throw new DevFlowError("ROUTE_CONFIRMATION_CORRECTION_REQUIRED", "\u8DEF\u7EBF\u9700\u8981\u4FEE\u6B63\uFF0C\u4E0D\u80FD\u6309\u5F53\u524D\u5206\u7C7B\u9501\u5B9A\u3002", { comment: matched.comment });
-  const selected = selectBaseRoute(current.routeConfirmation.facts);
-  await assertRouteExecutable(root2, selected);
-  const definition = routeDefinitionForFeature(selected.route, selected.classification.controls);
-  const traceability = traceEnforcementRequired(selected.route, selected.classification.controls) ? await writeTraceSnapshot(root2, emptyTraceabilityLedger(id, expectedRevision + 1, (await readProjectConfigSnapshot(root2)).sha256)) : void 0;
-  const review2 = reviewLedgerRequired(selected.route, selected.classification.controls) ? await writeReviewSnapshot(root2, emptyReviewLedger(id, expectedRevision + 1)) : void 0;
-  return mutate(root2, id, expectedRevision, "route-confirmation-accepted", (draft) => {
-    if (pendingDecisionForState(draft)?.basisHash !== pending.basisHash || draft.routeConfirmation?.basisHash !== pending.basisHash) throw new DevFlowError("ROUTE_CONFIRMATION_STALE", "\u8DEF\u7EBF\u786E\u8BA4\u4F9D\u636E\u5DF2\u53D8\u5316\u3002");
-    const interaction = Object.values(draft.interactions ?? {}).find((value) => value.target === "route-confirmation" && value.status === "pending");
-    if (interaction) resolveTextInteraction(draft, interaction.id, prompt.text, host, { promptEventId: prompt.eventId });
-    draft.mode = "routed";
-    draft.route = selected.route;
-    draft.classification = selected.classification;
-    draft.classificationBasis = selected.classificationBasis;
-    draft.obligations = selected.obligations;
-    draft.currentStage = definition.orderedSteps[0];
-    draft.workflowCapabilities = normalizeWorkflowCapabilities(SUPPORTED_WORKFLOW_CAPABILITIES);
-    draft.steps = Object.fromEntries(definition.orderedSteps.map((step) => [step, { status: "pending" }]));
-    if (traceability) draft.traceability = traceability;
-    if (review2) draft.review = review2;
-    delete draft.pendingDecision;
-    delete draft.routeConfirmation;
-    draft.lastUpdatedBy = { host, pluginVersion: "5.0.8" };
-  }, { promptEventId: prompt.eventId, level: selected.classification.level, orderedRoute: selected.classification.orderedRoute });
+  return mutatePrepared(root2, id, expectedRevision, "classification-locked", applyLock({ root: root2, facts, basisHash: confirmationBasisHash(facts, selected) }));
 }
 async function assertRouteExecutable(root2, selected) {
   const project = await readProjectConfig(root2);
@@ -4904,33 +4865,193 @@ async function assertRouteExecutable(root2, selected) {
     });
   }
 }
-async function resolveRouteClassificationElicitation(root2, id, expectedRevision, interactionId, action, comment, host) {
-  if (action !== "confirm") throw new DevFlowError("DECISION_REPLY_NOT_RECOGNIZED", "\u8BF7\u786E\u8BA4\u5F53\u524D\u8DEF\u7EBF\uFF0C\u6216\u5173\u95ED\u8868\u5355\u540E\u8865\u5145\u5206\u7C7B\u4E8B\u5B9E\u3002");
-  const current = await readState(root2, id);
-  const pending = pendingDecisionForState(current);
-  const interaction = current.interactions?.[interactionId];
-  if (pending?.kind !== "route-confirmation" || !current.routeConfirmation || !interaction || interaction.status !== "pending") throw new DevFlowError("ROUTE_CONFIRMATION_NOT_PENDING", "\u5F53\u524D\u6CA1\u6709\u5F85\u786E\u8BA4\u8DEF\u7EBF\u3002");
-  const selected = selectBaseRoute(current.routeConfirmation.facts);
-  await assertRouteExecutable(root2, selected);
-  const definition = routeDefinitionForFeature(selected.route, selected.classification.controls);
-  const traceability = traceEnforcementRequired(selected.route, selected.classification.controls) ? await writeTraceSnapshot(root2, emptyTraceabilityLedger(id, expectedRevision + 1, (await readProjectConfigSnapshot(root2)).sha256)) : void 0;
-  const review2 = reviewLedgerRequired(selected.route, selected.classification.controls) ? await writeReviewSnapshot(root2, emptyReviewLedger(id, expectedRevision + 1)) : void 0;
-  return mutate(root2, id, expectedRevision, "route-confirmation-accepted", (draft) => {
-    if (pendingDecisionForState(draft)?.basisHash !== pending.basisHash || draft.routeConfirmation?.basisHash !== pending.basisHash) throw new DevFlowError("ROUTE_CONFIRMATION_STALE", "\u8DEF\u7EBF\u786E\u8BA4\u4F9D\u636E\u5DF2\u53D8\u5316\u3002");
-    resolveNativeInteraction(draft, interactionId, action, comment, host);
-    draft.mode = "routed";
-    draft.route = selected.route;
-    draft.classification = selected.classification;
-    draft.classificationBasis = selected.classificationBasis;
-    draft.obligations = selected.obligations;
-    draft.currentStage = definition.orderedSteps[0];
-    draft.workflowCapabilities = normalizeWorkflowCapabilities(SUPPORTED_WORKFLOW_CAPABILITIES);
-    draft.steps = Object.fromEntries(definition.orderedSteps.map((step) => [step, { status: "pending" }]));
-    if (traceability) draft.traceability = traceability;
-    if (review2) draft.review = review2;
-    delete draft.routeConfirmation;
-    draft.lastUpdatedBy = { host, pluginVersion: "5.0.8" };
-  }, { interactionId, action, level: selected.classification.level, orderedRoute: selected.classification.orderedRoute });
+function confirmationBasisHash(facts, selected) {
+  return createHash13("sha256").update(JSON.stringify({
+    facts,
+    route: selected.classification.orderedRoute,
+    controls: selected.classification.controls
+  })).digest("hex");
+}
+async function prepareRouteTransitionPointers(root2, featureId, selected, current, nextRevision) {
+  const preparedTraceability = traceEnforcementRequired(selected.route, selected.classification.controls) && !current.traceability ? await writeTraceSnapshot(root2, emptyTraceabilityLedger(featureId, nextRevision, (await readProjectConfigSnapshot(root2)).sha256)) : void 0;
+  const preparedReview = reviewLedgerRequired(selected.route, selected.classification.controls) && !current.review ? await writeReviewSnapshot(root2, emptyReviewLedger(featureId, nextRevision)) : void 0;
+  const reviewInvalidation = current.review && (selected.route !== current.route || JSON.stringify(selected.classification) !== JSON.stringify(current.classification)) ? await prepareReviewInvalidation(root2, current, nextRevision) : void 0;
+  return { preparedTraceability, preparedReview, reviewInvalidation };
+}
+function applyLock(input) {
+  const { root: root2, facts, basisHash: basisHash2 } = input;
+  return async (current, nextRevision) => {
+    if (current.mode !== "intake") throw new DevFlowError("CLASSIFICATION_ALREADY_LOCKED", "classification is already locked");
+    const selected = selectBaseRoute(facts);
+    if (selected.contradictions.length) {
+      throw new DevFlowError("CLASSIFICATION_CONTRADICTION", "classification facts contain unresolved contradictions", {
+        contradictions: selected.contradictions,
+        userMessage: "\u5206\u7C7B\u53C2\u6570\u5B58\u5728\u51B2\u7A81\u6216\u7F3A\u5931\uFF0C\u65E0\u6CD5\u9501\u5B9A\u8DEF\u7EBF\u3002",
+        cause: `\u5206\u7C7B\u4E8B\u5B9E\u5B58\u5728 ${selected.contradictions.length} \u5904\u77DB\u76FE\uFF1A${selected.contradictions.join("\uFF1B")}`,
+        impact: "\u8DEF\u7EBF\u4E0D\u4F1A\u9501\u5B9A\uFF0C\u4ECD\u505C\u7559\u5728 intake \u9636\u6BB5\u3002",
+        recoveryKind: "retry",
+        recoveryInstruction: "\u4FEE\u6B63\u5206\u7C7B\u53C2\u6570\u540E\u91CD\u65B0\u9501\u5B9A\u5206\u7C7B\u3002",
+        retryOriginal: true,
+        requiresUserDecision: false
+      });
+    }
+    if (confirmationBasisHash(facts, selected) !== basisHash2) {
+      throw new DevFlowError("ROUTE_CONFIRMATION_STALE", "\u8DEF\u7EBF\u786E\u8BA4\u4F9D\u636E\u5DF2\u53D8\u5316\u3002", {
+        userMessage: "\u786E\u8BA4\u4F9D\u636E\u5DF2\u53D8\u5316\uFF0C\u9700\u8981\u91CD\u65B0\u786E\u8BA4\u5F53\u524D\u8DEF\u7EBF\u3002",
+        cause: "\u5199\u5165\u65F6\u4ECE\u5DF2\u5BA1\u8BA1\u4E8B\u5B9E\u91CD\u7B97\u7684\u786E\u8BA4 hash \u4E0E\u5448\u73B0\u65F6\u7684\u4F9D\u636E\u4E0D\u4E00\u81F4\u3002",
+        impact: "\u8DEF\u7EBF\u4E0D\u4F1A\u9501\u5B9A\uFF1B\u786E\u8BA4\u8EAB\u4EFD\u4FDD\u7559\uFF0C\u91CD\u65B0\u5448\u73B0\u540E\u518D\u786E\u8BA4\u3002",
+        recoveryKind: "refresh",
+        recoveryInstruction: "\u91CD\u65B0\u5448\u73B0\u5F53\u524D\u8DEF\u7EBF\u5E76\u786E\u8BA4\u3002",
+        retryOriginal: false
+      });
+    }
+    if (selected.classification.routeConfirmationRequired) {
+      const pending = pendingDecisionForState(current);
+      const gateMatches = pending?.kind === "route-confirmation" && pending.basisHash === basisHash2 && current.routeConfirmation?.basisHash === basisHash2;
+      if (!gateMatches) {
+        throw new DevFlowError("ROUTE_CONFIRMATION_REQUIRED", "\u8BE5\u8DEF\u7EBF\u9700\u8981\u7528\u6237\u786E\u8BA4\uFF0C\u4E0D\u80FD\u65E0\u95E8\u7981\u9501\u5B9A\u3002", {
+          userMessage: "\u8FD9\u6761\u8DEF\u7EBF\u9700\u8981\u5148\u786E\u8BA4\uFF1B\u5F53\u524D\u6CA1\u6709 hash \u4E00\u81F4\u7684\u5F85\u786E\u8BA4\u8DEF\u7EBF\u3002",
+          cause: "applyLock \u6536\u5230\u9700\u8981\u8DEF\u7EBF\u786E\u8BA4\u7684\u5206\u7C7B\uFF0C\u4F46\u72B6\u6001\u91CC\u6CA1\u6709\u5339\u914D\u7684\u5F85\u786E\u8BA4\u8DEF\u7EBF\u3002",
+          impact: "\u8DEF\u7EBF\u4E0D\u4F1A\u9501\u5B9A\u3002",
+          recoveryKind: "retry",
+          recoveryInstruction: "\u7531 lockClassification \u5448\u73B0\u8DEF\u7EBF\u786E\u8BA4\uFF0C\u7ECF answer \u786E\u8BA4\u540E\u9501\u5B9A\u3002",
+          retryOriginal: false
+        });
+      }
+    }
+    await assertRouteExecutable(root2, selected);
+    const definition = routeDefinitionForFeature(selected.route, selected.classification.controls);
+    const traceability = traceEnforcementRequired(selected.route, selected.classification.controls) ? await writeTraceSnapshot(root2, emptyTraceabilityLedger(current.featureId, nextRevision, (await readProjectConfigSnapshot(root2)).sha256)) : void 0;
+    const review2 = reviewLedgerRequired(selected.route, selected.classification.controls) ? await writeReviewSnapshot(root2, emptyReviewLedger(current.featureId, nextRevision)) : void 0;
+    return {
+      mutate: (draft) => {
+        draft.schemaVersion = 5;
+        draft.mode = "routed";
+        draft.route = selected.route;
+        draft.classification = selected.classification;
+        draft.classificationBasis = selected.classificationBasis;
+        draft.obligations = selected.obligations;
+        draft.currentStage = definition.orderedSteps[0];
+        draft.workflowCapabilities = normalizeWorkflowCapabilities(SUPPORTED_WORKFLOW_CAPABILITIES);
+        draft.steps = Object.fromEntries(definition.orderedSteps.map((step) => [step, { status: "pending" }]));
+        draft.humanGates = {};
+        draft.artifacts = {};
+        draft.verification = { attempts: [] };
+        draft.logicComplete = false;
+        if (traceability) draft.traceability = traceability;
+        if (review2) draft.review = review2;
+        delete draft.routeConfirmation;
+      }
+    };
+  };
+}
+async function resolveRouteConfirmationForAnswer(ctx) {
+  const { root: root2, featureId, expectedRevision, host, credential, interaction, state } = ctx;
+  const pending = pendingDecisionForState(state);
+  if (pending?.kind !== "route-confirmation" || !state.routeConfirmation) {
+    throw new DevFlowError("ROUTE_CONFIRMATION_NOT_PENDING", "\u5F53\u524D\u6CA1\u6709\u5F85\u786E\u8BA4\u8DEF\u7EBF\u3002");
+  }
+  let promptEventId;
+  let promptText;
+  if (credential.source === "text") {
+    const events = await readFeatureEvents(root2, featureId);
+    const prompt = interaction ? resolveInteractionPromptEvent(events, state, interaction, { host, userReply: credential.userReply }) : resolvePromptEvent(events, { host, userReply: credential.userReply, presentedAt: pending.presentedAt, presentedRevision: pending.presentedRevision, ...pending.presentationEventId ? { presentationEventId: pending.presentationEventId } : {} });
+    promptEventId = prompt.eventId;
+    promptText = prompt.text;
+  }
+  const matched = credential.source === "elicitation" ? { optionId: credential.action, comment: credential.comment } : (() => {
+    const m = matchDecisionReply(pending, promptText ?? credential.userReply);
+    return { optionId: m.option.id, comment: m.comment };
+  })();
+  if (matched.optionId !== "confirm") {
+    if (credential.source === "elicitation") {
+      throw new DevFlowError("DECISION_REPLY_NOT_RECOGNIZED", "\u8BF7\u786E\u8BA4\u5F53\u524D\u8DEF\u7EBF\uFF0C\u6216\u5173\u95ED\u8868\u5355\u540E\u8865\u5145\u5206\u7C7B\u4E8B\u5B9E\u3002");
+    }
+    throw new DevFlowError("ROUTE_CONFIRMATION_CORRECTION_REQUIRED", "\u8DEF\u7EBF\u9700\u8981\u4FEE\u6B63\uFF0C\u4E0D\u80FD\u6309\u5F53\u524D\u5206\u7C7B\u9501\u5B9A\u3002", { comment: matched.comment });
+  }
+  const confirmation = state.routeConfirmation;
+  let response;
+  let transitionData;
+  if (state.mode === "intake") {
+    const prepare = applyLock({ root: root2, facts: confirmation.facts, basisHash: confirmation.basisHash });
+    let confirmedLevel;
+    let confirmedRoute;
+    const next2 = await mutatePrepared(root2, featureId, expectedRevision, "route-confirmation-accepted", async (current, nextStateRevision) => {
+      const prepared = await prepare(current, nextStateRevision);
+      const applyMutate = prepared.mutate;
+      return {
+        ...prepared,
+        mutate: (draft) => {
+          applyMutate(draft);
+          confirmedLevel = draft.classification.level;
+          confirmedRoute = draft.classification.orderedRoute;
+          response = resolveResponseForAnswer(draft, interaction, {
+            source: credential.source,
+            action: credential.source === "elicitation" ? credential.action : void 0,
+            comment: credential.source === "elicitation" ? credential.comment : void 0,
+            userReply: credential.source === "text" ? credential.userReply : void 0,
+            promptText,
+            promptEventId,
+            host
+          });
+          delete draft.pendingDecision;
+          draft.lastUpdatedBy = { host, pluginVersion: "5.0.9" };
+        },
+        eventData: () => ({
+          promptEventId,
+          level: confirmedLevel,
+          orderedRoute: confirmedRoute
+        })
+      };
+    });
+    if (!response) throw new DevFlowError("INTERACTION_NOT_RESOLVED", interaction.id);
+    return { state: next2, action: "confirm" };
+  }
+  let selectedForEvent;
+  const next = await mutatePrepared(root2, featureId, expectedRevision, "route-confirmation-accepted", async (current, nextStateRevision) => {
+    const selected = selectBaseRoute(confirmation.facts);
+    if (confirmationBasisHash(confirmation.facts, selected) !== confirmation.basisHash) {
+      throw new DevFlowError("ROUTE_CONFIRMATION_STALE", "\u8DEF\u7EBF\u786E\u8BA4\u4F9D\u636E\u5DF2\u53D8\u5316\u3002", {
+        userMessage: "\u786E\u8BA4\u4F9D\u636E\u5DF2\u53D8\u5316\uFF0C\u9700\u8981\u91CD\u65B0\u5448\u73B0\u5F53\u524D\u8DEF\u7EBF\u3002",
+        impact: "\u8DEF\u7EBF\u4E0D\u4F1A\u53D8\u5316\uFF1B\u786E\u8BA4\u8EAB\u4EFD\u4FDD\u7559\uFF0C\u91CD\u65B0\u5448\u73B0\u540E\u518D\u786E\u8BA4\u3002",
+        recoveryKind: "refresh",
+        recoveryInstruction: "\u91CD\u65B0\u5448\u73B0\u5F53\u524D\u8DEF\u7EBF\u5E76\u786E\u8BA4\u3002",
+        retryOriginal: false
+      });
+    }
+    await assertRouteExecutable(root2, selected);
+    const { preparedTraceability, preparedReview, reviewInvalidation } = await prepareRouteTransitionPointers(root2, featureId, selected, current, nextStateRevision);
+    selectedForEvent = selected;
+    return {
+      mutate: (draft) => {
+        if (preparedTraceability) draft.traceability = preparedTraceability;
+        if (preparedReview) draft.review = preparedReview;
+        if (reviewInvalidation) draft.review = reviewInvalidation;
+        response = resolveResponseForAnswer(draft, interaction, {
+          source: credential.source,
+          action: credential.source === "elicitation" ? credential.action : void 0,
+          comment: credential.source === "elicitation" ? credential.comment : void 0,
+          userReply: credential.source === "text" ? credential.userReply : void 0,
+          promptText,
+          promptEventId,
+          host
+        });
+        const transition = applyRouteTransition(draft, selected);
+        transitionData = { previousRoute: transition.previousRoute, invalidatedSteps: transition.invalidatedSteps, invalidatedArtifacts: transition.invalidatedArtifacts };
+        delete draft.pendingDecision;
+        delete draft.routeConfirmation;
+        draft.lastUpdatedBy = { host, pluginVersion: "5.0.9" };
+      },
+      eventData: () => ({
+        promptEventId,
+        level: selectedForEvent?.classification.level,
+        orderedRoute: selectedForEvent?.classification.orderedRoute,
+        ...transitionData ? { previousRoute: transitionData.previousRoute, invalidatedSteps: transitionData.invalidatedSteps, invalidatedArtifacts: transitionData.invalidatedArtifacts } : {}
+      })
+    };
+  });
+  if (!response) throw new DevFlowError("INTERACTION_NOT_RESOLVED", interaction.id);
+  return { state: next, action: "confirm" };
 }
 var levelRank2 = { XS: 0, S: 1, M: 2, L: 3 };
 var topologyRank = { local: 0, "shared-contract": 1, "multi-chain": 2, "coordinated-rollback": 3 };
@@ -5003,7 +5124,7 @@ async function reclassifyFeature(root2, id, expectedRevision, next, reason, user
     };
     let presentationEventId;
     return mutatePrepared(root2, id, expectedRevision, "route-confirmation-represented", async () => ({ mutate: (draft) => {
-      const basisHash2 = createHash13("sha256").update(JSON.stringify({ facts, controls: selectedAtLock.classification.controls, reason })).digest("hex");
+      const basisHash2 = confirmationBasisHash(facts, selectedAtLock);
       draft.routeConfirmation = { facts, basisHash: basisHash2 };
       const interaction = createInteraction(draft, {
         kind: "route-confirmation",
@@ -5018,9 +5139,7 @@ async function reclassifyFeature(root2, id, expectedRevision, next, reason, user
   let notice;
   let eventData = { reason };
   const state = await mutatePrepared(root2, id, expectedRevision, "reclassified", async (current, nextStateRevision) => {
-    const preparedTraceability = traceEnforcementRequired(selectedAtLock.route, selectedAtLock.classification.controls) && !current.traceability ? await writeTraceSnapshot(root2, emptyTraceabilityLedger(id, nextStateRevision, (await readProjectConfigSnapshot(root2)).sha256)) : void 0;
-    const preparedReview = reviewLedgerRequired(selectedAtLock.route, selectedAtLock.classification.controls) && !current.review ? await writeReviewSnapshot(root2, emptyReviewLedger(id, nextStateRevision)) : void 0;
-    const reviewInvalidation = current.review && (selectedAtLock.route !== current.route || JSON.stringify(selectedAtLock.classification) !== JSON.stringify(current.classification)) ? await prepareReviewInvalidation(root2, current, nextStateRevision) : void 0;
+    const { preparedTraceability, preparedReview, reviewInvalidation } = await prepareRouteTransitionPointers(root2, id, selectedAtLock, current, nextStateRevision);
     return { mutate: async (draft) => {
       if (draft.lifecycle !== "active") throw new DevFlowError("INVALID_LIFECYCLE", "only an active feature can be reclassified");
       const selected = selectRoute(next);
@@ -5128,7 +5247,7 @@ async function recordDecision(root2, id, expectedRevision, question, evidence, c
         promptEventId: latest.eventId,
         rawText: evidence.trim()
       });
-      draft.lastUpdatedBy = { host, pluginVersion: "5.0.8" };
+      draft.lastUpdatedBy = { host, pluginVersion: "5.0.9" };
     }, { decisionId: decision.id, promptEventId: latest.eventId });
     return {
       state: state2,
@@ -5154,7 +5273,7 @@ ${conclusion.trim()}`).digest("hex"),
       ],
       ratification: { question: question.trim(), evidence: evidence.trim(), conclusion: conclusion.trim(), factRefs: [...factRefs] }
     });
-    draft.lastUpdatedBy = { host, pluginVersion: "5.0.8" };
+    draft.lastUpdatedBy = { host, pluginVersion: "5.0.9" };
   }, () => ({ decisionId: decision.id, presentationEventId: interaction?.presentationEventId }));
   if (!interaction) throw new DevFlowError("INTERACTION_NOT_CREATED", target);
   return { state, interaction: toPublicInteraction(interaction), decisionId: decision.id, interactionId: interaction.id };
@@ -5177,55 +5296,6 @@ function ratifyDecision(draft, interaction, response, promptEventId, host) {
     optionId: response.source === "elicitation" ? response.selectedOptionId ?? response.action : response.selectedOptionId,
     rawText: response.rawReply
   });
-}
-async function resolveInteractionDecision(root2, id, expectedRevision, interactionId, host, input, config) {
-  const initial = await readState(root2, id);
-  if (initial.revision !== expectedRevision) throw new DevFlowError("STATE_REVISION_CONFLICT", "state revision changed", { currentRevision: initial.revision });
-  const interaction = getInteraction(initial, interactionId);
-  if (interaction.kind !== config.kind || interaction.status !== "pending") {
-    throw new DevFlowError("INTERACTION_NOT_PENDING", config.notPendingMessage, { interactionId });
-  }
-  let promptEventId;
-  let promptText;
-  if (input.source === "text") {
-    const events = await readFeatureEvents(root2, id);
-    const match = resolveInteractionPromptEvent(events, initial, interaction, { host, userReply: input.userReply });
-    promptEventId = match.eventId;
-    promptText = match.text;
-  }
-  const pending = pendingDecisionForState(initial);
-  if (!pending) throw new DevFlowError("DECISION_NOT_PENDING", "\u5F53\u524D\u6CA1\u6709\u5F85\u51B3\u95EE\u9898\u3002");
-  const matched = matchDecisionReply(pending, input.source === "elicitation" ? input.action === "confirm" ? config.confirmReply : config.declineReply : promptText ?? input.userReply);
-  let response;
-  const state = await mutate(root2, id, expectedRevision, matched.option.id === "confirm" ? config.confirmOperation : config.declineOperation, (draft) => {
-    const live = draft.interactions?.[interactionId];
-    if (!live || live.status !== "pending") throw new DevFlowError("INTERACTION_ALREADY_RESOLVED", interactionId);
-    response = input.source === "elicitation" ? resolveNativeInteraction(draft, interactionId, input.action, input.comment, host) : resolveTextInteraction(draft, interactionId, promptText ?? input.userReply, host, { promptEventId });
-    if (matched.option.id === "confirm") config.apply(draft, live, response, promptEventId);
-    draft.lastUpdatedBy = { host, pluginVersion: "5.0.8" };
-  }, { interactionId, action: matched.option.id });
-  if (!response) throw new DevFlowError("INTERACTION_NOT_RESOLVED", interactionId);
-  return { state, response, interaction };
-}
-async function resolveRatificationDecision(root2, id, expectedRevision, interactionId, host, input) {
-  const { state, interaction } = await resolveInteractionDecision(root2, id, expectedRevision, interactionId, host, input, {
-    kind: "decision-ratification",
-    notPendingMessage: "\u5F53\u524D\u6CA1\u6709\u5F85\u8FFD\u8BA4\u7684\u51B3\u5B9A\u3002",
-    confirmReply: "\u786E\u8BA4\u767B\u8BB0",
-    declineReply: "\u4E0D\u8981\u767B\u8BB0",
-    confirmOperation: "decision-ratified",
-    declineOperation: "decision-ratification-rejected",
-    apply: (draft, live, response, promptEventId) => {
-      ratifyDecision(draft, live, response, promptEventId, host);
-    }
-  });
-  return { state, interaction: toPublicInteraction(getInteraction(state, interactionId)), decisionId: interaction.target.slice("decision-ratification:".length), interactionId };
-}
-function resolveRatificationAnswer(root2, id, expectedRevision, interactionId, userReply, host) {
-  return resolveRatificationDecision(root2, id, expectedRevision, interactionId, host, { source: "text", userReply });
-}
-function resolveRatificationElicitation(root2, id, expectedRevision, interactionId, action, comment, host) {
-  return resolveRatificationDecision(root2, id, expectedRevision, interactionId, host, { source: "elicitation", action, comment });
 }
 var revisionAffectedLabels = {
   classification: "\u5206\u7C7B\uFF08\u9700\u8981\u91CD\u65B0\u5206\u7C7B\u5E76\u91CD\u65B0\u786E\u8BA4\u8DEF\u7EBF\uFF09",
@@ -5271,7 +5341,7 @@ ${reason.trim()}`).digest("hex"),
       ],
       revision: { decisionId, oldConclusion: old.conclusion ?? old.question, newConclusion: newConclusion.trim(), reason: reason.trim(), affected }
     });
-    draft.lastUpdatedBy = { host, pluginVersion: "5.0.8" };
+    draft.lastUpdatedBy = { host, pluginVersion: "5.0.9" };
   }, () => ({ decisionId, successorId, presentationEventId: interaction?.presentationEventId }));
   if (!interaction) throw new DevFlowError("INTERACTION_NOT_CREATED", target);
   return { state, interaction: toPublicInteraction(interaction), decisionId: successorId, interactionId: interaction.id };
@@ -5336,27 +5406,61 @@ function applyDecisionRevision(draft, interaction, response, promptEventId, host
     delete draft.traceability;
   }
 }
-async function resolveRevisionDecision(root2, id, expectedRevision, interactionId, host, input) {
-  const { state, interaction } = await resolveInteractionDecision(root2, id, expectedRevision, interactionId, host, input, {
-    kind: "decision-revision",
-    notPendingMessage: "\u5F53\u524D\u6CA1\u6709\u5F85\u4FEE\u8BA2\u7684\u51B3\u5B9A\u3002",
-    confirmReply: "\u786E\u8BA4\u4FEE\u8BA2",
-    declineReply: "\u53D6\u6D88",
-    confirmOperation: "decision-revised",
-    declineOperation: "decision-revision-cancelled",
-    apply: (draft, live, response, promptEventId) => {
-      applyDecisionRevision(draft, live, response, promptEventId, host);
-    }
-  });
-  const oldDecisionId = interaction.revision?.decisionId ?? "";
-  const successorId = (state.governance?.decisions ?? []).find((decision) => decision.recordId === oldDecisionId)?.supersededBy ?? oldDecisionId;
-  return { state, interaction: toPublicInteraction(getInteraction(state, interactionId)), decisionId: successorId, interactionId };
+async function resolveRatificationForAnswer(ctx) {
+  const { root: root2, featureId, expectedRevision, host, credential, interaction, state } = ctx;
+  if (interaction.kind !== "decision-ratification" || interaction.status !== "pending") {
+    throw new DevFlowError("INTERACTION_NOT_PENDING", "\u5F53\u524D\u6CA1\u6709\u5F85\u8FFD\u8BA4\u7684\u51B3\u5B9A\u3002", { interactionId: interaction.id });
+  }
+  let promptEventId;
+  let promptText;
+  if (credential.source === "text") {
+    const events = await readFeatureEvents(root2, featureId);
+    const match = resolveInteractionPromptEvent(events, state, interaction, { host, userReply: credential.userReply });
+    promptEventId = match.eventId;
+    promptText = match.text;
+  }
+  const pending = pendingDecisionForState(state);
+  const matchedId = credential.source === "elicitation" ? credential.action : matchDecisionReply(pending, promptText ?? credential.userReply).option.id;
+  const confirms = matchedId === "confirm";
+  let response;
+  const next = await mutatePrepared(root2, featureId, expectedRevision, confirms ? "decision-ratified" : "decision-ratification-rejected", async () => ({
+    mutate: (draft) => {
+      response = resolveResponseForAnswer(draft, interaction, { source: credential.source, action: credential.source === "elicitation" ? credential.action : void 0, comment: credential.source === "elicitation" ? credential.comment : void 0, userReply: credential.source === "text" ? credential.userReply : void 0, promptText, promptEventId, host });
+      if (confirms) ratifyDecision(draft, draft.interactions[interaction.id], response, promptEventId, host);
+      draft.lastUpdatedBy = { host, pluginVersion: "5.0.9" };
+    },
+    eventData: () => ({ interactionId: interaction.id, action: matchedId })
+  }));
+  if (!response) throw new DevFlowError("INTERACTION_NOT_RESOLVED", interaction.id);
+  return { state: next, action: response.action, ...response.comment ? { comment: response.comment } : {} };
 }
-function resolveRevisionAnswer(root2, id, expectedRevision, interactionId, userReply, host) {
-  return resolveRevisionDecision(root2, id, expectedRevision, interactionId, host, { source: "text", userReply });
-}
-function resolveRevisionElicitation(root2, id, expectedRevision, interactionId, action, comment, host) {
-  return resolveRevisionDecision(root2, id, expectedRevision, interactionId, host, { source: "elicitation", action, comment });
+async function resolveRevisionForAnswer(ctx) {
+  const { root: root2, featureId, expectedRevision, host, credential, interaction, state } = ctx;
+  if (interaction.kind !== "decision-revision" || interaction.status !== "pending") {
+    throw new DevFlowError("INTERACTION_NOT_PENDING", "\u5F53\u524D\u6CA1\u6709\u5F85\u4FEE\u8BA2\u7684\u51B3\u5B9A\u3002", { interactionId: interaction.id });
+  }
+  let promptEventId;
+  let promptText;
+  if (credential.source === "text") {
+    const events = await readFeatureEvents(root2, featureId);
+    const match = resolveInteractionPromptEvent(events, state, interaction, { host, userReply: credential.userReply });
+    promptEventId = match.eventId;
+    promptText = match.text;
+  }
+  const pending = pendingDecisionForState(state);
+  const matchedId = credential.source === "elicitation" ? credential.action : matchDecisionReply(pending, promptText ?? credential.userReply).option.id;
+  const confirms = matchedId === "confirm";
+  let response;
+  const next = await mutatePrepared(root2, featureId, expectedRevision, confirms ? "decision-revised" : "decision-revision-cancelled", async () => ({
+    mutate: (draft) => {
+      response = resolveResponseForAnswer(draft, interaction, { source: credential.source, action: credential.source === "elicitation" ? credential.action : void 0, comment: credential.source === "elicitation" ? credential.comment : void 0, userReply: credential.source === "text" ? credential.userReply : void 0, promptText, promptEventId, host });
+      if (confirms) applyDecisionRevision(draft, draft.interactions[interaction.id], response, promptEventId, host);
+      draft.lastUpdatedBy = { host, pluginVersion: "5.0.9" };
+    },
+    eventData: () => ({ interactionId: interaction.id, action: matchedId })
+  }));
+  if (!response) throw new DevFlowError("INTERACTION_NOT_RESOLVED", interaction.id);
+  return { state: next, action: response.action, ...response.comment ? { comment: response.comment } : {} };
 }
 
 // plugins/dev-flow/src/core/plan-revision.ts
@@ -5624,7 +5728,7 @@ ${impactLines.join("\n")}
         traceabilitySha256: initial.traceability?.sha256 ?? "none"
       }
     });
-    draft.lastUpdatedBy = { host, pluginVersion: "5.0.8" };
+    draft.lastUpdatedBy = { host, pluginVersion: "5.0.9" };
   }, () => ({ presentationEventId: interaction?.presentationEventId }));
   if (!interaction) throw new DevFlowError("INTERACTION_NOT_CREATED", target);
   return { state, interaction: toPublicInteraction(interaction), interactionId: interaction.id };
@@ -5646,99 +5750,123 @@ function applyPlanRevision(draft, interaction, host) {
   delete draft.steps.implementation;
   delete draft.steps.code_review;
   draft.currentStage = "planning";
-  draft.lastUpdatedBy = { host, pluginVersion: "5.0.8" };
+  draft.lastUpdatedBy = { host, pluginVersion: "5.0.9" };
 }
-async function resolvePlanRevisionDecision(root2, id, expectedRevision, interactionId, host, input) {
-  const initial = await readState(root2, id);
-  if (initial.revision !== expectedRevision) throw new DevFlowError("STATE_REVISION_CONFLICT", "state revision changed", { currentRevision: initial.revision });
-  const pending = getInteraction(initial, interactionId);
-  const pendingDecision = pendingDecisionForState(initial);
-  const confirms = input.source === "elicitation" ? input.action === "confirm" : pendingDecision !== void 0 && matchDecisionReply(pendingDecision, input.userReply).option.id === "confirm";
-  if (confirms) {
-    const basis = pending.planRevisionBasis;
-    const artifact = initial.artifacts["implementation-plan"];
-    if (!basis || !artifact) throw new DevFlowError("PLAN_REVISION_STALE", "\u8BA1\u5212\u4FEE\u8BA2\u9884\u89C8\u7F3A\u5C11\u5F53\u524D\u4F9D\u636E\uFF0C\u8BF7\u91CD\u65B0\u751F\u6210\u3002", { retryOriginal: true });
-    const contents = await readArtifactText(root2, id, artifact.path);
-    const currentArtifactSha256 = createHash17("sha256").update(contents).digest("hex");
-    const currentConfigSha256 = (await readProjectConfigSnapshot(root2)).sha256;
-    const currentTraceabilitySha256 = initial.traceability?.sha256 ?? "none";
-    if (currentArtifactSha256 !== basis.artifactSha256 || currentConfigSha256 !== basis.projectConfigSha256 || currentTraceabilitySha256 !== basis.traceabilitySha256) {
-      throw new DevFlowError("PLAN_REVISION_STALE", "\u8BA1\u5212\u3001\u9879\u76EE\u914D\u7F6E\u6216 Trace \u5DF2\u5728\u9884\u89C8\u540E\u53D8\u5316\uFF0C\u8BF7\u91CD\u65B0\u751F\u6210\u5F71\u54CD\u9884\u89C8\u3002", {
-        retryOriginal: true,
-        changed: [
-          ...currentArtifactSha256 !== basis.artifactSha256 ? ["implementation-plan"] : [],
-          ...currentConfigSha256 !== basis.projectConfigSha256 ? ["project-config"] : [],
-          ...currentTraceabilitySha256 !== basis.traceabilitySha256 ? ["traceability"] : []
-        ]
-      });
-    }
+async function resolvePlanRevisionForAnswer(ctx) {
+  const { root: root2, featureId, expectedRevision, host, credential, interaction, state } = ctx;
+  if (interaction.kind !== "plan-revision" || interaction.status !== "pending") {
+    throw new DevFlowError("INTERACTION_NOT_PENDING", "\u5F53\u524D\u6CA1\u6709\u5F85\u5904\u7406\u7684\u8BA1\u5212\u4FEE\u8BA2\u3002", { interactionId: interaction.id });
   }
-  const reviewInvalidation = confirms && initial.review ? await prepareReviewInvalidation(root2, initial, expectedRevision + 1) : void 0;
-  const { state } = await resolveInteractionDecision(root2, id, expectedRevision, interactionId, host, input, {
-    kind: "plan-revision",
-    notPendingMessage: "\u5F53\u524D\u6CA1\u6709\u5F85\u5904\u7406\u7684\u8BA1\u5212\u4FEE\u8BA2\u3002",
-    confirmReply: "\u786E\u8BA4\u4FEE\u8BA2",
-    declineReply: "\u53D6\u6D88",
-    confirmOperation: "plan-revised",
-    declineOperation: "plan-revision-cancelled",
-    apply: (draft, live, response, promptEventId) => {
-      applyPlanRevision(draft, live, host);
-      if (reviewInvalidation) draft.review = reviewInvalidation;
-      const sideEffects = live.planRevision?.sideEffectUnits ?? [];
-      if (sideEffects.length) {
-        createInteraction(draft, {
-          kind: "side-effect-rerun",
-          target: `side-effect-rerun:${[...sideEffects].sort().join(",")}`,
-          basisHash: createHash17("sha256").update(`${id}
-${[...sideEffects].sort().join("\n")}`).digest("hex"),
-          question: `\u4EE5\u4E0B\u5DF2\u5B8C\u6210\u5B9E\u73B0\u5355\u5143\u5305\u542B\u6709\u526F\u4F5C\u7528\u7684\u64CD\u4F5C\uFF08\u5220\u9664/\u8FC1\u79FB/\u53D1\u5E03\u7B49\uFF09\uFF0C\u8BA1\u5212\u4FEE\u8BA2\u540E\u4E0D\u4F1A\u81EA\u52A8\u91CD\u8DD1\uFF1A${[...sideEffects].sort().join("\u3001")}\u3002\u786E\u8BA4\u91CD\u8DD1\u8FD9\u4E9B\u5355\u5143\u5417\uFF1F\u91CD\u8DD1\u524D\u8BF7\u786E\u8BA4\u5F53\u524D\u72B6\u6001\u5B89\u5168\u3002`,
-          options: [
-            { id: "confirm", label: "\u786E\u8BA4\u91CD\u8DD1" },
-            { id: "keep", label: "\u4E0D\u91CD\u8DD1\uFF0C\u4FDD\u7559\u539F\u7ED3\u679C" }
-          ],
-          sideEffectRerun: { units: [...sideEffects].sort() }
+  let promptEventId;
+  let promptText;
+  if (credential.source === "text") {
+    const events = await readFeatureEvents(root2, featureId);
+    const match = resolveInteractionPromptEvent(events, state, interaction, { host, userReply: credential.userReply });
+    promptEventId = match.eventId;
+    promptText = match.text;
+  }
+  const pending = pendingDecisionForState(state);
+  const matchedId = credential.source === "elicitation" ? credential.action : matchDecisionReply(pending, promptText ?? credential.userReply).option.id;
+  const confirms = matchedId === "confirm";
+  let reviewInvalidation;
+  let response;
+  const next = await mutatePrepared(root2, featureId, expectedRevision, confirms ? "plan-revised" : "plan-revision-cancelled", async (current, nextStateRevision) => {
+    if (confirms) {
+      const live = current.interactions?.[interaction.id];
+      const basis = live?.planRevisionBasis;
+      const artifact = current.artifacts["implementation-plan"];
+      if (!basis || !artifact) throw new DevFlowError("PLAN_REVISION_STALE", "\u8BA1\u5212\u4FEE\u8BA2\u9884\u89C8\u7F3A\u5C11\u5F53\u524D\u4F9D\u636E\uFF0C\u8BF7\u91CD\u65B0\u751F\u6210\u3002", { retryOriginal: true });
+      const contents = await readArtifactText(root2, featureId, artifact.path);
+      const currentArtifactSha256 = createHash17("sha256").update(contents).digest("hex");
+      const currentConfigSha256 = (await readProjectConfigSnapshot(root2)).sha256;
+      const currentTraceabilitySha256 = current.traceability?.sha256 ?? "none";
+      if (currentArtifactSha256 !== basis.artifactSha256 || currentConfigSha256 !== basis.projectConfigSha256 || currentTraceabilitySha256 !== basis.traceabilitySha256) {
+        throw new DevFlowError("PLAN_REVISION_STALE", "\u8BA1\u5212\u3001\u9879\u76EE\u914D\u7F6E\u6216 Trace \u5DF2\u5728\u9884\u89C8\u540E\u53D8\u5316\uFF0C\u8BF7\u91CD\u65B0\u751F\u6210\u5F71\u54CD\u9884\u89C8\u3002", {
+          retryOriginal: true,
+          changed: [
+            ...currentArtifactSha256 !== basis.artifactSha256 ? ["implementation-plan"] : [],
+            ...currentConfigSha256 !== basis.projectConfigSha256 ? ["project-config"] : [],
+            ...currentTraceabilitySha256 !== basis.traceabilitySha256 ? ["traceability"] : []
+          ]
         });
       }
+      if (current.review) reviewInvalidation = await prepareReviewInvalidation(root2, current, nextStateRevision);
     }
+    return {
+      mutate: (draft) => {
+        response = resolveResponseForAnswer(draft, interaction, { source: credential.source, action: credential.source === "elicitation" ? credential.action : void 0, comment: credential.source === "elicitation" ? credential.comment : void 0, userReply: credential.source === "text" ? credential.userReply : void 0, promptText, promptEventId, host });
+        if (confirms) {
+          const live = draft.interactions[interaction.id];
+          applyPlanRevision(draft, live, host);
+          if (reviewInvalidation) draft.review = reviewInvalidation;
+          const sideEffects = live.planRevision?.sideEffectUnits ?? [];
+          if (sideEffects.length) {
+            createInteraction(draft, {
+              kind: "side-effect-rerun",
+              target: `side-effect-rerun:${[...sideEffects].sort().join(",")}`,
+              basisHash: createHash17("sha256").update(`${featureId}
+${[...sideEffects].sort().join("\n")}`).digest("hex"),
+              question: `\u4EE5\u4E0B\u5DF2\u5B8C\u6210\u5B9E\u73B0\u5355\u5143\u5305\u542B\u6709\u526F\u4F5C\u7528\u7684\u64CD\u4F5C\uFF08\u5220\u9664/\u8FC1\u79FB/\u53D1\u5E03\u7B49\uFF09\uFF0C\u8BA1\u5212\u4FEE\u8BA2\u540E\u4E0D\u4F1A\u81EA\u52A8\u91CD\u8DD1\uFF1A${[...sideEffects].sort().join("\u3001")}\u3002\u786E\u8BA4\u91CD\u8DD1\u8FD9\u4E9B\u5355\u5143\u5417\uFF1F\u91CD\u8DD1\u524D\u8BF7\u786E\u8BA4\u5F53\u524D\u72B6\u6001\u5B89\u5168\u3002`,
+              options: [
+                { id: "confirm", label: "\u786E\u8BA4\u91CD\u8DD1" },
+                { id: "keep", label: "\u4E0D\u91CD\u8DD1\uFF0C\u4FDD\u7559\u539F\u7ED3\u679C" }
+              ],
+              sideEffectRerun: { units: [...sideEffects].sort() }
+            });
+          }
+        }
+        draft.lastUpdatedBy = { host, pluginVersion: "5.0.9" };
+      },
+      eventData: () => ({ interactionId: interaction.id, action: matchedId })
+    };
   });
-  return { state, interaction: toPublicInteraction(getInteraction(state, interactionId)), interactionId };
+  if (!response) throw new DevFlowError("INTERACTION_NOT_RESOLVED", interaction.id);
+  return { state: next, action: response.action, ...response.comment ? { comment: response.comment } : {} };
 }
-async function resolvePlanRevisionAnswer(root2, id, expectedRevision, interactionId, userReply, host) {
-  return resolvePlanRevisionDecision(root2, id, expectedRevision, interactionId, host, { source: "text", userReply });
-}
-async function resolvePlanRevisionElicitation(root2, id, expectedRevision, interactionId, action, comment, host) {
-  return resolvePlanRevisionDecision(root2, id, expectedRevision, interactionId, host, { source: "elicitation", action, comment });
-}
-async function resolveSideEffectRerunDecision(root2, id, expectedRevision, interactionId, host, input) {
-  const { state } = await resolveInteractionDecision(root2, id, expectedRevision, interactionId, host, input, {
-    kind: "side-effect-rerun",
-    notPendingMessage: "\u5F53\u524D\u6CA1\u6709\u5F85\u5904\u7406\u7684\u526F\u4F5C\u7528\u5355\u5143\u786E\u8BA4\u3002",
-    confirmReply: "\u786E\u8BA4\u91CD\u8DD1",
-    declineReply: "\u4E0D\u91CD\u8DD1\uFF0C\u4FDD\u7559\u539F\u7ED3\u679C",
-    confirmOperation: "side-effect-rerun-confirmed",
-    declineOperation: "side-effect-rerun-kept",
-    apply: (draft, live, response, promptEventId) => {
-      const units = draft.implementationUnits ?? [];
-      let reopened = false;
-      for (const unit of units) {
-        if (!live.sideEffectRerun?.units.includes(unit.unitId)) continue;
-        if (unit.status !== "checkpointed") continue;
-        reopenImplementationUnit(unit);
-        reopened = true;
+async function resolveSideEffectRerunForAnswer(ctx) {
+  const { root: root2, featureId, expectedRevision, host, credential, interaction, state } = ctx;
+  if (interaction.kind !== "side-effect-rerun" || interaction.status !== "pending") {
+    throw new DevFlowError("INTERACTION_NOT_PENDING", "\u5F53\u524D\u6CA1\u6709\u5F85\u5904\u7406\u7684\u526F\u4F5C\u7528\u5355\u5143\u786E\u8BA4\u3002", { interactionId: interaction.id });
+  }
+  let promptEventId;
+  let promptText;
+  if (credential.source === "text") {
+    const events = await readFeatureEvents(root2, featureId);
+    const match = resolveInteractionPromptEvent(events, state, interaction, { host, userReply: credential.userReply });
+    promptEventId = match.eventId;
+    promptText = match.text;
+  }
+  const pending = pendingDecisionForState(state);
+  const matchedId = credential.source === "elicitation" ? credential.action : matchDecisionReply(pending, promptText ?? credential.userReply).option.id;
+  const confirms = matchedId === "confirm";
+  let response;
+  const next = await mutatePrepared(root2, featureId, expectedRevision, confirms ? "side-effect-rerun-confirmed" : "side-effect-rerun-kept", async () => ({
+    mutate: (draft) => {
+      response = resolveResponseForAnswer(draft, interaction, { source: credential.source, action: credential.source === "elicitation" ? credential.action : void 0, comment: credential.source === "elicitation" ? credential.comment : void 0, userReply: credential.source === "text" ? credential.userReply : void 0, promptText, promptEventId, host });
+      if (confirms) {
+        const live = draft.interactions[interaction.id];
+        const units = draft.implementationUnits ?? [];
+        let reopened = false;
+        for (const unit of units) {
+          if (!live.sideEffectRerun?.units.includes(unit.unitId)) continue;
+          if (unit.status !== "checkpointed") continue;
+          reopenImplementationUnit(unit);
+          reopened = true;
+        }
+        if (reopened) {
+          delete draft.steps.implementation;
+          draft.logicComplete = false;
+          delete draft.steps.finalize;
+          const definition = routeDefinitionForFeature(draft.route, draft.classification.controls);
+          draft.currentStage = definition.orderedSteps.find((step) => draft.steps[step]?.status !== "satisfied") ?? definition.orderedSteps[0];
+        }
       }
-      if (reopened) {
-        delete draft.steps.implementation;
-        draft.logicComplete = false;
-        delete draft.steps.finalize;
-        const definition = routeDefinitionForFeature(draft.route, draft.classification.controls);
-        draft.currentStage = definition.orderedSteps.find((step) => draft.steps[step]?.status !== "satisfied") ?? definition.orderedSteps[0];
-      }
-    }
-  });
-  return { state, interaction: toPublicInteraction(getInteraction(state, interactionId)), interactionId };
-}
-async function resolveSideEffectRerunAnswer(root2, id, expectedRevision, interactionId, userReply, host) {
-  return resolveSideEffectRerunDecision(root2, id, expectedRevision, interactionId, host, { source: "text", userReply });
+      draft.lastUpdatedBy = { host, pluginVersion: "5.0.9" };
+    },
+    eventData: () => ({ interactionId: interaction.id, action: matchedId })
+  }));
+  if (!response) throw new DevFlowError("INTERACTION_NOT_RESOLVED", interaction.id);
+  return { state: next, action: response.action, ...response.comment ? { comment: response.comment } : {} };
 }
 function semanticKey(node) {
   switch (node.kind) {
@@ -5804,6 +5932,394 @@ function computePlanRevisionImpact(currentLedger, newLedger) {
     for (const unit of newUnits) affectedIds.add(unit.id);
   }
   return { affectedIds: [...affectedIds].sort(), fallbackReason };
+}
+
+// plugins/dev-flow/src/core/requirements-grill.ts
+async function currentRequirements(root2, id, state) {
+  if (!state.artifacts.requirements) throw new DevFlowError("MISSING_REQUIRED_ARTIFACT", "requirements");
+  await assertArtifactCurrent(root2, id, state, "requirements");
+}
+async function requestGrillDecision(root2, id, expectedRevision, input) {
+  if (!input.question.trim()) throw new DevFlowError("GRILL_QUESTION_REQUIRED", "\u95EE\u9898\u4E0D\u80FD\u4E3A\u7A7A\u3002", { userMessage: "\u5F53\u524D\u95EE\u9898\u6CA1\u6709\u5185\u5BB9\u3002", recoveryKind: "retry", recoveryInstruction: "\u8865\u5145\u4E00\u4E2A\u9700\u8981\u7528\u6237\u51B3\u5B9A\u7684\u95EE\u9898\u540E\u91CD\u8BD5\u3002", retryOriginal: true });
+  if (!input.recommendation.drawback?.trim() || !input.recommendation.alternative?.condition.trim()) {
+    throw new DevFlowError("GRILL_HIGH_IMPACT_REMINDER_REQUIRED", "\u9700\u6C42\u51B3\u7B56\u5C5E\u4E8E\u9AD8\u5F71\u54CD\u4EA4\u4E92\uFF0C\u5FC5\u987B\u8BF4\u660E\u63A8\u8350\u65B9\u6848\u7684\u4E3B\u8981\u7F3A\u70B9\u548C\u66FF\u4EE3\u6761\u4EF6\u3002", {
+      recoveryHint: "\u8865\u5145 drawback \u4E0E alternative.condition\uFF0C\u5E76\u8BA9 alternative.optionId \u6307\u5411\u975E\u63A8\u8350\u9009\u9879\u540E\u91CD\u8BD5\u3002",
+      retryOriginal: true
+    });
+  }
+  const initial = await readState(root2, id);
+  if (initial.revision !== expectedRevision) throw new DevFlowError("STATE_REVISION_CONFLICT", "state revision changed", { currentRevision: initial.revision });
+  if (initial.mode !== "intake") await currentRequirements(root2, id, initial);
+  const target = `grill:${input.questionId}`;
+  const existing = findInteractionForTarget(initial, target);
+  if (existing) return { state: initial, interaction: toPublicInteraction(existing), interactionId: existing.id };
+  let interaction;
+  const state = await mutate(root2, id, expectedRevision, "decision-presented", (draft) => {
+    interaction = createInteraction(draft, {
+      kind: "grill",
+      target,
+      basisHash: decisionBasisHash({ objective: draft.objective, questionId: input.questionId, requirements: draft.artifacts.requirements?.sha256 }),
+      question: input.question,
+      options: input.options,
+      recommendation: input.recommendation
+    });
+    draft.lastUpdatedBy = { host: input.host, pluginVersion: "5.0.9" };
+  }, () => ({ questionId: input.questionId, mode: "decision", presentationEventId: interaction?.presentationEventId }));
+  if (!interaction) throw new DevFlowError("INTERACTION_NOT_CREATED", target);
+  return { state, interaction: toPublicInteraction(interaction), interactionId: interaction.id };
+}
+async function resolveGrillForAnswer(ctx) {
+  const { root: root2, featureId, expectedRevision, host, credential, interaction, state } = ctx;
+  if (interaction.kind !== "grill" || interaction.status !== "pending") {
+    throw new DevFlowError("INTERACTION_NOT_PENDING", "\u5F53\u524D\u6CA1\u6709\u5F85\u56DE\u7B54\u7684\u9700\u6C42\u95EE\u9898\u3002", { interactionId: interaction.id });
+  }
+  let promptEventId;
+  let promptText;
+  if (credential.source === "text") {
+    const events = await readFeatureEvents(root2, featureId);
+    const match = resolveInteractionPromptEvent(events, state, interaction, { host, userReply: credential.userReply });
+    promptEventId = match.eventId;
+    promptText = match.text;
+  }
+  let response;
+  const next = await mutatePrepared(root2, featureId, expectedRevision, "decision-answered", async () => ({
+    mutate: (draft) => {
+      response = resolveResponseForAnswer(draft, interaction, { source: credential.source, action: credential.source === "elicitation" ? credential.action : void 0, comment: credential.source === "elicitation" ? credential.comment : void 0, userReply: credential.source === "text" ? credential.userReply : void 0, promptText, promptEventId, host });
+      if (!response) throw new DevFlowError("INTERACTION_NOT_RESOLVED", interaction.id);
+      const decisionId = interaction.target.slice("grill:".length);
+      const existingGovernance = draft.governance ?? EMPTY_GOVERNANCE_LEDGER;
+      const previous = existingGovernance.decisions.find((candidate) => candidate.recordId === decisionId && !candidate.supersededBy);
+      const recordId = previous ? `${decisionId}-${interaction.id}` : decisionId;
+      const decisions = [...existingGovernance.decisions];
+      if (previous) {
+        const previousIndex = decisions.findIndex((candidate) => candidate.recordId === previous.recordId);
+        if (previousIndex >= 0) decisions[previousIndex] = { ...previous, supersededBy: recordId };
+      }
+      const credentials = [...existingGovernance.credentials];
+      const credentialId = `CRED-grill-${interaction.id}`;
+      if (!credentials.some((record) => record.recordId === credentialId)) {
+        credentials.push({
+          recordId: credentialId,
+          kind: "credential",
+          source: credential.source === "elicitation" ? "native-form" : "text",
+          host,
+          interactionId: interaction.id,
+          ...response.selectedOptionId ? { optionId: response.selectedOptionId } : {},
+          ...response.rawReply ? { rawText: response.rawReply } : {},
+          ...credential.source === "text" && promptEventId ? { basis: { kind: "event", eventId: promptEventId } } : {},
+          recordedAt: response.respondedAt
+        });
+      }
+      if (!decisions.some((candidate) => candidate.recordId === recordId)) {
+        decisions.push({
+          recordId,
+          kind: "decision",
+          question: interaction.question ?? decisionId,
+          conclusion: response.action,
+          credentialId,
+          ...credential.source === "text" && promptEventId ? { basis: { kind: "event", eventId: promptEventId } } : {},
+          recordedAt: response.respondedAt
+        });
+      }
+      draft.governance = { ...existingGovernance, decisions, credentials };
+      draft.lastUpdatedBy = { host, pluginVersion: "5.0.9" };
+    },
+    eventData: () => ({ interactionId: interaction.id, mode: "decision" })
+  }));
+  if (!response) throw new DevFlowError("INTERACTION_NOT_RESOLVED", interaction.id);
+  return { state: next, action: response.action, ...response.comment ? { comment: response.comment } : {} };
+}
+async function assertRequirementsGrillSatisfied(root2, id, state) {
+  if (state.route !== "m" && state.route !== "l") return;
+  await currentRequirements(root2, id, state);
+  const pending = Object.values(state.interactions ?? {}).some((value) => {
+    const interaction = value;
+    return interaction.kind === "grill" && interaction.status === "pending";
+  }) || pendingDecisionForState(state)?.kind === "grill";
+  if (pending) throw new DevFlowError("GRILL_INCOMPLETE", "\u8FD8\u6709\u4E00\u4E2A\u9700\u6C42\u95EE\u9898\u7B49\u5F85\u56DE\u7B54\u3002", { userMessage: "\u9700\u6C42\u6F84\u6E05\u8FD8\u6CA1\u6709\u5B8C\u6210\u3002", cause: "\u51B3\u7B56\u8D26\u672C\u4ECD\u6709\u5F85\u56DE\u7B54\u7684 grill \u95EE\u9898\u3002", impact: "\u5F53\u524D\u8DEF\u7EBF\u4E0D\u80FD\u8FDB\u5165\u4E0B\u4E00\u6B65\u3002", recoveryKind: "retry", recoveryInstruction: "\u5148\u56DE\u7B54\u5F53\u524D\u552F\u4E00\u95EE\u9898\uFF0C\u518D\u7EE7\u7EED\u5F53\u524D\u6B65\u9AA4\u3002", retryOriginal: true });
+}
+
+// plugins/dev-flow/src/core/approval-interactions.ts
+import { createHash as createHash18 } from "node:crypto";
+var digest5 = (value) => createHash18("sha256").update(JSON.stringify(value)).digest("hex");
+function approvalId(value) {
+  if (!/^approval:[a-f0-9]{16,}$/.test(value)) throw new DevFlowError("INVALID_APPROVAL", value);
+  return value;
+}
+function approvalInteractionOptions() {
+  return [
+    { id: "confirm", label: "\u786E\u8BA4\u5F00\u59CB\u6267\u884C" },
+    { id: "request-changes", label: "\u63D0\u51FA\u4FEE\u6539\u610F\u89C1", requiresComment: true }
+  ];
+}
+async function assertReviewProjectionForApproval(root2, state) {
+  if (reviewEnforcementRequired(state.route, state.classification.controls)) {
+    await assertCurrentReviewProjection(root2, state);
+  }
+}
+async function presentApproval(root2, id, expectedRevision) {
+  const initial = await readState(root2, id);
+  const candidates = approvalIds(initial).filter((candidate) => {
+    const obligation = initial.obligations?.find((item) => item.id === candidate);
+    return obligation?.status !== "satisfied";
+  });
+  if (candidates.length !== 1) throw new DevFlowError("APPROVAL_NOT_UNIQUE", "Core \u65E0\u6CD5\u9009\u62E9\u552F\u4E00\u7684\u5F53\u524D\u5BA1\u6279\u3002", { approvalIds: candidates, recoveryHint: "\u5237\u65B0\u72B6\u6001\u5E76\u4FEE\u590D\u91CD\u590D\u6216\u7F3A\u5931\u7684\u5BA1\u6279\u6295\u5F71" });
+  const selectedApproval = approvalId(candidates[0]);
+  let interaction;
+  const state = await mutate(root2, id, expectedRevision, "approval-presented", async (state2) => {
+    if (state2.lifecycle !== "active") {
+      throw new DevFlowError("INVALID_LIFECYCLE", "approval requires active feature");
+    }
+    const obligation = state2.obligations?.find((candidate) => candidate.id === selectedApproval && candidate.kind === "approval");
+    if (!obligation || obligation.status === "satisfied") throw new DevFlowError("INVALID_APPROVAL", selectedApproval);
+    const definition = routeDefinitionForState(state2);
+    const implementationIndex = definition.orderedSteps.indexOf("implementation");
+    if (implementationIndex < 0 || !definition.orderedSteps.slice(0, implementationIndex).every((step) => state2.steps[step]?.status === "satisfied")) {
+      throw new DevFlowError("APPROVAL_NOT_READY", "approval is only available after planning prerequisites are complete", { expectedStage: definition.orderedSteps[implementationIndex - 1] });
+    }
+    if (state2.humanGates[selectedApproval]) {
+      throw new DevFlowError("APPROVAL_ALREADY_PRESENTED", selectedApproval);
+    }
+    await assertRequirementsGrillSatisfied(root2, id, state2);
+    await assertTraceGateCurrent(root2, state2, "planning");
+    await assertReviewProjectionForApproval(root2, state2);
+    const basisHash2 = digest5(approvalBasis(state2, selectedApproval));
+    state2.humanGates[selectedApproval] = {
+      status: "pending",
+      presentedRevision: state2.revision,
+      presentedAt: (/* @__PURE__ */ new Date()).toISOString(),
+      basisHash: basisHash2,
+      approvalId: selectedApproval
+    };
+    interaction = createInteraction(state2, {
+      kind: "approval",
+      target: `approval:${selectedApproval}`,
+      basisHash: basisHash2,
+      options: approvalInteractionOptions()
+    });
+  }, () => ({
+    approvalId: selectedApproval,
+    replyHint: interaction ? decisionHint(interaction) : approvalReplyHint(),
+    interactionId: interaction?.id,
+    presentationEventId: interaction?.presentationEventId
+  }));
+  if (!interaction) throw new DevFlowError("INTERACTION_NOT_CREATED", selectedApproval);
+  return { ...state, approvalId: selectedApproval, interactionId: interaction.id, approvalReplyHint: decisionHint(interaction), approvalInteraction: toPublicInteraction(interaction) };
+}
+function confirmationEventIds(value) {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return [];
+  const confirmation = value.confirmation;
+  if (typeof confirmation !== "object" || confirmation === null || Array.isArray(confirmation)) return [];
+  const record = confirmation;
+  const ids = [];
+  if (typeof record.promptEventId === "string") ids.push(record.promptEventId);
+  if (typeof record.turnBoundaryEventId === "string") ids.push(record.turnBoundaryEventId);
+  return ids;
+}
+function hostEventRecord(events, eventId, expectedHost) {
+  const record = events.find((item) => item.type === "host-event" && item.data.eventId === eventId);
+  if (record && expectedHost && record.data.host !== expectedHost) {
+    throw new DevFlowError("HOST_EVENT_HOST_MISMATCH", "host event belongs to a different host", {
+      expectedHost,
+      actualHost: record.data.host,
+      eventId
+    });
+  }
+  return record;
+}
+function assertApprovalEvidenceTiming(eventRecord, event, presented, recoveryHint) {
+  if (!event || !presented?.presentedAt || (eventRecord?.revision ?? -1) <= (presented.presentedRevision ?? -1) || Date.parse(event.at ?? "") < Date.parse(presented.presentedAt)) {
+    throw new DevFlowError("APPROVAL_SAME_TURN", "confirmation evidence must be later than approval presentation", {
+      recoveryHint
+    });
+  }
+}
+function assertApprovalPromptEvidence(event, userReply, recoveryHint) {
+  if (event?.type !== "user-prompt" || !textCompatible(String(event.text ?? ""), userReply)) {
+    throw new DevFlowError("APPROVAL_REPLY_MISMATCH", "userReply must be compatible with the captured prompt", {
+      recoveryHint
+    });
+  }
+}
+function assertApprovalTurnBoundaryEvidence(event, recoveryHint) {
+  if (event?.type !== "turn-boundary") {
+    throw new DevFlowError("APPROVAL_PROVENANCE_UNAVAILABLE", "turn boundary was not captured", {
+      ...recoveryHint ? { recoveryHint } : {}
+    });
+  }
+}
+function resolveProvenance(events, state, approval, userReply, provenance, host) {
+  if (provenance.promptEventId || provenance.turnBoundaryEventId) return provenance;
+  const current = state.humanGates[approval];
+  const consumed = new Set(Object.values(state.humanGates).flatMap(confirmationEventIds));
+  const match = [...events].reverse().find((item) => {
+    const event = item.data;
+    return item.type === "host-event" && typeof event.eventId === "string" && !consumed.has(event.eventId) && event.type === "user-prompt" && event.host === host && textCompatible(String(event.text ?? ""), userReply) && item.revision > (current?.presentedRevision ?? state.revision) && typeof current?.presentedAt === "string" && typeof event.at === "string" && Date.parse(event.at) >= Date.parse(current.presentedAt);
+  });
+  const eventId = match?.data?.eventId;
+  if (typeof eventId !== "string") {
+    throw new DevFlowError(
+      "APPROVAL_PROVENANCE_UNAVAILABLE",
+      "no matching post-presentation user prompt was captured",
+      { recoveryHint: "\u8BF7\u786E\u4FDD\u5BBF\u4E3B UserPromptSubmit hook \u5DF2\u751F\u6548\uFF0C\u7136\u540E\u5728\u95E8\u7981\u5448\u73B0\u540E\u63D0\u4EA4\u4E00\u6761\u51C6\u786E\u7684\u6279\u51C6\u8BCD\uFF08\u5982\u201C\u786E\u8BA4\u9700\u6C42\u201D\uFF09\u91CD\u8BD5\u786E\u8BA4" }
+    );
+  }
+  return { promptEventId: eventId };
+}
+function assertTokenEvidence(events, state, approval, userReply, provenance, host) {
+  const resolved = resolveProvenance(events, state, approval, userReply, provenance, host);
+  const current = state.humanGates[approval];
+  if (resolved.promptEventId) {
+    const eventRecord = hostEventRecord(events, resolved.promptEventId, host);
+    const event = eventRecord?.data;
+    assertApprovalEvidenceTiming(eventRecord, event, current, "\u8BF7\u5728\u786E\u8BA4\u5448\u73B0\u540E\u7684\u540E\u7EED\u56DE\u5408\u63D0\u4EA4\u4E00\u6B21\u6027\u56DE\u590D\u6216\u6279\u51C6\u8BCD");
+    assertApprovalPromptEvidence(event, userReply, "\u8BF7\u539F\u6837\u4F20\u9012\u6355\u83B7\u5230\u7684\u7528\u6237\u56DE\u590D\u6587\u672C\uFF08\u7A7A\u683C\u4E0E\u5927\u5C0F\u5199\u5DEE\u5F02\u4F1A\u81EA\u52A8\u5F52\u4E00\u5316\uFF09");
+  }
+  if (resolved.turnBoundaryEventId) {
+    const eventRecord = hostEventRecord(events, resolved.turnBoundaryEventId, host);
+    const event = eventRecord?.data;
+    assertApprovalEvidenceTiming(eventRecord, event, current, "\u8BF7\u5728\u786E\u8BA4\u5448\u73B0\u540E\u7684\u540E\u7EED\u56DE\u5408\u63D0\u4EA4\u4E00\u6B21\u6027\u56DE\u590D\u6216\u6279\u51C6\u8BCD");
+    assertApprovalTurnBoundaryEvidence(event);
+  }
+  return resolved;
+}
+async function resolveApprovalForAnswer(ctx) {
+  const { root: root2, featureId, expectedRevision, host, credential, interaction, state } = ctx;
+  if (interaction.kind !== "approval" || interaction.status !== "pending") {
+    throw new DevFlowError("INTERACTION_NOT_PENDING", "\u5F53\u524D\u6CA1\u6709\u5F85\u786E\u8BA4\u7684\u6267\u884C\u6279\u51C6\u3002", { interactionId: interaction.id });
+  }
+  const approval = approvalId(interaction.target.slice("approval:".length));
+  let provenance;
+  let promptText;
+  let promptEventId;
+  if (credential.source === "text") {
+    const events = await readFeatureEvents(root2, featureId);
+    provenance = assertTokenEvidence(events, state, approval, credential.userReply, {}, host);
+    promptEventId = provenance.promptEventId;
+    promptText = provenance.promptEventId ? events.find((item) => item.type === "host-event" && item.data.eventId === provenance.promptEventId)?.data?.text : void 0;
+  }
+  let response;
+  const next = await mutatePrepared(root2, featureId, expectedRevision, "approval-interaction-resolved", async (current) => {
+    await assertRequirementsGrillSatisfied(root2, featureId, current);
+    await assertTraceGateCurrent(root2, current, "planning");
+    await assertReviewProjectionForApproval(root2, current);
+    const gate = current.humanGates[approval];
+    if (gate?.status !== "pending") throw new DevFlowError("APPROVAL_NOT_PENDING", approval);
+    const live = current.interactions?.[interaction.id];
+    if (live?.kind !== "approval" || live?.target !== `approval:${approval}` || live?.status !== "pending") {
+      throw new DevFlowError("INTERACTION_NOT_PENDING", interaction.id);
+    }
+    const basisHash2 = digest5(approvalBasis(current, approval));
+    if (basisHash2 !== gate.basisHash || basisHash2 !== live.basisHash) {
+      throw new DevFlowError("APPROVAL_BASIS_CHANGED", approval, {
+        recoveryHint: "\u95E8\u7981\u4F9D\u636E\u5DF2\u53D8\u66F4\uFF0C\u8BF7\u66F4\u65B0\u5E76\u767B\u8BB0\u76F8\u5173\u8D44\u4EA7\u540E\u91CD\u65B0\u5448\u73B0\u95E8\u7981"
+      });
+    }
+    if (credential.source === "text") {
+      const ids = [
+        ...provenance?.promptEventId ? [provenance.promptEventId] : [],
+        ...provenance?.turnBoundaryEventId ? [provenance.turnBoundaryEventId] : []
+      ];
+      for (const [otherApproval, value] of Object.entries(current.humanGates)) {
+        if (otherApproval === approval) continue;
+        const replayed = confirmationEventIds(value).find((eventId) => ids.includes(eventId));
+        if (replayed) throw new DevFlowError("APPROVAL_EVENT_CONSUMED", replayed);
+      }
+    }
+    return {
+      mutate: (draft) => {
+        const phraseText = promptText ?? (credential.source === "text" ? credential.userReply : void 0);
+        response = resolveResponseForAnswer(draft, interaction, {
+          source: credential.source,
+          action: credential.source === "elicitation" ? credential.action : void 0,
+          comment: credential.source === "elicitation" ? credential.comment : void 0,
+          userReply: credential.source === "text" ? credential.userReply : void 0,
+          promptText,
+          promptEventId,
+          host,
+          phraseAction: phraseText && isExplicitApproval(phraseText) ? "confirm" : void 0
+        });
+        const currentGate = draft.humanGates[approval];
+        if (response.action === "confirm") {
+          draft.humanGates[approval] = {
+            ...currentGate,
+            status: "confirmed",
+            confirmation: {
+              interactionId: interaction.id,
+              ...response,
+              confirmedAt: (/* @__PURE__ */ new Date()).toISOString()
+            }
+          };
+          draft.obligations = satisfyObligations(draft.obligations, ["approval"]);
+        } else if (response.action === "request-changes") {
+          draft.humanGates[approval] = { ...currentGate, status: "returned", lastResponse: response };
+        } else {
+          throw new DevFlowError("INTERACTION_ACTION_INVALID", response.action);
+        }
+        draft.lastUpdatedBy = { host, pluginVersion: "5.0.9" };
+      },
+      eventData: () => ({ approval, interactionId: interaction.id, response })
+    };
+  });
+  if (!response) throw new DevFlowError("INTERACTION_NOT_RESOLVED", interaction.id);
+  return { state: next, action: response.action, ...response.comment ? { comment: response.comment } : {} };
+}
+
+// plugins/dev-flow/src/core/interaction-answer.ts
+var kindResolvers = {
+  "decision-ratification": resolveRatificationForAnswer,
+  "decision-revision": resolveRevisionForAnswer,
+  "plan-revision": resolvePlanRevisionForAnswer,
+  "side-effect-rerun": resolveSideEffectRerunForAnswer,
+  grill: resolveGrillForAnswer,
+  approval: resolveApprovalForAnswer,
+  "workspace-ownership": resolveOwnershipForAnswer,
+  "route-confirmation": resolveRouteConfirmationForAnswer
+};
+function pendingInteraction2(state) {
+  const decision = pendingDecisionForState(state);
+  return decision ? pendingInteractionForDecision(state, decision) : void 0;
+}
+function pendingAfter(state) {
+  const interaction = pendingInteraction2(state);
+  return interaction ? toPublicInteraction(interaction) : void 0;
+}
+async function answer(input) {
+  const { root: root2, featureId, expectedRevision, host, credential } = input;
+  const state = await readState(root2, featureId);
+  if (state.revision !== expectedRevision) {
+    throw new DevFlowError("STATE_REVISION_CONFLICT", "state revision changed", { currentRevision: state.revision });
+  }
+  const interaction = pendingInteraction2(state);
+  if (!interaction) {
+    throw new DevFlowError("INTERACTION_NOT_PENDING", "\u5F53\u524D\u6CA1\u6709\u9700\u8981\u56DE\u7B54\u7684\u95EE\u9898\u3002", {
+      userMessage: "\u5F53\u524D\u6CA1\u6709\u9700\u8981\u56DE\u7B54\u7684\u95EE\u9898\u3002",
+      cause: "\u6CA1\u6709\u5F85\u51B3\u7684\u6B63\u5F0F\u4EA4\u4E92\u8D26\u672C\u3002",
+      impact: "\u6D41\u7A0B\u5C06\u6309\u5F53\u524D\u9636\u6BB5\u81EA\u52A8\u7EE7\u7EED\uFF0C\u4E0D\u4F1A\u9501\u5B9A\u6216\u6539\u5199\u8DEF\u7EBF\u3002",
+      recoveryKind: "refresh",
+      recoveryInstruction: "\u5237\u65B0\u72B6\u6001\u540E\u7EE7\u7EED\u5F53\u524D\u6B65\u9AA4\u3002",
+      retryOriginal: false
+    });
+  }
+  const resolver = kindResolvers[interaction.kind];
+  if (!resolver) {
+    throw new DevFlowError("DECISION_KIND_UNSUPPORTED", "\u5F53\u524D\u95EE\u9898\u7C7B\u578B\u8FD8\u6CA1\u6709\u53EF\u7528\u7684\u7EDF\u4E00\u56DE\u7B54\u5165\u53E3\u3002", {
+      userMessage: "\u5F53\u524D\u95EE\u9898\u6682\u65F6\u4E0D\u80FD\u901A\u8FC7\u7EDF\u4E00\u5165\u53E3\u56DE\u7B54\u3002",
+      cause: `\u51B3\u7B56\u7C7B\u578B\u4E3A ${interaction.kind}\uFF0C\u5C1A\u672A\u63A5\u5165 answer\u3002`,
+      impact: "\u6D41\u7A0B\u4FDD\u6301\u5728\u5F53\u524D\u9636\u6BB5\uFF0C\u4EFB\u4F55\u72B6\u6001\u90FD\u6CA1\u6709\u88AB\u6539\u53D8\u3002",
+      recoveryKind: "repair",
+      recoveryInstruction: "\u8FD0\u884C dev_flow_doctor \u68C0\u67E5\u63D2\u4EF6\u7248\u672C\u4E0E\u72B6\u6001\uFF0C\u6216\u5237\u65B0\u540E\u91CD\u8BD5\u3002",
+      retryOriginal: false
+    });
+  }
+  const result = await resolver({ root: root2, featureId, expectedRevision, host, credential, interaction, state });
+  const pending = pendingAfter(result.state);
+  return {
+    state: result.state,
+    action: result.action,
+    ...result.comment ? { comment: result.comment } : {},
+    ...pending ? { pending } : {}
+  };
 }
 
 // plugins/dev-flow/src/core/state-store.ts
@@ -6151,7 +6667,7 @@ async function updateProjectConfig(root2, config, expectedSha256) {
     } catch {
       throw new DevFlowError("PROJECT_NOT_INITIALIZED", "run dev_flow_init_project first");
     }
-    const previousSha256 = createHash18("sha256").update(raw).digest("hex");
+    const previousSha256 = createHash19("sha256").update(raw).digest("hex");
     if (!/^[a-f0-9]{64}$/.test(expectedSha256) || previousSha256 !== expectedSha256) {
       throw new DevFlowError("PROJECT_CONFIG_REVISION_CONFLICT", "project configuration changed since it was read", {
         userMessage: "\u9879\u76EE\u914D\u7F6E\u5DF2\u88AB\u5176\u4ED6\u64CD\u4F5C\u66F4\u65B0\uFF0C\u65E7 expectedSha256 \u4E0D\u80FD\u8986\u76D6\u5F53\u524D\u914D\u7F6E\u3002",
@@ -6184,7 +6700,7 @@ async function updateProjectConfig(root2, config, expectedSha256) {
     );
     await writeAtomic(file, config);
     const nextRaw = await readFile10(file, "utf8");
-    return { config, previousSha256, sha256: createHash18("sha256").update(nextRaw).digest("hex"), impact, affectedEvidence };
+    return { config, previousSha256, sha256: createHash19("sha256").update(nextRaw).digest("hex"), impact, affectedEvidence };
   } finally {
     await release();
   }
@@ -6236,7 +6752,7 @@ async function prepareStatusProjection(root2, state, revision) {
       ...pending?.kind === "route-confirmation" ? ["## Pending", "", `- ${pending.question}`, ""] : []
     ].join("\n");
     const file2 = path12.join(features(root2), state.featureId, status.path);
-    state.artifacts.status = { ...status, sha256: createHash18("sha256").update(contents2).digest("hex") };
+    state.artifacts.status = { ...status, sha256: createHash19("sha256").update(contents2).digest("hex") };
     return async () => {
       await writeFile(file2, contents2);
     };
@@ -6278,7 +6794,7 @@ async function prepareStatusProjection(root2, state, revision) {
   const contents = `${projection}
 `;
   const file = path12.join(features(root2), state.featureId, status.path);
-  state.artifacts.status = { ...status, sha256: createHash18("sha256").update(contents).digest("hex") };
+  state.artifacts.status = { ...status, sha256: createHash19("sha256").update(contents).digest("hex") };
   return async () => {
     await writeFile(file, contents);
   };
@@ -6400,7 +6916,7 @@ async function appendEvent(root2, id, revision, type, data) {
 }
 async function stateFileSha256(root2, featureId) {
   const contents = await readFile10(statePath(root2, featureId));
-  return createHash18("sha256").update(contents).digest("hex");
+  return createHash19("sha256").update(contents).digest("hex");
 }
 async function assertWorkspaceOwnershipComplete(root2, state, config, operation) {
   const reconciled = await reconcileWorkspaceForFeature(root2, state, config);
@@ -6456,7 +6972,7 @@ async function startFeature(root2, input, options = {}) {
         const interaction = createInteraction(pendingState, {
           kind: "task-switch",
           target: `task-switch:${id}`,
-          basisHash: createHash18("sha256").update(`${active.featureId}
+          basisHash: createHash19("sha256").update(`${active.featureId}
 ${objectiveForSwitch(input)}`).digest("hex"),
           question: "\u5F53\u524D\u5DF2\u6709\u4E00\u4E2A\u8FDB\u884C\u4E2D\u7684\u4EFB\u52A1\u3002\u5F00\u59CB\u65B0\u4EFB\u52A1\u524D\uFF0C\u4F60\u5E0C\u671B\u5982\u4F55\u5904\u7406\u65E7\u4EFB\u52A1\uFF1F",
           options: [
@@ -6476,7 +6992,7 @@ ${objectiveForSwitch(input)}`).digest("hex"),
         cause: switchInteractionCreated ? "\u7CFB\u7EDF\u4E0D\u4F1A\u540E\u53F0 finalize\u3001\u6682\u505C\u3001\u7EC8\u6B62\u6216\u5207\u6362\u65E7\u4EFB\u52A1\u3002" : "\u65E7\u4EFB\u52A1\u4ECD\u6709\u5F85\u51B3\u95EE\u9898\uFF0C\u7CFB\u7EDF\u6CA1\u6709\u521B\u5EFA task-switch \u4EA4\u4E92\uFF0C\u4E5F\u4E0D\u4F1A\u540E\u53F0\u5207\u6362\u4EFB\u52A1\u3002",
         impact: "\u65B0\u4EFB\u52A1\u5C1A\u672A\u521B\u5EFA\uFF0C\u4E5F\u6CA1\u6709\u6539\u53D8\u65E7\u4EFB\u52A1\u7684\u6267\u884C\u72B6\u6001\u3002",
         recoveryKind: "ask-user",
-        recoveryInstruction: switchInteractionCreated ? "\u8BF7\u901A\u8FC7 dev_flow_answer \u9010\u9898\u9009\u62E9\u5904\u7406\u65E7\u4EFB\u52A1\u7684\u65B9\u5F0F\u3002" : "\u65E7\u4EFB\u52A1\u6709\u5F85\u51B3\u95EE\u9898\u672A\u89E3\u51B3\u3002\u5148\u8C03\u7528 dev_flow_answer \u56DE\u7B54\u8BE5\u95EE\u9898\uFF0C\u518D\u91CD\u8BD5\u5F00\u59CB\u65B0\u4EFB\u52A1\u3002",
+        recoveryInstruction: switchInteractionCreated ? "\u65E7\u4EFB\u52A1\u5F53\u524D\u6709\u5F85\u5904\u7406\u7684\u4EFB\u52A1\u5207\u6362\u95EE\u9898\uFF0C\u5F53\u524D\u7248\u672C\u6682\u4E0D\u652F\u6301\u901A\u8FC7\u7EDF\u4E00\u56DE\u7B54\u5165\u53E3\u5904\u7406\uFF1B\u8BF7\u5148\u5B8C\u6210\u6216\u6682\u505C\u65E7\u4EFB\u52A1\uFF0C\u518D\u91CD\u8BD5\u5F00\u59CB\u65B0\u4EFB\u52A1\u3002" : "\u65E7\u4EFB\u52A1\u6709\u5F85\u51B3\u95EE\u9898\u672A\u89E3\u51B3\u3002\u5148\u8C03\u7528 dev_flow_answer \u56DE\u7B54\u8BE5\u95EE\u9898\uFF0C\u518D\u91CD\u8BD5\u5F00\u59CB\u65B0\u4EFB\u52A1\u3002",
         requiresUserDecision: true,
         retryOriginal: false,
         activeFeatureId: active.featureId,
@@ -6522,7 +7038,7 @@ ${objectiveForSwitch(input)}`).digest("hex"),
         blockingFindings: [],
         logicComplete: false,
         governance: { decisions: [], claims: [], authorizations: [], credentials: [], repositoryFacts: [] },
-        lastUpdatedBy: { host: input.host, pluginVersion: "5.0.8" }
+        lastUpdatedBy: { host: input.host, pluginVersion: "5.0.9" }
       };
       const ownershipPaths = unknownOwnershipPaths(state);
       state.workspace.unownedPaths = ownershipPaths;
@@ -6633,7 +7149,7 @@ async function pauseFeature(root2, id, expectedRevision, reason, host) {
     if (state.lifecycle !== "active") throw new DevFlowError("INVALID_LIFECYCLE", "\u53EA\u6709\u8FDB\u884C\u4E2D\u7684 feature \u53EF\u4EE5\u6682\u505C\u3002", { userMessage: "\u5F53\u524D feature \u4E0D\u80FD\u6682\u505C\u3002", recoveryKind: "refresh", recoveryInstruction: "\u5237\u65B0\u72B6\u6001\u540E\u4ECE\u5F53\u524D\u9636\u6BB5\u7EE7\u7EED\u3002", retryOriginal: false });
     state.lifecycle = "paused";
     state.resumeSummary = `\u6682\u505C\u539F\u56E0\uFF1A${reason.trim()}\u3002\u6062\u590D\u540E\u5148\u5BF9\u8D26\u5DE5\u4F5C\u533A\uFF0C\u518D\u4ECE${state.currentStage ? `\u201C${state.currentStage}\u201D` : "\u5F53\u524D\u9636\u6BB5"}\u7EE7\u7EED\u3002`;
-    state.lastUpdatedBy = { host, pluginVersion: "5.0.8" };
+    state.lastUpdatedBy = { host, pluginVersion: "5.0.9" };
   }, { reason: reason.trim() });
 }
 async function resumeFeature(root2, id, host) {
@@ -6665,7 +7181,7 @@ async function resumeFeature(root2, id, host) {
     }
     presentationEventId = queueNextOwnershipDecision(state);
     state.resumeSummary = `\u5DF2\u6062\u590D${state.currentStage ? `\uFF0C\u4ECE\u201C${state.currentStage}\u201D\u7EE7\u7EED` : "\u5F53\u524D\u4EFB\u52A1"}\u3002${contentChanged ? "\u5DE5\u4F5C\u533A\u5185\u5BB9\u6709\u53D8\u5316\uFF0C\u76F8\u5173\u8BC1\u636E\u5DF2\u6807\u8BB0\u4E3A\u5F85\u66F4\u65B0\u3002" : ""}`;
-    state.lastUpdatedBy = { host, pluginVersion: "5.0.8" };
+    state.lastUpdatedBy = { host, pluginVersion: "5.0.9" };
   }, () => ({ observedHead: workspace.observedHead, contentChanged, checkpointAffected, ...presentationEventId ? { presentationEventId } : {} }));
 }
 async function abandonFeature(root2, id, expectedRevision, reason, userEvidence) {
@@ -6721,7 +7237,7 @@ async function repairFeature(root2, id, expectedRevision, host) {
       state.logicComplete = state.lifecycle === "finalized" && finalEvidenceCurrent;
       state.currentStage = state.logicComplete ? "complete" : definition.orderedSteps.find((step) => state.steps[step]?.status !== "satisfied") ?? "finalize";
     }
-    state.lastUpdatedBy = { host, pluginVersion: "5.0.8" };
+    state.lastUpdatedBy = { host, pluginVersion: "5.0.9" };
   }, { repaired: ["active-pointer", "current-stage", "freshness", "review/status-projection"] });
 }
 function isRecoveryPhase(value) {
@@ -6782,7 +7298,7 @@ async function pathExists(file) {
   }
 }
 async function fileSha256(file) {
-  return createHash18("sha256").update(await readFile10(file)).digest("hex");
+  return createHash19("sha256").update(await readFile10(file)).digest("hex");
 }
 async function updateRecoveryTransaction(root2, transaction, phase) {
   const next = { ...transaction, phase, ...phase === "completed" ? { completedAt: (/* @__PURE__ */ new Date()).toISOString() } : {} };
@@ -6846,31 +7362,7 @@ async function resumeRecovery(root2, transaction) {
   if (transaction.phase === "completed") await rm(recoveryTxnPath(root2), { force: true });
   return { recoveredTo: transaction.recoveredTo, featureId: transaction.featureId, stateSha256: transaction.stateSha256 };
 }
-var rollbackTransactionPhases = /* @__PURE__ */ new Set(["prepared", "backing-up", "rolling-back", "verifying", "committed", "compensating", "compensated"]);
-function isSha2562(value) {
-  return typeof value === "string" && /^[a-f0-9]{64}$/.test(value);
-}
-function validateRollbackTransaction(value) {
-  const transaction = value;
-  const validPlan = Array.isArray(transaction?.filePlan) && transaction.filePlan.every((action) => {
-    const candidate = action;
-    if (!candidate || candidate.action !== "restore" && candidate.action !== "delete" || typeof candidate.path !== "string" || !candidate.path) return false;
-    if (candidate.action === "restore" && (!isSha2562(candidate.blobSha256) || typeof candidate.mode !== "string" || !/^[0-7]{3,4}$/.test(candidate.mode))) return false;
-    if (candidate.blobSha256 !== void 0 && !isSha2562(candidate.blobSha256)) return false;
-    if (candidate.mode !== void 0 && (typeof candidate.mode !== "string" || !/^[0-7]{3,4}$/.test(candidate.mode))) return false;
-    if (candidate.kind !== void 0 && candidate.kind !== "file" && candidate.kind !== "symlink") return false;
-    return true;
-  });
-  if (transaction?.schemaVersion !== 1 || typeof transaction.transactionId !== "string" || !transaction.transactionId || typeof transaction.featureId !== "string" || !transaction.featureId || !rollbackTransactionPhases.has(transaction.phase) || typeof transaction.targetCheckpointId !== "string" || !/^CP-[0-9]{3,}$/.test(transaction.targetCheckpointId) || typeof transaction.targetUnitId !== "string" || !/^UNIT-[0-9]{3,}$/.test(transaction.targetUnitId) || !Array.isArray(transaction.undoOrder) || transaction.undoOrder.length === 0 || !transaction.undoOrder.every((unitId) => typeof unitId === "string" && /^UNIT-[0-9]{3,}$/.test(unitId)) || transaction.undoCheckpoints !== void 0 && (!Array.isArray(transaction.undoCheckpoints) || !transaction.undoCheckpoints.every((id) => typeof id === "string" && /^CP-[0-9]{3,}$/.test(id))) || !isSha2562(transaction.previewBasisHash) || !isSha2562(transaction.projectConfigSha256) || transaction.verificationCommandHashes !== void 0 && (typeof transaction.verificationCommandHashes !== "object" || transaction.verificationCommandHashes === null || Array.isArray(transaction.verificationCommandHashes) || Object.values(transaction.verificationCommandHashes).some((hash2) => !isSha2562(hash2))) || !Number.isInteger(transaction.stateRevision) || (transaction.stateRevision ?? -1) < 0 || typeof transaction.backupDirectory !== "string" || !/^checkpoints\/recovery\/[^/]+$/.test(transaction.backupDirectory) || !Number.isInteger(transaction.nextFileIndex) || (transaction.nextFileIndex ?? -1) < 0 || !validPlan || !Array.isArray(transaction.verificationAttemptIds) || !transaction.verificationAttemptIds.every((id) => typeof id === "string" && id.length > 0) || typeof transaction.startedAt !== "string" || transaction.completedAt !== void 0 && typeof transaction.completedAt !== "string" || transaction.error !== void 0 && typeof transaction.error !== "string") {
-    throw new DevFlowError("ROLLBACK_TRANSACTION_UNREADABLE", "rollback transaction journal is invalid", {
-      recoveryHint: "Run dev_flow_doctor; the workspace may be mid-rollback \u2014 do not hand-edit .dev-flow"
-    });
-  }
-}
-function rollbackTransactionFinished(transaction) {
-  return (transaction.phase === "committed" || transaction.phase === "compensated") && typeof transaction.completedAt === "string";
-}
-async function readRollbackTransaction(root2, featureId) {
+async function readRollbackJournalPresence(root2, featureId) {
   let raw;
   try {
     raw = await readFile10(rollbackTxnPath(root2, featureId), "utf8");
@@ -6888,20 +7380,19 @@ async function readRollbackTransaction(root2, featureId) {
       recoveryHint: "Run dev_flow_doctor; the workspace may be mid-rollback \u2014 do not hand-edit .dev-flow"
     });
   }
-  validateRollbackTransaction(parsed);
-  if (parsed.featureId !== featureId) {
+  const journal = parsed;
+  if (typeof journal.phase !== "string" || typeof journal.transactionId !== "string" || typeof journal.featureId !== "string") {
+    throw new DevFlowError("ROLLBACK_TRANSACTION_UNREADABLE", "rollback transaction journal is invalid", {
+      recoveryHint: "Run dev_flow_doctor; the workspace may be mid-rollback \u2014 do not hand-edit .dev-flow"
+    });
+  }
+  if (journal.featureId !== featureId) {
     throw new DevFlowError("ROLLBACK_TRANSACTION_UNREADABLE", "rollback transaction journal feature id does not match its path", {
       recoveryHint: "Run dev_flow_doctor; the workspace may be mid-rollback \u2014 do not hand-edit .dev-flow"
     });
   }
-  return parsed;
-}
-async function writeRollbackTransaction(root2, featureId, transaction) {
-  validateRollbackTransaction(transaction);
-  if (transaction.featureId !== featureId) {
-    throw new DevFlowError("ROLLBACK_TRANSACTION_UNREADABLE", "rollback transaction journal feature id does not match its path");
-  }
-  await writeAtomic(rollbackTxnPath(root2, featureId), transaction);
+  const finished = (journal.phase === "committed" || journal.phase === "compensated") && typeof journal.completedAt === "string";
+  return { finished, transactionId: journal.transactionId, featureId: journal.featureId, phase: journal.phase };
 }
 async function assertNoOpenRollbackTransaction(root2, allow) {
   let entries;
@@ -6913,225 +7404,15 @@ async function assertNoOpenRollbackTransaction(root2, allow) {
   }
   for (const entry of entries) {
     if (!entry.isDirectory()) continue;
-    const transaction = await readRollbackTransaction(root2, entry.name);
-    if (!transaction || rollbackTransactionFinished(transaction)) continue;
-    if (allow?.featureId === entry.name && allow.transactionId !== void 0 && allow.transactionId === transaction.transactionId) continue;
+    const presence = await readRollbackJournalPresence(root2, entry.name);
+    if (!presence || presence.finished) continue;
+    if (allow?.featureId === entry.name && allow.transactionId !== void 0 && allow.transactionId === presence.transactionId) continue;
     throw new DevFlowError("ROLLBACK_TRANSACTION_OPEN", "a rollback transaction is open", {
-      transactionId: transaction.transactionId,
+      transactionId: presence.transactionId,
       featureId: entry.name,
-      phase: transaction.phase,
+      phase: presence.phase,
       recoveryHint: `Resume the rollback transaction for feature ${entry.name} with the same input before mutating features`
     });
-  }
-}
-async function prepareRollbackTransaction(root2, featureId, expectedRevision, transaction) {
-  if (transaction.featureId !== featureId) {
-    throw new DevFlowError("ROLLBACK_TRANSACTION_UNREADABLE", "rollback transaction journal feature id does not match its path");
-  }
-  if (transaction.phase !== "prepared") {
-    throw new DevFlowError("ROLLBACK_TRANSACTION_UNREADABLE", "prepareRollbackTransaction only accepts phase prepared");
-  }
-  if (transaction.stateRevision !== expectedRevision) {
-    throw new DevFlowError("STATE_REVISION_CONFLICT", "state revision changed", { currentRevision: transaction.stateRevision });
-  }
-  const release = await lock(root2, featureId, "prepare-rollback-transaction");
-  try {
-    await assertNoOpenRollbackTransaction(root2);
-    const state = await readState(root2, featureId);
-    if (state.revision !== expectedRevision) {
-      throw new DevFlowError("STATE_REVISION_CONFLICT", "state revision changed", { currentRevision: state.revision });
-    }
-    await writeRollbackTransaction(root2, featureId, transaction);
-    return transaction;
-  } finally {
-    await release();
-  }
-}
-var ROLLBACK_DRIVE_LEASE_STALE_MS = 3e4;
-var ROLLBACK_DRIVE_LEASE_HEARTBEAT_MS = 1e4;
-function driveLeasePath(root2, featureId, transactionId) {
-  return path12.join(features(root2), featureId, "checkpoints", "recovery", `${transactionId}-drive-lease.json`);
-}
-function legacyDriveLeasePath(root2, featureId, transactionId) {
-  return path12.join(features(root2), featureId, "checkpoints", "recovery", transactionId, "drive-lease.json");
-}
-async function readLeaseAt(leaseFile, transactionId) {
-  try {
-    const raw = await readFile10(leaseFile, "utf8");
-    return JSON.parse(raw);
-  } catch (error) {
-    if (error.code === "ENOENT") return void 0;
-    throw new DevFlowError("ROLLBACK_TRANSACTION_UNREADABLE", "rollback drive lease is unreadable", {
-      transactionId,
-      recoveryHint: "Run dev_flow_doctor; do not hand-edit the drive lease"
-    });
-  }
-}
-async function readDriveLeases(root2, featureId, transactionId) {
-  const [sidecar, legacy] = await Promise.all([
-    readLeaseAt(driveLeasePath(root2, featureId, transactionId), transactionId),
-    readLeaseAt(legacyDriveLeasePath(root2, featureId, transactionId), transactionId)
-  ]);
-  return { ...sidecar ? { sidecar } : {}, ...legacy ? { legacy } : {} };
-}
-async function writeDriveLeasePair(root2, featureId, transactionId, lease) {
-  const legacyFile = legacyDriveLeasePath(root2, featureId, transactionId);
-  const sidecarFile = driveLeasePath(root2, featureId, transactionId);
-  await mkdir5(path12.dirname(legacyFile), { recursive: true });
-  await mkdir5(path12.dirname(sidecarFile), { recursive: true });
-  await writeAtomic(legacyFile, lease);
-  await writeAtomic(sidecarFile, lease);
-}
-function isProcessAlive(pid, ownerHostname) {
-  if (ownerHostname !== hostname()) return true;
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch {
-    return false;
-  }
-}
-function leaseHeartbeatAt(lease) {
-  const timestamp = Date.parse(lease.heartbeatAt ?? lease.acquiredAt);
-  return Number.isFinite(timestamp) ? timestamp : Number.NaN;
-}
-function activeLease(lease) {
-  const heartbeatAt = leaseHeartbeatAt(lease);
-  const live = Number.isFinite(heartbeatAt) && isProcessAlive(lease.pid, lease.hostname);
-  const stale = !Number.isFinite(heartbeatAt) || Date.now() - heartbeatAt > ROLLBACK_DRIVE_LEASE_STALE_MS;
-  return live && !stale;
-}
-function leaseBusyError(featureId, transactionId, lease) {
-  return new DevFlowError("ROLLBACK_TRANSACTION_BUSY", "another host is already driving this rollback transaction", {
-    transactionId,
-    featureId,
-    ownerId: lease.ownerId,
-    pid: lease.pid,
-    hostname: lease.hostname,
-    recoveryHint: "Wait for the other host to finish, or resume after its process exits and the lease ages out"
-  });
-}
-async function claimRollbackDriveLease(root2, featureId, transactionId) {
-  const release = await lock(root2, featureId, "claim-rollback-drive");
-  try {
-    const journal = await readRollbackTransaction(root2, featureId);
-    if (!journal || rollbackTransactionFinished(journal)) {
-      throw new DevFlowError("ROLLBACK_TRANSACTION_MISMATCH", "no open rollback transaction to drive", {
-        featureId,
-        transactionId
-      });
-    }
-    if (journal.transactionId !== transactionId) {
-      throw new DevFlowError("ROLLBACK_TRANSACTION_MISMATCH", "rollback transaction id does not match the open journal", {
-        openTransactionId: journal.transactionId,
-        transactionId
-      });
-    }
-    const leases = await readDriveLeases(root2, featureId, transactionId);
-    for (const existing of [leases.sidecar, leases.legacy]) {
-      if (existing && activeLease(existing)) {
-        throw leaseBusyError(featureId, transactionId, existing);
-      }
-    }
-    const lease = {
-      schemaVersion: 1,
-      transactionId,
-      featureId,
-      ownerId: randomUUID7(),
-      pid: process.pid,
-      hostname: hostname(),
-      acquiredAt: (/* @__PURE__ */ new Date()).toISOString(),
-      heartbeatAt: (/* @__PURE__ */ new Date()).toISOString()
-    };
-    await writeDriveLeasePair(root2, featureId, transactionId, lease);
-    return lease;
-  } finally {
-    await release();
-  }
-}
-async function renewRollbackDriveLease(root2, featureId, lease) {
-  const release = await lock(root2, featureId, "renew-rollback-drive");
-  try {
-    const leases = await readDriveLeases(root2, featureId, lease.transactionId);
-    const existing = leases.sidecar ?? leases.legacy;
-    if (!existing) {
-      throw new DevFlowError("ROLLBACK_TRANSACTION_MISMATCH", "rollback drive lease disappeared while being renewed", {
-        transactionId: lease.transactionId
-      });
-    }
-    for (const candidate of [leases.sidecar, leases.legacy]) {
-      if (candidate && candidate.ownerId !== lease.ownerId) {
-        throw leaseBusyError(featureId, lease.transactionId, candidate);
-      }
-    }
-    const renewed = { ...existing, heartbeatAt: (/* @__PURE__ */ new Date()).toISOString() };
-    await writeDriveLeasePair(root2, featureId, lease.transactionId, renewed);
-  } finally {
-    await release();
-  }
-}
-function maintainRollbackDriveLease(root2, featureId, lease) {
-  let stopped = false;
-  let inFlight2;
-  let failure2;
-  const renew = () => {
-    if (stopped || failure2) return inFlight2 ?? Promise.resolve();
-    if (!inFlight2) {
-      inFlight2 = renewRollbackDriveLease(root2, featureId, lease).catch((error) => {
-        failure2 = error;
-      }).finally(() => {
-        inFlight2 = void 0;
-      });
-    }
-    return inFlight2;
-  };
-  const interval = setInterval(() => {
-    void renew();
-  }, ROLLBACK_DRIVE_LEASE_HEARTBEAT_MS);
-  interval.unref();
-  return {
-    assertOwned() {
-      if (!failure2) return;
-      if (failure2 instanceof DevFlowError && failure2.code === "ROLLBACK_TRANSACTION_BUSY") throw failure2;
-      throw new DevFlowError("ROLLBACK_TRANSACTION_BUSY", "rollback drive lease could not be renewed; refusing to continue this driver", {
-        transactionId: lease.transactionId,
-        cause: failure2 instanceof DevFlowError ? failure2.code : String(failure2),
-        recoveryHint: "Wait for the current driver to finish, then resume the open rollback transaction"
-      });
-    },
-    async stop() {
-      stopped = true;
-      clearInterval(interval);
-      await inFlight2;
-    }
-  };
-}
-async function releaseRollbackDriveLease(root2, featureId, lease) {
-  const release = await lock(root2, featureId, "release-rollback-drive");
-  try {
-    const sidecarFile = driveLeasePath(root2, featureId, lease.transactionId);
-    const legacyFile = legacyDriveLeasePath(root2, featureId, lease.transactionId);
-    let sidecar;
-    try {
-      sidecar = JSON.parse(await readFile10(sidecarFile, "utf8"));
-    } catch {
-    }
-    if (sidecar?.ownerId === lease.ownerId) {
-      await rm(sidecarFile, { force: true });
-    }
-    try {
-      const legacyExisting = JSON.parse(await readFile10(legacyFile, "utf8"));
-      if (legacyExisting?.ownerId === lease.ownerId) {
-        await rm(legacyFile, { force: true });
-      }
-    } catch {
-    }
-    try {
-      await rmdir(path12.dirname(legacyFile));
-    } catch {
-    }
-  } finally {
-    await release();
   }
 }
 async function appendFeatureEvent(root2, id, revision, type, data) {
@@ -7354,7 +7635,7 @@ var names = {
   requirements: "\u9700\u6C42\u6587\u6863.md",
   "implementation-plan": "\u5B9E\u65BD\u8BA1\u5212.md"
 };
-var hash = (value) => createHash19("sha256").update(value).digest("hex");
+var hash = (value) => createHash20("sha256").update(value).digest("hex");
 var featureDirectory = (root2, id) => path13.join(root2, ".dev-flow", "features", id);
 var traceArtifactKinds = /* @__PURE__ */ new Set(["requirements", "implementation-plan"]);
 var traceArtifactKindList = /* @__PURE__ */ new Set(["requirements", "implementation-plan"]);
@@ -7659,7 +7940,7 @@ async function validatePlan(root2, id, artifactKind, traceDelta) {
 }
 
 // plugins/dev-flow/src/core/feature-check.ts
-import { createHash as createHash23 } from "node:crypto";
+import { createHash as createHash24 } from "node:crypto";
 
 // plugins/dev-flow/src/policy/evidence.ts
 var emptyEvidence = () => ({
@@ -7725,7 +8006,7 @@ function missingRequiredEvidence(required, evidence) {
 }
 
 // plugins/dev-flow/src/core/delivery-snapshot.ts
-import { createHash as createHash20 } from "node:crypto";
+import { createHash as createHash21 } from "node:crypto";
 import { execFile as execFile3 } from "node:child_process";
 import { lstat as lstat5, readFile as readFile12, writeFile as writeFile3 } from "node:fs/promises";
 import path14 from "node:path";
@@ -7741,7 +8022,7 @@ function currentRiskAuthorizations(state, basis) {
 
 // plugins/dev-flow/src/core/delivery-snapshot.ts
 var run2 = promisify3(execFile3);
-var digest5 = (value) => createHash20("sha256").update(value).digest("hex");
+var digest6 = (value) => createHash21("sha256").update(value).digest("hex");
 async function git2(root2, args, allowExitOne = false) {
   try {
     const result = await run2("git", args, { cwd: root2, encoding: "buffer", maxBuffer: 8 * 1024 * 1024 });
@@ -7877,7 +8158,7 @@ async function dirtyPaths2(root2, config) {
 }
 async function fileHash(root2, file) {
   try {
-    return digest5(await readFile12(path14.join(root2, file)));
+    return digest6(await readFile12(path14.join(root2, file)));
   } catch (error) {
     if (error.code === "ENOENT") return "deleted";
     throw error;
@@ -7964,7 +8245,7 @@ async function createDeliverySnapshot(root2, featureId, state, config) {
   const patchPath = path14.posix.join(relativeDirectory2, patchFilename);
   const manifestPath2 = path14.posix.join(relativeDirectory2, manifestFilename);
   const patch = patches.filter(Boolean).join("\n");
-  const patchHash = digest5(patch);
+  const patchHash = digest6(patch);
   await writeFile3(path14.join(root2, patchPath), patch, "utf8");
   const rows = await Promise.all(files.map(async (file) => `| ${file} | ${currentDirty.includes(file) ? "changed" : "unchanged"} | ${await fileHash(root2, file)} |`));
   const manifest = [
@@ -8007,7 +8288,7 @@ async function createDeliverySnapshot(root2, featureId, state, config) {
     `\u5728\u4ED3\u5E93\u6839\u76EE\u5F55\u6267\u884C\uFF1A\`git apply -R --binary ${patchPath}\``,
     ""
   ].join("\n");
-  const manifestHash = digest5(manifest);
+  const manifestHash = digest6(manifest);
   await writeFile3(path14.join(root2, manifestPath2), manifest, "utf8");
   return {
     manifestPath: manifestPath2,
@@ -8027,123 +8308,11 @@ async function createDeliverySnapshot(root2, featureId, state, config) {
   };
 }
 
-// plugins/dev-flow/src/core/requirements-grill.ts
-async function currentRequirements(root2, id, state) {
-  if (!state.artifacts.requirements) throw new DevFlowError("MISSING_REQUIRED_ARTIFACT", "requirements");
-  await assertArtifactCurrent(root2, id, state, "requirements");
-}
-async function requestGrillDecision(root2, id, expectedRevision, input) {
-  if (!input.question.trim()) throw new DevFlowError("GRILL_QUESTION_REQUIRED", "\u95EE\u9898\u4E0D\u80FD\u4E3A\u7A7A\u3002", { userMessage: "\u5F53\u524D\u95EE\u9898\u6CA1\u6709\u5185\u5BB9\u3002", recoveryKind: "retry", recoveryInstruction: "\u8865\u5145\u4E00\u4E2A\u9700\u8981\u7528\u6237\u51B3\u5B9A\u7684\u95EE\u9898\u540E\u91CD\u8BD5\u3002", retryOriginal: true });
-  if (!input.recommendation.drawback?.trim() || !input.recommendation.alternative?.condition.trim()) {
-    throw new DevFlowError("GRILL_HIGH_IMPACT_REMINDER_REQUIRED", "\u9700\u6C42\u51B3\u7B56\u5C5E\u4E8E\u9AD8\u5F71\u54CD\u4EA4\u4E92\uFF0C\u5FC5\u987B\u8BF4\u660E\u63A8\u8350\u65B9\u6848\u7684\u4E3B\u8981\u7F3A\u70B9\u548C\u66FF\u4EE3\u6761\u4EF6\u3002", {
-      recoveryHint: "\u8865\u5145 drawback \u4E0E alternative.condition\uFF0C\u5E76\u8BA9 alternative.optionId \u6307\u5411\u975E\u63A8\u8350\u9009\u9879\u540E\u91CD\u8BD5\u3002",
-      retryOriginal: true
-    });
-  }
-  const initial = await readState(root2, id);
-  if (initial.revision !== expectedRevision) throw new DevFlowError("STATE_REVISION_CONFLICT", "state revision changed", { currentRevision: initial.revision });
-  if (initial.mode !== "intake") await currentRequirements(root2, id, initial);
-  const target = `grill:${input.questionId}`;
-  const existing = findInteractionForTarget(initial, target);
-  if (existing) return { state: initial, interaction: toPublicInteraction(existing), interactionId: existing.id };
-  let interaction;
-  const state = await mutate(root2, id, expectedRevision, "decision-presented", (draft) => {
-    interaction = createInteraction(draft, {
-      kind: "grill",
-      target,
-      basisHash: decisionBasisHash({ objective: draft.objective, questionId: input.questionId, requirements: draft.artifacts.requirements?.sha256 }),
-      question: input.question,
-      options: input.options,
-      recommendation: input.recommendation
-    });
-    draft.lastUpdatedBy = { host: input.host, pluginVersion: "5.0.8" };
-  }, () => ({ questionId: input.questionId, mode: "decision", presentationEventId: interaction?.presentationEventId }));
-  if (!interaction) throw new DevFlowError("INTERACTION_NOT_CREATED", target);
-  return { state, interaction: toPublicInteraction(interaction), interactionId: interaction.id };
-}
-async function resolveGrillDecision(root2, id, expectedRevision, interactionId, host, input) {
-  const initial = await readState(root2, id);
-  if (initial.revision !== expectedRevision) throw new DevFlowError("STATE_REVISION_CONFLICT", "state revision changed", { currentRevision: initial.revision });
-  const interaction = getInteraction(initial, interactionId);
-  if (interaction.kind !== "grill" || interaction.status !== "pending") throw new DevFlowError("INTERACTION_NOT_PENDING", "\u5F53\u524D\u95EE\u9898\u5DF2\u7ECF\u5904\u7406\u6216\u4E0D\u5B58\u5728\u3002", { interactionId });
-  let promptEventId;
-  let promptText;
-  if (input.source === "text") {
-    const events = await readFeatureEvents(root2, id);
-    const match = resolveInteractionPromptEvent(events, initial, interaction, {
-      host,
-      userReply: input.userReply
-    });
-    promptEventId = match.eventId;
-    promptText = match.text;
-  }
-  let response;
-  const state = await mutate(root2, id, expectedRevision, "decision-answered", (draft) => {
-    response = input.source === "elicitation" ? resolveNativeInteraction(draft, interactionId, input.action, input.comment, host) : resolveTextInteraction(draft, interactionId, promptText ?? input.userReply, host, { promptEventId });
-    const decisionId = interaction.target.slice("grill:".length);
-    if (response) {
-      const existingGovernance = draft.governance ?? EMPTY_GOVERNANCE_LEDGER;
-      const previous = existingGovernance.decisions.find((candidate) => candidate.recordId === decisionId && !candidate.supersededBy);
-      const recordId = previous ? `${decisionId}-${interaction.id}` : decisionId;
-      const decisions = [...existingGovernance.decisions];
-      if (previous) {
-        const previousIndex = decisions.findIndex((candidate) => candidate.recordId === previous.recordId);
-        if (previousIndex >= 0) decisions[previousIndex] = { ...previous, supersededBy: recordId };
-      }
-      const credentials = [...existingGovernance.credentials];
-      const credentialId = `CRED-grill-${interaction.id}`;
-      if (!credentials.some((credential) => credential.recordId === credentialId)) {
-        credentials.push({
-          recordId: credentialId,
-          kind: "credential",
-          source: input.source === "elicitation" ? "native-form" : "text",
-          host,
-          interactionId,
-          ...response.selectedOptionId ? { optionId: response.selectedOptionId } : {},
-          ...response.rawReply ? { rawText: response.rawReply } : {},
-          ...input.source === "text" && promptEventId ? { basis: { kind: "event", eventId: promptEventId } } : {},
-          recordedAt: response.respondedAt
-        });
-      }
-      if (!decisions.some((candidate) => candidate.recordId === recordId)) {
-        decisions.push({
-          recordId,
-          kind: "decision",
-          question: interaction.question ?? decisionId,
-          conclusion: response.action,
-          credentialId,
-          ...input.source === "text" && promptEventId ? { basis: { kind: "event", eventId: promptEventId } } : {},
-          recordedAt: response.respondedAt
-        });
-      }
-      draft.governance = { ...existingGovernance, decisions, credentials };
-    }
-    draft.lastUpdatedBy = { host, pluginVersion: "5.0.8" };
-  }, { interactionId, mode: "decision" });
-  if (!response) throw new DevFlowError("INTERACTION_NOT_RESOLVED", "\u5F53\u524D\u95EE\u9898\u6CA1\u6709\u5B8C\u6210\u56DE\u7B54\u3002", { interactionId });
-  return { state, interaction: toPublicInteraction(getInteraction(state, interactionId)), response, interactionId };
-}
-async function resolveGrillElicitation(root2, id, expectedRevision, interactionId, action, comment, host) {
-  return resolveGrillDecision(root2, id, expectedRevision, interactionId, host, { source: "elicitation", action, comment });
-}
-async function resolveGrillAnswer(root2, id, expectedRevision, interactionId, userReply, host) {
-  return resolveGrillDecision(root2, id, expectedRevision, interactionId, host, { source: "text", userReply });
-}
-async function assertRequirementsGrillSatisfied(root2, id, state) {
-  if (state.route !== "m" && state.route !== "l") return;
-  await currentRequirements(root2, id, state);
-  const pending = Object.values(state.interactions ?? {}).some((value) => {
-    const interaction = value;
-    return interaction.kind === "grill" && interaction.status === "pending";
-  }) || pendingDecisionForState(state)?.kind === "grill";
-  if (pending) throw new DevFlowError("GRILL_INCOMPLETE", "\u8FD8\u6709\u4E00\u4E2A\u9700\u6C42\u95EE\u9898\u7B49\u5F85\u56DE\u7B54\u3002", { userMessage: "\u9700\u6C42\u6F84\u6E05\u8FD8\u6CA1\u6709\u5B8C\u6210\u3002", cause: "\u51B3\u7B56\u8D26\u672C\u4ECD\u6709\u5F85\u56DE\u7B54\u7684 grill \u95EE\u9898\u3002", impact: "\u5F53\u524D\u8DEF\u7EBF\u4E0D\u80FD\u8FDB\u5165\u4E0B\u4E00\u6B65\u3002", recoveryKind: "retry", recoveryInstruction: "\u5148\u56DE\u7B54\u5F53\u524D\u552F\u4E00\u95EE\u9898\uFF0C\u518D\u7EE7\u7EED\u5F53\u524D\u6B65\u9AA4\u3002", retryOriginal: true });
-}
-
 // plugins/dev-flow/src/core/review-jobs.ts
-import { createHash as createHash22, randomUUID as randomUUID8 } from "node:crypto";
+import { createHash as createHash23, randomUUID as randomUUID8 } from "node:crypto";
 
 // plugins/dev-flow/src/core/quality-exceptions.ts
-import { createHash as createHash21 } from "node:crypto";
+import { createHash as createHash22 } from "node:crypto";
 function validKind(kind) {
   if (kind === "review" || kind === "verification" || kind === "checkpoint" || kind === "implementation-evidence") return kind;
   throw new DevFlowError("QUALITY_EXCEPTION_KIND_INVALID", "\u8BE5\u6761\u4EF6\u4E0D\u662F\u53EF\u63A5\u53D7\u98CE\u9669\u7684\u6D41\u7A0B\u8D28\u91CF\u95EE\u9898\u3002", {
@@ -8201,21 +8370,6 @@ async function presentQualityException(root2, featureId, expectedRevision, input
   if (!interaction) throw new DevFlowError("INTERACTION_NOT_CREATED", kind);
   return { state, interaction: toPublicInteraction(interaction), interactionId };
 }
-async function resolveQualityExceptionAnswer(root2, featureId, expectedRevision, interactionId, userReply, host) {
-  const initial = await readState(root2, featureId);
-  const interaction = getInteraction(initial, interactionId);
-  if (interaction.kind !== "quality-exception" || interaction.status !== "pending") throw new DevFlowError("INTERACTION_NOT_PENDING", "\u5F53\u524D\u98CE\u9669\u95EE\u9898\u5DF2\u7ECF\u5904\u7406\u3002", { interactionId });
-  const match = resolveInteractionPromptEvent(await readFeatureEvents(root2, featureId), initial, interaction, {
-    host,
-    userReply
-  });
-  return resolveQualityExceptionResponse(root2, featureId, expectedRevision, interactionId, host, {
-    source: "text",
-    userReply,
-    promptEventId: match.eventId,
-    promptText: match.text
-  });
-}
 async function resolveQualityExceptionElicitation(root2, featureId, expectedRevision, interactionId, action, comment, host) {
   return resolveQualityExceptionResponse(root2, featureId, expectedRevision, interactionId, host, {
     source: "elicitation",
@@ -8238,7 +8392,7 @@ async function resolveQualityExceptionResponse(root2, featureId, expectedRevisio
       state.businessFingerprint = fingerprint2;
       const gov = state.governance ?? EMPTY_GOVERNANCE_LEDGER;
       const credentialId = `CRED-qe-${interaction.id}`;
-      const authorizationId = `AUTH-${createHash21("sha256").update(`${kind}|${fingerprint2}|${response.respondedAt}`).digest("hex").slice(0, 16)}`;
+      const authorizationId = `AUTH-${createHash22("sha256").update(`${kind}|${fingerprint2}|${response.respondedAt}`).digest("hex").slice(0, 16)}`;
       const authorizations = [...gov.authorizations];
       if (!authorizations.some((authorization) => authorization.recordId === authorizationId)) {
         authorizations.push({
@@ -8274,12 +8428,12 @@ async function resolveQualityExceptionResponse(root2, featureId, expectedRevisio
         state.obligations = satisfyObligations(state.obligations, [kind]);
       }
     }
-    state.lastUpdatedBy = { host, pluginVersion: "5.0.8" };
+    state.lastUpdatedBy = { host, pluginVersion: "5.0.9" };
   }, { interactionId });
 }
 
 // plugins/dev-flow/src/core/review-jobs.ts
-var digest6 = (value) => createHash22("sha256").update(value).digest("hex");
+var digest7 = (value) => createHash23("sha256").update(value).digest("hex");
 var leaseMilliseconds = 60 * 60 * 1e3;
 var samplingLeaseMilliseconds = 120 * 1e3;
 var basisArtifactKinds = ["requirements", "implementation-plan", "coverage-matrix", "rollback-units"];
@@ -8341,7 +8495,7 @@ async function deriveReviewInput(root2, state) {
       if (error instanceof DevFlowError && error.code === "ARTIFACT_INTEGRITY_FAILED") throw error;
       invalid5("REVIEW_BASIS_ARTIFACT_MISSING", `review basis artifact cannot be read: ${kind}`, { kind });
     }
-    if (digest6(contents) !== artifact.sha256) {
+    if (digest7(contents) !== artifact.sha256) {
       invalid5("ARTIFACT_INTEGRITY_FAILED", `review basis artifact was edited without registration: ${kind}`, {
         kind,
         recoveryHint: `Re-register the edited ${kind} artifact with the latest feature revision known before the edit.`
@@ -8350,7 +8504,7 @@ async function deriveReviewInput(root2, state) {
     return { kind, path: artifact.path, sha256: artifact.sha256, contents };
   }));
   const projectContents = (await readProjectConfigSnapshot(root2)).contents;
-  if (digest6(projectContents) !== projectConfigSha256) {
+  if (digest7(projectContents) !== projectConfigSha256) {
     invalid5("REVIEW_BASIS_UNAVAILABLE", "project configuration changed while review basis was being captured");
   }
   const scopeManifest = {
@@ -8379,7 +8533,7 @@ async function deriveReviewInput(root2, state) {
     ...state.traceability && trace2 ? { traceability: { path: state.traceability.path, sha256: state.traceability.sha256, revision: trace2.revision } } : {},
     projectConfigSha256,
     verificationCommandHashes: verificationCommandHashes(config),
-    scopeManifestSha256: digest6(canonicalReviewValueJson(scopeManifest)),
+    scopeManifestSha256: digest7(canonicalReviewValueJson(scopeManifest)),
     governedRootsFingerprint
   };
   const roles = [.../* @__PURE__ */ new Set([
@@ -8425,7 +8579,7 @@ function roleBasisHash(basis, frozenArtifacts, trace2, role) {
     "critical-correctness": ["critical_correctness"]
   };
   if (specialtyRisk[role]) {
-    return digest6(canonicalReviewValueJson({
+    return digest7(canonicalReviewValueJson({
       role,
       route: basis.route,
       level: basis.classification.level,
@@ -8441,7 +8595,7 @@ function roleBasisHash(basis, frozenArtifacts, trace2, role) {
     return [];
   }).filter((reference) => typeof reference === "string");
   const referencedCommandHashes = Object.fromEntries([...new Set(referencedCommandIds)].sort().filter((id) => basis.verificationCommandHashes?.[id] !== void 0).map((id) => [id, basis.verificationCommandHashes[id]]));
-  return digest6(canonicalReviewValueJson({
+  return digest7(canonicalReviewValueJson({
     role,
     route: basis.route,
     level: basis.classification.level,
@@ -8496,7 +8650,7 @@ function normalizeHostAttestation(value, now) {
   const parsed = parseHostAttestation(value);
   return {
     ...parsed,
-    rawSha256: digest6(parsed.raw),
+    rawSha256: digest7(parsed.raw),
     acceptedAt: now.toISOString()
   };
 }
@@ -8547,9 +8701,9 @@ function assertFindingScope(manifest, findings, resolutions) {
   for (const finding of findings) {
     if (finding.severity === "blocking" && !finding.evidence.length) invalid5("REVIEW_FINDING_EVIDENCE_REQUIRED", "blocking finding requires evidence");
     invalidPaths.push(...finding.targets.filter((target) => !validTarget(target)));
-    invalidPaths.push(...finding.evidence.map((evidence) => evidence.path).filter((path23) => !validEvidence(path23)));
+    invalidPaths.push(...finding.evidence.map((evidence) => evidence.path).filter((path24) => !validEvidence(path24)));
   }
-  invalidPaths.push(...resolutions.flatMap((resolution) => resolution.evidence.map((evidence) => evidence.path).filter((path23) => !validEvidence(path23))));
+  invalidPaths.push(...resolutions.flatMap((resolution) => resolution.evidence.map((evidence) => evidence.path).filter((path24) => !validEvidence(path24))));
   if (invalidPaths.length) {
     invalid5("REVIEW_FINDING_SCOPE_INVALID", "finding targets and evidence must be package-relative paths inside the scope manifest", {
       invalidPaths: [...new Set(invalidPaths)].sort(),
@@ -8705,7 +8859,7 @@ async function getReviewJob(root2, id, batchId, jobId, capability) {
   const state = await readState(root2, id);
   const batch = currentBatch2(await readReviewLedger(root2, state), batchId);
   const job = findJob(batch, jobId);
-  if (!job.claim || digest6(capability) !== job.claim.requestSha256) invalid5("REVIEW_JOB_CAPABILITY_INVALID", "review job capability is invalid");
+  if (!job.claim || digest7(capability) !== job.claim.requestSha256) invalid5("REVIEW_JOB_CAPABILITY_INVALID", "review job capability is invalid");
   const reviewPackage = await readBoundReviewPackage(root2, id, batch, job);
   return { job: visibleJob(job), package: reviewPackage };
 }
@@ -8715,7 +8869,7 @@ async function claimReviewJob(root2, id, expectedRevision, batchId, jobId, claim
   const state = await mutatePrepared(root2, id, expectedRevision, "review-job-claimed", async (current, nextStateRevision) => {
     const ledger = await readReviewLedger(root2, current);
     const batch = currentBatch2(ledger, batchId);
-    const requestSha256 = digest6(claimRequestId);
+    const requestSha256 = digest7(claimRequestId);
     const original = findJob(batch, jobId);
     const job = recoverExpiredSampling(recoverExpiredLease(original, now), now);
     if (job.status === "submitted" || job.status === "reused") invalid5("REVIEW_JOB_ALREADY_SUBMITTED", "review job is already satisfied", { jobId });
@@ -8751,7 +8905,7 @@ async function releaseReviewJob(root2, id, expectedRevision, batchId, jobId, cap
     if (original.status === "submitted") invalid5("REVIEW_JOB_ALREADY_SUBMITTED", "review job has already been submitted", { jobId });
     if (original.status === "sampling") invalid5("REVIEW_JOB_SAMPLING_IN_PROGRESS", "review job is held by server sampling", { jobId });
     if (original.status !== "claimed" || !original.claim) invalid5("REVIEW_JOB_NOT_CLAIMED", "review job is not currently claimed", { jobId });
-    if (digest6(capability) !== original.claim.requestSha256) invalid5("REVIEW_JOB_CAPABILITY_INVALID", "review job capability is invalid");
+    if (digest7(capability) !== original.claim.requestSha256) invalid5("REVIEW_JOB_CAPABILITY_INVALID", "review job capability is invalid");
     const released = { ...original, status: "pending", claim: void 0 };
     const updatedBatch = {
       ...batch,
@@ -8843,7 +8997,7 @@ async function submitParsedReviewJob(root2, featureId, ledger, batch, job, parse
     });
     resolvedIds.add(resolution.findingId);
   }
-  const payloadSha256 = digest6(canonicalReviewValueJson(normalizedParsed));
+  const payloadSha256 = digest7(canonicalReviewValueJson(normalizedParsed));
   const findings = dedupeFindings(normalizedParsed.findings).map((finding) => ({
     ...finding,
     findingId: `F-${randomUUID8()}`,
@@ -8924,9 +9078,9 @@ async function submitReviewJob(root2, id, expectedRevision, batchId, jobId, capa
     const ledger = await readReviewLedger(root2, current);
     const batch = currentBatch2(ledger, batchId);
     const job = findJob(batch, jobId);
-    const payloadSha256 = digest6(canonicalReviewValueJson(parsed));
+    const payloadSha256 = digest7(canonicalReviewValueJson(parsed));
     if (job.status === "sampling") invalid5("REVIEW_JOB_SAMPLING_IN_PROGRESS", "review job is held by server sampling", { jobId });
-    if (!job.claim || digest6(capability) !== job.claim.requestSha256) {
+    if (!job.claim || digest7(capability) !== job.claim.requestSha256) {
       invalid5("REVIEW_JOB_CAPABILITY_INVALID", "review job capability is invalid");
     }
     if (job.status === "submitted") {
@@ -8987,7 +9141,7 @@ function samplingCurrentBatch(ledger, batchId) {
   return batch;
 }
 function samplingAttemptForRequest(job, requestId) {
-  const requestSha256 = digest6(requestId);
+  const requestSha256 = digest7(requestId);
   const attempt = activeSamplingAttempt(job);
   if (job.status !== "sampling" || !attempt || attempt.requestSha256 !== requestSha256) {
     invalid5("REVIEW_SAMPLING_REQUEST_REPLAY", "sampling request was already consumed or does not belong to this job", { jobId: job.jobId });
@@ -9006,7 +9160,7 @@ async function beginReviewSampling(root2, id, expectedRevision, batchId, jobId, 
     if (job.status === "sampling") invalid5("REVIEW_JOB_SAMPLING_IN_PROGRESS", "review job is already held by server sampling", { jobId });
     const requestId = `${randomUUID8()}-${randomUUID8()}`;
     const attempt = {
-      requestSha256: digest6(requestId),
+      requestSha256: digest7(requestId),
       issuedAt: now.toISOString(),
       leaseExpiresAt: new Date(now.getTime() + samplingLeaseMilliseconds).toISOString(),
       status: "issued"
@@ -9114,8 +9268,8 @@ function sortedFindingIds(findingIds) {
   return sorted;
 }
 function findingSetHash(batch, findings) {
-  const items = findings.map((finding) => ({ findingId: finding.findingId, sha256: digest6(canonicalReviewValueJson(finding)) })).sort((left, right) => left.findingId.localeCompare(right.findingId));
-  return digest6(canonicalReviewValueJson({ batchId: batch.batchId, basisHash: batch.basisHash, findings: items }));
+  const items = findings.map((finding) => ({ findingId: finding.findingId, sha256: digest7(canonicalReviewValueJson(finding)) })).sort((left, right) => left.findingId.localeCompare(right.findingId));
+  return digest7(canonicalReviewValueJson({ batchId: batch.batchId, basisHash: batch.basisHash, findings: items }));
 }
 function riskBinding(interaction) {
   const binding = interaction.binding;
@@ -9223,60 +9377,6 @@ function assertResolvedAcceptance(state, interaction, batch, findings) {
   if (state.interactions?.[interaction.id] !== interaction) {
     invalid5("REVIEW_RISK_ACCEPTANCE_INVALID", "risk acceptance interaction is not part of feature state", { interactionId: interaction.id });
   }
-}
-function assertReviewRiskAcceptanceEvidence(event, interaction, promptEventId, userReply, host) {
-  if (!event) {
-    throw new DevFlowError("INTERACTION_PROVENANCE_UNAVAILABLE", "no matching user prompt event was captured", {
-      eventId: promptEventId,
-      recoveryHint: "\u4F7F\u7528\u5F53\u524D\u5BBF\u4E3B\u6355\u83B7\u7684\u540E\u7EED user-prompt event \u518D\u91CD\u8BD5"
-    });
-  }
-  const payload = event.data;
-  if (payload.host !== host) {
-    throw new DevFlowError("HOST_EVENT_HOST_MISMATCH", "host event belongs to a different host", {
-      expectedHost: host,
-      actualHost: payload.host,
-      eventId: promptEventId
-    });
-  }
-  if (payload.eventId !== promptEventId || payload.type !== "user-prompt") {
-    throw new DevFlowError("INTERACTION_PROVENANCE_UNAVAILABLE", "the referenced event is not a user prompt", {
-      eventId: promptEventId,
-      recoveryHint: "\u4F7F\u7528\u5F53\u524D\u5BBF\u4E3B\u6355\u83B7\u7684 user-prompt event \u518D\u91CD\u8BD5"
-    });
-  }
-  if (!textCompatible(String(payload.text ?? ""), userReply)) {
-    throw new DevFlowError("REVIEW_RISK_ACCEPTANCE_REPLY_MISMATCH", "userReply must be compatible with the captured prompt text", {
-      eventId: promptEventId,
-      recoveryHint: "\u4F20\u5165\u4E0E host event \u8BED\u4E49\u517C\u5BB9\u7684 userReply"
-    });
-  }
-  const eventTime = Date.parse(typeof payload.at === "string" ? payload.at : event.at);
-  const presentedTime = Date.parse(interaction.presentedAt);
-  if (Number.isNaN(eventTime) || Number.isNaN(presentedTime) || eventTime <= presentedTime) {
-    throw new DevFlowError("REVIEW_RISK_ACCEPTANCE_SAME_TURN", "risk acceptance must come from a later user turn", {
-      eventId: promptEventId,
-      recoveryHint: "\u5728\u98CE\u9669\u63A5\u53D7\u4EA4\u4E92\u5448\u73B0\u540E\u7684\u540E\u7EED\u56DE\u5408\u91CD\u65B0\u63D0\u4EA4"
-    });
-  }
-}
-async function resolveReviewRiskAcceptanceAnswer(root2, id, expectedRevision, interactionId, userReply, host) {
-  const initial = await readState(root2, id);
-  const interaction = getInteraction(initial, interactionId);
-  const events = await readFeatureEvents(root2, id);
-  const resolvedPromptEventId = resolveInteractionPromptEvent(events, initial, interaction, {
-    host,
-    userReply
-  }).eventId;
-  const hostEvent = events.find((event) => event.type === "host-event" && event.data.eventId === resolvedPromptEventId);
-  assertReviewRiskAcceptanceEvidence(hostEvent, interaction, resolvedPromptEventId, userReply, host);
-  const promptText = hostEvent?.data?.text;
-  return resolveReviewRiskAcceptanceResponse(root2, id, expectedRevision, interactionId, host, {
-    source: "text",
-    userReply,
-    promptEventId: resolvedPromptEventId,
-    ...typeof promptText === "string" ? { promptText } : {}
-  });
 }
 async function resolveReviewRiskAcceptanceElicitation(root2, id, expectedRevision, interactionId, action, comment, host) {
   return resolveReviewRiskAcceptanceResponse(root2, id, expectedRevision, interactionId, host, {
@@ -9394,32 +9494,82 @@ function currentUnresolvedBlocking(ledger, batch, state) {
     return !successor || !resolutionJob || !sourceJob || resolutionJob.role !== sourceJob.role || !resolutionJob.submission?.resolutions.some((resolution) => resolution.findingId === finding.findingId);
   });
 }
-async function assertReviewComplete(root2, state) {
-  const { ledger, batch } = await currentBatchWithBasis(root2, state);
-  const expectedPhase = currentOpenStep(state) === "code_review" ? "code" : "plan";
-  if ((batch.phase ?? "plan") !== expectedPhase) invalid5("REVIEW_BATCH_REQUIRED", `a current ${expectedPhase} review batch is required`, { expectedPhase });
-  if (batch.progress !== "complete") invalid5("REVIEW_BATCH_INCOMPLETE", "all required review jobs must be submitted", { batchId: batch.batchId });
-  const requiresIsolation = expectedPhase === "code" && (state.classification.controls.codeReview === "independent" || state.classification.controls.codeReview === "full");
-  if (requiresIsolation) {
-    const missingIsolation = batch.jobs.filter((job) => job.status === "submitted").filter((job) => !job.submission?.isolationProof).map((job) => job.jobId);
-    if (missingIsolation.length && !hasCurrentQualityException(state, "review")) {
-      invalid5("REVIEW_ISOLATION_REQUIRED", "\u72EC\u7ACB\u4EE3\u7801\u5BA1\u67E5\u8981\u6C42\u5BA1\u67E5\u5728\u4E0E\u5B9E\u73B0\u9694\u79BB\u7684\u65B0\u4E0A\u4E0B\u6587\u4E2D\u5B8C\u6210\uFF0C\u5F53\u524D\u6279\u6B21\u7F3A\u5C11\u9694\u79BB\u8BC1\u660E\u3002", {
-        jobIds: missingIsolation,
-        batchId: batch.batchId,
-        recoveryHint: "\u5728\u4E0E\u5B9E\u73B0\u9694\u79BB\u7684\u4E0A\u4E0B\u6587\u4E2D\u91CD\u65B0\u5B8C\u6210\u8FD9\u4E9B\u5BA1\u67E5 job \u5E76\u8BB0\u5F55 review-execution \u4E8B\u4EF6\uFF0C\u6216\u901A\u8FC7\u670D\u52A1\u7AEF\u91C7\u6837\u5B8C\u6210 job\uFF1B\u5BBF\u4E3B\u65E0\u6CD5\u63D0\u4F9B\u9694\u79BB\u4E0A\u4E0B\u6587\u65F6\uFF0C\u53EF\u901A\u8FC7\u8D28\u91CF\u4F8B\u5916\uFF08presentQualityException kind=review\uFF09\u663E\u5F0F\u63A5\u53D7\u72EC\u7ACB\u6027\u98CE\u9669\u540E\u7EE7\u7EED\u3002",
-        retryOriginal: true
-      });
+function reviewObligation(state, phase) {
+  if (state.mode !== "routed") return false;
+  if (phase === "code") return state.classification.controls.codeReview !== "none";
+  return reviewEnforcementRequired(state.route, state.classification.controls);
+}
+async function reviewBasisStale(root2, state, batch, phase) {
+  const requireLiveBasis = !planReviewBoundToBatch(state, batch);
+  const reviewInput = await deriveReviewInput(root2, state);
+  if (requireLiveBasis && basisHash(reviewInput.basis) !== batch.basisHash) return true;
+  const requirements = deriveReviewJobRequirements(state.route, state.classification.riskLabels, state.classification.controls.reviewRoles, phase);
+  for (const requirement of requirements) {
+    const job = batch.jobs.find((candidate) => candidate.role === requirement.role);
+    if (!job || job.roleBasisHash !== reviewInput.roleBasisHashes[requirement.role]) return true;
+  }
+  return false;
+}
+function reviewJobsSummary(batch) {
+  return batch.jobs.map(({ jobId, role, reviewDepth, status }) => ({ jobId, role, reviewDepth, status }));
+}
+async function reviewGate(root2, state, query) {
+  const phase = query?.phase ?? (currentOpenStep(state) === "code_review" ? "code" : "plan");
+  if (!reviewObligation(state, phase)) return { status: "ready" };
+  const ledger = await readReviewLedger(root2, state);
+  const batch = ledger.batches.find((candidate) => candidate.validity === "current");
+  if (!batch) return { status: "need-batch", cause: "missing" };
+  if ((batch.phase ?? "plan") !== phase) return { status: "need-batch", cause: "phase", batchId: batch.batchId };
+  if (await reviewBasisStale(root2, state, batch, phase)) return { status: "need-batch", cause: "stale", batchId: batch.batchId };
+  if (batch.progress !== "complete") return { status: "jobs-open", batchId: batch.batchId, jobs: reviewJobsSummary(batch) };
+  if (phase === "code") {
+    const requiresIsolation = state.classification.controls.codeReview === "independent" || state.classification.controls.codeReview === "full";
+    if (requiresIsolation && !hasCurrentQualityException(state, "review")) {
+      const missingIsolation = batch.jobs.filter((job) => job.status === "submitted" && !job.submission?.isolationProof).map((job) => job.jobId);
+      if (missingIsolation.length) return { status: "isolation", batchId: batch.batchId, jobIds: missingIsolation };
     }
   }
   const unresolved = currentUnresolvedBlocking(ledger, batch, state);
-  if (unresolved.length && !hasCurrentQualityException(state, "review")) invalid5("REVIEW_BLOCKING_FINDINGS", "review ledger has unresolved blocking findings", {
-    batchId: batch.batchId,
-    findingIds: unresolved.map((finding) => finding.findingId)
-  });
+  if (unresolved.length && !hasCurrentQualityException(state, "review")) {
+    return { status: "blocking", batchId: batch.batchId, findingIds: unresolved.map((finding) => finding.findingId) };
+  }
   if (reviewEnforcementRequired(state.route, state.classification.controls)) {
     await assertCurrentReviewProjection(root2, state);
   }
-  return { batchId: batch.batchId, basisHash: batch.basisHash, assuranceLevel: batch.assuranceLevel };
+  return { status: "ready", stamp: { batchId: batch.batchId, basisHash: batch.basisHash, assuranceLevel: batch.assuranceLevel } };
+}
+function reviewGateError(gate, phase) {
+  switch (gate.status) {
+    case "need-batch": {
+      if (gate.cause === "stale") {
+        return new DevFlowError("REVIEW_BASIS_STALE", "review batch basis no longer matches current feature state", {
+          batchId: gate.batchId,
+          recoveryHint: "\u91CD\u5EFA\u6279\u6B21\u2192\u91CD\u4EA4 jobs\u2192re-record planning"
+        });
+      }
+      return new DevFlowError("REVIEW_BATCH_REQUIRED", `a current ${phase} review batch is required`, { expectedPhase: phase });
+    }
+    case "jobs-open":
+      return new DevFlowError("REVIEW_BATCH_INCOMPLETE", "all required review jobs must be submitted", { batchId: gate.batchId });
+    case "isolation":
+      return new DevFlowError("REVIEW_ISOLATION_REQUIRED", "\u72EC\u7ACB\u4EE3\u7801\u5BA1\u67E5\u8981\u6C42\u5BA1\u67E5\u5728\u4E0E\u5B9E\u73B0\u9694\u79BB\u7684\u65B0\u4E0A\u4E0B\u6587\u4E2D\u5B8C\u6210\uFF0C\u5F53\u524D\u6279\u6B21\u7F3A\u5C11\u9694\u79BB\u8BC1\u660E\u3002", {
+        jobIds: gate.jobIds,
+        batchId: gate.batchId,
+        recoveryHint: "\u5728\u4E0E\u5B9E\u73B0\u9694\u79BB\u7684\u4E0A\u4E0B\u6587\u4E2D\u91CD\u65B0\u5B8C\u6210\u8FD9\u4E9B\u5BA1\u67E5 job \u5E76\u8BB0\u5F55 review-execution \u4E8B\u4EF6\uFF0C\u6216\u901A\u8FC7\u670D\u52A1\u7AEF\u91C7\u6837\u5B8C\u6210 job\uFF1B\u5BBF\u4E3B\u65E0\u6CD5\u63D0\u4F9B\u9694\u79BB\u4E0A\u4E0B\u6587\u65F6\uFF0C\u53EF\u901A\u8FC7\u8D28\u91CF\u4F8B\u5916\uFF08presentQualityException kind=review\uFF09\u663E\u5F0F\u63A5\u53D7\u72EC\u7ACB\u6027\u98CE\u9669\u540E\u7EE7\u7EED\u3002",
+        retryOriginal: true
+      });
+    case "blocking":
+      return new DevFlowError("REVIEW_BLOCKING_FINDINGS", "review ledger has unresolved blocking findings", {
+        batchId: gate.batchId,
+        findingIds: gate.findingIds
+      });
+  }
+}
+async function requireReviewReady(root2, state, query) {
+  const phase = query?.phase ?? (currentOpenStep(state) === "code_review" ? "code" : "plan");
+  const gate = await reviewGate(root2, state, query);
+  if (gate.status === "ready") return gate.stamp;
+  throw reviewGateError(gate, phase);
 }
 
 // plugins/dev-flow/src/core/auto-checkpoint.ts
@@ -9600,7 +9750,7 @@ async function invalidateAffectedClaims(root2, id, expectedRevision) {
       fallback,
       reason
     };
-    draft.lastUpdatedBy = { host: state.lastUpdatedBy.host, pluginVersion: "5.0.8" };
+    draft.lastUpdatedBy = { host: state.lastUpdatedBy.host, pluginVersion: "5.0.9" };
   }, { changedFiles, reopenedUnits, reviewReopened, verificationReopened, fallback, reason });
   return invalidated;
 }
@@ -9687,7 +9837,7 @@ async function recordStep(root2, id, expectedRevision, step, evidence) {
       state.classification.controls
     );
     if (required.fields.reviewBatch || step === "code_review") {
-      normalizedEvidence = await assertReviewComplete(root2, state);
+      normalizedEvidence = await requireReviewReady(root2, state, { phase: step === "code_review" ? "code" : "plan" });
     } else {
       assertRequiredEvidence(step, required, normalizedEvidence);
     }
@@ -9698,7 +9848,7 @@ async function recordStep(root2, id, expectedRevision, step, evidence) {
       const snapshotPath = await persistThroughSnapshot(root2, id, snapshot, fingerprint2, "review");
       normalizedEvidence = { ...normalizedEvidence, fingerprint: fingerprint2, snapshotPath };
       const gov = state.governance ?? EMPTY_GOVERNANCE_LEDGER;
-      const claimId = `CLAIM-${createHash23("sha256").update(`review-complete|code_review|${fingerprint2}`).digest("hex").slice(0, 16)}`;
+      const claimId = `CLAIM-${createHash24("sha256").update(`review-complete|code_review|${fingerprint2}`).digest("hex").slice(0, 16)}`;
       const claims = [...gov.claims];
       if (!claims.some((claim) => claim.recordId === claimId)) {
         claims.push({
@@ -9789,253 +9939,19 @@ async function finalize(root2, id, expectedRevision) {
   }, () => snapshot ? { deliverySnapshot: snapshot } : {});
 }
 
-// plugins/dev-flow/src/core/approval-interactions.ts
-import { createHash as createHash24 } from "node:crypto";
-var digest7 = (value) => createHash24("sha256").update(JSON.stringify(value)).digest("hex");
-function approvalId(value) {
-  if (!/^approval:[a-f0-9]{16,}$/.test(value)) throw new DevFlowError("INVALID_APPROVAL", value);
-  return value;
-}
-function approvalInteractionOptions() {
-  return [
-    { id: "confirm", label: "\u786E\u8BA4\u5F00\u59CB\u6267\u884C" },
-    { id: "request-changes", label: "\u63D0\u51FA\u4FEE\u6539\u610F\u89C1", requiresComment: true }
-  ];
-}
-async function assertReviewProjectionForApproval(root2, state) {
-  if (reviewEnforcementRequired(state.route, state.classification.controls)) {
-    await assertCurrentReviewProjection(root2, state);
-  }
-}
-async function presentApproval(root2, id, expectedRevision) {
-  const initial = await readState(root2, id);
-  const candidates = approvalIds(initial).filter((candidate) => {
-    const obligation = initial.obligations?.find((item) => item.id === candidate);
-    return obligation?.status !== "satisfied";
-  });
-  if (candidates.length !== 1) throw new DevFlowError("APPROVAL_NOT_UNIQUE", "Core \u65E0\u6CD5\u9009\u62E9\u552F\u4E00\u7684\u5F53\u524D\u5BA1\u6279\u3002", { approvalIds: candidates, recoveryHint: "\u5237\u65B0\u72B6\u6001\u5E76\u4FEE\u590D\u91CD\u590D\u6216\u7F3A\u5931\u7684\u5BA1\u6279\u6295\u5F71" });
-  const selectedApproval = approvalId(candidates[0]);
-  let interaction;
-  const state = await mutate(root2, id, expectedRevision, "approval-presented", async (state2) => {
-    if (state2.lifecycle !== "active") {
-      throw new DevFlowError("INVALID_LIFECYCLE", "approval requires active feature");
-    }
-    const obligation = state2.obligations?.find((candidate) => candidate.id === selectedApproval && candidate.kind === "approval");
-    if (!obligation || obligation.status === "satisfied") throw new DevFlowError("INVALID_APPROVAL", selectedApproval);
-    const definition = routeDefinitionForState(state2);
-    const implementationIndex = definition.orderedSteps.indexOf("implementation");
-    if (implementationIndex < 0 || !definition.orderedSteps.slice(0, implementationIndex).every((step) => state2.steps[step]?.status === "satisfied")) {
-      throw new DevFlowError("APPROVAL_NOT_READY", "approval is only available after planning prerequisites are complete", { expectedStage: definition.orderedSteps[implementationIndex - 1] });
-    }
-    if (state2.humanGates[selectedApproval]) {
-      throw new DevFlowError("APPROVAL_ALREADY_PRESENTED", selectedApproval);
-    }
-    await assertRequirementsGrillSatisfied(root2, id, state2);
-    await assertTraceGateCurrent(root2, state2, "planning");
-    await assertReviewProjectionForApproval(root2, state2);
-    const basisHash2 = digest7(approvalBasis(state2, selectedApproval));
-    state2.humanGates[selectedApproval] = {
-      status: "pending",
-      presentedRevision: state2.revision,
-      presentedAt: (/* @__PURE__ */ new Date()).toISOString(),
-      basisHash: basisHash2,
-      approvalId: selectedApproval
-    };
-    interaction = createInteraction(state2, {
-      kind: "approval",
-      target: `approval:${selectedApproval}`,
-      basisHash: basisHash2,
-      options: approvalInteractionOptions()
-    });
-  }, () => ({
-    approvalId: selectedApproval,
-    replyHint: interaction ? decisionHint(interaction) : approvalReplyHint(),
-    interactionId: interaction?.id,
-    presentationEventId: interaction?.presentationEventId
-  }));
-  if (!interaction) throw new DevFlowError("INTERACTION_NOT_CREATED", selectedApproval);
-  return { ...state, approvalId: selectedApproval, interactionId: interaction.id, approvalReplyHint: decisionHint(interaction), approvalInteraction: toPublicInteraction(interaction) };
-}
-function confirmationEventIds(value) {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) return [];
-  const confirmation = value.confirmation;
-  if (typeof confirmation !== "object" || confirmation === null || Array.isArray(confirmation)) return [];
-  const record = confirmation;
-  const ids = [];
-  if (typeof record.promptEventId === "string") ids.push(record.promptEventId);
-  if (typeof record.turnBoundaryEventId === "string") ids.push(record.turnBoundaryEventId);
-  return ids;
-}
-function hostEventRecord(events, eventId, expectedHost) {
-  const record = events.find((item) => item.type === "host-event" && item.data.eventId === eventId);
-  if (record && expectedHost && record.data.host !== expectedHost) {
-    throw new DevFlowError("HOST_EVENT_HOST_MISMATCH", "host event belongs to a different host", {
-      expectedHost,
-      actualHost: record.data.host,
-      eventId
-    });
-  }
-  return record;
-}
-function assertApprovalEvidenceTiming(eventRecord, event, presented, recoveryHint) {
-  if (!event || !presented?.presentedAt || (eventRecord?.revision ?? -1) <= (presented.presentedRevision ?? -1) || Date.parse(event.at ?? "") < Date.parse(presented.presentedAt)) {
-    throw new DevFlowError("APPROVAL_SAME_TURN", "confirmation evidence must be later than approval presentation", {
-      recoveryHint
-    });
-  }
-}
-function assertApprovalPromptEvidence(event, userReply, recoveryHint) {
-  if (event?.type !== "user-prompt" || !textCompatible(String(event.text ?? ""), userReply)) {
-    throw new DevFlowError("APPROVAL_REPLY_MISMATCH", "userReply must be compatible with the captured prompt", {
-      recoveryHint
-    });
-  }
-}
-function assertApprovalTurnBoundaryEvidence(event, recoveryHint) {
-  if (event?.type !== "turn-boundary") {
-    throw new DevFlowError("APPROVAL_PROVENANCE_UNAVAILABLE", "turn boundary was not captured", {
-      ...recoveryHint ? { recoveryHint } : {}
-    });
-  }
-}
-function resolveProvenance(events, state, approval, userReply, provenance, host) {
-  if (provenance.promptEventId || provenance.turnBoundaryEventId) return provenance;
-  const current = state.humanGates[approval];
-  const consumed = new Set(Object.values(state.humanGates).flatMap(confirmationEventIds));
-  const match = [...events].reverse().find((item) => {
-    const event = item.data;
-    return item.type === "host-event" && typeof event.eventId === "string" && !consumed.has(event.eventId) && event.type === "user-prompt" && event.host === host && textCompatible(String(event.text ?? ""), userReply) && item.revision > (current?.presentedRevision ?? state.revision) && typeof current?.presentedAt === "string" && typeof event.at === "string" && Date.parse(event.at) >= Date.parse(current.presentedAt);
-  });
-  const eventId = match?.data?.eventId;
-  if (typeof eventId !== "string") {
-    throw new DevFlowError(
-      "APPROVAL_PROVENANCE_UNAVAILABLE",
-      "no matching post-presentation user prompt was captured",
-      { recoveryHint: "\u8BF7\u786E\u4FDD\u5BBF\u4E3B UserPromptSubmit hook \u5DF2\u751F\u6548\uFF0C\u7136\u540E\u5728\u95E8\u7981\u5448\u73B0\u540E\u63D0\u4EA4\u4E00\u6761\u51C6\u786E\u7684\u6279\u51C6\u8BCD\uFF08\u5982\u201C\u786E\u8BA4\u9700\u6C42\u201D\uFF09\u91CD\u8BD5\u786E\u8BA4" }
-    );
-  }
-  return { promptEventId: eventId };
-}
-function approvalFromInteraction(state, interactionId) {
-  const interaction = getInteraction(state, interactionId);
-  if (interaction.kind !== "approval" || !interaction.target.startsWith("approval:")) {
-    throw new DevFlowError("INTERACTION_TARGET_INVALID", interactionId);
-  }
-  return approvalId(interaction.target.slice("approval:".length));
-}
-function assertTokenEvidence(events, state, approval, userReply, provenance, host) {
-  const resolved = resolveProvenance(events, state, approval, userReply, provenance, host);
-  const current = state.humanGates[approval];
-  if (resolved.promptEventId) {
-    const eventRecord = hostEventRecord(events, resolved.promptEventId, host);
-    const event = eventRecord?.data;
-    assertApprovalEvidenceTiming(eventRecord, event, current, "\u8BF7\u5728\u786E\u8BA4\u5448\u73B0\u540E\u7684\u540E\u7EED\u56DE\u5408\u63D0\u4EA4\u4E00\u6B21\u6027\u56DE\u590D\u6216\u6279\u51C6\u8BCD");
-    assertApprovalPromptEvidence(event, userReply, "\u8BF7\u539F\u6837\u4F20\u9012\u6355\u83B7\u5230\u7684\u7528\u6237\u56DE\u590D\u6587\u672C\uFF08\u7A7A\u683C\u4E0E\u5927\u5C0F\u5199\u5DEE\u5F02\u4F1A\u81EA\u52A8\u5F52\u4E00\u5316\uFF09");
-  }
-  if (resolved.turnBoundaryEventId) {
-    const eventRecord = hostEventRecord(events, resolved.turnBoundaryEventId, host);
-    const event = eventRecord?.data;
-    assertApprovalEvidenceTiming(eventRecord, event, current, "\u8BF7\u5728\u786E\u8BA4\u5448\u73B0\u540E\u7684\u540E\u7EED\u56DE\u5408\u63D0\u4EA4\u4E00\u6B21\u6027\u56DE\u590D\u6216\u6279\u51C6\u8BCD");
-    assertApprovalTurnBoundaryEvidence(event);
-  }
-  return resolved;
-}
-async function resolveApprovalResponse(root2, id, expectedRevision, interactionId, host, input) {
-  const initial = await readState(root2, id);
-  if (initial.revision !== expectedRevision) {
-    throw new DevFlowError("STATE_REVISION_CONFLICT", "state revision changed", { currentRevision: initial.revision });
-  }
-  const approval = approvalFromInteraction(initial, interactionId);
-  const events = input.source === "text" ? await readFeatureEvents(root2, id) : [];
-  const provenance = input.source === "text" ? assertTokenEvidence(events, initial, approval, input.userReply, input.provenance, host) : void 0;
-  const promptText = input.source === "text" && provenance?.promptEventId ? events.find((item) => item.type === "host-event" && item.data.eventId === provenance.promptEventId)?.data?.text : void 0;
-  let response;
-  return mutate(root2, id, expectedRevision, "approval-interaction-resolved", async (state) => {
-    await assertRequirementsGrillSatisfied(root2, id, state);
-    await assertTraceGateCurrent(root2, state, "planning");
-    await assertReviewProjectionForApproval(root2, state);
-    const current = state.humanGates[approval];
-    if (current?.status !== "pending") throw new DevFlowError("APPROVAL_NOT_PENDING", approval);
-    const interaction = getInteraction(state, interactionId);
-    if (interaction.kind !== "approval" || interaction.target !== `approval:${approval}` || interaction.status !== "pending") {
-      throw new DevFlowError("INTERACTION_NOT_PENDING", interactionId);
-    }
-    const basisHash2 = digest7(approvalBasis(state, approval));
-    if (basisHash2 !== current.basisHash || basisHash2 !== interaction.basisHash) {
-      throw new DevFlowError("APPROVAL_BASIS_CHANGED", approval, {
-        recoveryHint: "\u95E8\u7981\u4F9D\u636E\u5DF2\u53D8\u66F4\uFF0C\u8BF7\u66F4\u65B0\u5E76\u767B\u8BB0\u76F8\u5173\u8D44\u4EA7\u540E\u91CD\u65B0\u5448\u73B0\u95E8\u7981"
-      });
-    }
-    if (input.source === "text") {
-      const ids = [
-        ...provenance?.promptEventId ? [provenance.promptEventId] : [],
-        ...provenance?.turnBoundaryEventId ? [provenance.turnBoundaryEventId] : []
-      ];
-      for (const [otherApproval, value] of Object.entries(state.humanGates)) {
-        if (otherApproval === approval) continue;
-        const replayed = confirmationEventIds(value).find((eventId) => ids.includes(eventId));
-        if (replayed) throw new DevFlowError("APPROVAL_EVENT_CONSUMED", replayed);
-      }
-    }
-    response = input.source === "elicitation" ? resolveNativeInteraction(state, interactionId, input.action, input.comment, host) : resolveTextInteraction(
-      state,
-      interactionId,
-      promptText ?? input.userReply,
-      host,
-      provenance,
-      // 动态 approval 支持自然语言批准词（如“确认需求”“批准实现”），映射为 confirm 选项；
-      // Approval phrases are handled by the single natural-language answer path.
-      isExplicitApproval(promptText ?? input.userReply) ? "confirm" : void 0
-    );
-    if (response.action === "confirm") {
-      state.humanGates[approval] = {
-        ...current,
-        status: "confirmed",
-        confirmation: {
-          interactionId,
-          ...response,
-          confirmedAt: (/* @__PURE__ */ new Date()).toISOString()
-        }
-      };
-      state.obligations = satisfyObligations(state.obligations, ["approval"]);
-    } else if (response.action === "request-changes") {
-      state.humanGates[approval] = { ...current, status: "returned", lastResponse: response };
-    } else {
-      throw new DevFlowError("INTERACTION_ACTION_INVALID", response.action);
-    }
-    state.lastUpdatedBy = { host, pluginVersion: "5.0.8" };
-  }, () => ({ approval, interactionId, response }));
-}
-async function resolveApprovalElicitation(root2, id, expectedRevision, interactionId, action, comment, host) {
-  return resolveApprovalResponse(root2, id, expectedRevision, interactionId, host, { action, comment, source: "elicitation" });
-}
-async function resolveApprovalAnswer(root2, id, expectedRevision, interactionId, userReply, host) {
-  return resolveApprovalResponse(root2, id, expectedRevision, interactionId, host, {
-    userReply,
-    provenance: {},
-    source: "text"
-  });
-}
-
 // plugins/dev-flow/src/policy/stages.ts
-var routeStages = Object.freeze({
-  xs: ["locate", "implementation", "verification", "finalize"],
-  s: ["boundary", "implementation", "verification", "finalize"],
-  m: ["planning", "implementation", "code_review", "verification", "finalize"],
-  l: ["requirements_alignment", "planning", "plan_review", "execution_approval", "implementation", "code_review", "verification", "finalize"]
-});
-function stagesForRoute(route) {
-  return routeStages[route];
-}
 function effectiveStage(state) {
   if (state.mode === "intake" || !state.route) return "intake";
   if (state.lifecycle === "finalized") return "complete";
-  const stages = state.steps && Object.keys(state.steps).length > 0 ? Object.keys(state.steps) : stagesForRoute(state.route);
   if (state.steps) {
-    const pending = stages.find((stage) => state.steps?.[stage]?.status !== "satisfied");
-    if (pending) return pending;
+    const keys = Object.keys(state.steps);
+    if (keys.length > 0) {
+      const pending = keys.find((stage) => state.steps?.[stage]?.status !== "satisfied");
+      if (pending) return pending;
+      return keys[0];
+    }
   }
-  return state.currentStage ?? stages[0];
+  return state.currentStage ?? "unknown";
 }
 
 // plugins/dev-flow/src/core/execution-brief.ts
@@ -10067,37 +9983,6 @@ function buildFeatureMutationSummary(state) {
     // finalize 透明性：已排除但仍有变化的路径不阻塞完成，只在响应中提醒。
     ...snapshot?.excludedChangedPaths?.length ? { excludedChangedPaths: snapshot.excludedChangedPaths } : {}
   };
-}
-
-// plugins/dev-flow/src/policy/derive-next.ts
-function deriveNext(state) {
-  if (Number(state.schemaVersion) !== 4 && Number(state.schemaVersion) !== 5) throw new Error("UNSUPPORTED_STATE_SCHEMA");
-  if (state.lifecycle === "finalized") return { kind: "done" };
-  if (state.repair?.status === "waiting-user" || state.repair?.status === "stalled") {
-    return {
-      kind: "waiting-user",
-      reason: state.repair.recoveryAction?.reason ?? "\u81EA\u52A8\u4FEE\u590D\u9700\u8981\u7528\u6237\u51B3\u7B56",
-      recoveryAction: state.repair.recoveryAction ?? { kind: "ask-user", reason: "\u81EA\u52A8\u4FEE\u590D\u5DF2\u6682\u505C", facts: [], impact: "\u5F53\u524D\u5355\u5143\u672A\u5B8C\u6210", recommendation: "\u8BF7\u786E\u8BA4\u4FEE\u8BA2\u3001\u56DE\u6EDA\u6216\u8C03\u6574\u8BA1\u5212" }
-    };
-  }
-  if (state.classificationViolatesTopology) return { kind: "stop", reason: "reclassification-required" };
-  if (state.blockingFindings?.some((finding) => finding.blocking)) return { kind: "stop", reason: "resolve-blocking-findings" };
-  const definition = routeDefinition(state.route);
-  const orderedSteps = state.orderedSteps ?? definition.orderedSteps;
-  const approval = state.obligations?.find((obligation) => obligation.kind === "approval" && obligation.status !== "satisfied");
-  const implementationIndex = orderedSteps.indexOf("implementation");
-  const implementationReady = implementationIndex >= 0 && orderedSteps.slice(0, implementationIndex).every((step) => state.steps[step]?.status === "satisfied");
-  if (approval && implementationReady) {
-    return { kind: "present-human-gate", step: approval.id };
-  }
-  for (const step of orderedSteps) {
-    const snapshot = state.steps[step];
-    if (snapshot?.status === "satisfied") continue;
-    if (snapshot && snapshot.artifactReady === false) return { kind: "scaffold-artifact", step };
-    return { kind: "run-step", step };
-  }
-  if (!state.logicComplete) return { kind: "finalize" };
-  return { kind: "done" };
 }
 
 // plugins/dev-flow/src/core/verification.ts
@@ -10407,7 +10292,7 @@ async function runVerification(root2, id, expectedRevision, host, commandIds) {
       const signature = `${exitReason}:${createHash25("sha256").update(fullOutput).digest("hex").slice(0, 16)}`;
       state.repair = recordRepairAttempt(state.repair ?? startRepairLoop(), signature, output.slice(-3));
     }
-    state.lastUpdatedBy = { host, pluginVersion: "5.0.8" };
+    state.lastUpdatedBy = { host, pluginVersion: "5.0.9" };
   });
 }
 async function readVerificationFreshness(root2, state) {
@@ -10452,6 +10337,35 @@ function toDerivedState(state, verificationStale) {
     repair: state.repair
   };
 }
+function deriveRouteAction(state) {
+  if (Number(state.schemaVersion) !== 4 && Number(state.schemaVersion) !== 5) throw new Error("UNSUPPORTED_STATE_SCHEMA");
+  if (state.lifecycle === "finalized") return { kind: "done" };
+  if (state.repair?.status === "waiting-user" || state.repair?.status === "stalled") {
+    return {
+      kind: "waiting-user",
+      reason: state.repair.recoveryAction?.reason ?? "\u81EA\u52A8\u4FEE\u590D\u9700\u8981\u7528\u6237\u51B3\u7B56",
+      recoveryAction: state.repair.recoveryAction ?? { kind: "ask-user", reason: "\u81EA\u52A8\u4FEE\u590D\u5DF2\u6682\u505C", facts: [], impact: "\u5F53\u524D\u5355\u5143\u672A\u5B8C\u6210", recommendation: "\u8BF7\u786E\u8BA4\u4FEE\u8BA2\u3001\u56DE\u6EDA\u6216\u8C03\u6574\u8BA1\u5212" }
+    };
+  }
+  if (state.classificationViolatesTopology) return { kind: "stop", reason: "reclassification-required" };
+  if (state.blockingFindings?.some((finding) => finding.blocking)) return { kind: "stop", reason: "resolve-blocking-findings" };
+  const definition = routeDefinition(state.route);
+  const orderedSteps = state.orderedSteps ?? definition.orderedSteps;
+  const approval = state.obligations?.find((obligation) => obligation.kind === "approval" && obligation.status !== "satisfied");
+  const implementationIndex = orderedSteps.indexOf("implementation");
+  const implementationReady = implementationIndex >= 0 && orderedSteps.slice(0, implementationIndex).every((step) => state.steps[step]?.status === "satisfied");
+  if (approval && implementationReady) {
+    return { kind: "present-human-gate", step: approval.id };
+  }
+  for (const step of orderedSteps) {
+    const snapshot = state.steps[step];
+    if (snapshot?.status === "satisfied") continue;
+    if (snapshot && snapshot.artifactReady === false) return { kind: "scaffold-artifact", step };
+    return { kind: "run-step", step };
+  }
+  if (!state.logicComplete) return { kind: "finalize" };
+  return { kind: "done" };
+}
 function enrichRunStep(state, step) {
   const requiredEvidence = requiredEvidenceForStep(
     state.route,
@@ -10472,36 +10386,16 @@ function traceStepForAction(action) {
   return void 0;
 }
 async function reviewPlanAction(root2, state) {
-  if (!reviewEnforcementRequired(state.route, state.classification.controls)) return void 0;
-  const ledger = await readReviewLedger(root2, state);
-  const batch = ledger.batches.find((candidate) => candidate.validity === "current");
-  if (!batch) return { kind: "create-review-batch", step: "planning" };
-  if (batch.progress !== "complete") {
-    return {
-      kind: "review-jobs-pending",
-      step: "planning",
-      batchId: batch.batchId,
-      jobs: batch.jobs.map(({ jobId, role, reviewDepth, status }) => ({ jobId, role, reviewDepth, status }))
-    };
+  const gate = await reviewGate(root2, state);
+  if (gate.status === "ready") return void 0;
+  if (gate.status === "need-batch") return { kind: "create-review-batch", step: "planning" };
+  if (gate.status === "jobs-open") {
+    return { kind: "review-jobs-pending", step: "planning", batchId: gate.batchId, jobs: gate.jobs };
   }
-  try {
-    await assertReviewComplete(root2, state);
-    return void 0;
-  } catch (error) {
-    const code = error.code;
-    if (code === "REVIEW_BASIS_STALE" || code === "REVIEW_BATCH_REQUIRED") {
-      return { kind: "create-review-batch", step: "planning" };
-    }
-    if (code === "REVIEW_BLOCKING_FINDINGS" || code === "REVIEW_BATCH_INCOMPLETE") {
-      return {
-        kind: "review-jobs-pending",
-        step: "planning",
-        batchId: batch.batchId,
-        jobs: batch.jobs.map(({ jobId, role, reviewDepth, status }) => ({ jobId, role, reviewDepth, status }))
-      };
-    }
-    throw error;
+  if (gate.status === "isolation") {
+    return { kind: "review-jobs-pending", step: "planning", batchId: gate.batchId, jobIds: gate.jobIds };
   }
+  return { kind: "review-jobs-pending", step: "planning", batchId: gate.batchId, findingIds: gate.findingIds };
 }
 async function unitLifecycleAction(root2, state) {
   if (!checkpointsEnforcementRequired(state.route, state.classification.controls)) return void 0;
@@ -10517,10 +10411,20 @@ async function unitLifecycleAction(root2, state) {
 async function nextAction(root2, id) {
   const state = await readState(root2, id);
   if (state.mode === "intake") {
-    const pending = pendingDecisionForState(state);
-    return pending ? { kind: "intake", activity: "resolve-decision", reason: "\u5F53\u524D\u6709\u4E00\u4E2A\u51B3\u7B56\u4ECD\u5F85\u7528\u6237\u786E\u8BA4" } : { kind: "intake", activity: "investigate", reason: "\u8BFB\u53D6\u9700\u6C42\u3001\u4EE3\u7801\u3001\u6587\u6863\u548C\u6D4B\u8BD5\u5B8C\u6210\u8C03\u67E5\u540E\uFF0C\u8C03\u7528 dev_flow_lock_classification \u9501\u5B9A\u8DEF\u7EBF\uFF08\u9501\u5B9A\u524D\u4E0D\u8981\u8C03\u7528 record_step \u7B49\u8DEF\u7EBF\u6B65\u9AA4\u5DE5\u5177\uFF09" };
+    const pending2 = pendingDecisionForState(state);
+    return pending2 ? { kind: "intake", activity: "resolve-decision", reason: "\u5F53\u524D\u6709\u4E00\u4E2A\u51B3\u7B56\u4ECD\u5F85\u7528\u6237\u786E\u8BA4" } : { kind: "intake", activity: "investigate", reason: "\u8BFB\u53D6\u9700\u6C42\u3001\u4EE3\u7801\u3001\u6587\u6863\u548C\u6D4B\u8BD5\u5B8C\u6210\u8C03\u67E5\u540E\uFF0C\u8C03\u7528 dev_flow_lock_classification \u9501\u5B9A\u8DEF\u7EBF\uFF08\u9501\u5B9A\u524D\u4E0D\u8981\u8C03\u7528 record_step \u7B49\u8DEF\u7EBF\u6B65\u9AA4\u5DE5\u5177\uFF09" };
   }
-  const action = deriveNext(toDerivedState(state, await verificationIsStale(root2, state)));
+  let pending;
+  try {
+    pending = pendingDecisionForState(state);
+  } catch (error) {
+    if (error.code !== "GRILL_INTERACTION_RESTART_REQUIRED") throw error;
+    pending = void 0;
+  }
+  if (pending) {
+    return { kind: "intake", activity: "resolve-decision", reason: "\u5F53\u524D\u6709\u4E00\u4E2A\u51B3\u7B56\u4ECD\u5F85\u7528\u6237\u786E\u8BA4" };
+  }
+  const action = deriveRouteAction(toDerivedState(state, await verificationIsStale(root2, state)));
   if (action.kind === "run-step" || action.kind === "present-human-gate") {
     const definition = routeDefinitionForState(state);
     const requiredNow = [
@@ -10643,7 +10547,7 @@ function actionText(state, action) {
     case "run-step":
       return `\u7EE7\u7EED${stageLabel(action.step)}\u3002`;
     default:
-      return "\u7EE7\u7EED\u5F53\u524D\u9636\u6BB5\u3002";
+      return "\u8BE6\u60C5\u67E5\u770B dev_flow_status\u3002";
   }
 }
 function artifactLabel(kind) {
@@ -11464,7 +11368,7 @@ async function beginImplementationUnit(root2, id, expectedRevision, unitId) {
         await assertArtifactCurrent(root2, id, state, kind);
       }
       if (reviewEnforcementRequired(state.route, state.classification.controls)) {
-        await assertReviewComplete(root2, state);
+        await requireReviewReady(root2, state, { phase: "plan" });
       }
       nodes = currentImplementationNodes(ledger);
     } else {
@@ -11526,9 +11430,286 @@ async function beginImplementationUnit(root2, id, expectedRevision, unitId) {
 }
 
 // plugins/dev-flow/src/core/rollback.ts
-import { createHash as createHash28, randomUUID as randomUUID12 } from "node:crypto";
-import { access as access3, chmod, lstat as lstat6, mkdir as mkdir9, open as open7, readFile as readFile15, readlink as readlink4, rename as rename6, rm as rm2, symlink } from "node:fs/promises";
+import { createHash as createHash28, randomUUID as randomUUID13 } from "node:crypto";
+import { access as access3, chmod, lstat as lstat6, mkdir as mkdir10, open as open7, readFile as readFile16, readlink as readlink4, rename as rename6, rm as rm3, symlink } from "node:fs/promises";
+import path19 from "node:path";
+
+// plugins/dev-flow/src/core/rollback-journal.ts
+import { randomUUID as randomUUID12 } from "node:crypto";
+import { mkdir as mkdir9, readFile as readFile15, rm as rm2, rmdir } from "node:fs/promises";
+import { hostname as hostname2 } from "node:os";
 import path18 from "node:path";
+var features2 = (root2) => path18.join(root2, ".dev-flow", "features");
+var rollbackTxnPath2 = (root2, featureId) => path18.join(features2(root2), featureId, "rollback-transaction.json");
+var rollbackTransactionPhases = /* @__PURE__ */ new Set(["prepared", "backing-up", "rolling-back", "verifying", "committed", "compensating", "compensated"]);
+function isSha2562(value) {
+  return typeof value === "string" && /^[a-f0-9]{64}$/.test(value);
+}
+function validateRollbackTransaction(value) {
+  const transaction = value;
+  const validPlan = Array.isArray(transaction?.filePlan) && transaction.filePlan.every((action) => {
+    const candidate = action;
+    if (!candidate || candidate.action !== "restore" && candidate.action !== "delete" || typeof candidate.path !== "string" || !candidate.path) return false;
+    if (candidate.action === "restore" && (!isSha2562(candidate.blobSha256) || typeof candidate.mode !== "string" || !/^[0-7]{3,4}$/.test(candidate.mode))) return false;
+    if (candidate.blobSha256 !== void 0 && !isSha2562(candidate.blobSha256)) return false;
+    if (candidate.mode !== void 0 && (typeof candidate.mode !== "string" || !/^[0-7]{3,4}$/.test(candidate.mode))) return false;
+    if (candidate.kind !== void 0 && candidate.kind !== "file" && candidate.kind !== "symlink") return false;
+    return true;
+  });
+  if (transaction?.schemaVersion !== 1 || typeof transaction.transactionId !== "string" || !transaction.transactionId || typeof transaction.featureId !== "string" || !transaction.featureId || !rollbackTransactionPhases.has(transaction.phase) || typeof transaction.targetCheckpointId !== "string" || !/^CP-[0-9]{3,}$/.test(transaction.targetCheckpointId) || typeof transaction.targetUnitId !== "string" || !/^UNIT-[0-9]{3,}$/.test(transaction.targetUnitId) || !Array.isArray(transaction.undoOrder) || transaction.undoOrder.length === 0 || !transaction.undoOrder.every((unitId) => typeof unitId === "string" && /^UNIT-[0-9]{3,}$/.test(unitId)) || transaction.undoCheckpoints !== void 0 && (!Array.isArray(transaction.undoCheckpoints) || !transaction.undoCheckpoints.every((id) => typeof id === "string" && /^CP-[0-9]{3,}$/.test(id))) || !isSha2562(transaction.previewBasisHash) || !isSha2562(transaction.projectConfigSha256) || transaction.verificationCommandHashes !== void 0 && (typeof transaction.verificationCommandHashes !== "object" || transaction.verificationCommandHashes === null || Array.isArray(transaction.verificationCommandHashes) || Object.values(transaction.verificationCommandHashes).some((hash2) => !isSha2562(hash2))) || !Number.isInteger(transaction.stateRevision) || (transaction.stateRevision ?? -1) < 0 || typeof transaction.backupDirectory !== "string" || !/^checkpoints\/recovery\/[^/]+$/.test(transaction.backupDirectory) || !Number.isInteger(transaction.nextFileIndex) || (transaction.nextFileIndex ?? -1) < 0 || !validPlan || !Array.isArray(transaction.verificationAttemptIds) || !transaction.verificationAttemptIds.every((id) => typeof id === "string" && id.length > 0) || typeof transaction.startedAt !== "string" || transaction.completedAt !== void 0 && typeof transaction.completedAt !== "string" || transaction.error !== void 0 && typeof transaction.error !== "string") {
+    throw new DevFlowError("ROLLBACK_TRANSACTION_UNREADABLE", "rollback transaction journal is invalid", {
+      recoveryHint: "Run dev_flow_doctor; the workspace may be mid-rollback \u2014 do not hand-edit .dev-flow"
+    });
+  }
+}
+function rollbackTransactionFinished(transaction) {
+  return (transaction.phase === "committed" || transaction.phase === "compensated") && typeof transaction.completedAt === "string";
+}
+async function readRollbackTransaction(root2, featureId) {
+  let raw;
+  try {
+    raw = await readFile15(rollbackTxnPath2(root2, featureId), "utf8");
+  } catch (error) {
+    if (error.code === "ENOENT") return void 0;
+    throw new DevFlowError("ROLLBACK_TRANSACTION_UNREADABLE", "rollback transaction journal cannot be read", {
+      recoveryHint: "Run dev_flow_doctor; the workspace may be mid-rollback \u2014 do not hand-edit .dev-flow"
+    });
+  }
+  let parsed;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    throw new DevFlowError("ROLLBACK_TRANSACTION_UNREADABLE", "rollback transaction journal is not valid JSON", {
+      recoveryHint: "Run dev_flow_doctor; the workspace may be mid-rollback \u2014 do not hand-edit .dev-flow"
+    });
+  }
+  validateRollbackTransaction(parsed);
+  if (parsed.featureId !== featureId) {
+    throw new DevFlowError("ROLLBACK_TRANSACTION_UNREADABLE", "rollback transaction journal feature id does not match its path", {
+      recoveryHint: "Run dev_flow_doctor; the workspace may be mid-rollback \u2014 do not hand-edit .dev-flow"
+    });
+  }
+  return parsed;
+}
+async function writeRollbackTransaction(root2, featureId, transaction) {
+  validateRollbackTransaction(transaction);
+  if (transaction.featureId !== featureId) {
+    throw new DevFlowError("ROLLBACK_TRANSACTION_UNREADABLE", "rollback transaction journal feature id does not match its path");
+  }
+  await writeAtomic(rollbackTxnPath2(root2, featureId), transaction);
+}
+async function prepareRollbackTransaction(root2, featureId, expectedRevision, transaction) {
+  if (transaction.featureId !== featureId) {
+    throw new DevFlowError("ROLLBACK_TRANSACTION_UNREADABLE", "rollback transaction journal feature id does not match its path");
+  }
+  if (transaction.phase !== "prepared") {
+    throw new DevFlowError("ROLLBACK_TRANSACTION_UNREADABLE", "prepareRollbackTransaction only accepts phase prepared");
+  }
+  if (transaction.stateRevision !== expectedRevision) {
+    throw new DevFlowError("STATE_REVISION_CONFLICT", "state revision changed", { currentRevision: transaction.stateRevision });
+  }
+  const release = await lock(root2, featureId, "prepare-rollback-transaction");
+  try {
+    await assertNoOpenRollbackTransaction(root2);
+    const state = await readState(root2, featureId);
+    if (state.revision !== expectedRevision) {
+      throw new DevFlowError("STATE_REVISION_CONFLICT", "state revision changed", { currentRevision: state.revision });
+    }
+    await writeRollbackTransaction(root2, featureId, transaction);
+    return transaction;
+  } finally {
+    await release();
+  }
+}
+var ROLLBACK_DRIVE_LEASE_STALE_MS = 3e4;
+var ROLLBACK_DRIVE_LEASE_HEARTBEAT_MS = 1e4;
+function driveLeasePath(root2, featureId, transactionId) {
+  return path18.join(features2(root2), featureId, "checkpoints", "recovery", `${transactionId}-drive-lease.json`);
+}
+function legacyDriveLeasePath(root2, featureId, transactionId) {
+  return path18.join(features2(root2), featureId, "checkpoints", "recovery", transactionId, "drive-lease.json");
+}
+async function readLeaseAt(leaseFile, transactionId) {
+  try {
+    const raw = await readFile15(leaseFile, "utf8");
+    return JSON.parse(raw);
+  } catch (error) {
+    if (error.code === "ENOENT") return void 0;
+    throw new DevFlowError("ROLLBACK_TRANSACTION_UNREADABLE", "rollback drive lease is unreadable", {
+      transactionId,
+      recoveryHint: "Run dev_flow_doctor; do not hand-edit the drive lease"
+    });
+  }
+}
+async function readDriveLeases(root2, featureId, transactionId) {
+  const [sidecar, legacy] = await Promise.all([
+    readLeaseAt(driveLeasePath(root2, featureId, transactionId), transactionId),
+    readLeaseAt(legacyDriveLeasePath(root2, featureId, transactionId), transactionId)
+  ]);
+  return { ...sidecar ? { sidecar } : {}, ...legacy ? { legacy } : {} };
+}
+async function writeDriveLeasePair(root2, featureId, transactionId, lease) {
+  const legacyFile = legacyDriveLeasePath(root2, featureId, transactionId);
+  const sidecarFile = driveLeasePath(root2, featureId, transactionId);
+  await mkdir9(path18.dirname(legacyFile), { recursive: true });
+  await mkdir9(path18.dirname(sidecarFile), { recursive: true });
+  await writeAtomic(legacyFile, lease);
+  await writeAtomic(sidecarFile, lease);
+}
+function isProcessAlive(pid, ownerHostname) {
+  if (ownerHostname !== hostname2()) return true;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+function leaseHeartbeatAt(lease) {
+  const timestamp = Date.parse(lease.heartbeatAt ?? lease.acquiredAt);
+  return Number.isFinite(timestamp) ? timestamp : Number.NaN;
+}
+function activeLease(lease) {
+  const heartbeatAt = leaseHeartbeatAt(lease);
+  const live = Number.isFinite(heartbeatAt) && isProcessAlive(lease.pid, lease.hostname);
+  const stale = !Number.isFinite(heartbeatAt) || Date.now() - heartbeatAt > ROLLBACK_DRIVE_LEASE_STALE_MS;
+  return live && !stale;
+}
+function leaseBusyError(featureId, transactionId, lease) {
+  return new DevFlowError("ROLLBACK_TRANSACTION_BUSY", "another host is already driving this rollback transaction", {
+    transactionId,
+    featureId,
+    ownerId: lease.ownerId,
+    pid: lease.pid,
+    hostname: lease.hostname,
+    recoveryHint: "Wait for the other host to finish, or resume after its process exits and the lease ages out"
+  });
+}
+async function claimRollbackDriveLease(root2, featureId, transactionId) {
+  const release = await lock(root2, featureId, "claim-rollback-drive");
+  try {
+    const journal = await readRollbackTransaction(root2, featureId);
+    if (!journal || rollbackTransactionFinished(journal)) {
+      throw new DevFlowError("ROLLBACK_TRANSACTION_MISMATCH", "no open rollback transaction to drive", {
+        featureId,
+        transactionId
+      });
+    }
+    if (journal.transactionId !== transactionId) {
+      throw new DevFlowError("ROLLBACK_TRANSACTION_MISMATCH", "rollback transaction id does not match the open journal", {
+        openTransactionId: journal.transactionId,
+        transactionId
+      });
+    }
+    const leases = await readDriveLeases(root2, featureId, transactionId);
+    for (const existing of [leases.sidecar, leases.legacy]) {
+      if (existing && activeLease(existing)) {
+        throw leaseBusyError(featureId, transactionId, existing);
+      }
+    }
+    const lease = {
+      schemaVersion: 1,
+      transactionId,
+      featureId,
+      ownerId: randomUUID12(),
+      pid: process.pid,
+      hostname: hostname2(),
+      acquiredAt: (/* @__PURE__ */ new Date()).toISOString(),
+      heartbeatAt: (/* @__PURE__ */ new Date()).toISOString()
+    };
+    await writeDriveLeasePair(root2, featureId, transactionId, lease);
+    return lease;
+  } finally {
+    await release();
+  }
+}
+async function renewRollbackDriveLease(root2, featureId, lease) {
+  const release = await lock(root2, featureId, "renew-rollback-drive");
+  try {
+    const leases = await readDriveLeases(root2, featureId, lease.transactionId);
+    const existing = leases.sidecar ?? leases.legacy;
+    if (!existing) {
+      throw new DevFlowError("ROLLBACK_TRANSACTION_MISMATCH", "rollback drive lease disappeared while being renewed", {
+        transactionId: lease.transactionId
+      });
+    }
+    for (const candidate of [leases.sidecar, leases.legacy]) {
+      if (candidate && candidate.ownerId !== lease.ownerId) {
+        throw leaseBusyError(featureId, lease.transactionId, candidate);
+      }
+    }
+    const renewed = { ...existing, heartbeatAt: (/* @__PURE__ */ new Date()).toISOString() };
+    await writeDriveLeasePair(root2, featureId, lease.transactionId, renewed);
+  } finally {
+    await release();
+  }
+}
+function maintainRollbackDriveLease(root2, featureId, lease) {
+  let stopped = false;
+  let inFlight2;
+  let failure2;
+  const renew = () => {
+    if (stopped || failure2) return inFlight2 ?? Promise.resolve();
+    if (!inFlight2) {
+      inFlight2 = renewRollbackDriveLease(root2, featureId, lease).catch((error) => {
+        failure2 = error;
+      }).finally(() => {
+        inFlight2 = void 0;
+      });
+    }
+    return inFlight2;
+  };
+  const interval = setInterval(() => {
+    void renew();
+  }, ROLLBACK_DRIVE_LEASE_HEARTBEAT_MS);
+  interval.unref();
+  return {
+    assertOwned() {
+      if (!failure2) return;
+      if (failure2 instanceof DevFlowError && failure2.code === "ROLLBACK_TRANSACTION_BUSY") throw failure2;
+      throw new DevFlowError("ROLLBACK_TRANSACTION_BUSY", "rollback drive lease could not be renewed; refusing to continue this driver", {
+        transactionId: lease.transactionId,
+        cause: failure2 instanceof DevFlowError ? failure2.code : String(failure2),
+        recoveryHint: "Wait for the current driver to finish, then resume the open rollback transaction"
+      });
+    },
+    async stop() {
+      stopped = true;
+      clearInterval(interval);
+      await inFlight2;
+    }
+  };
+}
+async function releaseRollbackDriveLease(root2, featureId, lease) {
+  const release = await lock(root2, featureId, "release-rollback-drive");
+  try {
+    const sidecarFile = driveLeasePath(root2, featureId, lease.transactionId);
+    const legacyFile = legacyDriveLeasePath(root2, featureId, lease.transactionId);
+    let sidecar;
+    try {
+      sidecar = JSON.parse(await readFile15(sidecarFile, "utf8"));
+    } catch {
+    }
+    if (sidecar?.ownerId === lease.ownerId) {
+      await rm2(sidecarFile, { force: true });
+    }
+    try {
+      const legacyExisting = JSON.parse(await readFile15(legacyFile, "utf8"));
+      if (legacyExisting?.ownerId === lease.ownerId) {
+        await rm2(legacyFile, { force: true });
+      }
+    } catch {
+    }
+    try {
+      await rmdir(path18.dirname(legacyFile));
+    } catch {
+    }
+  } finally {
+    await release();
+  }
+}
+
+// plugins/dev-flow/src/core/rollback.ts
 var digest10 = (value) => createHash28("sha256").update(value).digest("hex");
 function rollbackNodes(nodes) {
   return Object.values(nodes).filter((node) => node.kind === "implementation-unit" && node.status === "current");
@@ -11693,8 +11874,8 @@ async function previewRollback(root2, featureId, targetCheckpointId) {
     }
   }
   const filePlan = /* @__PURE__ */ new Map();
-  const planAction = (path23, action) => {
-    filePlan.set(path23, action);
+  const planAction = (path24, action) => {
+    filePlan.set(path24, action);
   };
   for (const manifest of undoManifests) {
     for (const record of manifest.files) {
@@ -11911,7 +12092,7 @@ async function resolveRollbackGateResponse(root2, featureId, expectedRevision, i
     } else {
       throw new DevFlowError("INTERACTION_ACTION_INVALID", response.action);
     }
-    state.lastUpdatedBy = { host, pluginVersion: "5.0.8" };
+    state.lastUpdatedBy = { host, pluginVersion: "5.0.9" };
   }, () => ({ gate: "rollback-confirmation", interactionId, response }));
 }
 async function resolveRollbackGateElicitation(root2, featureId, expectedRevision, interactionId, action, comment, host) {
@@ -11921,13 +12102,7 @@ async function resolveRollbackGateElicitation(root2, featureId, expectedRevision
     source: "elicitation"
   });
 }
-async function resolveRollbackGateAnswer(root2, featureId, expectedRevision, interactionId, userReply, host) {
-  return resolveRollbackGateResponse(root2, featureId, expectedRevision, interactionId, host, {
-    userReply,
-    source: "text"
-  });
-}
-var featureDirectory4 = (root2, featureId) => path18.join(root2, ".dev-flow", "features", featureId);
+var featureDirectory4 = (root2, featureId) => path19.join(root2, ".dev-flow", "features", featureId);
 async function pathExists3(file) {
   try {
     await access3(file);
@@ -11945,8 +12120,8 @@ async function fsyncDirectory4(directory) {
   }
 }
 async function writeFileAtomicMode(file, bytes, mode) {
-  await mkdir9(path18.dirname(file), { recursive: true });
-  const temp = `${file}.${randomUUID12()}.tmp`;
+  await mkdir10(path19.dirname(file), { recursive: true });
+  const temp = `${file}.${randomUUID13()}.tmp`;
   const handle = await open7(temp, "w");
   try {
     await handle.writeFile(bytes);
@@ -11956,18 +12131,18 @@ async function writeFileAtomicMode(file, bytes, mode) {
   }
   await chmod(temp, Number.parseInt(mode, 8));
   await rename6(temp, file);
-  await fsyncDirectory4(path18.dirname(file));
+  await fsyncDirectory4(path19.dirname(file));
 }
 async function writeSymlinkAtomic(file, target) {
-  await mkdir9(path18.dirname(file), { recursive: true });
-  const temp = `${file}.${randomUUID12()}.tmp`;
+  await mkdir10(path19.dirname(file), { recursive: true });
+  const temp = `${file}.${randomUUID13()}.tmp`;
   await symlink(target, temp);
   await rename6(temp, file);
-  await fsyncDirectory4(path18.dirname(file));
+  await fsyncDirectory4(path19.dirname(file));
 }
 async function writeAtomicBuffer(file, contents) {
-  await mkdir9(path18.dirname(file), { recursive: true });
-  const temp = `${file}.${randomUUID12()}.tmp`;
+  await mkdir10(path19.dirname(file), { recursive: true });
+  const temp = `${file}.${randomUUID13()}.tmp`;
   const handle = await open7(temp, "w");
   try {
     await handle.writeFile(contents);
@@ -11976,7 +12151,7 @@ async function writeAtomicBuffer(file, contents) {
     await handle.close();
   }
   await rename6(temp, file);
-  await fsyncDirectory4(path18.dirname(file));
+  await fsyncDirectory4(path19.dirname(file));
 }
 function validateBackupManifest(value, transactionId) {
   const manifest = value;
@@ -11988,7 +12163,7 @@ function validateBackupManifest(value, transactionId) {
 async function readBackupManifest(manifestFile, transactionId) {
   let raw;
   try {
-    raw = await readFile15(manifestFile, "utf8");
+    raw = await readFile16(manifestFile, "utf8");
   } catch {
     throw new DevFlowError("ROLLBACK_BACKUP_CORRUPT", "rollback backup manifest is missing", { transactionId });
   }
@@ -12036,8 +12211,8 @@ async function assertWorkspaceMatchesChainTip(root2, featureId, config) {
   }
 }
 async function captureBackup(root2, featureId, journal, config, options) {
-  const dir = path18.join(featureDirectory4(root2, featureId), journal.backupDirectory);
-  const manifestFile = path18.join(dir, "backup-manifest.json");
+  const dir = path19.join(featureDirectory4(root2, featureId), journal.backupDirectory);
+  const manifestFile = path19.join(dir, "backup-manifest.json");
   if (await pathExists3(manifestFile)) {
     const manifest2 = await readBackupManifest(manifestFile, journal.transactionId);
     const current = await snapshotGovernedRoots(root2, config);
@@ -12048,16 +12223,16 @@ async function captureBackup(root2, featureId, journal, config, options) {
     return;
   }
   await assertWorkspaceMatchesChainTip(root2, featureId, config);
-  await mkdir9(path18.join(dir, "files"), { recursive: true });
-  await mkdir9(path18.join(dir, "trash"), { recursive: true });
+  await mkdir10(path19.join(dir, "files"), { recursive: true });
+  await mkdir10(path19.join(dir, "trash"), { recursive: true });
   const snapshot = await snapshotGovernedRoots(root2, config);
   let first = true;
   for (const file of snapshot) {
-    const bytes = file.kind === "symlink" ? Buffer.from(await readlink4(path18.join(root2, file.path))) : await readFile15(path18.join(root2, file.path));
+    const bytes = file.kind === "symlink" ? Buffer.from(await readlink4(path19.join(root2, file.path))) : await readFile16(path19.join(root2, file.path));
     if (digest10(bytes) !== file.sha256) {
       throw new DevFlowError("ROLLBACK_HASH_MISMATCH", "protected files changed while capturing the rollback backup", { path: file.path });
     }
-    const blobFile = path18.join(dir, "files", file.sha256);
+    const blobFile = path19.join(dir, "files", file.sha256);
     if (!await pathExists3(blobFile)) await writeAtomicBuffer(blobFile, bytes);
     if (first) {
       first = false;
@@ -12079,13 +12254,13 @@ async function captureBackup(root2, featureId, journal, config, options) {
   }
 }
 async function assertPathMatchesBackupExpectation(root2, filePath, expected) {
-  const absolute = path18.join(root2, filePath);
+  const absolute = path19.join(root2, filePath);
   if (expected) {
     let metadata;
     let bytes;
     try {
       metadata = await lstat6(absolute);
-      bytes = expected.kind === "symlink" ? Buffer.from(await readlink4(absolute)) : await readFile15(absolute);
+      bytes = expected.kind === "symlink" ? Buffer.from(await readlink4(absolute)) : await readFile16(absolute);
     } catch {
       throw new DevFlowError("ROLLBACK_HASH_MISMATCH", "workspace drifted from the pre-rollback backup before a file action", {
         path: filePath,
@@ -12116,20 +12291,20 @@ async function assertPathMatchesBackupExpectation(root2, filePath, expected) {
   }
 }
 async function applyFilePlan(root2, featureId, journal, options) {
-  const dir = path18.join(featureDirectory4(root2, featureId), journal.backupDirectory);
-  const trash = path18.join(dir, "trash");
-  const backup = await readBackupManifest(path18.join(dir, "backup-manifest.json"), journal.transactionId);
+  const dir = path19.join(featureDirectory4(root2, featureId), journal.backupDirectory);
+  const trash = path19.join(dir, "trash");
+  const backup = await readBackupManifest(path19.join(dir, "backup-manifest.json"), journal.transactionId);
   const expectedByPath = new Map(backup.files.map((file) => [file.path, file]));
   for (let index = journal.nextFileIndex; index < journal.filePlan.length; index += 1) {
     const action = journal.filePlan[index];
     if (index === 0) await options.fault?.("before-first-rename");
     await assertPathMatchesBackupExpectation(root2, action.path, expectedByPath.get(action.path));
-    const target = path18.join(root2, action.path);
+    const target = path19.join(root2, action.path);
     if (action.action === "restore") {
-      const blobFile = path18.join(featureDirectory4(root2, featureId), blobPath(action.blobSha256));
+      const blobFile = path19.join(featureDirectory4(root2, featureId), blobPath(action.blobSha256));
       let bytes;
       try {
-        bytes = await readFile15(blobFile);
+        bytes = await readFile16(blobFile);
       } catch {
         throw new DevFlowError("ROLLBACK_CHECKPOINT_CORRUPT", "checkpoint blob is missing", {
           blobSha256: action.blobSha256,
@@ -12145,11 +12320,11 @@ async function applyFilePlan(root2, featureId, journal, options) {
       if (action.kind === "symlink") await writeSymlinkAtomic(target, bytes.toString("utf8"));
       else await writeFileAtomicMode(target, bytes, action.mode);
     } else {
-      const trashFile = path18.join(trash, `${String(index).padStart(4, "0")}-${path18.basename(action.path)}`);
+      const trashFile = path19.join(trash, `${String(index).padStart(4, "0")}-${path19.basename(action.path)}`);
       if (await pathExists3(target)) {
-        await mkdir9(trash, { recursive: true });
+        await mkdir10(trash, { recursive: true });
         await rename6(target, trashFile);
-        await fsyncDirectory4(path18.dirname(target));
+        await fsyncDirectory4(path19.dirname(target));
         await fsyncDirectory4(trash);
       } else if (!await pathExists3(trashFile)) {
         throw new DevFlowError("ROLLBACK_HASH_MISMATCH", "file planned for deletion vanished outside the transaction", { path: action.path });
@@ -12161,7 +12336,7 @@ async function applyFilePlan(root2, featureId, journal, options) {
     for (const action2 of journal.filePlan.slice(0, journal.nextFileIndex)) {
       const expected = progressive.find((file) => file.path === action2.path);
       if (action2.action === "delete") {
-        if (await pathExists3(path18.join(root2, action2.path))) {
+        if (await pathExists3(path19.join(root2, action2.path))) {
           throw new DevFlowError("ROLLBACK_HASH_MISMATCH", "workspace drifted after a rollback file action", {
             path: action2.path,
             source: "post-plan",
@@ -12174,8 +12349,8 @@ async function applyFilePlan(root2, featureId, journal, options) {
         let metadata;
         let bytes;
         try {
-          metadata = await lstat6(path18.join(root2, action2.path));
-          bytes = expected.kind === "symlink" ? Buffer.from(await readlink4(path18.join(root2, action2.path))) : await readFile15(path18.join(root2, action2.path));
+          metadata = await lstat6(path19.join(root2, action2.path));
+          bytes = expected.kind === "symlink" ? Buffer.from(await readlink4(path19.join(root2, action2.path))) : await readFile16(path19.join(root2, action2.path));
         } catch {
           throw new DevFlowError("ROLLBACK_HASH_MISMATCH", "workspace drifted after a rollback file action", {
             path: action2.path,
@@ -12232,7 +12407,7 @@ async function transactionVerificationCommands(root2, featureId, journal, config
 }
 async function expectedPlanStateAfter(root2, featureId, journal, appliedCount) {
   const manifest = await readBackupManifest(
-    path18.join(featureDirectory4(root2, featureId), journal.backupDirectory, "backup-manifest.json"),
+    path19.join(featureDirectory4(root2, featureId), journal.backupDirectory, "backup-manifest.json"),
     journal.transactionId
   );
   const expected = new Map(manifest.files.map((file) => [file.path, { ...file }]));
@@ -12249,7 +12424,7 @@ async function expectedPlanState(root2, featureId, journal) {
   return expectedPlanStateAfter(root2, featureId, journal, journal.filePlan.length);
 }
 async function recordVerificationAttempt(root2, featureId, journal, attempt) {
-  const attemptId = randomUUID12();
+  const attemptId = randomUUID13();
   const state = await readState(root2, featureId);
   await appendFeatureEvent(root2, featureId, state.revision, "rollback-verification-attempt", {
     attemptId,
@@ -12331,7 +12506,7 @@ async function runRollbackVerification(root2, featureId, journal, config, option
   }
 }
 async function recordCompensationAttempt(root2, featureId, journal, attempt) {
-  const attemptId = randomUUID12();
+  const attemptId = randomUUID13();
   const state = await readState(root2, featureId);
   await appendFeatureEvent(root2, featureId, state.revision, "rollback-compensation-attempt", {
     attemptId,
@@ -12362,36 +12537,36 @@ async function compensateRollback(root2, featureId, journal, config, options) {
     journal.phase = "compensating";
     await writeRollbackTransaction(root2, featureId, journal);
   }
-  const dir = path18.join(featureDirectory4(root2, featureId), journal.backupDirectory);
+  const dir = path19.join(featureDirectory4(root2, featureId), journal.backupDirectory);
   const startedAt = (/* @__PURE__ */ new Date()).toISOString();
   try {
-    const manifest = await readBackupManifest(path18.join(dir, "backup-manifest.json"), journal.transactionId);
+    const manifest = await readBackupManifest(path19.join(dir, "backup-manifest.json"), journal.transactionId);
     let restored = 0;
     for (const file of manifest.files) {
-      const blobFile = path18.join(dir, "files", file.sha256);
+      const blobFile = path19.join(dir, "files", file.sha256);
       let bytes;
       try {
-        bytes = await readFile15(blobFile);
+        bytes = await readFile16(blobFile);
       } catch {
         throw new DevFlowError("ROLLBACK_BACKUP_CORRUPT", "rollback backup bytes are missing", { path: file.path, sha256: file.sha256 });
       }
       if (digest10(bytes) !== file.sha256) {
         throw new DevFlowError("ROLLBACK_BACKUP_CORRUPT", "rollback backup bytes failed their digest check", { path: file.path, sha256: file.sha256 });
       }
-      if (file.kind === "symlink") await writeSymlinkAtomic(path18.join(root2, file.path), bytes.toString("utf8"));
-      else await writeFileAtomicMode(path18.join(root2, file.path), bytes, file.mode);
+      if (file.kind === "symlink") await writeSymlinkAtomic(path19.join(root2, file.path), bytes.toString("utf8"));
+      else await writeFileAtomicMode(path19.join(root2, file.path), bytes, file.mode);
       restored += 1;
       if (restored === 1) await options.fault?.("during-compensation");
     }
     const current = await snapshotGovernedRoots(root2, config);
     const expectedPaths = new Set(manifest.files.map((file) => file.path));
-    const trash = path18.join(dir, "trash");
+    const trash = path19.join(dir, "trash");
     for (const file of current) {
       if (expectedPaths.has(file.path)) continue;
-      const trashFile = path18.join(trash, `extra-${digest10(file.path).slice(0, 16)}-${path18.basename(file.path)}`);
-      await mkdir9(trash, { recursive: true });
-      await rename6(path18.join(root2, file.path), trashFile);
-      await fsyncDirectory4(path18.dirname(path18.join(root2, file.path)));
+      const trashFile = path19.join(trash, `extra-${digest10(file.path).slice(0, 16)}-${path19.basename(file.path)}`);
+      await mkdir10(trash, { recursive: true });
+      await rename6(path19.join(root2, file.path), trashFile);
+      await fsyncDirectory4(path19.dirname(path19.join(root2, file.path)));
     }
     const after = await snapshotGovernedRoots(root2, config);
     const mismatches = snapshotMismatches(manifest.files, after);
@@ -12468,10 +12643,10 @@ async function commitRollbackState(root2, featureId, journal) {
   }, { allowRollbackTransaction: journal.transactionId });
 }
 async function cleanupRollbackBackup(root2, featureId, journal) {
-  const directory = path18.join(featureDirectory4(root2, featureId), journal.backupDirectory);
-  await rm2(path18.join(directory, "files"), { recursive: true, force: true });
-  await rm2(path18.join(directory, "trash"), { recursive: true, force: true });
-  await rm2(path18.join(directory, "backup-manifest.json"), { force: true });
+  const directory = path19.join(featureDirectory4(root2, featureId), journal.backupDirectory);
+  await rm3(path19.join(directory, "files"), { recursive: true, force: true });
+  await rm3(path19.join(directory, "trash"), { recursive: true, force: true });
+  await rm3(path19.join(directory, "backup-manifest.json"), { force: true });
 }
 async function finishCommitted(root2, featureId, journal, options) {
   await options.fault?.("before-state-cas");
@@ -12636,7 +12811,7 @@ async function executeRollback(root2, featureId, expectedRevision, targetCheckpo
       recoveryHint: "Present the rollback gate again after updating checkpoint state"
     });
   }
-  const transactionId = randomUUID12();
+  const transactionId = randomUUID13();
   const journal = {
     schemaVersion: 1,
     transactionId,
@@ -12663,12 +12838,12 @@ async function executeRollback(root2, featureId, expectedRevision, targetCheckpo
 }
 
 // plugins/dev-flow/src/core/acceptance.ts
-import { createHash as createHash30, randomUUID as randomUUID13 } from "node:crypto";
+import { createHash as createHash30, randomUUID as randomUUID14 } from "node:crypto";
 
 // plugins/dev-flow/src/core/acceptance-store.ts
 import { createHash as createHash29 } from "node:crypto";
-import { copyFile, lstat as lstat7, mkdir as mkdir10, readFile as readFile16 } from "node:fs/promises";
-import path19 from "node:path";
+import { copyFile, lstat as lstat7, mkdir as mkdir11, readFile as readFile17 } from "node:fs/promises";
+import path20 from "node:path";
 var digest11 = (value) => createHash29("sha256").update(value).digest("hex");
 function safePath(value) {
   const normalized = value.replaceAll("\\", "/");
@@ -12685,7 +12860,7 @@ function imageValid(bytes) {
 }
 async function storeScreenshotArtifact(root2, featureId, sourcePath) {
   const source = safePath(sourcePath);
-  const sourceAbsolute = path19.join(root2, source);
+  const sourceAbsolute = path20.join(root2, source);
   let metadata;
   try {
     metadata = await lstat7(sourceAbsolute);
@@ -12697,7 +12872,7 @@ async function storeScreenshotArtifact(root2, featureId, sourcePath) {
   }
   let bytes;
   try {
-    bytes = await readFile16(sourceAbsolute);
+    bytes = await readFile17(sourceAbsolute);
   } catch {
     throw new DevFlowError("INVALID_ACCEPTANCE_EVIDENCE", "\u622A\u56FE\u6587\u4EF6\u4E0D\u5B58\u5728\u6216\u4E0D\u53EF\u8BFB\u53D6\u3002", { path: source });
   }
@@ -12705,11 +12880,11 @@ async function storeScreenshotArtifact(root2, featureId, sourcePath) {
     throw new DevFlowError("INVALID_ACCEPTANCE_EVIDENCE", "\u622A\u56FE\u6587\u4EF6\u4E0D\u662F\u53EF\u89E3\u6790\u7684 PNG\u3001JPEG \u6216 WebP\u3002", { path: source });
   }
   const artifactSha256 = digest11(bytes);
-  const ext = path19.extname(source).toLowerCase() || ".bin";
+  const ext = path20.extname(source).toLowerCase() || ".bin";
   const artifactPath = `acceptance/${artifactSha256}${ext}`;
-  const featureRoot = path19.join(root2, ".dev-flow", "features", featureId);
-  await mkdir10(path19.join(featureRoot, "acceptance"), { recursive: true });
-  await copyFile(sourceAbsolute, path19.join(featureRoot, artifactPath));
+  const featureRoot = path20.join(root2, ".dev-flow", "features", featureId);
+  await mkdir11(path20.join(featureRoot, "acceptance"), { recursive: true });
+  await copyFile(sourceAbsolute, path20.join(featureRoot, artifactPath));
   return { artifactPath, artifactSha256 };
 }
 
@@ -12780,7 +12955,7 @@ async function recordAcceptanceEvidence(root2, id, expectedRevision, input) {
     if (!result.confirmed) throw new DevFlowError("INVALID_ACCEPTANCE_EVIDENCE", "\u6587\u4EF6\u6838\u5BF9\u6CA1\u6709\u5F97\u5230\u9884\u671F\u7ED3\u679C\u3002", { summary: result.summary });
     artifactSha256 = result.observedFingerprint;
   }
-  const evidenceId = `AC-EVIDENCE-${randomUUID13()}`;
+  const evidenceId = `AC-EVIDENCE-${randomUUID14()}`;
   return mutate(root2, id, expectedRevision, "acceptance-evidence-recorded", (state) => {
     const acceptance = ensureAcceptance(state);
     const record = {
@@ -12799,7 +12974,7 @@ async function recordAcceptanceEvidence(root2, id, expectedRevision, input) {
     };
     acceptance.evidence.push(record);
     upsertDisposition(state, record.acceptanceCriterionId, input.evidence.kind === "agent-self-check" ? "pending" : "satisfied", fingerprint2, [...acceptance.dispositions.find((item) => item.acceptanceCriterionId === record.acceptanceCriterionId)?.evidenceRefs ?? [], evidenceId]);
-    state.lastUpdatedBy = { host: input.host, pluginVersion: "5.0.8" };
+    state.lastUpdatedBy = { host: input.host, pluginVersion: "5.0.9" };
   });
 }
 function dispositionHash(state, criterionIds, fingerprint2) {
@@ -12850,7 +13025,7 @@ async function resolveAcceptanceConfirmation(root2, id, expectedRevision, intera
     const live = getInteraction(draft, interactionId);
     response = input.source === "elicitation" ? resolveNativeInteraction(draft, interactionId, input.action, input.comment, host) : resolveTextInteraction(draft, interactionId, promptText ?? input.userReply, host, { promptEventId });
     if (matched.option.id !== "confirm") return;
-    const credentialId = `CRED-ACCEPTANCE-${randomUUID13()}`;
+    const credentialId = `CRED-ACCEPTANCE-${randomUUID14()}`;
     const credentials = [...draft.governance?.credentials ?? []];
     const credential = {
       recordId: credentialId,
@@ -12874,16 +13049,13 @@ async function resolveAcceptanceConfirmation(root2, id, expectedRevision, intera
   if (!response) throw new DevFlowError("INTERACTION_NOT_RESOLVED", interactionId);
   return { state, interaction: toPublicInteraction(getInteraction(state, interactionId)), response };
 }
-async function resolveAcceptanceConfirmationAnswer(root2, id, expectedRevision, interactionId, userReply, host) {
-  return resolveAcceptanceConfirmation(root2, id, expectedRevision, interactionId, host, { source: "text", userReply });
-}
 async function resolveAcceptanceConfirmationElicitation(root2, id, expectedRevision, interactionId, action, comment, host) {
   return resolveAcceptanceConfirmation(root2, id, expectedRevision, interactionId, host, { source: "elicitation", action, comment });
 }
 
 // plugins/dev-flow/src/mcp/doctor.ts
-import { lstat as lstat8, readdir as readdir7, readFile as readFile17 } from "node:fs/promises";
-import path20 from "node:path";
+import { lstat as lstat8, readdir as readdir7, readFile as readFile18 } from "node:fs/promises";
+import path21 from "node:path";
 import { createHash as createHash31 } from "node:crypto";
 function projectActiveWorkflow(state) {
   let pending;
@@ -12894,7 +13066,7 @@ function projectActiveWorkflow(state) {
   } catch {
     pendingUnreadable = true;
   }
-  const nextStep = pendingUnreadable ? "\u5F85\u51B3\u95EE\u9898\u4E0D\u53EF\u8BFB\uFF0C\u67E5\u770B dev_flow_status" : pending ? `\u56DE\u7B54\u5F85\u51B3\u95EE\u9898\uFF1A${pending.question}` : state.mode === "intake" ? "\u5B8C\u6210\u8C03\u67E5\u540E\u8C03\u7528 dev_flow_lock_classification" : state.mode === "routed" ? `\u7EE7\u7EED ${state.currentStage ?? "\u5F53\u524D\u9636\u6BB5"}\uFF08\u8BE6\u60C5\u770B dev_flow_status\uFF09` : "\u67E5\u770B dev_flow_status";
+  const nextStep = pendingUnreadable ? "\u5F85\u51B3\u95EE\u9898\u4E0D\u53EF\u8BFB\uFF0C\u67E5\u770B dev_flow_status" : pending ? `\u56DE\u7B54\u5F85\u51B3\u95EE\u9898\uFF1A${pending.question}` : state.mode === "intake" ? "\u5B8C\u6210\u8C03\u67E5\u540E\u8C03\u7528 dev_flow_lock_classification" : state.mode === "routed" ? "\u8BE6\u60C5\u770B dev_flow_status" : "\u67E5\u770B dev_flow_status";
   return {
     mode: state.mode,
     ...state.mode === "routed" && state.currentStage ? { stage: state.currentStage } : {},
@@ -12912,7 +13084,7 @@ async function readable(file) {
 }
 async function validJson(file) {
   try {
-    JSON.parse(await readFile17(file, "utf8"));
+    JSON.parse(await readFile18(file, "utf8"));
     return true;
   } catch {
     return false;
@@ -12920,7 +13092,7 @@ async function validJson(file) {
 }
 async function pointerRecoveryCandidates(root2) {
   try {
-    const directory = path20.join(root2, ".dev-flow", "features");
+    const directory = path21.join(root2, ".dev-flow", "features");
     const entries = await readdir7(directory, { withFileTypes: true });
     return await Promise.all(entries.filter((entry) => entry.isDirectory()).map(async (entry) => {
       let stateSha256;
@@ -12963,7 +13135,7 @@ async function collectDoctorReport(root2, pluginRoot2, version, tools) {
     else if (capabilities.prompt.status === "stale") add2("HOOK_PROMPT_HEALTH_STALE", "warning", `${host} UserPromptSubmit \u901A\u9053\u6700\u8FD1\u4FE1\u53F7\u5DF2\u8FC7\u671F`, "\u6062\u590D UserPromptSubmit hook\uFF0C\u53D1\u9001\u4E00\u6761\u7528\u6237\u6D88\u606F\u540E\u91CD\u8BD5\u6587\u672C\u56DE\u7B54");
     return { host, status, capabilities, ...latest ? { latest } : {}, ...ageMs !== void 0 ? { ageMs } : {} };
   });
-  const projectFile = path20.join(root2, ".dev-flow", "project.json");
+  const projectFile = path21.join(root2, ".dev-flow", "project.json");
   let project = { initialized: await readable(projectFile), valid: false };
   if (!project.initialized) add2("PROJECT_NOT_INITIALIZED", "warning", "run dev_flow_init_project before starting a feature");
   else {
@@ -12975,7 +13147,7 @@ async function collectDoctorReport(root2, pluginRoot2, version, tools) {
       add2("PROJECT_CONFIG_INVALID", "error", error instanceof Error ? error.message : String(error));
     }
   }
-  const activeFile = path20.join(root2, ".dev-flow", "active.json");
+  const activeFile = path21.join(root2, ".dev-flow", "active.json");
   let activeFeature = { present: await readable(activeFile), valid: false };
   let corruptFeature;
   let corruptActivePointer;
@@ -13013,7 +13185,7 @@ async function collectDoctorReport(root2, pluginRoot2, version, tools) {
         }
         if (!digest13) {
           try {
-            const raw = await readFile17(path20.join(root2, ".dev-flow", "features", active.featureId, "state.json"));
+            const raw = await readFile18(path21.join(root2, ".dev-flow", "features", active.featureId, "state.json"));
             digest13 = createHash31("sha256").update(raw).digest("hex");
           } catch {
             digest13 = void 0;
@@ -13043,7 +13215,7 @@ async function collectDoctorReport(root2, pluginRoot2, version, tools) {
       if (error.code === "ACTIVE_POINTER_UNREADABLE") {
         let activeSha256;
         try {
-          activeSha256 = createHash31("sha256").update(await readFile17(activeFile)).digest("hex");
+          activeSha256 = createHash31("sha256").update(await readFile18(activeFile)).digest("hex");
         } catch {
         }
         activeFeature = { present: true, valid: false, corrupt: true, recoveryAction: "abandon" };
@@ -13072,7 +13244,7 @@ async function collectDoctorReport(root2, pluginRoot2, version, tools) {
   );
   const rollbackTransactions = [];
   try {
-    const featuresDirectory = path20.join(root2, ".dev-flow", "features");
+    const featuresDirectory = path21.join(root2, ".dev-flow", "features");
     const entries = await readdir7(featuresDirectory, { withFileTypes: true });
     for (const entry of entries.filter((candidate) => candidate.isDirectory())) {
       let journal;
@@ -13215,14 +13387,14 @@ async function collectDoctorReport(root2, pluginRoot2, version, tools) {
     }
   }
   const paths = {
-    claudeManifest: path20.join(pluginRoot2, ".claude-plugin", "plugin.json"),
-    codexManifest: path20.join(pluginRoot2, ".codex-plugin", "plugin.json"),
-    mcp: path20.join(pluginRoot2, ".mcp.json"),
-    claudeHooks: path20.join(pluginRoot2, "hosts", "claude", "hooks.json"),
-    codexHooks: path20.join(pluginRoot2, "hosts", "codex", "hooks.json"),
-    mcpBundle: path20.join(pluginRoot2, "dist", "mcp-server.mjs"),
-    claudeBundle: path20.join(pluginRoot2, "dist", "claude-hook.mjs"),
-    codexBundle: path20.join(pluginRoot2, "dist", "codex-hook.mjs")
+    claudeManifest: path21.join(pluginRoot2, ".claude-plugin", "plugin.json"),
+    codexManifest: path21.join(pluginRoot2, ".codex-plugin", "plugin.json"),
+    mcp: path21.join(pluginRoot2, ".mcp.json"),
+    claudeHooks: path21.join(pluginRoot2, "hosts", "claude", "hooks.json"),
+    codexHooks: path21.join(pluginRoot2, "hosts", "codex", "hooks.json"),
+    mcpBundle: path21.join(pluginRoot2, "dist", "mcp-server.mjs"),
+    claudeBundle: path21.join(pluginRoot2, "dist", "claude-hook.mjs"),
+    codexBundle: path21.join(pluginRoot2, "dist", "codex-hook.mjs")
   };
   const files = await Promise.all(Object.entries(paths).map(async ([name, file]) => [name, await readable(file)]));
   const missing = files.filter(([, exists]) => !exists).map(([name]) => name);
@@ -13232,11 +13404,11 @@ async function collectDoctorReport(root2, pluginRoot2, version, tools) {
   add2(invalidJson ? "PLUGIN_WIRING_INVALID" : "PLUGIN_WIRING_VALID", invalidJson ? "error" : "ok", invalidJson ? "a manifest, MCP file, or hook file is not valid JSON" : "plugin manifest, MCP and hook wiring parse successfully");
   const legacyFeatures = [];
   try {
-    const directory = path20.join(root2, ".dev-flow", "features");
+    const directory = path21.join(root2, ".dev-flow", "features");
     const entries = await readdir7(directory, { withFileTypes: true });
     for (const entry of entries.filter((candidate) => candidate.isDirectory())) {
       try {
-        const raw = JSON.parse(await readFile17(path20.join(directory, entry.name, "state.json"), "utf8"));
+        const raw = JSON.parse(await readFile18(path21.join(directory, entry.name, "state.json"), "utf8"));
         if ([1, 2, 3].includes(Number(raw.schemaVersion)) && raw.lifecycle !== "finalized" && raw.lifecycle !== "abandoned") legacyFeatures.push(entry.name);
       } catch {
       }
@@ -13273,7 +13445,7 @@ import { promisify as promisify6 } from "node:util";
 // plugins/dev-flow/src/mcp/windows-notifications.ts
 import { execFile as execFile5 } from "node:child_process";
 import { access as access4 } from "node:fs/promises";
-import path21 from "node:path";
+import path22 from "node:path";
 import { promisify as promisify5 } from "node:util";
 var run4 = promisify5(execFile5);
 var WINDOWS_NOTIFICATION_APP_ID = "io.github.wxy_hh.dev_flow";
@@ -13286,7 +13458,7 @@ function environmentOf(options) {
 }
 function shortcutPathOf(environment) {
   const appData = environment.APPDATA;
-  return appData ? path21.win32.join(appData, "Microsoft", "Windows", "Start Menu", "Programs", shortcutName) : void 0;
+  return appData ? path22.win32.join(appData, "Microsoft", "Windows", "Start Menu", "Programs", shortcutName) : void 0;
 }
 async function command(file, args) {
   return run4(file, args);
@@ -13314,7 +13486,7 @@ $ErrorActionPreference = 'Stop'
 $shortcutPath = ${powerShellLiteral(shortcutPath)}
 $nodeExecutable = ${powerShellLiteral(nodeExecutable)}
 $nodeArguments = '-e "process.exit(0)"'
-$workingDirectory = ${powerShellLiteral(path21.win32.dirname(shortcutPath))}
+$workingDirectory = ${powerShellLiteral(path22.win32.dirname(shortcutPath))}
 $appId = ${powerShellLiteral(WINDOWS_NOTIFICATION_APP_ID)}
 $source = @'
 using System;
@@ -13519,11 +13691,11 @@ function stable2(value) {
   if (Array.isArray(value)) return `[${value.map(stable2).join(",")}]`;
   return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${stable2(value[key])}`).join(",")}}`;
 }
-function childPath(path23, key) {
-  return typeof key === "number" ? `${path23}[${key}]` : `${path23}.${key}`;
+function childPath(path24, key) {
+  return typeof key === "number" ? `${path24}[${key}]` : `${path24}.${key}`;
 }
-function issue2(path23, keyword, message, extra = {}) {
-  return { path: path23, keyword, message, ...extra };
+function issue2(path24, keyword, message, extra = {}) {
+  return { path: path24, keyword, message, ...extra };
 }
 function matchesType(value, expected) {
   if (expected === "integer") return typeof value === "number" && Number.isInteger(value);
@@ -13547,24 +13719,24 @@ function discriminatorMatches(value, schema) {
   }
   return constrained;
 }
-function validate(value, schema, path23) {
+function validate(value, schema, path24) {
   if (Object.keys(schema).length === 0) return [];
   const issues = [];
   const expectedType = schema.type;
   if (typeof expectedType === "string" && !matchesType(value, expectedType)) {
-    return [issue2(path23, "type", `expected ${expectedType}, got ${typeOf(value)}`)];
+    return [issue2(path24, "type", `expected ${expectedType}, got ${typeOf(value)}`)];
   }
   if (Array.isArray(expectedType) && !expectedType.some((candidate) => typeof candidate === "string" && matchesType(value, candidate))) {
-    return [issue2(path23, "type", `expected one of ${expectedType.join(", ")}, got ${typeOf(value)}`)];
+    return [issue2(path24, "type", `expected one of ${expectedType.join(", ")}, got ${typeOf(value)}`)];
   }
   if (schema.const !== void 0 && stable2(value) !== stable2(schema.const)) {
-    issues.push(issue2(path23, "const", `must equal ${stable2(schema.const)}`));
+    issues.push(issue2(path24, "const", `must equal ${stable2(schema.const)}`));
   }
   if (Array.isArray(schema.enum) && !schema.enum.some((candidate) => stable2(value) === stable2(candidate))) {
-    issues.push(issue2(path23, "enum", "must be one of the allowed values"));
+    issues.push(issue2(path24, "enum", "must be one of the allowed values"));
   }
   if (typeof value === "string") {
-    if (typeof schema.minLength === "number" && value.length < schema.minLength) issues.push(issue2(path23, "minLength", `must have length >= ${schema.minLength}`));
+    if (typeof schema.minLength === "number" && value.length < schema.minLength) issues.push(issue2(path24, "minLength", `must have length >= ${schema.minLength}`));
     if (typeof schema.pattern === "string") {
       let matches = false;
       try {
@@ -13572,21 +13744,21 @@ function validate(value, schema, path23) {
       } catch {
         matches = false;
       }
-      if (!matches) issues.push(issue2(path23, "pattern", "does not match the required pattern"));
+      if (!matches) issues.push(issue2(path24, "pattern", "does not match the required pattern"));
     }
   }
   if (typeof value === "number" && typeof schema.minimum === "number" && value < schema.minimum) {
-    issues.push(issue2(path23, "minimum", `must be >= ${schema.minimum}`));
+    issues.push(issue2(path24, "minimum", `must be >= ${schema.minimum}`));
   }
   if (Array.isArray(value)) {
-    if (typeof schema.minItems === "number" && value.length < schema.minItems) issues.push(issue2(path23, "minItems", `must contain at least ${schema.minItems} items`));
-    if (typeof schema.maxItems === "number" && value.length > schema.maxItems) issues.push(issue2(path23, "maxItems", `must contain at most ${schema.maxItems} items`));
+    if (typeof schema.minItems === "number" && value.length < schema.minItems) issues.push(issue2(path24, "minItems", `must contain at least ${schema.minItems} items`));
+    if (typeof schema.maxItems === "number" && value.length > schema.maxItems) issues.push(issue2(path24, "maxItems", `must contain at most ${schema.maxItems} items`));
     if (schema.uniqueItems === true) {
       const seen = new Set(value.map(stable2));
-      if (seen.size !== value.length) issues.push(issue2(path23, "uniqueItems", "items must be unique"));
+      if (seen.size !== value.length) issues.push(issue2(path24, "uniqueItems", "items must be unique"));
     }
     if (schema.items && typeof schema.items === "object" && !Array.isArray(schema.items)) {
-      value.forEach((item, index) => issues.push(...validate(item, schema.items, childPath(path23, index))));
+      value.forEach((item, index) => issues.push(...validate(item, schema.items, childPath(path24, index))));
     }
   }
   if (typeof value === "object" && value !== null && !Array.isArray(value)) {
@@ -13594,36 +13766,36 @@ function validate(value, schema, path23) {
     const properties = schema.properties && typeof schema.properties === "object" && !Array.isArray(schema.properties) ? schema.properties : {};
     const required = Array.isArray(schema.required) ? schema.required.filter((key) => typeof key === "string") : [];
     for (const key of required) {
-      if (!(key in record)) issues.push(issue2(childPath(path23, key), "required", "is required"));
+      if (!(key in record)) issues.push(issue2(childPath(path24, key), "required", "is required"));
     }
     const additional = schema.additionalProperties;
     for (const [key, item] of Object.entries(record)) {
       if (properties[key]) {
-        issues.push(...validate(item, properties[key], childPath(path23, key)));
+        issues.push(...validate(item, properties[key], childPath(path24, key)));
       } else if (additional === false) {
-        issues.push(issue2(childPath(path23, key), "additionalProperties", "unknown field", {
+        issues.push(issue2(childPath(path24, key), "additionalProperties", "unknown field", {
           unknownField: key,
           allowedFields: Object.keys(properties).sort()
         }));
       } else if (additional && typeof additional === "object" && !Array.isArray(additional)) {
-        issues.push(...validate(item, additional, childPath(path23, key)));
+        issues.push(...validate(item, additional, childPath(path24, key)));
       }
     }
     const propertyNames = schema.propertyNames && typeof schema.propertyNames === "object" && !Array.isArray(schema.propertyNames) ? schema.propertyNames : void 0;
     if (propertyNames) {
-      for (const key of Object.keys(record)) issues.push(...validate(key, propertyNames, childPath(path23, key)));
+      for (const key of Object.keys(record)) issues.push(...validate(key, propertyNames, childPath(path24, key)));
     }
   }
   if (Array.isArray(schema.oneOf)) {
     const candidates = schema.oneOf.filter((candidate) => typeof candidate === "object" && candidate !== null && !Array.isArray(candidate));
-    const results = candidates.map((candidate) => validate(value, candidate, path23));
+    const results = candidates.map((candidate) => validate(value, candidate, path24));
     const valid = results.filter((result) => result.length === 0);
     if (valid.length !== 1) {
       const discriminatorResults = results.filter((_, index) => discriminatorMatches(value, candidates[index]));
       const bestPool = discriminatorResults.length ? discriminatorResults : results;
       const best = bestPool.sort((left, right) => left.length - right.length)[0] ?? [];
       issues.push(...best);
-      issues.push(issue2(path23, "oneOf", "must match exactly one schema"));
+      issues.push(issue2(path24, "oneOf", "must match exactly one schema"));
     }
   }
   return issues;
@@ -13647,8 +13819,8 @@ function validateToolInput(toolName, args, schemas) {
 
 // plugins/dev-flow/src/mcp/server.ts
 var root = process.cwd();
-var moduleDirectory = path22.dirname(fileURLToPath(import.meta.url));
-var pluginRoot = path22.basename(moduleDirectory) === "dist" ? path22.resolve(moduleDirectory, "..") : path22.resolve(moduleDirectory, "../..");
+var moduleDirectory = path23.dirname(fileURLToPath(import.meta.url));
+var pluginRoot = path23.basename(moduleDirectory) === "dist" ? path23.resolve(moduleDirectory, "..") : path23.resolve(moduleDirectory, "../..");
 var object = (required, properties = {}) => ({
   type: "object",
   required,
@@ -14282,6 +14454,16 @@ function interactionEnvelope(state, interaction, interactionOutcome, response) {
     } } : {}
   };
 }
+function answerOutcomeMessage(action, kind) {
+  if (kind === "workspace-ownership") {
+    if (action === "adopt-all" || action === "adopt" || action === "include") return "\u5DF2\u5C06\u8DEF\u5F84\u7EB3\u5165\u5F53\u524D\u4EFB\u52A1\u3002";
+    if (action === "exclude-all" || action === "exclude") return "\u5DF2\u5C06\u8DEF\u5F84\u6392\u9664\uFF1B\u7CFB\u7EDF\u4E0D\u4F1A\u81EA\u52A8\u8FD8\u539F\u6216\u6682\u5B58\u5B83\u4EEC\u3002";
+    if (action === "one-by-one") return "\u5DF2\u5207\u6362\u4E3A\u9010\u4E2A\u786E\u8BA4\u8DEF\u5F84\u3002";
+    return void 0;
+  }
+  if (kind === "route-confirmation" && action === "confirm") return "\u8DEF\u7EBF\u5DF2\u6309\u53EF\u4FE1\u7528\u6237\u786E\u8BA4\u539F\u5B50\u9501\u5B9A\u3002";
+  return void 0;
+}
 function rollbackGateMessage(preview) {
   const files = preview.filePlan.map((action) => `${action.action === "restore" ? "\u6062\u590D" : "\u5220\u9664"} ${action.path}`);
   const verification2 = preview.verificationCommands.map((command2) => command2.command);
@@ -14495,11 +14677,11 @@ async function dispatch(name, a, connection2) {
   switch (name) {
     case "dev_flow_init_project": {
       await initProject(root, a.config);
-      return { \u72B6\u6001: "\u5DF2\u521D\u59CB\u5316", \u914D\u7F6E\u8DEF\u5F84: path22.join(root, ".dev-flow", "project.json"), \u4E0B\u4E00\u6B65: "\u8C03\u7528 dev_flow_start \u5F00\u59CB\u4E00\u4E2A\u9700\u6C42\u3002" };
+      return { \u72B6\u6001: "\u5DF2\u521D\u59CB\u5316", \u914D\u7F6E\u8DEF\u5F84: path23.join(root, ".dev-flow", "project.json"), \u4E0B\u4E00\u6B65: "\u8C03\u7528 dev_flow_start \u5F00\u59CB\u4E00\u4E2A\u9700\u6C42\u3002" };
     }
     case "dev_flow_update_project": {
       const result = await updateProjectConfig(root, a.config, a.expectedSha256);
-      return { \u72B6\u6001: "\u5DF2\u66F4\u65B0", \u914D\u7F6E\u8DEF\u5F84: path22.join(root, ".dev-flow", "project.json"), previousSha256: result.previousSha256, sha256: result.sha256, \u53D8\u5316: result.impact, \u53D7\u5F71\u54CD\u8BC1\u636E: result.affectedEvidence, \u4E0B\u4E00\u6B65: "\u65B0\u589E\u6216\u6269\u5145\u9A8C\u8BC1\u80FD\u529B\u53EF\u7EE7\u7EED\u5F53\u524D\u4EFB\u52A1\uFF1B\u88AB\u5F15\u7528\u547D\u4EE4\u53D8\u5316\u7684 Trace/RU \u9700\u8981\u6309\u9519\u8BEF\u63D0\u793A\u91CD\u65B0\u767B\u8BB0\u3002" };
+      return { \u72B6\u6001: "\u5DF2\u66F4\u65B0", \u914D\u7F6E\u8DEF\u5F84: path23.join(root, ".dev-flow", "project.json"), previousSha256: result.previousSha256, sha256: result.sha256, \u53D8\u5316: result.impact, \u53D7\u5F71\u54CD\u8BC1\u636E: result.affectedEvidence, \u4E0B\u4E00\u6B65: "\u65B0\u589E\u6216\u6269\u5145\u9A8C\u8BC1\u80FD\u529B\u53EF\u7EE7\u7EED\u5F53\u524D\u4EFB\u52A1\uFF1B\u88AB\u5F15\u7528\u547D\u4EE4\u53D8\u5316\u7684 Trace/RU \u9700\u8981\u6309\u9519\u8BEF\u63D0\u793A\u91CD\u65B0\u767B\u8BB0\u3002" };
     }
     case "dev_flow_classify": {
       if (!a.classificationBasis && (a.level === void 0 || a.topology === void 0)) {
@@ -14537,7 +14719,7 @@ async function dispatch(name, a, connection2) {
       emitAttentionNotification({ kind: "decision-required", featureId: a.featureId, decision: "decision-revision" });
       const selection = await connection2.elicit(result.interaction, result.interaction.question ?? "\u8BF7\u786E\u8BA4\u662F\u5426\u4FEE\u8BA2\u8BE5\u51B3\u5B9A\u3002");
       if (!selection) return interactionEnvelope(result.state, result.interaction, "pending");
-      const next = await resolveRevisionElicitation(root, a.featureId, result.state.revision, result.interactionId, selection.action, selection.comment, a.host);
+      const next = await answer({ root, featureId: a.featureId, expectedRevision: result.state.revision, host: a.host, credential: { source: "elicitation", action: selection.action, comment: selection.comment } });
       const response = interactionResponse(next.state, result.interactionId);
       return interactionEnvelope(next.state, toPublicInteraction(getInteraction(next.state, result.interactionId)), response?.action ?? selection.action, response);
     }
@@ -14546,7 +14728,7 @@ async function dispatch(name, a, connection2) {
       emitAttentionNotification({ kind: "decision-required", featureId: a.featureId, decision: "plan-revision" });
       const selection = await connection2.elicit(result.interaction, result.interaction.question ?? "\u8BF7\u786E\u8BA4\u662F\u5426\u4FEE\u8BA2\u5B9E\u65BD\u8BA1\u5212\u3002");
       if (!selection) return interactionEnvelope(result.state, result.interaction, "pending");
-      const next = await resolvePlanRevisionElicitation(root, a.featureId, result.state.revision, result.interactionId, selection.action, selection.comment, a.host);
+      const next = await answer({ root, featureId: a.featureId, expectedRevision: result.state.revision, host: a.host, credential: { source: "elicitation", action: selection.action, comment: selection.comment } });
       const response = interactionResponse(next.state, result.interactionId);
       return interactionEnvelope(next.state, toPublicInteraction(getInteraction(next.state, result.interactionId)), response?.action ?? selection.action, response);
     }
@@ -14574,17 +14756,15 @@ async function dispatch(name, a, connection2) {
       emitAttentionNotification({ kind: "decision-required", featureId: a.featureId, decision: "route-confirmation" });
       const selection = await connection2.elicit(toPublicInteraction(interaction), interaction.question ?? decision.question);
       if (!selection) return interactionEnvelope(state, toPublicInteraction(interaction), "pending");
-      const next = await resolveRouteClassificationElicitation(
+      const next = await answer({
         root,
-        a.featureId,
-        state.revision,
-        interaction.id,
-        selection.action,
-        selection.comment,
-        state.lastUpdatedBy.host
-      );
-      const response = interactionResponse(next, interaction.id);
-      return interactionEnvelope(next, toPublicInteraction(getInteraction(next, interaction.id)), selection.action, response);
+        featureId: a.featureId,
+        expectedRevision: state.revision,
+        host: state.lastUpdatedBy.host,
+        credential: { source: "elicitation", action: selection.action, comment: selection.comment }
+      });
+      const response = interactionResponse(next.state, interaction.id);
+      return interactionEnvelope(next.state, toPublicInteraction(getInteraction(next.state, interaction.id)), selection.action, response);
     }
     case "dev_flow_status":
       return readCompactStatus(root, a.featureId);
@@ -14703,7 +14883,7 @@ async function dispatch(name, a, connection2) {
       emitAttentionNotification({ kind: "decision-required", featureId: a.featureId, decision: "decision-ratification" });
       const selection = await connection2.elicit(result.interaction, result.interaction.question ?? "\u8BF7\u786E\u8BA4\u662F\u5426\u767B\u8BB0\u8BE5\u51B3\u5B9A\u3002");
       if (!selection) return { ...interactionEnvelope(result.state, result.interaction, "pending"), decisionId: result.decisionId };
-      const next = await resolveRatificationElicitation(root, a.featureId, result.state.revision, result.interactionId, selection.action, selection.comment, a.host);
+      const next = await answer({ root, featureId: a.featureId, expectedRevision: result.state.revision, host: a.host, credential: { source: "elicitation", action: selection.action, comment: selection.comment } });
       const response = interactionResponse(next.state, result.interactionId);
       return { ...interactionEnvelope(next.state, toPublicInteraction(getInteraction(next.state, result.interactionId)), response?.action ?? selection.action, response), decisionId: result.decisionId };
     }
@@ -14812,20 +14992,18 @@ async function dispatch(name, a, connection2) {
         "\u8BF7\u786E\u8BA4\u5F53\u524D\u6267\u884C\u6458\u8981\uFF0C\u6216\u63D0\u51FA\u9700\u8981\u4FEE\u6539\u7684\u610F\u89C1\u3002"
       );
       if (!selection) return interactionEnvelope(presentation, presentation.approvalInteraction, "pending");
-      const state = await resolveApprovalElicitation(
+      const state = await answer({
         root,
-        a.featureId,
-        presentation.revision,
-        presentation.interactionId,
-        selection.action,
-        selection.comment,
-        a.host
-      );
+        featureId: a.featureId,
+        expectedRevision: presentation.revision,
+        host: a.host,
+        credential: { source: "elicitation", action: selection.action, comment: selection.comment }
+      });
       return interactionEnvelope(
-        state,
+        state.state,
         presentation.approvalInteraction,
         selection.action,
-        interactionResponse(state, presentation.interactionId)
+        interactionResponse(state.state, presentation.interactionId)
       );
     }
     case "dev_flow_record_acceptance_evidence": {
@@ -14845,185 +15023,29 @@ async function dispatch(name, a, connection2) {
     }
     case "dev_flow_answer": {
       await assertHostHealth(root, a.host, "\u56DE\u7B54\u5F53\u524D\u95EE\u9898");
-      const state = await readState(root, a.featureId);
-      const decision = pendingDecisionForState(state);
-      if (!decision) {
-        return {
-          state,
-          message: "\u5F53\u524D\u6CA1\u6709\u9700\u8981\u56DE\u7B54\u7684\u95EE\u9898\u3002",
-          nextStep: "\u6D41\u7A0B\u5C06\u6309\u5F53\u524D\u9636\u6BB5\u81EA\u52A8\u7EE7\u7EED\u3002"
-        };
-      }
-      const interaction = pendingInteractionForDecision(state, decision);
-      if (decision.kind === "task-switch" && interaction) {
-        const result = await resolveTaskSwitchAnswer(root, a.featureId, a.expectedRevision, a.userReply, a.host);
-        return {
-          state: result.state,
-          message: result.action === "pause-old" ? "\u65E7\u4EFB\u52A1\u5DF2\u6682\u505C\uFF0C\u53EF\u4EE5\u91CD\u8BD5\u5F00\u59CB\u65B0\u4EFB\u52A1\u3002" : result.action === "return-old" ? "\u7EE7\u7EED\u5F53\u524D\u4EFB\u52A1\uFF1B\u65B0\u4EFB\u52A1\u5C1A\u672A\u521B\u5EFA\u3002" : "\u8BF7\u5148\u5B8C\u6210\u5F53\u524D\u4EFB\u52A1\uFF1B\u65B0\u4EFB\u52A1\u5C1A\u672A\u521B\u5EFA\u3002",
-          \u9700\u8981\u7528\u6237\u51B3\u5B9A: false
-        };
-      }
-      if (decision.kind === "route-confirmation") {
-        const next = await confirmRouteClassification(root, a.featureId, a.expectedRevision, a.userReply, a.host);
-        return { state: next, message: "\u8DEF\u7EBF\u5DF2\u6309\u53EF\u4FE1\u7528\u6237\u786E\u8BA4\u539F\u5B50\u9501\u5B9A\u3002", \u9700\u8981\u7528\u6237\u51B3\u5B9A: false };
-      }
-      if (decision.kind === "workspace-ownership" && interaction) {
-        const result = await resolveWorkspaceOwnershipText(
-          root,
-          a.featureId,
-          a.expectedRevision,
-          interaction.id,
-          a.userReply,
-          a.host
-        );
-        return {
-          state: result.state,
-          message: result.action === "adopt-all" || result.action === "adopt" || result.action === "include" ? "\u5DF2\u5C06\u8DEF\u5F84\u7EB3\u5165\u5F53\u524D\u4EFB\u52A1\u3002" : result.action === "exclude-all" || result.action === "exclude" ? "\u5DF2\u5C06\u8DEF\u5F84\u6392\u9664\uFF1B\u7CFB\u7EDF\u4E0D\u4F1A\u81EA\u52A8\u8FD8\u539F\u6216\u6682\u5B58\u5B83\u4EEC\u3002" : "\u5DF2\u5207\u6362\u4E3A\u9010\u4E2A\u786E\u8BA4\u8DEF\u5F84\u3002",
-          ...pendingDecisionForState(result.state) ? { attention: "\u8BF7\u53EA\u56DE\u7B54\u5F53\u524D\u8FD9\u4E00\u9053\u95EE\u9898\u3002", \u9700\u8981\u7528\u6237\u51B3\u5B9A: true } : { \u9700\u8981\u7528\u6237\u51B3\u5B9A: false }
-        };
-      }
-      if (decision.kind === "acceptance-confirmation" && interaction) {
-        const result = await resolveAcceptanceConfirmationAnswer(root, a.featureId, a.expectedRevision, interaction.id, a.userReply, a.host);
-        return {
-          state: result.state,
-          message: "\u5DF2\u8BB0\u5F55\u5F53\u524D\u9A8C\u6536\u786E\u8BA4\u3002",
-          interaction: result.interaction,
-          response: result.response,
-          \u9700\u8981\u7528\u6237\u51B3\u5B9A: false
-        };
-      }
-      if (!interaction) {
-        const prompt = resolvePromptEvent(await readFeatureEvents(root, a.featureId), {
-          host: a.host,
-          userReply: a.userReply,
-          presentedAt: decision.presentedAt,
-          presentedRevision: decision.presentedRevision,
-          ...decision.presentationEventId ? { presentationEventId: decision.presentationEventId } : {},
-          ...decision.question ? { question: decision.question } : {}
-        });
-        const matched = matchDecisionReply(decision, prompt.text);
-        let nextPresentationEventId;
-        const next = await mutate(root, a.featureId, a.expectedRevision, "decision-answered", async (draft) => {
-          const current = draft.pendingDecision;
-          if (!current) throw new DevFlowError("DECISION_ALREADY_RESOLVED", "\u5F53\u524D\u95EE\u9898\u5DF2\u7ECF\u5904\u7406\u3002", { userMessage: "\u5F53\u524D\u95EE\u9898\u5DF2\u7ECF\u5904\u7406\uFF0C\u8BF7\u5237\u65B0\u72B6\u6001\u3002", recoveryKind: "refresh", recoveryInstruction: "\u5237\u65B0\u5F53\u524D\u72B6\u6001\u540E\u7EE7\u7EED\u3002", retryOriginal: false });
-          delete draft.pendingDecision;
-          if (current.kind === "route-confirmation") {
-            if (matched.option.id === "confirm") {
-              const confirmation = draft.routeConfirmation;
-              if (!confirmation || confirmation.basisHash !== current.basisHash) throw new DevFlowError("ROUTE_CONFIRMATION_STALE", "\u8DEF\u7EBF\u786E\u8BA4\u4F9D\u636E\u5DF2\u53D8\u5316\uFF0C\u8BF7\u91CD\u65B0\u5448\u73B0\u3002");
-              const selected = selectRoute({
-                ...confirmation.facts,
-                classificationBasis: {
-                  scopeFactRefs: confirmation.facts.scopeFactRefs,
-                  topologyFactRefs: confirmation.facts.topologyFactRefs,
-                  uncertaintyFactRefs: confirmation.facts.uncertaintyFactRefs,
-                  riskFactRefs: confirmation.facts.riskFactRefs,
-                  decisionRefs: confirmation.facts.decisionRefs,
-                  ...confirmation.facts.signals ? { signals: confirmation.facts.signals } : {},
-                  ...confirmation.facts.controlEnhancements ? { controlEnhancements: confirmation.facts.controlEnhancements } : {}
-                }
-              });
-              const definition = routeDefinitionForFeature(selected.route, selected.classification.controls);
-              draft.mode = "routed";
-              draft.route = selected.route;
-              draft.classification = selected.classification;
-              draft.classificationBasis = selected.classificationBasis;
-              draft.obligations = selected.obligations;
-              draft.currentStage = definition.orderedSteps[0];
-              draft.workflowCapabilities = normalizeWorkflowCapabilities(SUPPORTED_WORKFLOW_CAPABILITIES);
-              draft.steps = Object.fromEntries(definition.orderedSteps.map((step) => [step, { status: "pending" }]));
-              if (traceEnforcementRequired(selected.route, selected.classification.controls)) {
-                draft.traceability = await writeTraceSnapshot(root, emptyTraceabilityLedger(draft.featureId, draft.revision + 1, (await readProjectConfigSnapshot(root)).sha256));
-              }
-              if (reviewEnforcementRequired(selected.route, selected.classification.controls)) {
-                draft.review = await writeReviewSnapshot(root, emptyReviewLedger(draft.featureId, draft.revision + 1));
-              }
-            }
-            delete draft.routeConfirmation;
-          } else if (current.kind === "workspace-ownership" && current.target?.startsWith("workspace:")) {
-            const file = current.target.slice("workspace:".length);
-            const owner = matched.option.id === "adopt" ? "feature" : "excluded";
-            draft.workspace.ownership[file] = owner;
-            if (owner === "feature") draft.workspace.ownershipSource[file] = "user-adopted";
-            const nextFile = Object.keys(draft.workspace.startedDirty).find((candidate) => draft.workspace.ownership[candidate] === void 0);
-            if (nextFile) {
-              const nextInteraction = createInteraction(draft, {
-                kind: "workspace-ownership",
-                target: `workspace:${nextFile}`,
-                basisHash: current.basisHash,
-                question: `\u542F\u52A8\u524D\u5DF2\u53D1\u73B0\u8DEF\u5F84\u201C${nextFile}\u201D\u5B58\u5728\u6539\u52A8\u3002\u5B83\u662F\u5426\u5C5E\u4E8E\u5F53\u524D\u4EFB\u52A1\uFF1F`,
-                options: [
-                  { id: "adopt", label: "\u7EB3\u5165\u5F53\u524D\u4EFB\u52A1" },
-                  { id: "exclude", label: "\u5148\u5904\u7406\u540E\u7EE7\u7EED" }
-                ],
-                workspacePaths: [nextFile],
-                workspaceBatchPaths: [nextFile]
-              });
-              nextPresentationEventId = nextInteraction.presentationEventId;
-            }
-          } else if (current.kind === "task-switch" && matched.option.id === "pause-old") {
-            draft.lifecycle = "paused";
-            draft.resumeSummary = "\u65E7\u4EFB\u52A1\u5DF2\u6682\u505C\uFF1B\u6062\u590D\u65F6\u4F1A\u81EA\u52A8\u5BF9\u8D26\u5DE5\u4F5C\u533A\u3002";
-          }
-        }, () => ({ eventId: prompt.eventId, action: matched.option.id, ...nextPresentationEventId ? { presentationEventId: nextPresentationEventId } : {} }));
-        return {
-          state: next,
-          message: matched.option.id === "adopt" ? "\u5DF2\u5C06\u8BE5\u8DEF\u5F84\u7EB3\u5165\u5F53\u524D\u4EFB\u52A1\u3002" : matched.option.id === "exclude" ? "\u5DF2\u5C06\u8BE5\u8DEF\u5F84\u6392\u9664\uFF1B\u7CFB\u7EDF\u4E0D\u4F1A\u81EA\u52A8\u8FD8\u539F\u6216\u6682\u5B58\u5B83\u3002" : "\u5DF2\u8BB0\u5F55\u4F60\u7684\u9009\u62E9\uFF0C\u6D41\u7A0B\u5C06\u6309\u5F53\u524D\u4EFB\u52A1\u72B6\u6001\u7EE7\u7EED\u3002",
-          ...pendingDecisionForState(next) ? { attention: "\u8BF7\u53EA\u56DE\u7B54\u5F53\u524D\u8FD9\u4E00\u9053\u95EE\u9898\u3002", \u9700\u8981\u7528\u6237\u51B3\u5B9A: true } : { \u9700\u8981\u7528\u6237\u51B3\u5B9A: false }
-        };
-      }
-      if (decision.kind === "approval") {
-        const next = await resolveApprovalAnswer(root, a.featureId, a.expectedRevision, interaction.id, a.userReply, a.host);
-        const response = interactionResponse(next, interaction.id);
-        return interactionEnvelope(next, toPublicInteraction(getInteraction(next, interaction.id)), response?.action ?? "\u5DF2\u5904\u7406", response);
-      }
-      if (decision.kind === "grill") {
-        const result = await resolveGrillAnswer(root, a.featureId, a.expectedRevision, interaction.id, a.userReply, a.host);
-        return interactionEnvelope(result.state, result.interaction, result.response?.action ?? "\u5DF2\u5904\u7406", result.response);
-      }
-      if (decision.kind === "review-risk") {
-        const result = await resolveReviewRiskAcceptanceAnswer(root, a.featureId, a.expectedRevision, interaction.id, a.userReply, a.host);
-        const response = interactionResponse(result.state, interaction.id);
-        return interactionEnvelope(result.state, toPublicInteraction(getInteraction(result.state, interaction.id)), result.idempotent ? "\u5DF2\u63A5\u53D7\u98CE\u9669" : response?.action ?? "\u5DF2\u5904\u7406", response);
-      }
-      if (decision.kind === "quality-exception") {
-        const next = await resolveQualityExceptionAnswer(root, a.featureId, a.expectedRevision, interaction.id, a.userReply, a.host);
-        const response = interactionResponse(next, interaction.id);
-        return interactionEnvelope(next, toPublicInteraction(getInteraction(next, interaction.id)), response?.action ?? "\u5DF2\u5904\u7406", response);
-      }
-      if (decision.kind === "rollback-confirmation") {
-        const next = await resolveRollbackGateAnswer(root, a.featureId, a.expectedRevision, interaction.id, a.userReply, a.host);
-        const response = interactionResponse(next, interaction.id);
-        return interactionEnvelope(next, toPublicInteraction(getInteraction(next, interaction.id)), response?.action ?? "\u5DF2\u5904\u7406", response);
-      }
-      if (decision.kind === "decision-ratification") {
-        const result = await resolveRatificationAnswer(root, a.featureId, a.expectedRevision, interaction.id, a.userReply, a.host);
-        const response = interactionResponse(result.state, interaction.id);
-        return interactionEnvelope(result.state, toPublicInteraction(getInteraction(result.state, interaction.id)), response?.action ?? "\u5DF2\u5904\u7406", response);
-      }
-      if (decision.kind === "decision-revision") {
-        const result = await resolveRevisionAnswer(root, a.featureId, a.expectedRevision, interaction.id, a.userReply, a.host);
-        const response = interactionResponse(result.state, interaction.id);
-        return interactionEnvelope(result.state, toPublicInteraction(getInteraction(result.state, interaction.id)), response?.action ?? "\u5DF2\u5904\u7406", response);
-      }
-      if (decision.kind === "plan-revision") {
-        const result = await resolvePlanRevisionAnswer(root, a.featureId, a.expectedRevision, interaction.id, a.userReply, a.host);
-        const response = interactionResponse(result.state, interaction.id);
-        return interactionEnvelope(result.state, toPublicInteraction(getInteraction(result.state, interaction.id)), response?.action ?? "\u5DF2\u5904\u7406", response);
-      }
-      if (decision.kind === "side-effect-rerun") {
-        const result = await resolveSideEffectRerunAnswer(root, a.featureId, a.expectedRevision, interaction.id, a.userReply, a.host);
-        const response = interactionResponse(result.state, interaction.id);
-        return interactionEnvelope(result.state, toPublicInteraction(getInteraction(result.state, interaction.id)), response?.action ?? "\u5DF2\u5904\u7406", response);
-      }
-      throw new DevFlowError("DECISION_KIND_UNSUPPORTED", "\u5F53\u524D\u51B3\u7B56\u7C7B\u578B\u8FD8\u6CA1\u6709\u53EF\u7528\u7684\u56DE\u7B54\u5904\u7406\u5668\u3002", {
-        userMessage: "\u5F53\u524D\u95EE\u9898\u6682\u65F6\u4E0D\u80FD\u81EA\u52A8\u5904\u7406\u3002",
-        cause: `\u51B3\u7B56\u7C7B\u578B\u4E3A ${decision.kind}\u3002`,
-        impact: "\u6D41\u7A0B\u4FDD\u6301\u5728\u5F53\u524D\u9636\u6BB5\u3002",
-        recoveryKind: "repair",
-        recoveryInstruction: "\u8FD0\u884C doctor \u68C0\u67E5\u63D2\u4EF6\u7248\u672C\u548C\u72B6\u6001\u3002",
-        retryOriginal: false
+      const prior = await readState(root, a.featureId);
+      const priorDecision = pendingDecisionForState(prior);
+      const priorInteraction = priorDecision ? pendingInteractionForDecision(prior, priorDecision) : void 0;
+      const result = await answer({
+        root,
+        featureId: a.featureId,
+        expectedRevision: a.expectedRevision,
+        host: a.host,
+        credential: { source: "text", userReply: a.userReply }
       });
+      const interaction = priorInteraction ? getInteraction(result.state, priorInteraction.id) : void 0;
+      const publicInteraction = interaction ? toPublicInteraction(interaction) : void 0;
+      const response = interaction?.response;
+      const pendingDecision = pendingDecisionForState(result.state);
+      const pendingInteraction3 = pendingDecision ? pendingInteractionForDecision(result.state, pendingDecision) : void 0;
+      const message = answerOutcomeMessage(result.action, priorDecision?.kind);
+      return {
+        ...publicInteraction ? interactionEnvelope(result.state, publicInteraction, response?.action ?? result.action, response) : { state: result.state },
+        action: result.action,
+        ...result.comment ? { comment: result.comment } : {},
+        ...message ? { message } : {},
+        ...pendingDecision ? { attention: "\u8BF7\u53EA\u56DE\u7B54\u5F53\u524D\u8FD9\u4E00\u9053\u95EE\u9898\u3002", \u9700\u8981\u7528\u6237\u51B3\u5B9A: true, ...pendingInteraction3 ? { pending: toPublicInteraction(pendingInteraction3) } : {} } : { \u9700\u8981\u7528\u6237\u51B3\u5B9A: false }
+      };
     }
     case "dev_flow_present_quality_exception": {
       const result = await presentQualityException(root, a.featureId, a.expectedRevision, {
@@ -15058,16 +15080,14 @@ async function dispatch(name, a, connection2) {
       emitAttentionNotification({ kind: "decision-required", featureId: a.featureId, decision: "grill" });
       const selection = await connection2.elicit(result.interaction, result.interaction.presentation ?? result.interaction.question ?? "\u8BF7\u9009\u62E9\u4E00\u4E2A\u65B9\u6848\u3002");
       if (!selection) return interactionEnvelope(result.state, result.interaction, "pending");
-      const resolved = await resolveGrillElicitation(
+      const resolved = await answer({
         root,
-        a.featureId,
-        result.state.revision,
-        result.interactionId,
-        selection.action,
-        selection.comment,
-        a.host
-      );
-      return interactionEnvelope(resolved.state, resolved.interaction, selection.action, resolved.response);
+        featureId: a.featureId,
+        expectedRevision: result.state.revision,
+        host: a.host,
+        credential: { source: "elicitation", action: selection.action, comment: selection.comment }
+      });
+      return interactionEnvelope(resolved.state, toPublicInteraction(getInteraction(resolved.state, result.interactionId)), selection.action, interactionResponse(resolved.state, result.interactionId));
     }
     case "dev_flow_reclassify":
       return reclassifyFeature(root, a.featureId, a.expectedRevision, a.classification, a.reason, a.userEvidence);
@@ -15091,7 +15111,7 @@ async function dispatch(name, a, connection2) {
     case "dev_flow_enable_windows_notifications":
       return enableWindowsNotifications({ nodeExecutable: process.execPath });
     case "dev_flow_doctor":
-      return collectDoctorReport(root, pluginRoot, "5.0.8", publicTools);
+      return collectDoctorReport(root, pluginRoot, "5.0.9", publicTools);
     case "dev_flow_recover_corrupt_feature":
       return recoverCorruptFeature(root, {
         featureId: a.featureId,
@@ -15117,7 +15137,7 @@ async function dispatchRequest(message) {
       connection.configure(message.params?.capabilities, message.params?.clientInfo);
       protocolResult(message.id, {
         protocolVersion: message.params?.protocolVersion || "2024-11-05",
-        serverInfo: { name: "dev-flow", version: "5.0.8" },
+        serverInfo: { name: "dev-flow", version: "5.0.9" },
         capabilities: { tools: {} },
         instructions: "\u5148\u5B8C\u6210\u4E8B\u5B9E\u8C03\u67E5\u548C\u8DEF\u7EBF\u5206\u7C7B\u3002\u65E5\u5E38\u8BFB\u53D6 dev_flow_status\uFF1B\u5B83\u4F1A\u663E\u793A\u4E2D\u6587\u9636\u6BB5\u3001\u5F53\u524D\u4E0B\u4E00\u6B65\u548C\u552F\u4E00\u5F85\u51B3\u95EE\u9898\u3002\u6240\u6709\u7528\u6237\u51B3\u5B9A\u7EDF\u4E00\u4F7F\u7528 dev_flow_answer\uFF0C\u7CFB\u7EDF\u4F1A\u81EA\u52A8\u6309\u95EE\u9898\u7C7B\u578B\u5904\u7406\u3002\u6CA1\u6709\u771F\u5B9E\u51B3\u7B56\u7F3A\u53E3\u65F6\u6D41\u7A0B\u4F1A\u81EA\u52A8\u63A8\u8FDB\u3002\u5148\u8C03\u7528 dev_flow_init_project\uFF0C\u518D\u5F00\u59CB feature\u3002"
       });

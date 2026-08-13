@@ -43,7 +43,7 @@ async function setup(prefix) {
     },
   }, { scanned: ["assumption", "free-space", "tbd", "fallback", "scope", "acceptance"], items: [] });
   await store.recordHostEvent(root, { eventId: `route-${state.revision}`, type: "user-prompt", host: "claude", text: "确认这条路线" });
-  state = await store.confirmRouteClassification(root, "iso", state.revision, "确认这条路线", "claude");
+  state = (await store.answer({ root, featureId: "iso", expectedRevision: state.revision, host: "claude", credential: { source: "text", userReply: "确认这条路线" } })).state;
   return { root, state };
 }
 

@@ -85,7 +85,7 @@ async function setup(prefix) {
   state = await store.lockClassification(root, "nb", state.revision, classificationFacts(), { scanned, items: [] });
   // M 路线需要先确认路线。
   await store.recordHostEvent(root, { eventId: `route-confirm-${state.revision}`, type: "user-prompt", host: "claude", text: "确认这条路线" });
-  state = await store.confirmRouteClassification(root, "nb", state.revision, "确认这条路线", "claude");
+  state = (await store.answer({ root, featureId: "nb", expectedRevision: state.revision, host: "claude", credential: { source: "text", userReply: "确认这条路线" } })).state;
   state = await registerTraceFixture({ root, featureId: "nb", state, kind: "requirements", delta: requirementsDelta("仅核对文档结构，无运行时行为") });
   state = await checks.recordStep(root, "nb", state.revision, "requirements_alignment", {});
   state = await registerTraceFixture({ root, featureId: "nb", state, kind: "implementation-plan", delta: planDelta(), edit: () => planMarkdown });

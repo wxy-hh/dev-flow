@@ -40,7 +40,7 @@ test("start creates intake and route confirmation atomically creates routed v4 s
   const pending = await state.lockClassification(root, "f", intake.revision, facts, boundaryAudit);
   assert.equal(decisions.pendingDecisionForState(pending).kind, "route-confirmation");
   await state.recordHostEvent(root, { eventId: "route-confirm", type: "user-prompt", host: "codex", text: "确认这条路线" });
-  const routed = await state.confirmRouteClassification(root, "f", pending.revision, "确认这条路线", "codex");
+  const routed = (await state.answer({ root, featureId: "f", expectedRevision: pending.revision, host: "codex", credential: { source: "text", userReply: "确认这条路线" } })).state;
   assert.equal(routed.mode, "routed");
   assert.equal(routed.route, "m");
   assert.equal(routed.schemaVersion, 5);

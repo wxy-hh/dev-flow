@@ -122,7 +122,7 @@ export async function loadSource(relativePath) {
         const routeInteraction = Object.values(routed.interactions ?? {}).find((value) => value.kind === "route-confirmation" && value.status === "pending");
         if (routeInteraction) {
           await module.recordHostEvent(root, { eventId: `route-confirm-${routed.revision}`, type: "user-prompt", host: input.host ?? "claude", text: "确认这条路线" });
-          routed = await module.confirmRouteClassification(root, routed.featureId, routed.revision, "确认这条路线", input.host ?? "claude");
+          routed = (await module.answer({ root, featureId: routed.featureId, expectedRevision: routed.revision, host: input.host ?? "claude", credential: { source: "text", userReply: "确认这条路线" } })).state;
         }
         return routed;
       },

@@ -5,11 +5,12 @@ import path from "node:path";
 import { recordArtifact, recordArtifactWithTrace, scaffoldArtifact, validatePlan } from "../core/artifacts.js";
 import { DevFlowError, failureFrom } from "../core/errors.js";
 import { finalize, recordStep } from "../core/feature-check.js";
-import { presentApproval, resolveApprovalAnswer, resolveApprovalElicitation } from "../core/approval-interactions.js";
+import { presentApproval } from "../core/approval-interactions.js";
 import {
-  initProject, updateProjectConfig, startFeature, lockClassification, confirmRouteClassification, resolveRouteClassificationElicitation, resolveWorkspaceOwnershipText, resolveTaskSwitchAnswer, recordDecision, resolveRatificationAnswer, resolveRatificationElicitation, reviseDecision, resolveRevisionAnswer, resolveRevisionElicitation, revisePlanDuringImplementation, resolvePlanRevisionAnswer, resolvePlanRevisionElicitation, resolveSideEffectRerunAnswer, abandonFeature, reclassifyFeature, recoverCorruptFeature, repairFeature, readState, readFeatureEvents, mutate, pauseFeature, resumeFeature, reconcileWorkspace, assertHostHealth, registerRepositoryFact, registerRepositoryFacts,
+  initProject, updateProjectConfig, startFeature, lockClassification, recordDecision, reviseDecision, revisePlanDuringImplementation, abandonFeature, reclassifyFeature, recoverCorruptFeature, repairFeature, readState, readFeatureEvents, mutate, pauseFeature, resumeFeature, reconcileWorkspace, assertHostHealth, registerRepositoryFact, registerRepositoryFacts,
 } from "../core/state-store.js";
 import type { FeatureState } from "../core/state-store.js";
+import { answer } from "../core/interaction-answer.js";
 import { buildFeatureMutationSummary } from "../core/execution-brief.js";
 import { readCompactStatus } from "../core/status-projection.js";
 import { inspectFeature, inspectionTopics } from "../core/inspection.js";
@@ -30,7 +31,7 @@ import { collectDoctorReport } from "./doctor.js";
 import { emitAttention } from "./attention.js";
 import { enableWindowsNotifications } from "./windows-notifications.js";
 import { validateToolInput } from "./input-validation.js";
-import { requestGrillDecision, resolveGrillAnswer, resolveGrillElicitation } from "../core/requirements-grill.js";
+import { requestGrillDecision } from "../core/requirements-grill.js";
 import { validateTraceDelta } from "../core/traceability.js";
 import { inspectCurrentTrace } from "../core/traceability-gates.js";
 import {
@@ -746,6 +747,18 @@ function interactionEnvelope(
   };
 }
 
+/** First-slice answer outcomes map back to user-facing messages for the text tool. */
+function answerOutcomeMessage(action: string, kind: string | undefined): string | undefined {
+  if (kind === "workspace-ownership") {
+    if (action === "adopt-all" || action === "adopt" || action === "include") return "已将路径纳入当前任务。";
+    if (action === "exclude-all" || action === "exclude") return "已将路径排除；系统不会自动还原或暂存它们。";
+    if (action === "one-by-one") return "已切换为逐个确认路径。";
+    return undefined;
+  }
+  if (kind === "route-confirmation" && action === "confirm") return "路线已按可信用户确认原子锁定。";
+  return undefined;
+}
+
 /** Rollback confirmations expose the exact preview that their basis hash commits to. */
 function rollbackGateMessage(preview: RollbackPreview): string {
   const files = preview.filePlan.map((action) => `${action.action === "restore" ? "恢复" : "删除"} ${action.path}`);
@@ -1036,7 +1049,7 @@ async function dispatch(name: PublicToolName, a: any, connection: McpConnection)
       emitAttentionNotification({ kind: "decision-required", featureId: a.featureId, decision: "decision-revision" });
       const selection = await connection.elicit(result.interaction, result.interaction.question ?? "请确认是否修订该决定。");
       if (!selection) return interactionEnvelope(result.state, result.interaction, "pending");
-      const next = await resolveRevisionElicitation(root, a.featureId, result.state.revision, result.interactionId, selection.action, selection.comment, a.host);
+      const next = await answer({ root, featureId: a.featureId, expectedRevision: result.state.revision, host: a.host, credential: { source: "elicitation", action: selection.action, comment: selection.comment } });
       const response = interactionResponse(next.state, result.interactionId);
       return interactionEnvelope(next.state, toPublicInteraction(getInteraction(next.state, result.interactionId)), response?.action ?? selection.action, response);
     }
@@ -1045,7 +1058,7 @@ async function dispatch(name: PublicToolName, a: any, connection: McpConnection)
       emitAttentionNotification({ kind: "decision-required", featureId: a.featureId, decision: "plan-revision" });
       const selection = await connection.elicit(result.interaction, result.interaction.question ?? "请确认是否修订实施计划。");
       if (!selection) return interactionEnvelope(result.state, result.interaction, "pending");
-      const next = await resolvePlanRevisionElicitation(root, a.featureId, result.state.revision, result.interactionId, selection.action, selection.comment, a.host);
+      const next = await answer({ root, featureId: a.featureId, expectedRevision: result.state.revision, host: a.host, credential: { source: "elicitation", action: selection.action, comment: selection.comment } });
       const response = interactionResponse(next.state, result.interactionId);
       return interactionEnvelope(next.state, toPublicInteraction(getInteraction(next.state, result.interactionId)), response?.action ?? selection.action, response);
     }
@@ -1066,12 +1079,12 @@ async function dispatch(name: PublicToolName, a: any, connection: McpConnection)
       emitAttentionNotification({ kind: "decision-required", featureId: a.featureId, decision: "route-confirmation" });
       const selection = await connection.elicit(toPublicInteraction(interaction), interaction.question ?? decision.question);
       if (!selection) return interactionEnvelope(state, toPublicInteraction(interaction), "pending");
-      const next = await resolveRouteClassificationElicitation(
-        root, a.featureId, state.revision, interaction.id,
-        selection.action, selection.comment, state.lastUpdatedBy.host,
-      );
-      const response = interactionResponse(next, interaction.id);
-      return interactionEnvelope(next, toPublicInteraction(getInteraction(next, interaction.id)), selection.action, response);
+      const next = await answer({
+        root, featureId: a.featureId, expectedRevision: state.revision, host: state.lastUpdatedBy.host,
+        credential: { source: "elicitation", action: selection.action, comment: selection.comment },
+      });
+      const response = interactionResponse(next.state, interaction.id);
+      return interactionEnvelope(next.state, toPublicInteraction(getInteraction(next.state, interaction.id)), selection.action, response);
     }
     case "dev_flow_status": return readCompactStatus(root, a.featureId);
     case "dev_flow_inspect": return inspectFeature(root, a.featureId, a.topic);
@@ -1177,7 +1190,7 @@ async function dispatch(name: PublicToolName, a: any, connection: McpConnection)
       emitAttentionNotification({ kind: "decision-required", featureId: a.featureId, decision: "decision-ratification" });
       const selection = await connection.elicit(result.interaction, result.interaction.question ?? "请确认是否登记该决定。");
       if (!selection) return { ...interactionEnvelope(result.state, result.interaction, "pending"), decisionId: result.decisionId };
-      const next = await resolveRatificationElicitation(root, a.featureId, result.state.revision, result.interactionId, selection.action, selection.comment, a.host);
+      const next = await answer({ root, featureId: a.featureId, expectedRevision: result.state.revision, host: a.host, credential: { source: "elicitation", action: selection.action, comment: selection.comment } });
       const response = interactionResponse(next.state, result.interactionId);
       return { ...interactionEnvelope(next.state, toPublicInteraction(getInteraction(next.state, result.interactionId)), response?.action ?? selection.action, response), decisionId: result.decisionId };
     }
@@ -1273,16 +1286,16 @@ async function dispatch(name: PublicToolName, a: any, connection: McpConnection)
         "请确认当前执行摘要，或提出需要修改的意见。",
       );
       if (!selection) return interactionEnvelope(presentation, presentation.approvalInteraction, "pending");
-      const state = await resolveApprovalElicitation(
-        root, a.featureId, presentation.revision, presentation.interactionId,
-         selection.action, selection.comment, a.host,
-      );
+      const state = await answer({
+        root, featureId: a.featureId, expectedRevision: presentation.revision, host: a.host,
+        credential: { source: "elicitation", action: selection.action, comment: selection.comment },
+      });
       return interactionEnvelope(
-        state,
+        state.state,
         presentation.approvalInteraction,
         selection.action,
-         interactionResponse(state, presentation.interactionId),
-       );
+        interactionResponse(state.state, presentation.interactionId),
+      );
      }
     case "dev_flow_record_acceptance_evidence": {
       return recordAcceptanceEvidence(root, a.featureId, a.expectedRevision, {
@@ -1301,190 +1314,29 @@ async function dispatch(name: PublicToolName, a: any, connection: McpConnection)
     }
      case "dev_flow_answer": {
        await assertHostHealth(root, a.host, "回答当前问题");
-       const state = await readState(root, a.featureId);
-       const decision = pendingDecisionForState(state);
-        if (!decision) {
-          return {
-            state,
-           message: "当前没有需要回答的问题。",
-           nextStep: "流程将按当前阶段自动继续。",
-         };
-       }
-       const interaction = pendingInteractionForDecision(state, decision);
-       if (decision.kind === "task-switch" && interaction) {
-         const result = await resolveTaskSwitchAnswer(root, a.featureId, a.expectedRevision, a.userReply, a.host);
-         return {
-           state: result.state,
-           message: result.action === "pause-old"
-             ? "旧任务已暂停，可以重试开始新任务。"
-             : result.action === "return-old"
-               ? "继续当前任务；新任务尚未创建。"
-               : "请先完成当前任务；新任务尚未创建。",
-           需要用户决定: false,
-         };
-       }
-       if (decision.kind === "route-confirmation") {
-         const next = await confirmRouteClassification(root, a.featureId, a.expectedRevision, a.userReply, a.host);
-         return { state: next, message: "路线已按可信用户确认原子锁定。", 需要用户决定: false };
-       }
-       if (decision.kind === "workspace-ownership" && interaction) {
-         const result = await resolveWorkspaceOwnershipText(
-           root, a.featureId, a.expectedRevision, interaction.id, a.userReply, a.host,
-         );
-         return {
-           state: result.state,
-           message: result.action === "adopt-all" || result.action === "adopt" || result.action === "include"
-             ? "已将路径纳入当前任务。"
-             : result.action === "exclude-all" || result.action === "exclude"
-               ? "已将路径排除；系统不会自动还原或暂存它们。"
-               : "已切换为逐个确认路径。",
-           ...(pendingDecisionForState(result.state)
-             ? { attention: "请只回答当前这一道问题。", 需要用户决定: true }
-             : { 需要用户决定: false }),
-         };
-       }
-       if (decision.kind === "acceptance-confirmation" && interaction) {
-         const result = await resolveAcceptanceConfirmationAnswer(root, a.featureId, a.expectedRevision, interaction.id, a.userReply, a.host);
-         return {
-           state: result.state,
-           message: "已记录当前验收确认。",
-           interaction: result.interaction,
-           response: result.response,
-           需要用户决定: false,
-         };
-       }
-       if (!interaction) {
-         const prompt = resolvePromptEvent(await readFeatureEvents(root, a.featureId), {
-           host: a.host,
-           userReply: a.userReply,
-           presentedAt: decision.presentedAt,
-           presentedRevision: decision.presentedRevision,
-           ...(decision.presentationEventId ? { presentationEventId: decision.presentationEventId } : {}),
-           ...(decision.question ? { question: decision.question } : {}),
-         });
-         const matched = matchDecisionReply(decision, prompt.text);
-         let nextPresentationEventId: string | undefined;
-         const next = await mutate(root, a.featureId, a.expectedRevision, "decision-answered", async (draft) => {
-           const current = draft.pendingDecision;
-           if (!current) throw new DevFlowError("DECISION_ALREADY_RESOLVED", "当前问题已经处理。", { userMessage: "当前问题已经处理，请刷新状态。", recoveryKind: "refresh", recoveryInstruction: "刷新当前状态后继续。", retryOriginal: false });
-           delete draft.pendingDecision;
-           if (current.kind === "route-confirmation") {
-             if (matched.option.id === "confirm") {
-               const confirmation = draft.routeConfirmation;
-               if (!confirmation || confirmation.basisHash !== current.basisHash) throw new DevFlowError("ROUTE_CONFIRMATION_STALE", "路线确认依据已变化，请重新呈现。");
-               const selected = selectRoute({
-                 ...confirmation.facts,
-                 classificationBasis: {
-                   scopeFactRefs: confirmation.facts.scopeFactRefs,
-                   topologyFactRefs: confirmation.facts.topologyFactRefs,
-                   uncertaintyFactRefs: confirmation.facts.uncertaintyFactRefs,
-                   riskFactRefs: confirmation.facts.riskFactRefs,
-                   decisionRefs: confirmation.facts.decisionRefs,
-                   ...(confirmation.facts.signals ? { signals: confirmation.facts.signals } : {}),
-                   ...(confirmation.facts.controlEnhancements ? { controlEnhancements: confirmation.facts.controlEnhancements } : {}),
-                 },
-               });
-               const definition = routeDefinitionForFeature(selected.route, selected.classification.controls);
-               draft.mode = "routed";
-               draft.route = selected.route;
-               draft.classification = selected.classification;
-               draft.classificationBasis = selected.classificationBasis;
-               draft.obligations = selected.obligations;
-               draft.currentStage = definition.orderedSteps[0];
-               draft.workflowCapabilities = normalizeWorkflowCapabilities(SUPPORTED_WORKFLOW_CAPABILITIES);
-               draft.steps = Object.fromEntries(definition.orderedSteps.map((step) => [step, { status: "pending" as const }]));
-               if (traceEnforcementRequired(selected.route, selected.classification.controls)) {
-                 draft.traceability = await writeTraceSnapshot(root, emptyTraceabilityLedger(draft.featureId, draft.revision + 1, (await readProjectConfigSnapshot(root)).sha256));
-               }
-               if (reviewEnforcementRequired(selected.route, selected.classification.controls)) {
-                 draft.review = await writeReviewSnapshot(root, emptyReviewLedger(draft.featureId, draft.revision + 1));
-               }
-             }
-             delete draft.routeConfirmation;
-           } else if (current.kind === "workspace-ownership" && current.target?.startsWith("workspace:")) {
-             const file = current.target.slice("workspace:".length);
-             const owner = matched.option.id === "adopt" ? "feature" : "excluded";
-             draft.workspace.ownership[file] = owner;
-             if (owner === "feature") draft.workspace.ownershipSource[file] = "user-adopted";
-             const nextFile = Object.keys(draft.workspace.startedDirty).find((candidate) => draft.workspace.ownership[candidate] === undefined);
-             if (nextFile) {
-               const nextInteraction = createInteraction(draft, {
-                 kind: "workspace-ownership",
-                 target: `workspace:${nextFile}`,
-                 basisHash: current.basisHash,
-                 question: `启动前已发现路径“${nextFile}”存在改动。它是否属于当前任务？`,
-                 options: [
-                   { id: "adopt", label: "纳入当前任务" },
-                   { id: "exclude", label: "先处理后继续" },
-                 ],
-                 workspacePaths: [nextFile],
-                 workspaceBatchPaths: [nextFile],
-               });
-               nextPresentationEventId = nextInteraction.presentationEventId;
-             }
-           } else if (current.kind === "task-switch" && matched.option.id === "pause-old") {
-             draft.lifecycle = "paused";
-             draft.resumeSummary = "旧任务已暂停；恢复时会自动对账工作区。";
-           }
-         }, () => ({ eventId: prompt.eventId, action: matched.option.id, ...(nextPresentationEventId ? { presentationEventId: nextPresentationEventId } : {}) }));
-          return {
-            state: next,
-           message: matched.option.id === "adopt" ? "已将该路径纳入当前任务。" : matched.option.id === "exclude" ? "已将该路径排除；系统不会自动还原或暂存它。" : "已记录你的选择，流程将按当前任务状态继续。",
-           ...(pendingDecisionForState(next) ? { attention: "请只回答当前这一道问题。", 需要用户决定: true } : { 需要用户决定: false }),
-         };
-       }
-       if (decision.kind === "approval") {
-         const next = await resolveApprovalAnswer(root, a.featureId, a.expectedRevision, interaction.id, a.userReply, a.host);
-         const response = interactionResponse(next, interaction.id);
-         return interactionEnvelope(next, toPublicInteraction(getInteraction(next, interaction.id)), response?.action ?? "已处理", response);
-       }
-       if (decision.kind === "grill") {
-         const result = await resolveGrillAnswer(root, a.featureId, a.expectedRevision, interaction.id, a.userReply, a.host);
-         return interactionEnvelope(result.state, result.interaction, result.response?.action ?? "已处理", result.response);
-       }
-       if (decision.kind === "review-risk") {
-         const result = await resolveReviewRiskAcceptanceAnswer(root, a.featureId, a.expectedRevision, interaction.id, a.userReply, a.host);
-         const response = interactionResponse(result.state, interaction.id);
-         return interactionEnvelope(result.state, toPublicInteraction(getInteraction(result.state, interaction.id)), result.idempotent ? "已接受风险" : response?.action ?? "已处理", response);
-       }
-       if (decision.kind === "quality-exception") {
-         const next = await resolveQualityExceptionAnswer(root, a.featureId, a.expectedRevision, interaction.id, a.userReply, a.host);
-         const response = interactionResponse(next, interaction.id);
-         return interactionEnvelope(next, toPublicInteraction(getInteraction(next, interaction.id)), response?.action ?? "已处理", response);
-       }
-       if (decision.kind === "rollback-confirmation") {
-         const next = await resolveRollbackGateAnswer(root, a.featureId, a.expectedRevision, interaction.id, a.userReply, a.host);
-         const response = interactionResponse(next, interaction.id);
-         return interactionEnvelope(next, toPublicInteraction(getInteraction(next, interaction.id)), response?.action ?? "已处理", response);
-       }
-       if (decision.kind === "decision-ratification") {
-         const result = await resolveRatificationAnswer(root, a.featureId, a.expectedRevision, interaction.id, a.userReply, a.host);
-         const response = interactionResponse(result.state, interaction.id);
-         return interactionEnvelope(result.state, toPublicInteraction(getInteraction(result.state, interaction.id)), response?.action ?? "已处理", response);
-       }
-       if (decision.kind === "decision-revision") {
-         const result = await resolveRevisionAnswer(root, a.featureId, a.expectedRevision, interaction.id, a.userReply, a.host);
-         const response = interactionResponse(result.state, interaction.id);
-         return interactionEnvelope(result.state, toPublicInteraction(getInteraction(result.state, interaction.id)), response?.action ?? "已处理", response);
-       }
-       if (decision.kind === "plan-revision") {
-         const result = await resolvePlanRevisionAnswer(root, a.featureId, a.expectedRevision, interaction.id, a.userReply, a.host);
-         const response = interactionResponse(result.state, interaction.id);
-         return interactionEnvelope(result.state, toPublicInteraction(getInteraction(result.state, interaction.id)), response?.action ?? "已处理", response);
-       }
-       if (decision.kind === "side-effect-rerun") {
-         const result = await resolveSideEffectRerunAnswer(root, a.featureId, a.expectedRevision, interaction.id, a.userReply, a.host);
-         const response = interactionResponse(result.state, interaction.id);
-         return interactionEnvelope(result.state, toPublicInteraction(getInteraction(result.state, interaction.id)), response?.action ?? "已处理", response);
-       }
-       throw new DevFlowError("DECISION_KIND_UNSUPPORTED", "当前决策类型还没有可用的回答处理器。", {
-         userMessage: "当前问题暂时不能自动处理。",
-         cause: `决策类型为 ${decision.kind}。`,
-         impact: "流程保持在当前阶段。",
-         recoveryKind: "repair",
-         recoveryInstruction: "运行 doctor 检查插件版本和状态。",
-         retryOriginal: false,
+       const prior = await readState(root, a.featureId);
+       const priorDecision = pendingDecisionForState(prior);
+       const priorInteraction = priorDecision ? pendingInteractionForDecision(prior, priorDecision) : undefined;
+       const result = await answer({
+         root,
+         featureId: a.featureId,
+         expectedRevision: a.expectedRevision,
+         host: a.host,
+         credential: { source: "text", userReply: a.userReply },
        });
+       const interaction = priorInteraction ? getInteraction(result.state, priorInteraction.id) : undefined;
+       const publicInteraction = interaction ? toPublicInteraction(interaction) : undefined;
+       const response = interaction?.response;
+       const pendingDecision = pendingDecisionForState(result.state);
+       const pendingInteraction = pendingDecision ? pendingInteractionForDecision(result.state, pendingDecision) : undefined;
+       const message = answerOutcomeMessage(result.action, priorDecision?.kind);
+       return {
+         ...(publicInteraction ? interactionEnvelope(result.state, publicInteraction, response?.action ?? result.action, response) : { state: result.state }),
+         action: result.action,
+         ...(result.comment ? { comment: result.comment } : {}),
+         ...(message ? { message } : {}),
+         ...(pendingDecision ? { attention: "请只回答当前这一道问题。", 需要用户决定: true, ...(pendingInteraction ? { pending: toPublicInteraction(pendingInteraction) } : {}) } : { 需要用户决定: false }),
+       };
      }
      case "dev_flow_present_quality_exception": {
        const result = await presentQualityException(root, a.featureId, a.expectedRevision, {
@@ -1514,12 +1366,12 @@ async function dispatch(name: PublicToolName, a: any, connection: McpConnection)
       emitAttentionNotification({ kind: "decision-required", featureId: a.featureId, decision: "grill" });
       const selection = await connection.elicit(result.interaction, result.interaction.presentation ?? result.interaction.question ?? "请选择一个方案。");
       if (!selection) return interactionEnvelope(result.state, result.interaction, "pending");
-      const resolved = await resolveGrillElicitation(
-         root, a.featureId, result.state.revision, result.interactionId,
-          selection.action, selection.comment, a.host,
-       );
-       return interactionEnvelope(resolved.state, resolved.interaction, selection.action, resolved.response);
-     }
+      const resolved = await answer({
+        root, featureId: a.featureId, expectedRevision: result.state.revision, host: a.host,
+        credential: { source: "elicitation", action: selection.action, comment: selection.comment },
+      });
+      return interactionEnvelope(resolved.state, toPublicInteraction(getInteraction(resolved.state, result.interactionId)), selection.action, interactionResponse(resolved.state, result.interactionId));
+    }
     case "dev_flow_reclassify": return reclassifyFeature(root, a.featureId, a.expectedRevision, a.classification, a.reason, a.userEvidence);
     case "dev_flow_verify": return runVerification(
        root, a.featureId, a.expectedRevision, a.host, a.commandIds,

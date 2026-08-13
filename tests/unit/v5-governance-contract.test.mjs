@@ -51,7 +51,7 @@ test("a trusted user event is bound to one interaction and cannot be replayed fo
     // 较早对话的决定需要追认：记录一个可信用户事件并用于追认
     const recorded = await store.recordDecision(fixture.root, "credential-contract", started.revision, "是否保留兼容行为？", "用户已有结论", "保留", [], "codex");
     await store.recordHostEvent(fixture.root, { eventId: "shared-reply", type: "user-prompt", host: "codex", text: "确认登记", at: new Date(Date.now() + 1000).toISOString() });
-    const ratified = await store.resolveRatificationAnswer(fixture.root, "credential-contract", recorded.state.revision, recorded.interactionId, "确认登记", "codex");
+    const ratified = await store.answer({ root: fixture.root, featureId: "credential-contract", expectedRevision: recorded.state.revision, host: "codex", credential: { source: "text", userReply: "确认登记" } });
     assert.equal(ratified.state.governance.decisions.find((d) => d.recordId === recorded.decisionId)?.recordId, recorded.decisionId);
     // 同一事件不能再次满足另一个交互（凭证绑定目标交互，不可重复使用）
     const presented = await quality.presentQualityException(fixture.root, "credential-contract", ratified.state.revision, {
@@ -79,7 +79,7 @@ test("a decision reference cannot satisfy a repository-fact boundary item", asyn
     const started = await store.startFeature(fixture.root, { featureId: "fact-decision-contract", host: "codex" });
     const recorded = await store.recordDecision(fixture.root, "fact-decision-contract", started.revision, "是否允许共享契约变更？", "已核实调用方", "允许", [], "codex");
     await store.recordHostEvent(fixture.root, { eventId: "ratify-fd", type: "user-prompt", host: "codex", text: "确认登记", at: new Date(Date.now() + 1000).toISOString() });
-    const ratified = await store.resolveRatificationAnswer(fixture.root, "fact-decision-contract", recorded.state.revision, recorded.interactionId, "确认登记", "codex");
+    const ratified = await store.answer({ root: fixture.root, featureId: "fact-decision-contract", expectedRevision: recorded.state.revision, host: "codex", credential: { source: "text", userReply: "确认登记" } });
     // 把决定引用填到 repository-fact 项上：决定不能满足仓库事实，边界保持未解决
     assert.throws(
       () => routePolicy.assertBoundaryAuditComplete({
@@ -102,7 +102,7 @@ test("each governance record kind is written only to its own ledger", async () =
     // 决定 → 只进 decisions
     const recorded = await store.recordDecision(fixture.root, "ledger-contract", started.revision, "问题？", "证据", "结论", [], "codex");
     await store.recordHostEvent(fixture.root, { eventId: "ratify-ledger", type: "user-prompt", host: "codex", text: "确认登记", at: new Date(Date.now() + 1000).toISOString() });
-    const ratified = await store.resolveRatificationAnswer(fixture.root, "ledger-contract", recorded.state.revision, recorded.interactionId, "确认登记", "codex");
+    const ratified = await store.answer({ root: fixture.root, featureId: "ledger-contract", expectedRevision: recorded.state.revision, host: "codex", credential: { source: "text", userReply: "确认登记" } });
     assert.ok(ratified.state.governance.decisions.length >= 1);
     assert.equal(ratified.state.governance.authorizations.length, 0);
     assert.equal(ratified.state.governance.repositoryFacts.length, 0);

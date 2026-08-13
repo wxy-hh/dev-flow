@@ -47,7 +47,7 @@ test("Claude/Codex 共享 intake、可信 decision 与锁定后的 v5 状态", a
   const recorded = await state.recordDecision(root, intake.featureId, withFact.state.revision, "是否允许共享契约变更？", "调用方兼容性已核实", "允许共享契约变更", [factRef], "codex");
   // 较早对话的决定需要用户追认（issue 08）：确认后才是 resolved 决定
   await state.recordHostEvent(root, { eventId: "codex-ratify", type: "user-prompt", host: "codex", text: "确认登记" });
-  const ratified = await state.resolveRatificationAnswer(root, intake.featureId, recorded.state.revision, recorded.interactionId, "确认登记", "codex");
+  const ratified = await state.answer({ root, featureId: intake.featureId, expectedRevision: recorded.state.revision, host: "codex", credential: { source: "text", userReply: "确认登记" } });
   const pending = await state.lockClassification(root, intake.featureId, ratified.state.revision, {
     level: "M", topology: "shared-contract", requirements: "provided-confirmed",
     scopeFactRefs: [factRef], topologyFactRefs: [factRef], uncertaintyFactRefs: [],
@@ -55,7 +55,7 @@ test("Claude/Codex 共享 intake、可信 decision 与锁定后的 v5 状态", a
     signals: { changeSurface: "multi-component", behaviorChange: "bounded-rule", topology: "shared-contract", unitCount: 1, requirements: "provided-confirmed", operationalRecovery: false, executableRollback: false },
   }, { scanned: ["assumption", "free-space", "tbd", "fallback", "scope", "acceptance"], items: [] });
   await state.recordHostEvent(root, { eventId: "codex-route-confirm", type: "user-prompt", host: "codex", text: "确认这条路线" });
-  const routed = await state.confirmRouteClassification(root, intake.featureId, pending.revision, "确认这条路线", "codex");
+  const routed = (await state.answer({ root, featureId: intake.featureId, expectedRevision: pending.revision, host: "codex", credential: { source: "text", userReply: "确认这条路线" } })).state;
   const handedOff = await state.readState(root, routed.featureId);
   assert.equal(handedOff.mode, "routed");
   assert.equal(handedOff.route, "m");

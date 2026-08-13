@@ -62,7 +62,7 @@ test("选中即信任：结构化事件存在时 agent 任意转述均不影响�
       eventId: "answer-struct", type: "user-prompt", host: "claude",
       text: "确认这条路线（推荐）", question: "请确认 Dev Flow 路线",
     });
-    const routed = await store.confirmRouteClassification(fixture.root, pending.featureId, pending.revision, "agent 转述完全无关的内容", "claude");
+    const routed = (await store.answer({ root: fixture.root, featureId: pending.featureId, expectedRevision: pending.revision, host: "claude", credential: { source: "text", userReply: "agent 转述完全无关的内容" } })).state;
     assert.equal(routed.mode, "routed");
     assert.equal(decisions.pendingDecisionForState(routed), undefined);
   } finally { await fixture.dispose(); }
@@ -76,7 +76,7 @@ test("文本凭证（无问题字段）仍需 userReply 与事件语义兼容", 
       eventId: "answer-text", type: "user-prompt", host: "claude", text: "确认这条路线",
     });
     await assert.rejects(
-      () => store.confirmRouteClassification(fixture.root, pending.featureId, pending.revision, "完全无关的转述", "claude"),
+      () => store.answer({ root: fixture.root, featureId: pending.featureId, expectedRevision: pending.revision, host: "claude", credential: { source: "text", userReply: "完全无关的转述" } }),
       (error) => error.code === "INTERACTION_PROVENANCE_UNAVAILABLE",
     );
   } finally { await fixture.dispose(); }

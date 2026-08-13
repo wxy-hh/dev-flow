@@ -31,7 +31,7 @@ async function setup(prefix, withRatifiedDecision = true) {
   if (withRatifiedDecision) {
     const presented = await store.recordDecision(root, "f", state.revision, "是否保留兼容行为？", "历史兼容测试仍存在", "保留兼容行为", ["fact-1"], "codex");
     await store.recordHostEvent(root, { eventId: "ratify", type: "user-prompt", host: "codex", text: "确认登记" });
-    state = (await store.resolveRatificationAnswer(root, "f", presented.state.revision, presented.interactionId, "确认登记", "codex")).state;
+    state = (await store.answer({ root, featureId: "f", expectedRevision: presented.state.revision, host: "codex", credential: { source: "text", userReply: "确认登记" } })).state;
   }
   return { root, state };
 }
@@ -49,7 +49,7 @@ test("reviseDecision previews old decision, new conclusion, and affected work; c
 
     // 取消：决定、阶段与已有工作均不改变。
     await store.recordHostEvent(root, { eventId: "cancel", type: "user-prompt", host: "codex", text: "取消" });
-    const cancelled = await store.resolveRevisionAnswer(root, "f", preview.state.revision, preview.interactionId, "取消", "codex");
+    const cancelled = await store.answer({ root, featureId: "f", expectedRevision: preview.state.revision, host: "codex", credential: { source: "text", userReply: "取消" } });
     assert.equal(cancelled.state.governance.decisions[0].supersededBy, undefined);
     assert.equal(cancelled.state.governance.decisions.length, 1);
   } finally {
@@ -63,7 +63,7 @@ test("confirming a revision appends the successor, supersedes the old record, an
     const decisionId = state.governance.decisions[0].recordId;
     const preview = await store.reviseDecision(root, "f", state.revision, decisionId, "不再保留兼容行为", "用户改变主意", "codex");
     await store.recordHostEvent(root, { eventId: "revise-ok", type: "user-prompt", host: "codex", text: "确认修订" });
-    const revised = await store.resolveRevisionAnswer(root, "f", preview.state.revision, preview.interactionId, "确认修订", "codex");
+    const revised = await store.answer({ root, featureId: "f", expectedRevision: preview.state.revision, host: "codex", credential: { source: "text", userReply: "确认修订" } });
 
     assert.equal(revised.state.governance.decisions.length, 2);
     assert.match(revised.state.governance.decisions[0].supersededBy, /^DEC-/);
@@ -86,7 +86,7 @@ test("native form confirmation appends the revised decision instead of only reso
   try {
     const decisionId = state.governance.decisions[0].recordId;
     const preview = await store.reviseDecision(root, "f", state.revision, decisionId, "不再保留兼容行为", "用户改变主意", "codex");
-    const revised = await store.resolveRevisionElicitation(root, "f", preview.state.revision, preview.interactionId, "confirm", undefined, "codex");
+    const revised = await store.answer({ root, featureId: "f", expectedRevision: preview.state.revision, host: "codex", credential: { source: "elicitation", action: "confirm" } });
 
     assert.equal(revised.state.governance.decisions.length, 2);
     assert.equal(revised.state.governance.decisions[1].conclusion, "不再保留兼容行为");
@@ -103,14 +103,14 @@ test("revising a decision that does not affect classification keeps the confirme
     // 锁定路线但 decisionRefs 不引用该决定（决定不影响分类依据）
     const locked = await store.lockClassification(root, "f", state.revision, { ...facts, decisionRefs: [] }, boundaryAudit);
     await store.recordHostEvent(root, { eventId: "route-ok", type: "user-prompt", host: "codex", text: "确认这条路线" });
-    const routed = await store.confirmRouteClassification(root, "f", locked.revision, "确认这条路线", "codex");
+    const routed = (await store.answer({ root, featureId: "f", expectedRevision: locked.revision, host: "codex", credential: { source: "text", userReply: "确认这条路线" } })).state;
     assert.equal(routed.mode, "routed");
     const decisionId = state.governance.decisions[0].recordId;
     const preview = await store.reviseDecision(root, "f", routed.revision, decisionId, "不再保留兼容行为", "用户改变主意", "codex");
     // 范围/风险/可见路线不变：affected 不含 classification
     assert.ok(!preview.interaction.revision.affected.includes("classification"));
     await store.recordHostEvent(root, { eventId: "revise-keep", type: "user-prompt", host: "codex", text: "确认修订" });
-    const revised = await store.resolveRevisionAnswer(root, "f", preview.state.revision, preview.interactionId, "确认修订", "codex");
+    const revised = await store.answer({ root, featureId: "f", expectedRevision: preview.state.revision, host: "codex", credential: { source: "text", userReply: "确认修订" } });
     // 路线与分类保留，不重复确认路线
     assert.equal(revised.state.mode, "routed");
     assert.equal(revised.state.route, "m");
@@ -131,7 +131,7 @@ test("revising a classification-referenced decision invalidates classification a
     const classificationFacts = { ...facts, decisionRefs: [decisionId] };
     const locked = await store.lockClassification(root, "f", state.revision, classificationFacts, boundaryAudit);
     await store.recordHostEvent(root, { eventId: "route-ok", type: "user-prompt", host: "codex", text: "确认这条路线" });
-    const routed = await store.confirmRouteClassification(root, "f", locked.revision, "确认这条路线", "codex");
+    const routed = (await store.answer({ root, featureId: "f", expectedRevision: locked.revision, host: "codex", credential: { source: "text", userReply: "确认这条路线" } })).state;
     assert.equal(routed.mode, "routed");
     // 模拟已登记需求与计划工件
     const withArtifacts = await store.mutate(root, "f", routed.revision, "test-artifacts", (draft) => {
@@ -144,7 +144,7 @@ test("revising a classification-referenced decision invalidates classification a
     assert.match(preview.interaction.question, /预计影响：分类/);
 
     await store.recordHostEvent(root, { eventId: "revise-ok", type: "user-prompt", host: "codex", text: "确认修订" });
-    const revised = await store.resolveRevisionAnswer(root, "f", preview.state.revision, preview.interactionId, "确认修订", "codex");
+    const revised = await store.answer({ root, featureId: "f", expectedRevision: preview.state.revision, host: "codex", credential: { source: "text", userReply: "确认修订" } });
     // 分类失效：回到 intake，保留决策记录；路线确认被清除，走正常确认流程。
     assert.equal(revised.state.mode, "intake");
     assert.equal(revised.state.route, undefined);
@@ -168,7 +168,7 @@ test("a superseded decision reference fails boundary audit at lock time", async 
     // 修订并确认：旧决定 superseded
     const preview = await store.reviseDecision(root, "f", state.revision, decisionId, "不再保留兼容行为", "用户改变主意", "codex");
     await store.recordHostEvent(root, { eventId: "revise-sup", type: "user-prompt", host: "codex", text: "确认修订" });
-    const revised = await store.resolveRevisionAnswer(root, "f", preview.state.revision, preview.interactionId, "确认修订", "codex");
+    const revised = await store.answer({ root, featureId: "f", expectedRevision: preview.state.revision, host: "codex", credential: { source: "text", userReply: "确认修订" } });
     assert.ok(revised.state.governance.decisions.find((d) => d.recordId === decisionId).supersededBy);
     // 引用已被取代的决定锁定分类 → 边界未解决
     await assert.rejects(

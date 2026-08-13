@@ -8,15 +8,14 @@ import { normalizeReplyText } from "./text-normalization.js";
 import {
   createInteraction,
   getInteraction,
-  resolveNativeInteraction,
-  resolveTextInteraction,
+  resolveResponseForAnswer,
   toPublicInteraction,
-  type InteractionKind,
   type InteractionResponse,
   type PublicInteraction,
   type UserInteraction,
 } from "./user-interactions.js";
-import { mutate, readFeatureEvents, readState, type FeatureState } from "./state-store.js";
+import { mutate, mutatePrepared, readFeatureEvents, readState, type FeatureState } from "./state-store.js";
+import type { AnswerResolveContext, AnswerResolveResult } from "./interaction-answer.js";
 
 export interface DecisionRatificationResult {
   state: FeatureState;
@@ -168,7 +167,7 @@ export async function recordDecision(
   return { state, interaction: toPublicInteraction(interaction), decisionId: decision.id, interactionId: interaction.id };
 }
 
-function ratifyDecision(draft: FeatureState, interaction: UserInteraction, response: InteractionResponse, promptEventId: string | undefined, host: "claude" | "codex"): void {
+export function ratifyDecision(draft: FeatureState, interaction: UserInteraction, response: InteractionResponse, promptEventId: string | undefined, host: "claude" | "codex"): void {
   const candidate = interaction.ratification;
   if (!candidate) throw new DevFlowError("INTERACTION_INVALID", "decision-ratification interaction is missing its candidate content", { interactionId: interaction.id });
   const decision = resolveDecision(createDecision(candidate.question, candidate.factRefs), candidate.evidence, candidate.conclusion);
@@ -186,85 +185,6 @@ function ratifyDecision(draft: FeatureState, interaction: UserInteraction, respo
     optionId: response.source === "elicitation" ? (response.selectedOptionId ?? response.action) : response.selectedOptionId,
     rawText: response.rawReply,
   });
-}
-
-/** 交互回答的统一解析骨架：领域模块共享同一可信回答与 CAS seam。 */
-export async function resolveInteractionDecision(
-  root: string,
-  id: string,
-  expectedRevision: number,
-  interactionId: string,
-  host: "claude" | "codex",
-  input: { source: "elicitation"; action: string; comment?: string } | { source: "text"; userReply: string },
-  config: {
-    kind: InteractionKind;
-    notPendingMessage: string;
-    confirmReply: string;
-    declineReply: string;
-    confirmOperation: string;
-    declineOperation: string;
-    apply: (draft: FeatureState, interaction: UserInteraction, response: InteractionResponse, promptEventId: string | undefined) => void;
-  },
-): Promise<{ state: FeatureState; response: InteractionResponse; interaction: UserInteraction }> {
-  const initial = await readState(root, id);
-  if (initial.revision !== expectedRevision) throw new DevFlowError("STATE_REVISION_CONFLICT", "state revision changed", { currentRevision: initial.revision });
-  const interaction = getInteraction(initial, interactionId);
-  if (interaction.kind !== config.kind || interaction.status !== "pending") {
-    throw new DevFlowError("INTERACTION_NOT_PENDING", config.notPendingMessage, { interactionId });
-  }
-  let promptEventId: string | undefined;
-  let promptText: string | undefined;
-  if (input.source === "text") {
-    const events = await readFeatureEvents(root, id);
-    const match = resolveInteractionPromptEvent(events, initial, interaction, { host, userReply: input.userReply });
-    promptEventId = match.eventId;
-    promptText = match.text;
-  }
-  const pending = pendingDecisionForState(initial);
-  if (!pending) throw new DevFlowError("DECISION_NOT_PENDING", "当前没有待决问题。");
-  const matched = matchDecisionReply(pending, input.source === "elicitation" ? (input.action === "confirm" ? config.confirmReply : config.declineReply) : promptText ?? input.userReply);
-  let response: InteractionResponse | undefined;
-  const state = await mutate(root, id, expectedRevision, matched.option.id === "confirm" ? config.confirmOperation : config.declineOperation, (draft) => {
-    const live = draft.interactions?.[interactionId] as UserInteraction | undefined;
-    if (!live || live.status !== "pending") throw new DevFlowError("INTERACTION_ALREADY_RESOLVED", interactionId);
-    response = input.source === "elicitation"
-      ? resolveNativeInteraction(draft, interactionId, input.action, input.comment, host)
-      : resolveTextInteraction(draft, interactionId, promptText ?? input.userReply, host, { promptEventId });
-    if (matched.option.id === "confirm") config.apply(draft, live, response!, promptEventId);
-    draft.lastUpdatedBy = { host, pluginVersion: __DEV_FLOW_VERSION__ };
-  }, { interactionId, action: matched.option.id });
-  if (!response) throw new DevFlowError("INTERACTION_NOT_RESOLVED", interactionId);
-  return { state, response, interaction };
-}
-
-async function resolveRatificationDecision(
-  root: string,
-  id: string,
-  expectedRevision: number,
-  interactionId: string,
-  host: "claude" | "codex",
-  input: { source: "elicitation"; action: string; comment?: string } | { source: "text"; userReply: string },
-): Promise<DecisionRatificationResult> {
-  const { state, interaction } = await resolveInteractionDecision(root, id, expectedRevision, interactionId, host, input, {
-    kind: "decision-ratification",
-    notPendingMessage: "当前没有待追认的决定。",
-    confirmReply: "确认登记",
-    declineReply: "不要登记",
-    confirmOperation: "decision-ratified",
-    declineOperation: "decision-ratification-rejected",
-    apply: (draft, live, response, promptEventId) => {
-      ratifyDecision(draft, live, response, promptEventId, host);
-    },
-  });
-  return { state, interaction: toPublicInteraction(getInteraction(state, interactionId)), decisionId: interaction.target.slice("decision-ratification:".length), interactionId };
-}
-
-export function resolveRatificationAnswer(root: string, id: string, expectedRevision: number, interactionId: string, userReply: string, host: "claude" | "codex"): Promise<DecisionRatificationResult> {
-  return resolveRatificationDecision(root, id, expectedRevision, interactionId, host, { source: "text", userReply });
-}
-
-export function resolveRatificationElicitation(root: string, id: string, expectedRevision: number, interactionId: string, action: string, comment: string | undefined, host: "claude" | "codex"): Promise<DecisionRatificationResult> {
-  return resolveRatificationDecision(root, id, expectedRevision, interactionId, host, { source: "elicitation", action, comment });
 }
 
 export interface DecisionRevisionResult {
@@ -327,7 +247,7 @@ export async function reviseDecision(
   return { state, interaction: toPublicInteraction(interaction), decisionId: successorId, interactionId: interaction.id };
 }
 
-function applyDecisionRevision(draft: FeatureState, interaction: UserInteraction, response: InteractionResponse, promptEventId: string | undefined, host: "claude" | "codex"): void {
+export function applyDecisionRevision(draft: FeatureState, interaction: UserInteraction, response: InteractionResponse, promptEventId: string | undefined, host: "claude" | "codex"): void {
   const rev = interaction.revision;
   if (!rev) throw new DevFlowError("INTERACTION_INVALID", "decision-revision interaction is missing its candidate content", { interactionId: interaction.id });
   const gov = draft.governance ?? EMPTY_GOVERNANCE_LEDGER;
@@ -388,34 +308,66 @@ function applyDecisionRevision(draft: FeatureState, interaction: UserInteraction
   }
 }
 
-async function resolveRevisionDecision(
-  root: string,
-  id: string,
-  expectedRevision: number,
-  interactionId: string,
-  host: "claude" | "codex",
-  input: { source: "elicitation"; action: string; comment?: string } | { source: "text"; userReply: string },
-): Promise<DecisionRevisionResult> {
-  const { state, interaction } = await resolveInteractionDecision(root, id, expectedRevision, interactionId, host, input, {
-    kind: "decision-revision",
-    notPendingMessage: "当前没有待修订的决定。",
-    confirmReply: "确认修订",
-    declineReply: "取消",
-    confirmOperation: "decision-revised",
-    declineOperation: "decision-revision-cancelled",
-    apply: (draft, live, response, promptEventId) => {
-      applyDecisionRevision(draft, live, response, promptEventId, host);
+/** 决策追认经统一回答入口落账（ADR-0019）：确认登记 / 不要登记。 */
+export async function resolveRatificationForAnswer(ctx: AnswerResolveContext): Promise<AnswerResolveResult> {
+  const { root, featureId, expectedRevision, host, credential, interaction, state } = ctx;
+  if (interaction.kind !== "decision-ratification" || interaction.status !== "pending") {
+    throw new DevFlowError("INTERACTION_NOT_PENDING", "当前没有待追认的决定。", { interactionId: interaction.id });
+  }
+  let promptEventId: string | undefined;
+  let promptText: string | undefined;
+  if (credential.source === "text") {
+    const events = await readFeatureEvents(root, featureId);
+    const match = resolveInteractionPromptEvent(events, state, interaction, { host, userReply: credential.userReply });
+    promptEventId = match.eventId;
+    promptText = match.text;
+  }
+  const pending = pendingDecisionForState(state);
+  const matchedId = credential.source === "elicitation"
+    ? credential.action
+    : matchDecisionReply(pending!, promptText ?? credential.userReply).option.id;
+  const confirms = matchedId === "confirm";
+  let response: InteractionResponse | undefined;
+  const next = await mutatePrepared(root, featureId, expectedRevision, confirms ? "decision-ratified" : "decision-ratification-rejected", async () => ({
+    mutate: (draft) => {
+      response = resolveResponseForAnswer(draft, interaction, { source: credential.source, action: credential.source === "elicitation" ? credential.action : undefined, comment: credential.source === "elicitation" ? credential.comment : undefined, userReply: credential.source === "text" ? credential.userReply : undefined, promptText, promptEventId, host });
+      if (confirms) ratifyDecision(draft, draft.interactions![interaction.id] as UserInteraction, response, promptEventId, host);
+      draft.lastUpdatedBy = { host, pluginVersion: __DEV_FLOW_VERSION__ };
     },
-  });
-  const oldDecisionId = interaction.revision?.decisionId ?? "";
-  const successorId = (state.governance?.decisions ?? []).find((decision) => decision.recordId === oldDecisionId)?.supersededBy ?? oldDecisionId;
-  return { state, interaction: toPublicInteraction(getInteraction(state, interactionId)), decisionId: successorId, interactionId };
+    eventData: () => ({ interactionId: interaction.id, action: matchedId }),
+  }));
+  if (!response) throw new DevFlowError("INTERACTION_NOT_RESOLVED", interaction.id);
+  return { state: next, action: response.action, ...(response.comment ? { comment: response.comment } : {}) };
 }
 
-export function resolveRevisionAnswer(root: string, id: string, expectedRevision: number, interactionId: string, userReply: string, host: "claude" | "codex"): Promise<DecisionRevisionResult> {
-  return resolveRevisionDecision(root, id, expectedRevision, interactionId, host, { source: "text", userReply });
-}
-
-export function resolveRevisionElicitation(root: string, id: string, expectedRevision: number, interactionId: string, action: string, comment: string | undefined, host: "claude" | "codex"): Promise<DecisionRevisionResult> {
-  return resolveRevisionDecision(root, id, expectedRevision, interactionId, host, { source: "elicitation", action, comment });
+/** 决策修订经统一回答入口落账（ADR-0019）：确认修订 / 取消。 */
+export async function resolveRevisionForAnswer(ctx: AnswerResolveContext): Promise<AnswerResolveResult> {
+  const { root, featureId, expectedRevision, host, credential, interaction, state } = ctx;
+  if (interaction.kind !== "decision-revision" || interaction.status !== "pending") {
+    throw new DevFlowError("INTERACTION_NOT_PENDING", "当前没有待修订的决定。", { interactionId: interaction.id });
+  }
+  let promptEventId: string | undefined;
+  let promptText: string | undefined;
+  if (credential.source === "text") {
+    const events = await readFeatureEvents(root, featureId);
+    const match = resolveInteractionPromptEvent(events, state, interaction, { host, userReply: credential.userReply });
+    promptEventId = match.eventId;
+    promptText = match.text;
+  }
+  const pending = pendingDecisionForState(state);
+  const matchedId = credential.source === "elicitation"
+    ? credential.action
+    : matchDecisionReply(pending!, promptText ?? credential.userReply).option.id;
+  const confirms = matchedId === "confirm";
+  let response: InteractionResponse | undefined;
+  const next = await mutatePrepared(root, featureId, expectedRevision, confirms ? "decision-revised" : "decision-revision-cancelled", async () => ({
+    mutate: (draft) => {
+      response = resolveResponseForAnswer(draft, interaction, { source: credential.source, action: credential.source === "elicitation" ? credential.action : undefined, comment: credential.source === "elicitation" ? credential.comment : undefined, userReply: credential.source === "text" ? credential.userReply : undefined, promptText, promptEventId, host });
+      if (confirms) applyDecisionRevision(draft, draft.interactions![interaction.id] as UserInteraction, response, promptEventId, host);
+      draft.lastUpdatedBy = { host, pluginVersion: __DEV_FLOW_VERSION__ };
+    },
+    eventData: () => ({ interactionId: interaction.id, action: matchedId }),
+  }));
+  if (!response) throw new DevFlowError("INTERACTION_NOT_RESOLVED", interaction.id);
+  return { state: next, action: response.action, ...(response.comment ? { comment: response.comment } : {}) };
 }

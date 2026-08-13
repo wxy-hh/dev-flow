@@ -1,6 +1,6 @@
 import { assertArtifactCurrent } from "./artifacts.js";
 import { DevFlowError } from "./errors.js";
-import { mutate, readFeatureEvents, readState, type FeatureState } from "./state-store.js";
+import { mutate, mutatePrepared, readFeatureEvents, readState, type FeatureState } from "./state-store.js";
 import { decisionBasisHash } from "../policy/obligations.js";
 import { resolveInteractionPromptEvent } from "./interaction-provenance.js";
 import { pendingDecisionForState } from "./decision-interactions.js";
@@ -8,15 +8,14 @@ import { EMPTY_GOVERNANCE_LEDGER } from "../policy/types.js";
 import {
   createInteraction,
   findInteractionForTarget,
-  getInteraction,
-  resolveNativeInteraction,
-  resolveTextInteraction,
+  resolveResponseForAnswer,
   toPublicInteraction,
   type InteractionOption,
   type InteractionResponse,
   type PublicInteraction,
 } from "./user-interactions.js";
 import type { GrillRecommendation } from "./grill-interaction.js";
+import type { AnswerResolveContext, AnswerResolveResult } from "./interaction-answer.js";
 
 export interface GrillDecisionInput {
   questionId: string;
@@ -77,36 +76,26 @@ export async function requestGrillDecision(
   return { state, interaction: toPublicInteraction(interaction), interactionId: interaction.id };
 }
 
-async function resolveGrillDecision(
-  root: string,
-  id: string,
-  expectedRevision: number,
-  interactionId: string,
-  host: "claude" | "codex",
-  input: { source: "elicitation"; action: string; comment?: string } | { source: "text"; userReply: string },
-): Promise<GrillDecisionResult> {
-  const initial = await readState(root, id);
-  if (initial.revision !== expectedRevision) throw new DevFlowError("STATE_REVISION_CONFLICT", "state revision changed", { currentRevision: initial.revision });
-  const interaction = getInteraction(initial, interactionId);
-  if (interaction.kind !== "grill" || interaction.status !== "pending") throw new DevFlowError("INTERACTION_NOT_PENDING", "当前问题已经处理或不存在。", { interactionId });
+/** grill 经统一回答入口落账（ADR-0019）：A/B/C 选项或带理由的 other。 */
+export async function resolveGrillForAnswer(ctx: AnswerResolveContext): Promise<AnswerResolveResult> {
+  const { root, featureId, expectedRevision, host, credential, interaction, state } = ctx;
+  if (interaction.kind !== "grill" || interaction.status !== "pending") {
+    throw new DevFlowError("INTERACTION_NOT_PENDING", "当前没有待回答的需求问题。", { interactionId: interaction.id });
+  }
   let promptEventId: string | undefined;
   let promptText: string | undefined;
-  if (input.source === "text") {
-    const events = await readFeatureEvents(root, id);
-    const match = resolveInteractionPromptEvent(events, initial, interaction, {
-      host,
-      userReply: input.userReply,
-    });
+  if (credential.source === "text") {
+    const events = await readFeatureEvents(root, featureId);
+    const match = resolveInteractionPromptEvent(events, state, interaction, { host, userReply: credential.userReply });
     promptEventId = match.eventId;
     promptText = match.text;
   }
   let response: InteractionResponse | undefined;
-  const state = await mutate(root, id, expectedRevision, "decision-answered", (draft) => {
-    response = input.source === "elicitation"
-      ? resolveNativeInteraction(draft, interactionId, input.action, input.comment, host)
-      : resolveTextInteraction(draft, interactionId, promptText ?? input.userReply, host, { promptEventId });
-    const decisionId = interaction.target.slice("grill:".length);
-    if (response) {
+  const next = await mutatePrepared(root, featureId, expectedRevision, "decision-answered", async () => ({
+    mutate: (draft) => {
+      response = resolveResponseForAnswer(draft, interaction, { source: credential.source, action: credential.source === "elicitation" ? credential.action : undefined, comment: credential.source === "elicitation" ? credential.comment : undefined, userReply: credential.source === "text" ? credential.userReply : undefined, promptText, promptEventId, host });
+      if (!response) throw new DevFlowError("INTERACTION_NOT_RESOLVED", interaction.id);
+      const decisionId = interaction.target.slice("grill:".length);
       const existingGovernance = draft.governance ?? EMPTY_GOVERNANCE_LEDGER;
       const previous = existingGovernance.decisions.find((candidate) => candidate.recordId === decisionId && !candidate.supersededBy);
       const recordId = previous ? `${decisionId}-${interaction.id}` : decisionId;
@@ -117,16 +106,16 @@ async function resolveGrillDecision(
       }
       const credentials = [...existingGovernance.credentials];
       const credentialId = `CRED-grill-${interaction.id}`;
-      if (!credentials.some((credential) => credential.recordId === credentialId)) {
+      if (!credentials.some((record) => record.recordId === credentialId)) {
         credentials.push({
           recordId: credentialId,
           kind: "credential",
-          source: input.source === "elicitation" ? "native-form" : "text",
+          source: credential.source === "elicitation" ? "native-form" : "text",
           host,
-          interactionId,
+          interactionId: interaction.id,
           ...(response.selectedOptionId ? { optionId: response.selectedOptionId } : {}),
           ...(response.rawReply ? { rawText: response.rawReply } : {}),
-          ...(input.source === "text" && promptEventId ? { basis: { kind: "event", eventId: promptEventId } } : {}),
+          ...(credential.source === "text" && promptEventId ? { basis: { kind: "event", eventId: promptEventId } } : {}),
           recordedAt: response.respondedAt,
         });
       }
@@ -137,24 +126,17 @@ async function resolveGrillDecision(
           question: interaction.question ?? decisionId,
           conclusion: response.action,
           credentialId,
-          ...(input.source === "text" && promptEventId ? { basis: { kind: "event", eventId: promptEventId } } : {}),
+          ...(credential.source === "text" && promptEventId ? { basis: { kind: "event", eventId: promptEventId } } : {}),
           recordedAt: response.respondedAt,
         });
       }
       draft.governance = { ...existingGovernance, decisions, credentials };
-    }
-    draft.lastUpdatedBy = { host, pluginVersion: __DEV_FLOW_VERSION__ };
-  }, { interactionId, mode: "decision" });
-  if (!response) throw new DevFlowError("INTERACTION_NOT_RESOLVED", "当前问题没有完成回答。", { interactionId });
-  return { state, interaction: toPublicInteraction(getInteraction(state, interactionId)), response, interactionId };
-}
-
-export async function resolveGrillElicitation(root: string, id: string, expectedRevision: number, interactionId: string, action: string, comment: string | undefined, host: "claude" | "codex"): Promise<GrillDecisionResult> {
-  return resolveGrillDecision(root, id, expectedRevision, interactionId, host, { source: "elicitation", action, comment });
-}
-
-export async function resolveGrillAnswer(root: string, id: string, expectedRevision: number, interactionId: string, userReply: string, host: "claude" | "codex"): Promise<GrillDecisionResult> {
-  return resolveGrillDecision(root, id, expectedRevision, interactionId, host, { source: "text", userReply });
+      draft.lastUpdatedBy = { host, pluginVersion: __DEV_FLOW_VERSION__ };
+    },
+    eventData: () => ({ interactionId: interaction.id, mode: "decision" }),
+  }));
+  if (!response) throw new DevFlowError("INTERACTION_NOT_RESOLVED", interaction.id);
+  return { state: next, action: response.action, ...(response.comment ? { comment: response.comment } : {}) };
 }
 
 /** Requirements completion is derived from the decision ledger, never Markdown control fields. */

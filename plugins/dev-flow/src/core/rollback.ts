@@ -13,20 +13,22 @@ import { implementationUnitForNode, pathWithinFileScope } from "../policy/rollba
 import { implementationUnitBasisHash } from "./implementation-units.js";
 import {
   appendFeatureEvent,
-  claimRollbackDriveLease,
-  maintainRollbackDriveLease,
   mutate,
   mutatePrepared,
-  prepareRollbackTransaction,
   readFeatureEvents,
-  readRollbackTransaction,
   readState,
+  type FeatureState,
+} from "./state-store.js";
+import {
+  claimRollbackDriveLease,
+  maintainRollbackDriveLease,
+  prepareRollbackTransaction,
+  readRollbackTransaction,
   releaseRollbackDriveLease,
   rollbackTransactionFinished,
   writeRollbackTransaction,
-  type FeatureState,
   type RollbackTransaction,
-} from "./state-store.js";
+} from "./rollback-journal.js";
 import { readProjectConfigSnapshot, readTraceability } from "./traceability-store.js";
 import { runVerificationCommand } from "./verification.js";
 import { approvalIds } from "./approval-basis.js";

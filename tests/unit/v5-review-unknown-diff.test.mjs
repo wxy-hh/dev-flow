@@ -88,10 +88,9 @@ test("a referenced verification command change rebuilds only affected review rol
     assert.deepEqual(updated.affectedEvidence.traceNodeIds, ["UNIT-001"]);
     assert.deepEqual(updated.affectedEvidence.reviewRoles, ["rollback-operability"]);
 
-    await assert.rejects(
-      () => jobs.assertReviewComplete(root, state),
-      (error) => error.code === "REVIEW_BASIS_STALE",
-    );
+    const gate = await jobs.reviewGate(root, state);
+    assert.equal(gate.status, "need-batch");
+    assert.equal(gate.cause, "stale");
     const rebuilt = await jobs.createReviewBatch(root, state.featureId, state.revision);
     assert.equal(rebuilt.created, true);
     assert.notEqual(rebuilt.batch.batchId, first.batch.batchId);

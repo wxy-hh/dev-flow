@@ -37,7 +37,7 @@ test("earlier chat text never becomes the current decision without a fresh trust
 
     // 呈现之前的事件不能完成追认。
     await assert.rejects(
-      () => store.resolveRatificationAnswer(root, "f", presented.state.revision, presented.interactionId, "保留兼容行为", "codex"),
+      () => store.answer({ root, featureId: "f", expectedRevision: presented.state.revision, host: "codex", credential: { source: "text", userReply: "保留兼容行为" } }),
       (error) => error.code === "INTERACTION_PROVENANCE_UNAVAILABLE" || error.code === "DECISION_REPLY_NOT_RECOGNIZED",
     );
   } finally {
@@ -50,7 +50,7 @@ test("a short confirmation after presentation ratifies; rejection leaves the dec
   try {
     const presented = await store.recordDecision(root, "f", state.revision, "是否保留兼容行为？", "历史兼容测试仍存在", "保留兼容行为", ["fact-1"], "codex");
     await store.recordHostEvent(root, { eventId: "ratify-ok", type: "user-prompt", host: "codex", text: "确认登记" });
-    const ratified = await store.resolveRatificationAnswer(root, "f", presented.state.revision, presented.interactionId, "确认登记", "codex");
+    const ratified = await store.answer({ root, featureId: "f", expectedRevision: presented.state.revision, host: "codex", credential: { source: "text", userReply: "确认登记" } });
     assert.equal(ratified.state.governance.decisions.length, 1);
     assert.equal(ratified.state.governance.decisions[0].conclusion, "保留兼容行为");
     // 决策与凭证绑定同一可信事件。
@@ -65,7 +65,7 @@ test("a short confirmation after presentation ratifies; rejection leaves the dec
       const started = await store.startFeature(root2, { featureId: "g", host: "codex" });
       const p2 = await store.recordDecision(root2, "g", started.revision, "是否升级依赖？", "讨论中表示不升级", "不升级", [], "codex");
       await store.recordHostEvent(root2, { eventId: "ratify-no", type: "user-prompt", host: "codex", text: "不要登记" });
-      const rejected = await store.resolveRatificationAnswer(root2, "g", p2.state.revision, p2.interactionId, "不要登记", "codex");
+      const rejected = await store.answer({ root: root2, featureId: "g", expectedRevision: p2.state.revision, host: "codex", credential: { source: "text", userReply: "不要登记" } });
       assert.equal(rejected.state.governance.decisions.length, 0);
       assert.equal(rejected.state.governance.decisions.length, 0);
       assert.equal(decisions.pendingDecisionForState(rejected.state), undefined);
@@ -81,7 +81,7 @@ test("native form confirmation ratifies the decision and records a native creden
   const { root, state } = await setup("dev-flow-ratify-native-");
   try {
     const presented = await store.recordDecision(root, "f", state.revision, "是否保留兼容行为？", "历史兼容测试仍存在", "保留兼容行为", [], "codex");
-    const ratified = await store.resolveRatificationElicitation(root, "f", presented.state.revision, presented.interactionId, "confirm", undefined, "codex");
+    const ratified = await store.answer({ root, featureId: "f", expectedRevision: presented.state.revision, host: "codex", credential: { source: "elicitation", action: "confirm" } });
 
     assert.equal(ratified.state.governance.decisions.length, 1);
     assert.equal(ratified.state.governance.decisions[0].conclusion, "保留兼容行为");
@@ -101,7 +101,7 @@ test("cross-host answers and replayed answers cannot ratify", async () => {
     // 跨宿主回答被拒绝
     await store.recordHostEvent(root, { eventId: "other-host", type: "user-prompt", host: "claude", text: "确认登记" });
     await assert.rejects(
-      () => store.resolveRatificationAnswer(root, "f", presented.state.revision, presented.interactionId, "确认登记", "codex"),
+      () => store.answer({ root, featureId: "f", expectedRevision: presented.state.revision, host: "codex", credential: { source: "text", userReply: "确认登记" } }),
       (error) => error.code === "HOST_EVENT_HOST_MISMATCH",
     );
     const unchanged = await store.readState(root, "f");
@@ -120,7 +120,7 @@ test("replayed identical answers are ambiguous and cannot ratify", async () => {
     await store.recordHostEvent(root, { eventId: "ratify-1", type: "user-prompt", host: "codex", text: "确认登记" });
     await store.recordHostEvent(root, { eventId: "ratify-2", type: "user-prompt", host: "codex", text: "确认登记" });
     await assert.rejects(
-      () => store.resolveRatificationAnswer(root, "f", presented.state.revision, presented.interactionId, "确认登记", "codex"),
+      () => store.answer({ root, featureId: "f", expectedRevision: presented.state.revision, host: "codex", credential: { source: "text", userReply: "确认登记" } }),
       (error) => error.code === "INTERACTION_PROVENANCE_AMBIGUOUS",
     );
     const unchanged = await store.readState(root, "f");
@@ -141,7 +141,7 @@ test("native form answer ratifies even when the displayed question is reformulat
       eventId: "ratify-reform", type: "user-prompt", host: "codex",
       text: "确认登记", question: "将“仅产出计划”登记为当前决定吗？",
     });
-    const ratified = await store.resolveRatificationAnswer(root, "f", presented.state.revision, presented.interactionId, "就按这个登记", "codex");
+    const ratified = await store.answer({ root, featureId: "f", expectedRevision: presented.state.revision, host: "codex", credential: { source: "text", userReply: "就按这个登记" } });
     assert.equal(ratified.state.governance.decisions.length, 1);
     assert.equal(ratified.state.governance.decisions[0].conclusion, "仅产出计划");
     assert.equal(ratified.state.governance.decisions[0].basis.eventId, "ratify-reform");

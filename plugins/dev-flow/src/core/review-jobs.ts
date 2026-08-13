@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { toPublicReviewJob, type ReviewAgentAttestation, type ReviewBasis, type ReviewBatch, type ReviewFindingEvent, type ReviewJob, type ReviewLedger, type ReviewSamplingAttempt, type PublicReviewJob } from "../policy/review.js";
 import type { AcceptanceCriterionNode, TraceNode, TraceabilityLedger, VerificationDispositionKind } from "../policy/traceability.js";
-import type { ReviewAssurance, ReviewFinding, ReviewFindingInput, ReviewFindingResolutionInput, ReviewRole } from "../policy/types.js";
+import type { ReviewAssurance, ReviewDepth, ReviewFinding, ReviewFindingInput, ReviewFindingResolutionInput, ReviewRole } from "../policy/types.js";
 import { pathWithinFileScope } from "../policy/rollback.js";
 import {
   assuranceForReview2a,
@@ -1537,13 +1537,11 @@ async function resolveReviewRiskAcceptanceResponse(
   return { ...result!, state };
 }
 
-/** Only Core derives plan-review evidence from a complete, current batch. */
 /**
- * 统一的“当前未解决严重发现”查询（issue 16）：inspect 与所有推进门禁
- * 读取完全相同的集合。
- * - 新格式（findingEvents）：由 finding 事件账本派生；
- * - 旧格式批次（无 findingEvents）：由 jobs + dispositions 派生。
- * 两条路径不再由不同调用者自行归约。
+ * 统一的“当前未解决严重发现”查询（issue 16）：只有 reviewGate 与 inspect
+ * 读取这组集合（inspect 为展示、gate 为就绪判定），二者共用同一归约。
+ * 两条路径（findingEvents 派生、旧格式 jobs + dispositions 派生）都收敛于此。
+ * @internal 不是公开就绪 API——就绪只问 reviewGate。
  */
 export function currentUnresolvedBlocking(
   ledger: ReviewLedger,
@@ -1589,45 +1587,131 @@ export function currentUnresolvedBlocking(
     });
 }
 
-export async function assertReviewComplete(
+/** 审查就绪时写入步骤证据的 stamp（batchId / basisHash / assuranceLevel）。 */
+export interface ReviewStamp {
+  batchId: string;
+  basisHash: string;
+  assuranceLevel: ReviewAssurance;
+}
+
+/**
+ * 审查就绪的唯一公开 seam（ADR-0023）。返回就绪或一种缺口，不返回 NextAction，
+ * 不对外暴露 deficit 集合。调用方：nextAction 调度、recordStep/begin 门禁、inspect。
+ */
+export type ReviewGateResult =
+  | { status: "ready"; stamp?: ReviewStamp }
+  | { status: "need-batch"; cause: "missing" | "stale" | "phase"; batchId?: string }
+  | { status: "jobs-open"; batchId: string; jobs: Array<{ jobId: string; role: ReviewRole; reviewDepth: ReviewDepth; status: "pending" | "claimed" | "sampling" | "submitted" | "reused" }> }
+  | { status: "blocking"; batchId: string; findingIds: string[] }
+  | { status: "isolation"; batchId: string; jobIds: string[] };
+
+export interface ReviewGateQuery {
+  phase?: "plan" | "code";
+}
+
+/** 某相位是否存在审查义务：plan 跟 planReview，code 跟 codeReview（与 reviewLedgerRequired 一致）。 */
+function reviewObligation(state: FeatureState, phase: "plan" | "code"): boolean {
+  if (state.mode !== "routed") return false;
+  if (phase === "code") return state.classification.controls.codeReview !== "none";
+  return reviewEnforcementRequired(state.route, state.classification.controls);
+}
+
+/** 与 currentBatchWithBasis 相同的基础新鲜度判定，但用布尔表达缺口而不是抛错。 */
+async function reviewBasisStale(root: string, state: FeatureState, batch: ReviewBatch, phase: "plan" | "code"): Promise<boolean> {
+  const requireLiveBasis = !planReviewBoundToBatch(state, batch);
+  const reviewInput = await deriveReviewInput(root, state);
+  if (requireLiveBasis && basisHash(reviewInput.basis) !== batch.basisHash) return true;
+  const requirements = deriveReviewJobRequirements(state.route, state.classification.riskLabels, state.classification.controls.reviewRoles, phase);
+  for (const requirement of requirements) {
+    const job = batch.jobs.find((candidate) => candidate.role === requirement.role);
+    if (!job || job.roleBasisHash !== reviewInput.roleBasisHashes[requirement.role]) return true;
+  }
+  return false;
+}
+
+function reviewJobsSummary(batch: ReviewBatch): Array<{ jobId: string; role: ReviewRole; reviewDepth: ReviewDepth; status: "pending" | "claimed" | "sampling" | "submitted" | "reused" }> {
+  return batch.jobs.map(({ jobId, role, reviewDepth, status }) => ({ jobId, role, reviewDepth, status }));
+}
+
+/**
+ * 审查就绪门禁（ADR-0023）。无审查义务时直接就绪且不读 ledger；有义务时
+ * 按 need-batch → jobs-open → isolation → blocking → ready 的先到先胜次序
+ * 给一种结果。投影不可读在本将就绪时 fail-closed（抛修复错误，不当日常缺口）。
+ */
+export async function reviewGate(
   root: string,
   state: FeatureState,
-): Promise<{ batchId: string; basisHash: string; assuranceLevel: ReviewAssurance }> {
-  const { ledger, batch } = await currentBatchWithBasis(root, state);
-  const expectedPhase = currentOpenStep(state) === "code_review" ? "code" : "plan";
-  if ((batch.phase ?? "plan") !== expectedPhase) invalid("REVIEW_BATCH_REQUIRED", `a current ${expectedPhase} review batch is required`, { expectedPhase });
-  if (batch.progress !== "complete") invalid("REVIEW_BATCH_INCOMPLETE", "all required review jobs must be submitted", { batchId: batch.batchId });
+  query?: ReviewGateQuery,
+): Promise<ReviewGateResult> {
+  const phase = query?.phase ?? (currentOpenStep(state) === "code_review" ? "code" : "plan");
+  if (!reviewObligation(state, phase)) return { status: "ready" };
+  const ledger = await readReviewLedger(root, state);
+  const batch = ledger.batches.find((candidate) => candidate.validity === "current");
+  if (!batch) return { status: "need-batch", cause: "missing" };
+  if ((batch.phase ?? "plan") !== phase) return { status: "need-batch", cause: "phase", batchId: batch.batchId };
+  if (await reviewBasisStale(root, state, batch, phase)) return { status: "need-batch", cause: "stale", batchId: batch.batchId };
+  if (batch.progress !== "complete") return { status: "jobs-open", batchId: batch.batchId, jobs: reviewJobsSummary(batch) };
   // 独立代码审查的隔离门禁（ADR-0017 / issue 19）：M/L 路线默认要求
   // codeReview "independent"，高后果标签会提升到 "full"——两者都要求审查在
   // 与实现隔离的新上下文中完成。只有绑定专用 review-execution 事件的 subagent
-  // 证明或受控 server sampling 能形成隔离证明；缺失时审查保持未完成并阻塞，
-  // 恢复路径：宿主 subagent 在独立上下文重做、使用服务端采样完成 job，或通过
-  // 质量例外（kind=review）显式接受独立性风险后继续。
-  const requiresIsolation = expectedPhase === "code"
-    && (state.classification.controls.codeReview === "independent" || state.classification.controls.codeReview === "full");
-  if (requiresIsolation) {
-    const missingIsolation = batch.jobs
-      .filter((job) => job.status === "submitted")
-      .filter((job) => !job.submission?.isolationProof)
-      .map((job) => job.jobId);
-    if (missingIsolation.length && !hasCurrentQualityException(state, "review")) {
-      invalid("REVIEW_ISOLATION_REQUIRED", "独立代码审查要求审查在与实现隔离的新上下文中完成，当前批次缺少隔离证明。", {
-        jobIds: missingIsolation,
-        batchId: batch.batchId,
-        recoveryHint: "在与实现隔离的上下文中重新完成这些审查 job 并记录 review-execution 事件，或通过服务端采样完成 job；宿主无法提供隔离上下文时，可通过质量例外（presentQualityException kind=review）显式接受独立性风险后继续。",
-        retryOriginal: true,
-      });
+  // 证明或受控 server sampling 能形成隔离证明；缺失时审查保持未完成并阻塞。
+  if (phase === "code") {
+    const requiresIsolation = state.classification.controls.codeReview === "independent" || state.classification.controls.codeReview === "full";
+    if (requiresIsolation && !hasCurrentQualityException(state, "review")) {
+      const missingIsolation = batch.jobs
+        .filter((job) => job.status === "submitted" && !job.submission?.isolationProof)
+        .map((job) => job.jobId);
+      if (missingIsolation.length) return { status: "isolation", batchId: batch.batchId, jobIds: missingIsolation };
     }
   }
   const unresolved = currentUnresolvedBlocking(ledger, batch, state);
-  if (unresolved.length && !hasCurrentQualityException(state, "review")) invalid("REVIEW_BLOCKING_FINDINGS", "review ledger has unresolved blocking findings", {
-    batchId: batch.batchId,
-    findingIds: unresolved.map((finding) => finding.findingId),
-  });
-  // The ledger is the authority, but plan-review remains a required generated
-  // artifact. Do not allow a complete batch to bypass a missing/corrupt view.
+  if (unresolved.length && !hasCurrentQualityException(state, "review")) {
+    return { status: "blocking", batchId: batch.batchId, findingIds: unresolved.map((finding) => finding.findingId) };
+  }
+  // 账本是权威，但 plan-review 仍是必选生成的工件：就绪前不得绕过缺失/损坏的视图。
   if (reviewEnforcementRequired(state.route, state.classification.controls)) {
     await assertCurrentReviewProjection(root, state);
   }
-  return { batchId: batch.batchId, basisHash: batch.basisHash, assuranceLevel: batch.assuranceLevel };
+  return { status: "ready", stamp: { batchId: batch.batchId, basisHash: batch.basisHash, assuranceLevel: batch.assuranceLevel } };
+}
+
+/** 把非就绪的 gate 结果译回现有错误码（REQUIRED / STALE / INCOMPLETE / BLOCKING / ISOLATION）。 */
+function reviewGateError(gate: Exclude<ReviewGateResult, { status: "ready" }>, phase: "plan" | "code"): DevFlowError {
+  switch (gate.status) {
+    case "need-batch": {
+      if (gate.cause === "stale") {
+        return new DevFlowError("REVIEW_BASIS_STALE", "review batch basis no longer matches current feature state", {
+          batchId: gate.batchId,
+          recoveryHint: "重建批次→重交 jobs→re-record planning",
+        });
+      }
+      return new DevFlowError("REVIEW_BATCH_REQUIRED", `a current ${phase} review batch is required`, { expectedPhase: phase });
+    }
+    case "jobs-open":
+      return new DevFlowError("REVIEW_BATCH_INCOMPLETE", "all required review jobs must be submitted", { batchId: gate.batchId });
+    case "isolation":
+      return new DevFlowError("REVIEW_ISOLATION_REQUIRED", "独立代码审查要求审查在与实现隔离的新上下文中完成，当前批次缺少隔离证明。", {
+        jobIds: gate.jobIds,
+        batchId: gate.batchId,
+        recoveryHint: "在与实现隔离的上下文中重新完成这些审查 job 并记录 review-execution 事件，或通过服务端采样完成 job；宿主无法提供隔离上下文时，可通过质量例外（presentQualityException kind=review）显式接受独立性风险后继续。",
+        retryOriginal: true,
+      });
+    case "blocking":
+      return new DevFlowError("REVIEW_BLOCKING_FINDINGS", "review ledger has unresolved blocking findings", {
+        batchId: gate.batchId,
+        findingIds: gate.findingIds,
+      });
+  }
+}
+
+/** recordStep / begin 读 gate 的同一句“过/不过”：就绪返回 stamp，否则抛对应错误码。 */
+export async function requireReviewReady(
+  root: string,
+  state: FeatureState,
+  query?: ReviewGateQuery,
+): Promise<ReviewStamp> {
+  const phase = query?.phase ?? (currentOpenStep(state) === "code_review" ? "code" : "plan");
+  const gate = await reviewGate(root, state, query);
+  if (gate.status === "ready") return gate.stamp!;
+  throw reviewGateError(gate, phase);
 }

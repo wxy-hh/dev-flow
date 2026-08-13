@@ -7,7 +7,7 @@ import { DevFlowError } from "./errors.js";
 import { assertArtifactCurrent } from "./artifacts.js";
 import { captureUnitBaseline } from "./checkpoints.js";
 import { fingerprintGovernedRoots, snapshotGovernedRoots } from "./fingerprint.js";
-import { assertReviewComplete } from "./review-jobs.js";
+import { requireReviewReady } from "./review-jobs.js";
 import { assertHostHealth } from "./host-health.js";
 import { assertWorkspaceOwnershipComplete, mutate, readProjectConfig, type FeatureState } from "./state-store.js";
 import { currentOpenStep } from "./step-order.js";
@@ -206,7 +206,8 @@ export async function beginImplementationUnit(
         await assertArtifactCurrent(root, id, state, kind);
       }
       if (reviewEnforcementRequired(state.route, state.classification.controls)) {
-        await assertReviewComplete(root, state);
+        // begin 显式问 plan：计划审查未就绪（缺批次/依据过期/作业未齐/严重发现）不得开始单元。
+        await requireReviewReady(root, state, { phase: "plan" });
       }
       nodes = currentImplementationNodes(ledger);
     } else {

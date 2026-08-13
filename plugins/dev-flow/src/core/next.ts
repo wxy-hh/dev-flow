@@ -1,14 +1,12 @@
-import { checkpointsEnforcementRequired, reviewEnforcementRequired } from "../policy/contract.js";
-import { deriveNext } from "../policy/derive-next.js";
+import { checkpointsEnforcementRequired, routeDefinition } from "../policy/contract.js";
 import { requiredEvidenceForStep, requiredEvidenceIsEmpty } from "../policy/evidence.js";
-import type { NextAction } from "../policy/types.js";
+import type { DeriveState, NextAction, PendingDecision } from "../policy/types.js";
 import type { TraceNode } from "../policy/traceability.js";
 import { readState, type FeatureState } from "./state-store.js";
 import { inspectTraceGate } from "./traceability-gates.js";
 import { readTraceability } from "./traceability-store.js";
 import { verificationIsStale } from "./verification.js";
-import { assertReviewComplete } from "./review-jobs.js";
-import { readReviewLedger } from "./review-store.js";
+import { reviewGate } from "./review-jobs.js";
 import { assertCurrentReviewProjection } from "./review-projection.js";
 import { routeDefinitionForState } from "./step-order.js";
 import { hasCurrentQualityException } from "./quality-exceptions.js";
@@ -44,6 +42,48 @@ function toDerivedState(state: FeatureState, verificationStale: boolean) {
   } as const;
 }
 
+/**
+ * Pure route-loop policy over a derived state: the ordered-step schedule.
+ * Private to nextAction (ADR-0021) — not a public contract. Anyone asking
+ * "what now" goes through nextAction only.
+ */
+function deriveRouteAction(state: DeriveState): NextAction {
+  if (Number(state.schemaVersion) !== 4 && Number(state.schemaVersion) !== 5) throw new Error("UNSUPPORTED_STATE_SCHEMA");
+  if (state.lifecycle === "finalized") return { kind: "done" };
+  if (state.repair?.status === "waiting-user" || state.repair?.status === "stalled") {
+    return {
+      kind: "waiting-user",
+      reason: state.repair.recoveryAction?.reason ?? "自动修复需要用户决策",
+      recoveryAction: state.repair.recoveryAction ?? { kind: "ask-user", reason: "自动修复已暂停", facts: [], impact: "当前单元未完成", recommendation: "请确认修订、回滚或调整计划" },
+    };
+  }
+  if (state.classificationViolatesTopology) return { kind: "stop", reason: "reclassification-required" };
+  if (state.blockingFindings?.some((finding) => finding.blocking)) return { kind: "stop", reason: "resolve-blocking-findings" };
+
+  const definition = routeDefinition(state.route);
+  const orderedSteps = state.orderedSteps ?? definition.orderedSteps;
+  // Approval is a dynamic obligation, never a fixed route stage. Present it
+  // only when all route work before implementation is complete; this keeps
+  // artifact scaffolding and plan review ahead of the user decision.
+  const approval = state.obligations?.find((obligation) => obligation.kind === "approval" && obligation.status !== "satisfied");
+  const implementationIndex = orderedSteps.indexOf("implementation");
+  const implementationReady = implementationIndex >= 0
+    && orderedSteps.slice(0, implementationIndex).every((step) => state.steps[step]?.status === "satisfied");
+  if (approval && implementationReady) {
+    return { kind: "present-human-gate", step: approval.id };
+  }
+
+  for (const step of orderedSteps) {
+    const snapshot = state.steps[step];
+    if (snapshot?.status === "satisfied") continue;
+    if (snapshot && snapshot.artifactReady === false) return { kind: "scaffold-artifact", step };
+    return { kind: "run-step", step };
+  }
+
+  if (!state.logicComplete) return { kind: "finalize" };
+  return { kind: "done" };
+}
+
 function enrichRunStep(state: FeatureState, step: string): NextAction {
   const requiredEvidence = requiredEvidenceForStep(
     state.route,
@@ -69,39 +109,21 @@ function traceStepForAction(action: NextAction): string | undefined {
 
 /**
  * Review jobs are state-machine actions, not a suggestion embedded in a Skill.
- * No job output is exposed here: callers only receive the work queue metadata.
+ * The gate is the single readiness verdict: next schedules from its structured
+ * result without a second ledger read. Isolation/blocking carry their ids from
+ * the result, never thrown through the scheduler.
  */
 async function reviewPlanAction(root: string, state: FeatureState): Promise<NextAction | undefined> {
-  if (!reviewEnforcementRequired(state.route, state.classification.controls)) return undefined;
-  const ledger = await readReviewLedger(root, state);
-  const batch = ledger.batches.find((candidate) => candidate.validity === "current");
-  if (!batch) return { kind: "create-review-batch", step: "planning" };
-  if (batch.progress !== "complete") {
-    return {
-      kind: "review-jobs-pending",
-      step: "planning",
-      batchId: batch.batchId,
-      jobs: batch.jobs.map(({ jobId, role, reviewDepth, status }) => ({ jobId, role, reviewDepth, status })),
-    };
+  const gate = await reviewGate(root, state);
+  if (gate.status === "ready") return undefined;
+  if (gate.status === "need-batch") return { kind: "create-review-batch", step: "planning" };
+  if (gate.status === "jobs-open") {
+    return { kind: "review-jobs-pending", step: "planning", batchId: gate.batchId, jobs: gate.jobs };
   }
-  try {
-    await assertReviewComplete(root, state);
-    return undefined;
-  } catch (error) {
-    const code = (error as { code?: unknown }).code;
-    if (code === "REVIEW_BASIS_STALE" || code === "REVIEW_BATCH_REQUIRED") {
-      return { kind: "create-review-batch", step: "planning" };
-    }
-    if (code === "REVIEW_BLOCKING_FINDINGS" || code === "REVIEW_BATCH_INCOMPLETE") {
-      return {
-        kind: "review-jobs-pending",
-        step: "planning",
-        batchId: batch.batchId,
-        jobs: batch.jobs.map(({ jobId, role, reviewDepth, status }) => ({ jobId, role, reviewDepth, status })),
-      };
-    }
-    throw error;
+  if (gate.status === "isolation") {
+    return { kind: "review-jobs-pending", step: "planning", batchId: gate.batchId, jobIds: gate.jobIds };
   }
+  return { kind: "review-jobs-pending", step: "planning", batchId: gate.batchId, findingIds: gate.findingIds };
 }
 
 /**
@@ -134,7 +156,22 @@ export async function nextAction(root: string, id: string): Promise<NextAction> 
       ? { kind: "intake", activity: "resolve-decision", reason: "当前有一个决策仍待用户确认" }
       : { kind: "intake", activity: "investigate", reason: "读取需求、代码、文档和测试完成调查后，调用 dev_flow_lock_classification 锁定路线（锁定前不要调用 record_step 等路线步骤工具）" };
   }
-  const action = deriveNext(toDerivedState(state, await verificationIsStale(root, state)));
+  let pending: PendingDecision | undefined;
+  try {
+    pending = pendingDecisionForState(state);
+  } catch (error) {
+    // Legacy grill state cannot be projected as a pending decision (its old
+    // contract has no recommendation). Fail soft here so next/status still
+    // report the route schedule and doctor/recover carry the restart guidance.
+    if ((error as { code?: unknown }).code !== "GRILL_INTERACTION_RESTART_REQUIRED") throw error;
+    pending = undefined;
+  }
+  if (pending) {
+    // A unique pending interaction preempts every other next step in routed
+    // mode too — the next action is to answer it (issue 02).
+    return { kind: "intake", activity: "resolve-decision", reason: "当前有一个决策仍待用户确认" };
+  }
+  const action = deriveRouteAction(toDerivedState(state, await verificationIsStale(root, state)));
 
   if (action.kind === "run-step" || action.kind === "present-human-gate") {
     const definition = routeDefinitionForState(state);

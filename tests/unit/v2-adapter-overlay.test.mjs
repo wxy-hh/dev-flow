@@ -181,7 +181,7 @@ test("高风险 XS 的确认义务在 implementation 写入前生效", async () 
   assert.equal(blocked?.code, "DEV_FLOW_IMPLEMENTATION_APPROVAL_REQUIRED");
 
   const presentation = await gates.presentApproval(root, "security-xs", current.revision, action.step);
-  current = await gates.resolveApprovalElicitation(root, "security-xs", presentation.revision, presentation.interactionId, "confirm", undefined, "codex");
+  current = (await state.answer({ root, featureId: "security-xs", expectedRevision: presentation.revision, host: "codex", credential: { source: "elicitation", action: "confirm" } })).state;
   const allowed = await adapter.preToolBlock(root, { tool_name: "write", tool_input: { file_path: "src/feature.txt" } });
   assert.equal(allowed, undefined);
 });
@@ -207,7 +207,7 @@ test("implementation 阶段 git 门禁：startup-excluded 预存脏文件提示�
   current = await steps.recordStep(root, "git-guard", current.revision, "locate", undefined);
   const action = await next.nextAction(root, "git-guard");
   const presentation = await gates.presentApproval(root, "git-guard", current.revision, action.step);
-  current = await gates.resolveApprovalElicitation(root, "git-guard", presentation.revision, presentation.interactionId, "confirm", undefined, "codex");
+  current = (await state.answer({ root, featureId: "git-guard", expectedRevision: presentation.revision, host: "codex", credential: { source: "elicitation", action: "confirm" } })).state;
 
   const startupExcluded = await adapter.evaluatePreToolUse(root, { tool_name: "bash", tool_input: { command: "git add src/pre-existing.js" } });
   assert.equal(startupExcluded.kind, "allow");
@@ -225,4 +225,31 @@ test("implementation 阶段 git 门禁：startup-excluded 预存脏文件提示�
   });
   const excludedBlocked = await adapter.preToolBlock(root, { tool_name: "bash", tool_input: { command: "git add src/user-excluded.js" } });
   assert.equal(excludedBlocked?.code, "DEV_FLOW_GIT_GUARD");
+});
+
+test("git commit -a/-am/--all 无法安全枚举，即使实现阶段已批准也按 unbounded 拦下", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "dev-flow-v2-adapter-commitall-"));
+  await mkdir(path.join(root, "src"));
+  await state.initProject(root, config);
+  let current = await state.startFeature(root, {
+    featureId: "commit-all",
+    objective: "验证 commit -a 门禁",
+    scope: { inScope: ["src/feature.txt"], outOfScope: [] },
+    level: "XS",
+    topology: "local",
+    requirements: "provided-confirmed",
+    riskLabels: ["security"],
+    host: "codex",
+  });
+  current = await steps.recordStep(root, "commit-all", current.revision, "locate", undefined);
+  const action = await next.nextAction(root, "commit-all");
+  const presentation = await gates.presentApproval(root, "commit-all", current.revision, action.step);
+  current = (await state.answer({ root, featureId: "commit-all", expectedRevision: presentation.revision, host: "codex", credential: { source: "elicitation", action: "confirm" } })).state;
+
+  for (const command of ['git commit -a -m "x"', 'git commit -am "x"', "git commit --all -m x"]) {
+    const blocked = await adapter.preToolBlock(root, { tool_name: "bash", tool_input: { command } });
+    assert.equal(blocked?.code, "DEV_FLOW_GIT_GUARD", command);
+  }
+  // --amend 不是 all 形态：已批准实现阶段下按具名 staged paths 处理（空暂存放行）
+  assert.equal(await adapter.preToolBlock(root, { tool_name: "bash", tool_input: { command: 'git commit --amend -m "x"' } }), undefined);
 });

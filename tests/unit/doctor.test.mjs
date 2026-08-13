@@ -6,7 +6,9 @@ import { createTinyApp, strictProjectConfig } from "../helpers/fixture-repo.mjs"
 import { loadSource } from "../helpers/load-source.mjs";
 
 const store = await loadSource("plugins/dev-flow/src/core/state-store.ts");
+const journal = await loadSource("plugins/dev-flow/src/core/rollback-journal.ts");
 const reviewStore = await loadSource("plugins/dev-flow/src/core/review-store.ts");
+const { createInteraction } = await loadSource("plugins/dev-flow/src/core/user-interactions.ts");
 const { collectDoctorReport } = await loadSource("plugins/dev-flow/src/mcp/doctor.ts");
 const pluginRoot = path.resolve("plugins/dev-flow");
 
@@ -204,7 +206,7 @@ test("doctor reports an open rollback transaction with its resume input", async 
     assert.deepEqual(report.rollbackTransactions, []);
     assert.ok(!report.diagnostics.some((item) => item.code.startsWith("ROLLBACK_")));
 
-    await store.writeRollbackTransaction(fixture.root, "feature", rollbackJournal("feature"));
+    await journal.writeRollbackTransaction(fixture.root, "feature", rollbackJournal("feature"));
     report = await collectDoctorReport(fixture.root, pluginRoot, "1.0.0", ["dev_flow_doctor"]);
     const diagnostic = report.diagnostics.find((item) => item.code === "ROLLBACK_TRANSACTION_OPEN");
     assert.equal(diagnostic?.status, "error");
@@ -223,7 +225,7 @@ test("doctor reports a blocked rollback recovery with both attempt id groups", a
   try {
     await store.initProject(fixture.root, strictProjectConfig);
     const state = await store.startFeature(fixture.root, { featureId: "feature", host: "codex", level: "XS", topology: "local" });
-    await store.writeRollbackTransaction(fixture.root, "feature", rollbackJournal("feature", {
+    await journal.writeRollbackTransaction(fixture.root, "feature", rollbackJournal("feature", {
       phase: "compensating",
       error: "rollback backup bytes failed their digest check",
       verificationAttemptIds: ["attempt-v1", "attempt-c1"],
@@ -257,7 +259,7 @@ test("doctor reports a completed rollback transaction as audit and an unreadable
   try {
     await store.initProject(fixture.root, strictProjectConfig);
     await store.startFeature(fixture.root, { featureId: "feature", host: "codex", level: "XS", topology: "local" });
-    await store.writeRollbackTransaction(fixture.root, "feature", rollbackJournal("feature", {
+    await journal.writeRollbackTransaction(fixture.root, "feature", rollbackJournal("feature", {
       phase: "committed",
       completedAt: new Date().toISOString(),
     }));
@@ -317,5 +319,36 @@ test("doctor stays successful when pendingDecisionForState rejects a legacy gril
     assert.equal(report.activeFeature.pendingDecision, undefined);
     assert.match(report.activeFeature.nextStep, /待决问题不可读/);
     assert.ok(report.diagnostics.some((item) => item.code === "ACTIVE_FEATURE_STATE" && item.status === "ok"));
+  } finally { await fixture.dispose(); }
+});
+
+test("doctor 无待决 routed 的下一步指向 status，不发明「继续某阶段」指令", async () => {
+  const fixture = await createTinyApp();
+  try {
+    await store.initProject(fixture.root, strictProjectConfig);
+    await store.startFeature(fixture.root, { featureId: "routed", host: "codex", level: "XS", topology: "local" });
+    const report = await collectDoctorReport(fixture.root, pluginRoot, "5.0.0", ["dev_flow_doctor"]);
+    assert.equal(report.activeFeature.mode, "routed");
+    assert.match(report.activeFeature.nextStep, /dev_flow_status/);
+    assert.doesNotMatch(report.activeFeature.nextStep, /继续/);
+  } finally { await fixture.dispose(); }
+});
+
+test("doctor routed 有待决交互时提到该问题，不落到 status 兜底", async () => {
+  const fixture = await createTinyApp();
+  try {
+    await store.initProject(fixture.root, strictProjectConfig);
+    const state = await store.startFeature(fixture.root, { featureId: "routed-pending", host: "codex", level: "XS", topology: "local" });
+    await store.mutate(fixture.root, "routed-pending", state.revision, "test-inject-pending", (draft) => {
+      createInteraction(draft, {
+        kind: "approval", target: "approval:implementation", basisHash: "a".repeat(64), question: "请确认实施",
+        options: [{ id: "confirm", label: "确认" }, { id: "revise", label: "驳回" }],
+      });
+    });
+    const report = await collectDoctorReport(fixture.root, pluginRoot, "5.0.0", ["dev_flow_doctor"]);
+    assert.equal(report.activeFeature.mode, "routed");
+    assert.equal(report.activeFeature.pendingDecision.kind, "approval");
+    assert.match(report.activeFeature.nextStep, /回答待决问题/);
+    assert.match(report.activeFeature.nextStep, /请确认实施/);
   } finally { await fixture.dispose(); }
 });

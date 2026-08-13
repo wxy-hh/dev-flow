@@ -96,9 +96,10 @@ async function trace(root: string, state: FeatureState) {
 
 async function review(root: string, state: FeatureState) {
   if (state.mode === "intake" || !reviewEnforcementRequired(state.route, state.classification.controls)) return { enforced: false };
+  // issue 16：inspect 与推进门禁共用同一未解发现归约（与 reviewGate 共用内部函数，
+  // 禁止第三套）。作业未齐时也如实显示已提交 job 的 blocking finding。
   const ledger = await readReviewLedger(root, state);
   const current = ledger.batches.find((batch) => batch.validity === "current");
-  // issue 16：inspect 与推进门禁读取完全相同的当前未解决发现集合。
   const unresolved = current ? currentUnresolvedBlocking(ledger, current, state) : [];
   // issue 19：来源维度与隔离维度分开展示，互不替代。
   const isolation = current?.jobs.flatMap((job) => job.submission?.isolationProof ? [{ jobId: job.jobId, mode: job.submission.isolationProof.mode }] : []) ?? [];

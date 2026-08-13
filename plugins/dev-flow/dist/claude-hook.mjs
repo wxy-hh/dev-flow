@@ -1,8 +1,8 @@
-/* dev-flow 5.0.8; built from source, deterministic build */
+/* dev-flow 5.0.9; built from source, deterministic build */
 
 // plugins/dev-flow/src/core/state-store.ts
 import { randomUUID as randomUUID6, createHash as createHash11 } from "node:crypto";
-import { access, mkdir as mkdir5, open as open5, readdir as readdir4, readFile as readFile9, rename as rename4, rm, rmdir, writeFile as writeFile2 } from "node:fs/promises";
+import { access, mkdir as mkdir5, open as open5, readdir as readdir4, readFile as readFile9, rename as rename4, rm, writeFile as writeFile2 } from "node:fs/promises";
 import { hostname } from "node:os";
 import path11 from "node:path";
 
@@ -355,8 +355,8 @@ var IMPLEMENTATION_UNIT_TRANSITIONS = Object.freeze({
   checkpointed: Object.freeze(["rolled_back"]),
   rolled_back: Object.freeze(["active"])
 });
-function pathWithinFileScope(path16, fileScope) {
-  return fileScope.some((pattern) => scopePatternMatches(pattern.normalize("NFC"), path16.normalize("NFC")));
+function pathWithinFileScope(path17, fileScope) {
+  return fileScope.some((pattern) => scopePatternMatches(pattern.normalize("NFC"), path17.normalize("NFC")));
 }
 function isSafeFileScopePattern(value) {
   if (typeof value !== "string" || !value || value.trim() !== value) return false;
@@ -2168,7 +2168,7 @@ async function reconcileWorkspace(root2, id, expectedRevision, host) {
     draft.workspace = workspace;
     if (contentChanged) markAffectedEvidenceStale(draft, changedPaths, reopenedLifecycle, legalCheckpointPaths);
     presentationEventId = queueNextOwnershipDecision(draft);
-    draft.lastUpdatedBy = { host, pluginVersion: "5.0.8" };
+    draft.lastUpdatedBy = { host, pluginVersion: "5.0.9" };
   }, () => ({
     observedHead: workspace.observedHead,
     commitCount: workspace.observedCommits.length,
@@ -2857,7 +2857,7 @@ async function recordTrustedWriteOwnership(root2, paths, host, eventId2) {
       draft.workspace.ownershipSource[file] = "trusted-hook";
     }
     draft.workspace.unownedPaths = (draft.workspace.unownedPaths ?? []).filter((file) => !governed.includes(file));
-    draft.lastUpdatedBy = { host, pluginVersion: "5.0.8" };
+    draft.lastUpdatedBy = { host, pluginVersion: "5.0.9" };
   }, { eventId: eventId2, host, paths: governed, after });
 }
 async function recordHostAuthorizationEvent(root2, type, record) {
@@ -2993,31 +2993,7 @@ async function readRecoveryTransaction(root2) {
     throw new DevFlowError("RECOVERY_TRANSACTION_UNREADABLE", "recovery journal is not valid JSON", { recoveryHint: "Run dev_flow_doctor; do not start a new feature" });
   }
 }
-var rollbackTransactionPhases = /* @__PURE__ */ new Set(["prepared", "backing-up", "rolling-back", "verifying", "committed", "compensating", "compensated"]);
-function isSha256(value) {
-  return typeof value === "string" && /^[a-f0-9]{64}$/.test(value);
-}
-function validateRollbackTransaction(value) {
-  const transaction = value;
-  const validPlan = Array.isArray(transaction?.filePlan) && transaction.filePlan.every((action) => {
-    const candidate = action;
-    if (!candidate || candidate.action !== "restore" && candidate.action !== "delete" || typeof candidate.path !== "string" || !candidate.path) return false;
-    if (candidate.action === "restore" && (!isSha256(candidate.blobSha256) || typeof candidate.mode !== "string" || !/^[0-7]{3,4}$/.test(candidate.mode))) return false;
-    if (candidate.blobSha256 !== void 0 && !isSha256(candidate.blobSha256)) return false;
-    if (candidate.mode !== void 0 && (typeof candidate.mode !== "string" || !/^[0-7]{3,4}$/.test(candidate.mode))) return false;
-    if (candidate.kind !== void 0 && candidate.kind !== "file" && candidate.kind !== "symlink") return false;
-    return true;
-  });
-  if (transaction?.schemaVersion !== 1 || typeof transaction.transactionId !== "string" || !transaction.transactionId || typeof transaction.featureId !== "string" || !transaction.featureId || !rollbackTransactionPhases.has(transaction.phase) || typeof transaction.targetCheckpointId !== "string" || !/^CP-[0-9]{3,}$/.test(transaction.targetCheckpointId) || typeof transaction.targetUnitId !== "string" || !/^UNIT-[0-9]{3,}$/.test(transaction.targetUnitId) || !Array.isArray(transaction.undoOrder) || transaction.undoOrder.length === 0 || !transaction.undoOrder.every((unitId) => typeof unitId === "string" && /^UNIT-[0-9]{3,}$/.test(unitId)) || transaction.undoCheckpoints !== void 0 && (!Array.isArray(transaction.undoCheckpoints) || !transaction.undoCheckpoints.every((id) => typeof id === "string" && /^CP-[0-9]{3,}$/.test(id))) || !isSha256(transaction.previewBasisHash) || !isSha256(transaction.projectConfigSha256) || transaction.verificationCommandHashes !== void 0 && (typeof transaction.verificationCommandHashes !== "object" || transaction.verificationCommandHashes === null || Array.isArray(transaction.verificationCommandHashes) || Object.values(transaction.verificationCommandHashes).some((hash2) => !isSha256(hash2))) || !Number.isInteger(transaction.stateRevision) || (transaction.stateRevision ?? -1) < 0 || typeof transaction.backupDirectory !== "string" || !/^checkpoints\/recovery\/[^/]+$/.test(transaction.backupDirectory) || !Number.isInteger(transaction.nextFileIndex) || (transaction.nextFileIndex ?? -1) < 0 || !validPlan || !Array.isArray(transaction.verificationAttemptIds) || !transaction.verificationAttemptIds.every((id) => typeof id === "string" && id.length > 0) || typeof transaction.startedAt !== "string" || transaction.completedAt !== void 0 && typeof transaction.completedAt !== "string" || transaction.error !== void 0 && typeof transaction.error !== "string") {
-    throw new DevFlowError("ROLLBACK_TRANSACTION_UNREADABLE", "rollback transaction journal is invalid", {
-      recoveryHint: "Run dev_flow_doctor; the workspace may be mid-rollback \u2014 do not hand-edit .dev-flow"
-    });
-  }
-}
-function rollbackTransactionFinished(transaction) {
-  return (transaction.phase === "committed" || transaction.phase === "compensated") && typeof transaction.completedAt === "string";
-}
-async function readRollbackTransaction(root2, featureId) {
+async function readRollbackJournalPresence(root2, featureId) {
   let raw;
   try {
     raw = await readFile9(rollbackTxnPath(root2, featureId), "utf8");
@@ -3035,13 +3011,19 @@ async function readRollbackTransaction(root2, featureId) {
       recoveryHint: "Run dev_flow_doctor; the workspace may be mid-rollback \u2014 do not hand-edit .dev-flow"
     });
   }
-  validateRollbackTransaction(parsed);
-  if (parsed.featureId !== featureId) {
+  const journal = parsed;
+  if (typeof journal.phase !== "string" || typeof journal.transactionId !== "string" || typeof journal.featureId !== "string") {
+    throw new DevFlowError("ROLLBACK_TRANSACTION_UNREADABLE", "rollback transaction journal is invalid", {
+      recoveryHint: "Run dev_flow_doctor; the workspace may be mid-rollback \u2014 do not hand-edit .dev-flow"
+    });
+  }
+  if (journal.featureId !== featureId) {
     throw new DevFlowError("ROLLBACK_TRANSACTION_UNREADABLE", "rollback transaction journal feature id does not match its path", {
       recoveryHint: "Run dev_flow_doctor; the workspace may be mid-rollback \u2014 do not hand-edit .dev-flow"
     });
   }
-  return parsed;
+  const finished = (journal.phase === "committed" || journal.phase === "compensated") && typeof journal.completedAt === "string";
+  return { finished, transactionId: journal.transactionId, featureId: journal.featureId, phase: journal.phase };
 }
 async function assertNoOpenRollbackTransaction(root2, allow) {
   let entries;
@@ -3053,13 +3035,13 @@ async function assertNoOpenRollbackTransaction(root2, allow) {
   }
   for (const entry of entries) {
     if (!entry.isDirectory()) continue;
-    const transaction = await readRollbackTransaction(root2, entry.name);
-    if (!transaction || rollbackTransactionFinished(transaction)) continue;
-    if (allow?.featureId === entry.name && allow.transactionId !== void 0 && allow.transactionId === transaction.transactionId) continue;
+    const presence = await readRollbackJournalPresence(root2, entry.name);
+    if (!presence || presence.finished) continue;
+    if (allow?.featureId === entry.name && allow.transactionId !== void 0 && allow.transactionId === presence.transactionId) continue;
     throw new DevFlowError("ROLLBACK_TRANSACTION_OPEN", "a rollback transaction is open", {
-      transactionId: transaction.transactionId,
+      transactionId: presence.transactionId,
       featureId: entry.name,
-      phase: transaction.phase,
+      phase: presence.phase,
       recoveryHint: `Resume the rollback transaction for feature ${entry.name} with the same input before mutating features`
     });
   }
@@ -3069,7 +3051,7 @@ async function appendFeatureEvent(root2, id, revision, type, data) {
 }
 
 // plugins/dev-flow/src/hosts/adapter-policy.ts
-import path13 from "node:path";
+import path14 from "node:path";
 import { execFile as execFile4 } from "node:child_process";
 import { promisify as promisify4 } from "node:util";
 
@@ -3112,6 +3094,9 @@ function classifyGitCommandKind(command) {
   return result;
 }
 var gitReadOnlyCommands = [...readOnly].sort();
+
+// plugins/dev-flow/src/core/write-gate.ts
+import path13 from "node:path";
 
 // plugins/dev-flow/src/core/implementation-units.ts
 import { createHash as createHash14, randomUUID as randomUUID9 } from "node:crypto";
@@ -3394,34 +3379,6 @@ function planReviewBoundToBatch(state, batch) {
   const evidence = state.steps.planning?.evidence;
   return state.steps.planning?.status === "satisfied" && evidence?.batchId === batch.batchId && evidence?.basisHash === batch.basisHash;
 }
-async function currentBatchWithBasis(root2, state, options = {}) {
-  const ledger = await readReviewLedger(root2, state);
-  const batch = ledger.batches.find((candidate) => candidate.validity === "current");
-  if (!batch) invalid3("REVIEW_BATCH_REQUIRED", "a current review batch is required");
-  const requireLiveBasis = options.requireLiveBasis ?? !planReviewBoundToBatch(state, batch);
-  const reviewInput = await deriveReviewInput(root2, state);
-  if (requireLiveBasis) {
-    if (basisHash(reviewInput.basis) !== batch.basisHash) {
-      invalid3("REVIEW_BASIS_STALE", "review batch basis no longer matches current feature state", {
-        batchId: batch.batchId,
-        recoveryHint: "\u91CD\u5EFA\u6279\u6B21\u2192\u91CD\u4EA4 jobs\u2192re-record planning"
-      });
-    }
-  }
-  const phase = batch.phase ?? "plan";
-  const requirements = deriveReviewJobRequirements(state.route, state.classification.riskLabels, state.classification.controls.reviewRoles, phase);
-  for (const requirement of requirements) {
-    const job = batch.jobs.find((candidate) => candidate.role === requirement.role);
-    if (!job || job.roleBasisHash !== reviewInput.roleBasisHashes[requirement.role]) {
-      invalid3("REVIEW_BASIS_STALE", "review role basis no longer matches current feature semantics", {
-        batchId: batch.batchId,
-        role: requirement.role,
-        recoveryHint: "\u91CD\u5EFA\u6279\u6B21\u2192\u91CD\u4EA4\u53D7\u5F71\u54CD role job\u2192re-record planning"
-      });
-    }
-  }
-  return { ledger, batch };
-}
 function currentUnresolvedBlocking(ledger, batch, state) {
   if (ledger.findingEvents?.length) {
     const roleBasis = (origin) => batch.jobs.find((job) => job.role === origin.role)?.roleBasisHash;
@@ -3454,32 +3411,82 @@ function currentUnresolvedBlocking(ledger, batch, state) {
     return !successor || !resolutionJob || !sourceJob || resolutionJob.role !== sourceJob.role || !resolutionJob.submission?.resolutions.some((resolution) => resolution.findingId === finding.findingId);
   });
 }
-async function assertReviewComplete(root2, state) {
-  const { ledger, batch } = await currentBatchWithBasis(root2, state);
-  const expectedPhase = currentOpenStep(state) === "code_review" ? "code" : "plan";
-  if ((batch.phase ?? "plan") !== expectedPhase) invalid3("REVIEW_BATCH_REQUIRED", `a current ${expectedPhase} review batch is required`, { expectedPhase });
-  if (batch.progress !== "complete") invalid3("REVIEW_BATCH_INCOMPLETE", "all required review jobs must be submitted", { batchId: batch.batchId });
-  const requiresIsolation = expectedPhase === "code" && (state.classification.controls.codeReview === "independent" || state.classification.controls.codeReview === "full");
-  if (requiresIsolation) {
-    const missingIsolation = batch.jobs.filter((job) => job.status === "submitted").filter((job) => !job.submission?.isolationProof).map((job) => job.jobId);
-    if (missingIsolation.length && !hasCurrentQualityException(state, "review")) {
-      invalid3("REVIEW_ISOLATION_REQUIRED", "\u72EC\u7ACB\u4EE3\u7801\u5BA1\u67E5\u8981\u6C42\u5BA1\u67E5\u5728\u4E0E\u5B9E\u73B0\u9694\u79BB\u7684\u65B0\u4E0A\u4E0B\u6587\u4E2D\u5B8C\u6210\uFF0C\u5F53\u524D\u6279\u6B21\u7F3A\u5C11\u9694\u79BB\u8BC1\u660E\u3002", {
-        jobIds: missingIsolation,
-        batchId: batch.batchId,
-        recoveryHint: "\u5728\u4E0E\u5B9E\u73B0\u9694\u79BB\u7684\u4E0A\u4E0B\u6587\u4E2D\u91CD\u65B0\u5B8C\u6210\u8FD9\u4E9B\u5BA1\u67E5 job \u5E76\u8BB0\u5F55 review-execution \u4E8B\u4EF6\uFF0C\u6216\u901A\u8FC7\u670D\u52A1\u7AEF\u91C7\u6837\u5B8C\u6210 job\uFF1B\u5BBF\u4E3B\u65E0\u6CD5\u63D0\u4F9B\u9694\u79BB\u4E0A\u4E0B\u6587\u65F6\uFF0C\u53EF\u901A\u8FC7\u8D28\u91CF\u4F8B\u5916\uFF08presentQualityException kind=review\uFF09\u663E\u5F0F\u63A5\u53D7\u72EC\u7ACB\u6027\u98CE\u9669\u540E\u7EE7\u7EED\u3002",
-        retryOriginal: true
-      });
+function reviewObligation(state, phase) {
+  if (state.mode !== "routed") return false;
+  if (phase === "code") return state.classification.controls.codeReview !== "none";
+  return reviewEnforcementRequired(state.route, state.classification.controls);
+}
+async function reviewBasisStale(root2, state, batch, phase) {
+  const requireLiveBasis = !planReviewBoundToBatch(state, batch);
+  const reviewInput = await deriveReviewInput(root2, state);
+  if (requireLiveBasis && basisHash(reviewInput.basis) !== batch.basisHash) return true;
+  const requirements = deriveReviewJobRequirements(state.route, state.classification.riskLabels, state.classification.controls.reviewRoles, phase);
+  for (const requirement of requirements) {
+    const job = batch.jobs.find((candidate) => candidate.role === requirement.role);
+    if (!job || job.roleBasisHash !== reviewInput.roleBasisHashes[requirement.role]) return true;
+  }
+  return false;
+}
+function reviewJobsSummary(batch) {
+  return batch.jobs.map(({ jobId, role, reviewDepth, status }) => ({ jobId, role, reviewDepth, status }));
+}
+async function reviewGate(root2, state, query) {
+  const phase = query?.phase ?? (currentOpenStep(state) === "code_review" ? "code" : "plan");
+  if (!reviewObligation(state, phase)) return { status: "ready" };
+  const ledger = await readReviewLedger(root2, state);
+  const batch = ledger.batches.find((candidate) => candidate.validity === "current");
+  if (!batch) return { status: "need-batch", cause: "missing" };
+  if ((batch.phase ?? "plan") !== phase) return { status: "need-batch", cause: "phase", batchId: batch.batchId };
+  if (await reviewBasisStale(root2, state, batch, phase)) return { status: "need-batch", cause: "stale", batchId: batch.batchId };
+  if (batch.progress !== "complete") return { status: "jobs-open", batchId: batch.batchId, jobs: reviewJobsSummary(batch) };
+  if (phase === "code") {
+    const requiresIsolation = state.classification.controls.codeReview === "independent" || state.classification.controls.codeReview === "full";
+    if (requiresIsolation && !hasCurrentQualityException(state, "review")) {
+      const missingIsolation = batch.jobs.filter((job) => job.status === "submitted" && !job.submission?.isolationProof).map((job) => job.jobId);
+      if (missingIsolation.length) return { status: "isolation", batchId: batch.batchId, jobIds: missingIsolation };
     }
   }
   const unresolved = currentUnresolvedBlocking(ledger, batch, state);
-  if (unresolved.length && !hasCurrentQualityException(state, "review")) invalid3("REVIEW_BLOCKING_FINDINGS", "review ledger has unresolved blocking findings", {
-    batchId: batch.batchId,
-    findingIds: unresolved.map((finding) => finding.findingId)
-  });
+  if (unresolved.length && !hasCurrentQualityException(state, "review")) {
+    return { status: "blocking", batchId: batch.batchId, findingIds: unresolved.map((finding) => finding.findingId) };
+  }
   if (reviewEnforcementRequired(state.route, state.classification.controls)) {
     await assertCurrentReviewProjection(root2, state);
   }
-  return { batchId: batch.batchId, basisHash: batch.basisHash, assuranceLevel: batch.assuranceLevel };
+  return { status: "ready", stamp: { batchId: batch.batchId, basisHash: batch.basisHash, assuranceLevel: batch.assuranceLevel } };
+}
+function reviewGateError(gate, phase) {
+  switch (gate.status) {
+    case "need-batch": {
+      if (gate.cause === "stale") {
+        return new DevFlowError("REVIEW_BASIS_STALE", "review batch basis no longer matches current feature state", {
+          batchId: gate.batchId,
+          recoveryHint: "\u91CD\u5EFA\u6279\u6B21\u2192\u91CD\u4EA4 jobs\u2192re-record planning"
+        });
+      }
+      return new DevFlowError("REVIEW_BATCH_REQUIRED", `a current ${phase} review batch is required`, { expectedPhase: phase });
+    }
+    case "jobs-open":
+      return new DevFlowError("REVIEW_BATCH_INCOMPLETE", "all required review jobs must be submitted", { batchId: gate.batchId });
+    case "isolation":
+      return new DevFlowError("REVIEW_ISOLATION_REQUIRED", "\u72EC\u7ACB\u4EE3\u7801\u5BA1\u67E5\u8981\u6C42\u5BA1\u67E5\u5728\u4E0E\u5B9E\u73B0\u9694\u79BB\u7684\u65B0\u4E0A\u4E0B\u6587\u4E2D\u5B8C\u6210\uFF0C\u5F53\u524D\u6279\u6B21\u7F3A\u5C11\u9694\u79BB\u8BC1\u660E\u3002", {
+        jobIds: gate.jobIds,
+        batchId: gate.batchId,
+        recoveryHint: "\u5728\u4E0E\u5B9E\u73B0\u9694\u79BB\u7684\u4E0A\u4E0B\u6587\u4E2D\u91CD\u65B0\u5B8C\u6210\u8FD9\u4E9B\u5BA1\u67E5 job \u5E76\u8BB0\u5F55 review-execution \u4E8B\u4EF6\uFF0C\u6216\u901A\u8FC7\u670D\u52A1\u7AEF\u91C7\u6837\u5B8C\u6210 job\uFF1B\u5BBF\u4E3B\u65E0\u6CD5\u63D0\u4F9B\u9694\u79BB\u4E0A\u4E0B\u6587\u65F6\uFF0C\u53EF\u901A\u8FC7\u8D28\u91CF\u4F8B\u5916\uFF08presentQualityException kind=review\uFF09\u663E\u5F0F\u63A5\u53D7\u72EC\u7ACB\u6027\u98CE\u9669\u540E\u7EE7\u7EED\u3002",
+        retryOriginal: true
+      });
+    case "blocking":
+      return new DevFlowError("REVIEW_BLOCKING_FINDINGS", "review ledger has unresolved blocking findings", {
+        batchId: gate.batchId,
+        findingIds: gate.findingIds
+      });
+  }
+}
+async function requireReviewReady(root2, state, query) {
+  const phase = query?.phase ?? (currentOpenStep(state) === "code_review" ? "code" : "plan");
+  const gate = await reviewGate(root2, state, query);
+  if (gate.status === "ready") return gate.stamp;
+  throw reviewGateError(gate, phase);
 }
 
 // plugins/dev-flow/src/core/implementation-units.ts
@@ -3490,10 +3497,10 @@ function currentImplementationNodes(ledger) {
 function planImplementationUnitDefs(planMarkdown) {
   const blocks = parsePlanBlocks(planMarkdown);
   const defs = [];
-  for (const [id, block] of blocks) {
-    if (block.kind !== "implementation-unit" || !/^UNIT-[0-9]{3,}$/.test(id)) continue;
+  for (const [id, block2] of blocks) {
+    if (block2.kind !== "implementation-unit" || !/^UNIT-[0-9]{3,}$/.test(id)) continue;
     const fields = {};
-    for (const line of block.text.split("\n")) {
+    for (const line of block2.text.split("\n")) {
       const match = /^-\s+([A-Za-z_]+):\s*(.*)$/.exec(line.trim());
       if (!match) continue;
       const raw = match[2].trim();
@@ -3570,7 +3577,7 @@ async function beginImplementationUnit(root2, id, expectedRevision, unitId) {
         await assertArtifactCurrent(root2, id, state, kind);
       }
       if (reviewEnforcementRequired(state.route, state.classification.controls)) {
-        await assertReviewComplete(root2, state);
+        await requireReviewReady(root2, state, { phase: "plan" });
       }
       nodes = currentImplementationNodes(ledger);
     } else {
@@ -3631,32 +3638,263 @@ async function beginImplementationUnit(root2, id, expectedRevision, unitId) {
   }, { unitId });
 }
 
-// plugins/dev-flow/src/core/write-policy.ts
-function judgeWrite(context) {
-  if (context.recoveryTransactionOpen) return {
-    decision: "block",
-    reason: "recovery transaction is open",
-    recoveryAction: { kind: "refresh-status", reason: "\u5148\u6062\u590D\u672A\u5B8C\u6210\u4E8B\u52A1" }
-  };
-  if (context.controlPath) return {
-    decision: "block",
-    reason: "workflow control files are Core-owned",
-    recoveryAction: { kind: "use-equivalent-operation", reason: "\u901A\u8FC7 MCP/Core \u53D8\u66F4\u72B6\u6001" }
-  };
-  if (context.mode === "intake" && context.governedPath) return {
-    decision: "block",
-    reason: "intake has no implementation stage",
-    recoveryAction: { kind: "refresh-status", reason: "\u5148\u5B8C\u6210\u4E8B\u5B9E\u8C03\u67E5\u5E76\u9501\u5B9A\u8DEF\u7EBF" }
-  };
-  if (context.stage === "implementation" && context.governedPath) {
-    return context.impactResolved ? { decision: "allow", reason: "implementation writes are semantically in scope; actual diff is audited at unit boundary" } : { decision: "audit", reason: "write target will be classified from post-tool actual diff" };
+// plugins/dev-flow/src/core/write-gate.ts
+function block(code, paths, reason, detail) {
+  return { decision: "block", block: { code, paths, reason, ...detail ? { detail } : {} } };
+}
+var controlFileNames = /* @__PURE__ */ new Set(["state.json", "active.json", "project.json", "events.jsonl", "status.md", "\u72B6\u6001\u6587\u6863.md", "recovery-transaction.json", "recovery-events.jsonl"]);
+function isDevFlowPath(relative) {
+  return relative === ".dev-flow" || relative.startsWith(".dev-flow/");
+}
+function isControlPath(relative) {
+  if (!isDevFlowPath(relative)) return false;
+  if (/^\.dev-flow\/features\/[^/]+\/traceability(?:\/|$)/.test(relative)) return true;
+  if (/^\.dev-flow\/features\/[^/]+\/review\/(?:snapshots|packages|projections)(?:\/|$)/.test(relative)) return true;
+  const base = path13.posix.basename(relative);
+  if (controlFileNames.has(base)) return true;
+  if (relative.includes("/.lock/") || relative.endsWith("/.lock")) return true;
+  if (relative === ".dev-flow/active.json" || relative === ".dev-flow/project.json") return true;
+  if (relative.includes("/recovered/")) return true;
+  if (relative.endsWith("/state.json") || relative.endsWith("/events.jsonl") || relative.endsWith("/status.md") || relative.endsWith("/\u72B6\u6001\u6587\u6863.md")) return true;
+  return false;
+}
+function isGoverned(relative, governedRoots) {
+  return governedRoots.some((item) => relative === item || relative.startsWith(`${item}/`));
+}
+function isGeneratedReviewProjectionPath(kind, artifactPath) {
+  return kind === "plan-review" && typeof artifactPath === "string" && /^review\/projections\/[a-f0-9]{64}\.md$/.test(artifactPath);
+}
+function inFeatureScope(relative, state) {
+  return state.scope.inScope.some((scope) => scope === "." || relative === scope || relative.startsWith(`${scope}/`));
+}
+async function loadActiveWorkflow(root2) {
+  try {
+    const recovery = await readRecoveryTransaction(root2);
+    if (recovery) {
+      try {
+        const project2 = await readProjectConfig(root2);
+        return { kind: "unreadable", reason: `recovery journal open for ${recovery.featureId}`, governedRoots: project2.governedRoots, blockAllWrites: false };
+      } catch {
+        return { kind: "unreadable", reason: "project.json invalid while recovery journal is open", blockAllWrites: true };
+      }
+    }
+  } catch {
+    return { kind: "unreadable", reason: "recovery journal unreadable", blockAllWrites: true };
   }
-  if (context.governedPath) return {
-    decision: "block",
-    reason: "governed file write is outside implementation stage",
-    recoveryAction: { kind: "revise-plan", reason: "\u5C06\u5B9E\u73B0\u5199\u5165\u653E\u5230 implementation stage" }
+  let active;
+  try {
+    active = await readActive(root2);
+  } catch {
+    try {
+      const project2 = await readProjectConfig(root2);
+      return { kind: "unreadable", reason: "active.json unreadable", governedRoots: project2.governedRoots, blockAllWrites: false };
+    } catch {
+      return { kind: "unreadable", reason: "project.json invalid while active.json is unreadable", blockAllWrites: true };
+    }
+  }
+  if (!active) return { kind: "none" };
+  let project;
+  try {
+    project = await readProjectConfig(root2);
+  } catch {
+    return { kind: "unreadable", reason: "project.json invalid", blockAllWrites: true };
+  }
+  let state;
+  let ledger;
+  try {
+    state = await readState(root2, active.featureId);
+  } catch {
+    return { kind: "unreadable", reason: "state invalid", governedRoots: project.governedRoots, blockAllWrites: false };
+  }
+  if (state.lifecycle !== "active" || active.revision !== state.revision) return { kind: "unreadable", reason: "active pointer revision mismatch", governedRoots: project.governedRoots, blockAllWrites: false };
+  if (state.traceability) {
+    try {
+      ledger = await readTraceability(root2, state);
+    } catch {
+      return { kind: "unreadable", reason: "traceability snapshot invalid", governedRoots: project.governedRoots, blockAllWrites: false };
+    }
+  }
+  if (state.review) {
+    try {
+      await readReviewLedger(root2, state);
+    } catch {
+      return { kind: "unreadable", reason: "review snapshot invalid", governedRoots: project.governedRoots, blockAllWrites: false };
+    }
+  }
+  const allowedArtifacts = /* @__PURE__ */ new Set();
+  for (const [kind, artifact] of Object.entries(state.artifacts ?? {})) {
+    if (kind === "status" || !artifact?.path) continue;
+    if (isGeneratedReviewProjectionPath(kind, artifact.path)) continue;
+    if (typeof artifact.path !== "string" || path13.posix.dirname(artifact.path) !== "." || !artifact.path.endsWith(".md")) {
+      return { kind: "unreadable", reason: "artifact path invalid", governedRoots: project.governedRoots, blockAllWrites: false };
+    }
+    const relative = `.dev-flow/features/${active.featureId}/${artifact.path}`.split(path13.sep).join("/");
+    allowedArtifacts.add(relative);
+  }
+  return {
+    kind: "ready",
+    workflow: {
+      featureId: active.featureId,
+      logicComplete: state.logicComplete,
+      approvalConfirmed: Boolean(confirmedApproval(state)),
+      allowedArtifacts,
+      governedRoots: project.governedRoots,
+      state,
+      ledger
+    }
   };
-  return { decision: "allow", reason: "unprotected or scratch write" };
+}
+async function revokedImplementationApprovalHint(root2, featureId) {
+  const events = await readFeatureEvents(root2, featureId);
+  let lastConfirmedIndex = -1;
+  for (let index = events.length - 1; index >= 0; index--) {
+    const event2 = events[index];
+    const data = event2.data;
+    if ((event2.type === "approval-confirmed" || event2.type === "approval-interaction-resolved") && typeof data.approval === "string" && data.approval.startsWith("approval:")) {
+      lastConfirmedIndex = index;
+      break;
+    }
+  }
+  if (lastConfirmedIndex < 0) return void 0;
+  for (let index = events.length - 1; index >= lastConfirmedIndex; index--) {
+    const event2 = events[index];
+    const data = event2.data;
+    if ((event2.type === "artifact-recorded" || event2.type === "artifact-recorded-with-trace") && data.kind !== void 0 && approvalBasisArtifacts.includes(data.kind) && data.invalidationReason) {
+      return data.kind;
+    }
+  }
+  return void 0;
+}
+async function writeGate(root2, intent) {
+  if (intent.kind === "file" && "unresolved" in intent) {
+    const loaded2 = await loadActiveWorkflow(root2);
+    return loaded2.kind === "ready" ? { decision: "allow", advisory: "unresolved-write" } : { decision: "allow" };
+  }
+  if (intent.kind === "file") {
+    for (const relative of intent.paths) {
+      if (isControlPath(relative)) {
+        return block("CONTROL_MUTATION_FORBIDDEN", [relative], "workflow control files are Core-owned", { variant: "control-file" });
+      }
+    }
+  }
+  const loaded = await loadActiveWorkflow(root2);
+  if (loaded.kind === "none") return { decision: "allow" };
+  if (loaded.kind === "unreadable") {
+    if (intent.kind === "git") {
+      return block("WORKFLOW_STATE_UNREADABLE", [], loaded.reason, { unreadableReason: loaded.reason });
+    }
+    for (const relative of intent.paths) {
+      if (loaded.blockAllWrites || isDevFlowPath(relative) || isGoverned(relative, loaded.governedRoots ?? [])) {
+        return block("WORKFLOW_STATE_UNREADABLE", [relative], loaded.reason, { unreadableReason: loaded.reason });
+      }
+    }
+    return { decision: "allow" };
+  }
+  if (intent.kind === "git") return evaluateGitWrite(loaded.workflow, intent);
+  return evaluateFileWrite(root2, loaded.workflow, intent.paths);
+}
+async function evaluateFileWrite(root2, workflow, paths) {
+  const state = workflow.state;
+  if (!state) return { decision: "allow" };
+  let unitNeededPath;
+  for (const relative of paths) {
+    if (isControlPath(relative)) return block("CONTROL_MUTATION_FORBIDDEN", [relative], "workflow control files are Core-owned", { variant: "control-file" });
+    if (isDevFlowPath(relative)) {
+      if (workflow.allowedArtifacts.has(relative)) continue;
+      if (relative.startsWith(`.dev-flow/features/${workflow.featureId}/`) && relative.endsWith(".md")) {
+        return block("ARTIFACT_NOT_REGISTERED", [relative], "feature artifact Markdown is not registered");
+      }
+      return block("CONTROL_MUTATION_FORBIDDEN", [relative], "Dev Flow control area is Core-owned", { variant: "control-area" });
+    }
+    const governed = isGoverned(relative, workflow.governedRoots);
+    if (state.mode === "intake" && governed) {
+      return approvalBlock(root2, workflow, relative, "intake");
+    }
+    if (state.mode === "routed" && currentOpenStep(state) === "implementation" && governed) {
+      const approvalPending = state.obligations?.some((obligation) => obligation.kind === "approval" && obligation.status !== "satisfied") ?? false;
+      if (approvalPending && !workflow.approvalConfirmed) {
+        return approvalBlock(root2, workflow, relative, "approval");
+      }
+      const unitBlock = implementationUnitWriteBlock(state, workflow.ledger, relative);
+      if (unitBlock?.code === "IMPLEMENTATION_UNIT_OUT_OF_SCOPE") {
+        return block("IMPLEMENTATION_UNIT_OUT_OF_SCOPE", [relative], "active implementation unit is not backed by the current trace");
+      }
+      if (unitBlock?.code === "IMPLEMENTATION_UNIT_REQUIRED") unitNeededPath ??= relative;
+      continue;
+    }
+  }
+  if (unitNeededPath) {
+    try {
+      const prepared = await ensureActiveImplementationUnit(root2, workflow.featureId, state);
+      if (prepared.revision !== state.revision) {
+        const refreshed = await loadActiveWorkflow(root2);
+        if (refreshed.kind !== "ready") {
+          return block("IMPLEMENTATION_UNIT_REQUIRED", [unitNeededPath], "no active implementation unit", { beginFailed: "active workflow refresh after implementation-unit preparation did not produce a readable state" });
+        }
+        for (const relative of paths) {
+          if (!isGoverned(relative, refreshed.workflow.governedRoots)) continue;
+          const unitBlock = implementationUnitWriteBlock(refreshed.workflow.state, refreshed.workflow.ledger, relative);
+          if (unitBlock?.code === "IMPLEMENTATION_UNIT_OUT_OF_SCOPE") {
+            return block("IMPLEMENTATION_UNIT_OUT_OF_SCOPE", [relative], "active implementation unit is not backed by the current trace");
+          }
+        }
+        return { decision: "allow" };
+      }
+      return block("IMPLEMENTATION_UNIT_REQUIRED", [unitNeededPath], "no active implementation unit");
+    } catch (error) {
+      const diagnostic = error instanceof Error ? error.message : String(error);
+      return block("IMPLEMENTATION_UNIT_REQUIRED", [unitNeededPath], "no active implementation unit", { beginFailed: diagnostic });
+    }
+  }
+  return { decision: "allow" };
+}
+async function approvalBlock(root2, workflow, relative, variant) {
+  let revokedKind;
+  try {
+    revokedKind = await revokedImplementationApprovalHint(root2, workflow.featureId);
+  } catch {
+    return block("WORKFLOW_STATE_UNREADABLE", [relative], "events.jsonl invalid or unreadable", { unreadableReason: "events.jsonl invalid or unreadable" });
+  }
+  return block("IMPLEMENTATION_APPROVAL_REQUIRED", [relative], "governed write requires implementation approval", {
+    variant,
+    ...revokedKind ? { revokedKind } : {}
+  });
+}
+function evaluateGitWrite(workflow, intent) {
+  if (intent.kind !== "git") return { decision: "allow" };
+  if ("form" in intent) {
+    if (intent.form === "publish") {
+      return block("GIT_GUARD", [], "external publish is not allowed", { variant: "publish" });
+    }
+    return block("GIT_GUARD", [], "git write cannot be safety-enumerated", { variant: "unbounded" });
+  }
+  const state = workflow.state;
+  const paths = intent.paths;
+  if (!state || state.lifecycle !== "active") {
+    return block("GIT_GUARD", paths, "git delivery write is not allowed before the implementation stage", { variant: "not-eligible" });
+  }
+  const implementationReady = state.mode === "routed" && currentOpenStep(state) === "implementation" && workflow.approvalConfirmed;
+  if (!state.logicComplete && !implementationReady) {
+    return block("GIT_GUARD", paths, "git delivery write is not allowed before logic-complete", { variant: "not-eligible" });
+  }
+  const startedDirty = state.workspace.startedDirty ?? {};
+  const startupExcluded = paths.filter((relative) => state.workspace.ownership[relative] === "excluded" && startedDirty[relative] !== void 0);
+  const excluded = paths.filter((relative) => state.workspace.ownership[relative] === "excluded" && startedDirty[relative] === void 0);
+  const unknown = paths.filter((relative) => state.workspace.ownership[relative] !== "feature" && state.workspace.ownership[relative] !== "excluded" && !inFeatureScope(relative, state));
+  if (excluded.length || unknown.length) {
+    return block("GIT_GUARD", [...excluded, ...unknown], "git command includes unowned or excluded paths", { variant: "paths" });
+  }
+  if (startupExcluded.length) {
+    return {
+      decision: "audit",
+      block: {
+        code: "GIT_STARTUP_EXCLUDED",
+        paths: startupExcluded,
+        reason: "startup-excluded pre-existing dirty paths are not blocked but stay out of delivery"
+      }
+    };
+  }
+  return { decision: "allow" };
 }
 
 // plugins/dev-flow/src/hosts/adapter-policy.ts
@@ -3674,20 +3912,19 @@ function hostToolExecutionDetails(event2, succeeded, fallbackEventId) {
 function createPreToolBlock(code, reason, impact, recovery) {
   return { code, reason, impact, recovery, recoveryHint: recovery.action };
 }
-function formatPreToolBlock(block) {
-  const confirmation = block.recovery.mode === "user-decision" ? "\u9700\u8981\u7528\u6237\u51B3\u5B9A\uFF1B\u6A21\u578B\u5E94\u53EA\u8BE2\u95EE\u4E00\u6B21\uFF0C\u786E\u8BA4\u540E\u76F4\u63A5\u6267\u884C\u89E3\u51B3\u52A8\u4F5C\u3002" : block.recovery.mode === "guided" ? "\u5148\u81EA\u52A8\u6267\u884C\u89E3\u51B3\u52A8\u4F5C\uFF1B\u53EA\u6709\u52A8\u4F5C\u8BC1\u660E\u9700\u8981 recover\u3001\u91CD\u5EFA\u3001\u653E\u5F03\u6216\u6539\u53D8\u76EE\u6807\u65F6\u624D\u8BE2\u95EE\u7528\u6237\u4E00\u6B21\u3002" : "\u4E0D\u9700\u8981\u7528\u6237\u51B3\u5B9A\uFF1B\u6A21\u578B\u53EF\u4EE5\u76F4\u63A5\u6267\u884C\u89E3\u51B3\u52A8\u4F5C\u3002";
-  const continuation = block.recovery.retryOriginal ? "\u89E3\u51B3\u540E\u81EA\u52A8\u91CD\u8BD5\u539F\u64CD\u4F5C\uFF0C\u65E0\u9700\u7528\u6237\u518D\u6B21\u56DE\u590D\u7EE7\u7EED" : "\u539F\u64CD\u4F5C\u4E0D\u4F1A\u91CD\u8BD5\uFF1B\u5B8C\u6210\u89E3\u51B3\u52A8\u4F5C\u540E\u7EE7\u7EED\u540E\u7EED\u5FC5\u8981\u6B65\u9AA4";
+function formatPreToolBlock(block2) {
+  const confirmation = block2.recovery.mode === "user-decision" ? "\u9700\u8981\u7528\u6237\u51B3\u5B9A\uFF1B\u6A21\u578B\u5E94\u53EA\u8BE2\u95EE\u4E00\u6B21\uFF0C\u786E\u8BA4\u540E\u76F4\u63A5\u6267\u884C\u89E3\u51B3\u52A8\u4F5C\u3002" : block2.recovery.mode === "guided" ? "\u5148\u81EA\u52A8\u6267\u884C\u89E3\u51B3\u52A8\u4F5C\uFF1B\u53EA\u6709\u52A8\u4F5C\u8BC1\u660E\u9700\u8981 recover\u3001\u91CD\u5EFA\u3001\u653E\u5F03\u6216\u6539\u53D8\u76EE\u6807\u65F6\u624D\u8BE2\u95EE\u7528\u6237\u4E00\u6B21\u3002" : "\u4E0D\u9700\u8981\u7528\u6237\u51B3\u5B9A\uFF1B\u6A21\u578B\u53EF\u4EE5\u76F4\u63A5\u6267\u884C\u89E3\u51B3\u52A8\u4F5C\u3002";
+  const continuation = block2.recovery.retryOriginal ? "\u89E3\u51B3\u540E\u81EA\u52A8\u91CD\u8BD5\u539F\u64CD\u4F5C\uFF0C\u65E0\u9700\u7528\u6237\u518D\u6B21\u56DE\u590D\u7EE7\u7EED" : "\u539F\u64CD\u4F5C\u4E0D\u4F1A\u91CD\u8BD5\uFF1B\u5B8C\u6210\u89E3\u51B3\u52A8\u4F5C\u540E\u7EE7\u7EED\u540E\u7EED\u5FC5\u8981\u6B65\u9AA4";
   return [
-    block.code,
-    `\u539F\u56E0\uFF1A${block.reason}`,
-    `\u5F71\u54CD\uFF1A${block.impact}`,
-    `\u89E3\u51B3\u65B9\u6848\uFF1A${block.recovery.action}`,
+    block2.code,
+    `\u539F\u56E0\uFF1A${block2.reason}`,
+    `\u5F71\u54CD\uFF1A${block2.impact}`,
+    `\u89E3\u51B3\u65B9\u6848\uFF1A${block2.recovery.action}`,
     `\u786E\u8BA4\uFF1A${confirmation}`,
     `\u7EE7\u7EED\u65B9\u5F0F\uFF1A${continuation}`
   ].join("\n");
 }
 var directWriteTools = /* @__PURE__ */ new Set(["write", "edit", "multiedit", "applypatch", "apply_patch", "patch"]);
-var controlFileNames = /* @__PURE__ */ new Set(["state.json", "active.json", "project.json", "events.jsonl", "status.md", "\u72B6\u6001\u6587\u6863.md", "recovery-transaction.json", "recovery-events.jsonl"]);
 var scratchHint = "\uFF1B\u4E34\u65F6\u9A8C\u8BC1\u6587\u4EF6\u8BF7\u653E\u5165 scratch/ \u76EE\u5F55";
 var runGit = promisify4(execFile4);
 function toolName(event2) {
@@ -3698,33 +3935,21 @@ function isRelevantPreToolUse(event2) {
   return name === "bash" || directWriteTools.has(name);
 }
 function projectRelative(root2, target) {
-  const absolute = path13.resolve(root2, target);
-  const relative = path13.relative(root2, absolute);
-  if (relative === "" || relative.startsWith("..") || path13.isAbsolute(relative)) return void 0;
-  return relative.split(path13.sep).join("/").normalize("NFC");
+  const absolute = path14.resolve(root2, target);
+  const relative = path14.relative(root2, absolute);
+  if (relative === "" || relative.startsWith("..") || path14.isAbsolute(relative)) return void 0;
+  return relative.split(path14.sep).join("/").normalize("NFC");
 }
-function isGoverned(root2, target, governedRoots) {
-  const relative = projectRelative(root2, target);
-  if (!relative) return false;
-  return governedRoots.some((item) => relative === item || relative.startsWith(`${item}/`));
-}
-function isDevFlowPath(relative) {
-  return relative === ".dev-flow" || relative.startsWith(".dev-flow/");
-}
-function isControlPath(relative) {
-  if (!isDevFlowPath(relative)) return false;
-  if (/^\.dev-flow\/features\/[^/]+\/traceability(?:\/|$)/.test(relative)) return true;
-  if (/^\.dev-flow\/features\/[^/]+\/review\/(?:snapshots|packages|projections)(?:\/|$)/.test(relative)) return true;
-  const base = path13.posix.basename(relative);
-  if (controlFileNames.has(base)) return true;
-  if (relative.includes("/.lock/") || relative.endsWith("/.lock")) return true;
-  if (relative === ".dev-flow/active.json" || relative === ".dev-flow/project.json") return true;
-  if (relative.includes("/recovered/")) return true;
-  if (relative.endsWith("/state.json") || relative.endsWith("/events.jsonl") || relative.endsWith("/status.md") || relative.endsWith("/\u72B6\u6001\u6587\u6863.md")) return true;
-  return false;
-}
-function isGeneratedReviewProjectionPath(kind, artifactPath) {
-  return kind === "plan-review" && typeof artifactPath === "string" && /^review\/projections\/[a-f0-9]{64}\.md$/.test(artifactPath);
+function projectRelativePaths(root2, targets) {
+  const seen = /* @__PURE__ */ new Set();
+  const paths = [];
+  for (const target of targets) {
+    const relative = projectRelative(root2, target);
+    if (!relative || seen.has(relative)) continue;
+    seen.add(relative);
+    paths.push(relative);
+  }
+  return paths;
 }
 function patchTargets(value) {
   const text = typeof value === "string" ? value : "";
@@ -3747,14 +3972,6 @@ function trustedWriteTargets(root2, event2) {
     return analysis.kind === "resolved" ? analysis.targets : [];
   })() : directTargets(event2);
   return [...new Set(targets.map((target) => projectRelative(root2, target)).filter((value) => Boolean(value)))].sort();
-}
-function knownWriteTargets(event2) {
-  if (toolName(event2) === "bash") {
-    const command = typeof event2.tool_input?.command === "string" ? event2.tool_input.command : "";
-    const analysis = analyzeBashWriteTargets(command);
-    return analysis.kind === "resolved" ? analysis.targets : analysis.kind === "read-only" ? [] : void 0;
-  }
-  return directTargets(event2);
 }
 var writeSyntaxHint = /(?:^|[;&|]\s*)(?:\w+=\S+\s+)*(?:tee\b|touch\b|mkdir\b|rm\b|mv\b|cp\b|sed\s+-i\b|perl\s+-pi\b)|(?:^|\s)>{1,2}\s*|\s>{1,2}\s*|\bapply_patch\b/;
 function stripQuotes(token) {
@@ -3917,7 +4134,7 @@ function heredocConsumer(line, openerIndex) {
   const lastSegment = line.slice(0, openerIndex).split(/[;&|]\s*/).at(-1) ?? "";
   const withoutEnv = lastSegment.replace(/^(?:\w+=\S+\s+)+/, "");
   const command = withoutEnv.match(/^\s*(?:command\s+)?([A-Za-z0-9_./-]+)/)?.[1];
-  return command ? path13.posix.basename(command) : void 0;
+  return command ? path14.posix.basename(command) : void 0;
 }
 function maskHeredocBodies(command) {
   const lines = command.split("\n");
@@ -3985,21 +4202,21 @@ function analyzeBashWriteTargets(command) {
       const words = commandWords(withoutEnv.slice(teeIndex), "tee");
       const paths = words && collectPathOperands(words, 0);
       if (!paths) return { kind: "unresolved", syntax: "tee-args" };
-      for (const path16 of paths) collect2(path16);
+      for (const path17 of paths) collect2(path17);
     }
     const simple = withoutEnv.match(/^(touch|mkdir|rm)\b/);
     if (simple) {
       const words = commandWords(withoutEnv, simple[1]);
       const paths = words && collectPathOperands(words, 0);
       if (!paths) return { kind: "unresolved", syntax: "simple-args" };
-      for (const path16 of paths) collect2(path16);
+      for (const path17 of paths) collect2(path17);
     }
     const moveCopy = withoutEnv.match(/^(mv|cp)\b/);
     if (moveCopy) {
       const words = commandWords(withoutEnv, moveCopy[1]);
       const paths = words && collectPathOperands(words, 0);
       if (!paths || paths.length < 2) return { kind: "unresolved", syntax: "mv-cp-args" };
-      if (moveCopy[1] === "mv") for (const path16 of paths) collect2(path16);
+      if (moveCopy[1] === "mv") for (const path17 of paths) collect2(path17);
       else collect2(paths.at(-1));
     }
     const sed = withoutEnv.match(/^sed\s+(-i\S*)\s+([\s\S]*)$/);
@@ -4007,7 +4224,7 @@ function analyzeBashWriteTargets(command) {
       const words = shellWords(sed[2]);
       const paths = words && collectPathOperands(words, 1);
       if (!paths) return { kind: "unresolved", syntax: "sed-args" };
-      for (const path16 of paths) collect2(path16);
+      for (const path17 of paths) collect2(path17);
     }
     const perl = withoutEnv.match(/^perl\s+(-pi\S*)\s+([\s\S]*)$/);
     if (perl) {
@@ -4015,7 +4232,7 @@ function analyzeBashWriteTargets(command) {
       const firstPath = words?.[0] === "-e" ? 2 : 0;
       const paths = words && collectPathOperands(words, firstPath);
       if (!paths) return { kind: "unresolved", syntax: "perl-args" };
-      for (const path16 of paths) collect2(path16);
+      for (const path17 of paths) collect2(path17);
     }
   }
   if (targets.length === 0) {
@@ -4024,298 +4241,26 @@ function analyzeBashWriteTargets(command) {
   }
   return { kind: "resolved", targets };
 }
-async function loadActiveWorkflow(root2) {
-  try {
-    const recovery = await readRecoveryTransaction(root2);
-    if (recovery) {
-      try {
-        const project2 = await readProjectConfig(root2);
-        return { kind: "unreadable", reason: `recovery journal open for ${recovery.featureId}`, governedRoots: project2.governedRoots, blockAllWrites: false };
-      } catch {
-        return { kind: "unreadable", reason: "project.json invalid while recovery journal is open", blockAllWrites: true };
-      }
-    }
-  } catch {
-    return { kind: "unreadable", reason: "recovery journal unreadable", blockAllWrites: true };
-  }
-  let active;
-  try {
-    active = await readActive(root2);
-  } catch {
-    try {
-      const project2 = await readProjectConfig(root2);
-      return { kind: "unreadable", reason: "active.json unreadable", governedRoots: project2.governedRoots, blockAllWrites: false };
-    } catch {
-      return { kind: "unreadable", reason: "project.json invalid while active.json is unreadable", blockAllWrites: true };
-    }
-  }
-  if (!active) return { kind: "none" };
-  let project;
-  try {
-    project = await readProjectConfig(root2);
-  } catch {
-    return { kind: "unreadable", reason: "project.json invalid", blockAllWrites: true };
-  }
-  let state;
-  let ledger;
-  try {
-    state = await readState(root2, active.featureId);
-  } catch {
-    return { kind: "unreadable", reason: "state invalid", governedRoots: project.governedRoots, blockAllWrites: false };
-  }
-  if (state.lifecycle !== "active" || active.revision !== state.revision) return { kind: "unreadable", reason: "active pointer revision mismatch", governedRoots: project.governedRoots, blockAllWrites: false };
-  if (state.traceability) {
-    try {
-      ledger = await readTraceability(root2, state);
-    } catch {
-      return { kind: "unreadable", reason: "traceability snapshot invalid", governedRoots: project.governedRoots, blockAllWrites: false };
-    }
-  }
-  if (state.review) {
-    try {
-      await readReviewLedger(root2, state);
-    } catch {
-      return { kind: "unreadable", reason: "review snapshot invalid", governedRoots: project.governedRoots, blockAllWrites: false };
-    }
-  }
-  const allowedArtifacts = /* @__PURE__ */ new Set();
-  for (const [kind, artifact] of Object.entries(state.artifacts ?? {})) {
-    if (kind === "status" || !artifact?.path) continue;
-    if (isGeneratedReviewProjectionPath(kind, artifact.path)) continue;
-    if (typeof artifact.path !== "string" || path13.posix.dirname(artifact.path) !== "." || !artifact.path.endsWith(".md")) {
-      return { kind: "unreadable", reason: "artifact path invalid", governedRoots: project.governedRoots, blockAllWrites: false };
-    }
-    const relative = `.dev-flow/features/${active.featureId}/${artifact.path}`.split(path13.sep).join("/");
-    allowedArtifacts.add(relative);
-  }
-  const approvalConfirmed = Boolean(confirmedApproval(state));
-  return {
-    kind: "ready",
-    workflow: {
-      featureId: active.featureId,
-      route: state.route,
-      logicComplete: state.logicComplete,
-      approvalConfirmed,
-      allowedArtifacts,
-      governedRoots: project.governedRoots,
-      state,
-      ledger
-    }
-  };
-}
-function classifyTarget(root2, target, workflow) {
-  const relative = projectRelative(root2, target);
-  if (!relative) return void 0;
-  if (isControlPath(relative)) return controlMutationBlock(relative);
-  if (isDevFlowPath(relative)) {
-    if (workflow.allowedArtifacts.has(relative)) return void 0;
-    if (relative.startsWith(`.dev-flow/features/${workflow.featureId}/`) && relative.endsWith(".md")) {
-      const displayName = path13.posix.basename(relative, ".md");
-      const kind = displayName === "\u9700\u6C42\u6587\u6863" ? "requirements" : displayName === "\u5B9E\u65BD\u8BA1\u5212" ? "implementation-plan" : displayName;
-      return createPreToolBlock(
-        "DEV_FLOW_ARTIFACT_NOT_REGISTERED",
-        `\u76EE\u6807 ${relative} \u662F active feature \u7684 ${kind} Markdown \u8D44\u4EA7\uFF0C\u4F46\u5C1A\u672A\u767B\u8BB0`,
-        "\u539F\u5199\u5165\u672A\u6267\u884C\uFF1B\u8BE5\u8D44\u4EA7\u4E0D\u4F1A\u8FDB\u5165 feature \u8BC1\u636E\u8D26\u672C",
-        {
-          mode: "guided",
-          action: `\u5148\u901A\u8FC7 MCP scaffold/register ${kind} \u8D44\u4EA7 ${relative}\uFF0C\u518D\u81EA\u52A8\u91CD\u8BD5\u539F\u5199\u5165`,
-          retryOriginal: true
-        }
-      );
-    }
-    return createPreToolBlock(
-      "DEV_FLOW_STATE_MUTATION_FORBIDDEN",
-      `\u76EE\u6807 ${relative} \u4F4D\u4E8E Dev Flow \u63A7\u5236\u533A\uFF0C\u4E14\u4E0D\u662F active feature \u5DF2\u767B\u8BB0\u7684\u53EF\u7F16\u8F91 Markdown \u8D44\u4EA7`,
-      "\u539F\u5199\u5165\u672A\u6267\u884C\uFF1BDev Flow \u63A7\u5236\u533A\u6CA1\u6709\u88AB\u4FEE\u6539",
-      {
-        mode: "user-decision",
-        action: "\u786E\u8BA4\u540E\u7531\u6A21\u578B\u8C03\u7528\u5BF9\u5E94 MCP \u5B8C\u6210\u540C\u4E00\u5DE5\u4F5C\u6D41\u610F\u56FE\uFF1B\u4E0D\u8981\u76F4\u63A5\u7F16\u8F91\u63A7\u5236\u533A\u6587\u4EF6",
-        retryOriginal: false
-      }
-    );
-  }
-  if (workflow.state?.mode === "intake") {
-    const decision = judgeWrite({ mode: "intake", controlPath: false, governedPath: isGoverned(root2, target, workflow.governedRoots), impactResolved: false });
-    if (decision.decision === "block") {
-      return createPreToolBlock(
-        "DEV_FLOW_IMPLEMENTATION_APPROVAL_REQUIRED",
-        `feature \u4ECD\u5904\u4E8E intake\uFF0C\u76EE\u6807 ${relative} \u4F4D\u4E8E governed root\uFF0C\u5C1A\u672A\u8FDB\u5165\u53EF\u6267\u884C\u5B9E\u73B0\u9636\u6BB5`,
-        "\u539F\u5199\u5165\u672A\u6267\u884C\uFF1Bgoverned \u76EE\u6807\u4FDD\u6301\u4E0D\u53D8",
-        {
-          mode: "user-decision",
-          action: "\u5148\u5B8C\u6210 intake \u8C03\u67E5\u3001\u89E3\u51B3\u5206\u7C7B\u51B3\u7B56\u5E76\u9501\u5B9A\u57FA\u7840\u8DEF\u7EBF\uFF1B\u6EE1\u8DB3\u5B9E\u73B0\u6279\u51C6\u6761\u4EF6\u540E\u81EA\u52A8\u91CD\u8BD5\u539F\u5199\u5165",
-          retryOriginal: true
-        }
-      );
-    }
-  }
-  if (workflow.state?.mode === "routed" && currentOpenStep(workflow.state) === "implementation" && isGoverned(root2, target, workflow.governedRoots)) {
-    const approvalPending = workflow.state.obligations?.some((obligation) => obligation.kind === "approval" && obligation.status !== "satisfied") ?? false;
-    if (approvalPending && !workflow.approvalConfirmed) {
-      return createPreToolBlock(
-        "DEV_FLOW_IMPLEMENTATION_APPROVAL_REQUIRED",
-        `\u5F53\u524D open step \u662F implementation\uFF0C\u4F46\u76EE\u6807 ${projectRelative(root2, target)} \u4F4D\u4E8E governed root\uFF0C\u6267\u884C\u6279\u51C6\u4E49\u52A1\u5C1A\u672A\u6EE1\u8DB3`,
-        "\u539F\u5199\u5165\u672A\u6267\u884C\uFF1B\u76EE\u6807\u6587\u4EF6\u548C\u5F53\u524D feature \u72B6\u6001\u672A\u6539\u53D8",
-        {
-          mode: "user-decision",
-          action: `\u5411\u7528\u6237\u5C55\u793A\u5F53\u524D\u5B9E\u73B0\u6279\u51C6\u95EE\u9898\u5E76\u8BF7\u6C42\u4E00\u6B21\u786E\u8BA4\uFF1B\u786E\u8BA4\u540E\u81EA\u52A8\u91CD\u8BD5\u539F\u5199\u5165${scratchHint}`,
-          retryOriginal: true
-        }
-      );
-    }
-    const unitBlock = implementationUnitWriteBlock(workflow.state, workflow.ledger, projectRelative(root2, target));
-    if (unitBlock?.code === "IMPLEMENTATION_UNIT_REQUIRED") {
-      return createPreToolBlock(
-        "DEV_FLOW_IMPLEMENTATION_UNIT_REQUIRED",
-        `\u76EE\u6807 ${projectRelative(root2, target)} \u5DF2\u901A\u8FC7\u5B9E\u73B0\u6279\u51C6\uFF0C\u4F46\u5F53\u524D\u6CA1\u6709\u6D3B\u52A8\u7684 implementation unit`,
-        "\u539F\u5199\u5165\u672A\u6267\u884C\uFF1Bgoverned \u76EE\u6807\u4FDD\u6301\u4E0D\u53D8",
-        {
-          mode: "automatic",
-          action: "\u8C03\u7528 dev_flow_begin_implementation_unit \u51C6\u5907\u5F53\u524D implementation unit\uFF1B\u6210\u529F\u540E\u81EA\u52A8\u91CD\u8BD5\u539F\u5199\u5165",
-          retryOriginal: true
-        }
-      );
-    }
-    if (unitBlock?.code === "IMPLEMENTATION_UNIT_OUT_OF_SCOPE") {
-      return createPreToolBlock(
-        "DEV_FLOW_IMPLEMENTATION_UNIT_OUT_OF_SCOPE",
-        `\u5F53\u524D implementation unit \u5728 Trace \u4E2D\u5DF2\u5931\u6548\uFF0C\u65E0\u6CD5\u8BC1\u660E\u76EE\u6807 ${projectRelative(root2, target)} \u5C5E\u4E8E\u5F53\u524D\u5B9E\u73B0\u4F9D\u636E`,
-        "\u539F\u5199\u5165\u672A\u6267\u884C\uFF1B\u76EE\u6807\u6587\u4EF6\u548C Trace \u72B6\u6001\u672A\u6539\u53D8",
-        {
-          mode: "user-decision",
-          action: "\u5237\u65B0 Trace\uFF1B\u80FD\u81EA\u52A8\u4FEE\u590D\u5931\u6548\u5F15\u7528\u65F6\u5148\u4FEE\u590D\uFF0C\u5426\u5219\u5C55\u793A\u5DEE\u5F02\u5E76\u5411\u7528\u6237\u8BE2\u95EE\u4E00\u6B21\uFF1B\u89E3\u51B3\u540E\u81EA\u52A8\u91CD\u8BD5\u539F\u5199\u5165",
-          retryOriginal: true
-        }
-      );
-    }
-    const decision = judgeWrite({ mode: "routed", stage: "implementation", controlPath: false, governedPath: true, impactResolved: true });
-    if (decision.decision !== "block") return void 0;
-  }
-  if (workflow.state && isGoverned(root2, target, workflow.governedRoots)) {
-    const relative2 = projectRelative(root2, target);
-    const block = implementationUnitWriteBlock(workflow.state, workflow.ledger, relative2);
-    if (block?.code === "IMPLEMENTATION_UNIT_REQUIRED") {
-      return createPreToolBlock(
-        "DEV_FLOW_IMPLEMENTATION_UNIT_REQUIRED",
-        `\u76EE\u6807 ${relative2} \u4F4D\u4E8E governed root\uFF0C\u4F46\u6CA1\u6709\u6D3B\u52A8\u7684 implementation unit`,
-        "\u539F\u5199\u5165\u672A\u6267\u884C\uFF1B\u76EE\u6807\u6587\u4EF6\u4FDD\u6301\u4E0D\u53D8",
-        {
-          mode: "automatic",
-          action: "\u8C03\u7528 dev_flow_begin_implementation_unit \u5F00\u59CB\u4E0B\u4E00\u4E2A implementation unit\uFF1B\u6210\u529F\u540E\u81EA\u52A8\u91CD\u8BD5\u539F\u5199\u5165",
-          retryOriginal: true
-        }
-      );
-    }
-    if (block?.code === "IMPLEMENTATION_UNIT_OUT_OF_SCOPE") {
-      return createPreToolBlock(
-        "DEV_FLOW_IMPLEMENTATION_UNIT_OUT_OF_SCOPE",
-        `\u5F53\u524D implementation unit \u5728 Trace \u4E2D\u5DF2\u5931\u6548\uFF0C\u65E0\u6CD5\u8BC1\u660E\u76EE\u6807 ${relative2} \u5C5E\u4E8E\u5F53\u524D\u5B9E\u73B0\u4F9D\u636E`,
-        "\u539F\u5199\u5165\u672A\u6267\u884C\uFF1B\u76EE\u6807\u6587\u4EF6\u548C Trace \u72B6\u6001\u672A\u6539\u53D8",
-        {
-          mode: "user-decision",
-          action: "\u5237\u65B0 Trace\uFF1B\u80FD\u81EA\u52A8\u4FEE\u590D\u5931\u6548\u5F15\u7528\u65F6\u5148\u4FEE\u590D\uFF0C\u5426\u5219\u5C55\u793A\u5DEE\u5F02\u5E76\u5411\u7528\u6237\u8BE2\u95EE\u4E00\u6B21\uFF1B\u89E3\u51B3\u540E\u81EA\u52A8\u91CD\u8BD5\u539F\u5199\u5165",
-          retryOriginal: true
-        }
-      );
-    }
-  }
-  return void 0;
-}
 async function stagedGitPaths(root2) {
   const result = await runGit("git", ["diff", "--cached", "--name-only", "-z"], { cwd: root2, encoding: "utf8" });
   return String(result.stdout).split("\0").filter(Boolean).map((value) => value.replaceAll("\\", "/").normalize("NFC"));
 }
-function inFeatureScope(relative, state) {
-  return state.scope.inScope.some((scope) => scope === "." || relative === scope || relative.startsWith(`${scope}/`));
-}
-function gitPathPolicy(command, root2, workflow, paths) {
-  const state = workflow.state;
-  if (!state) return {};
-  const startedDirty = state.workspace.startedDirty ?? {};
-  const startupExcluded = paths.filter((relative) => state.workspace.ownership[relative] === "excluded" && startedDirty[relative] !== void 0);
-  const excluded = paths.filter((relative) => state.workspace.ownership[relative] === "excluded" && startedDirty[relative] === void 0);
-  const unknown = paths.filter((relative) => state.workspace.ownership[relative] !== "feature" && state.workspace.ownership[relative] !== "excluded" && !inFeatureScope(relative, state));
-  if (excluded.length || unknown.length) {
-    return {
-      block: createPreToolBlock(
-        "DEV_FLOW_GIT_GUARD",
-        "Git \u547D\u4EE4\u5305\u542B\u672A\u5F52\u5C5E\u6216\u5DF2\u6392\u9664\u7684\u8DEF\u5F84",
-        "\u539F Git \u64CD\u4F5C\u672A\u6267\u884C\uFF1B\u4E0D\u4F1A\u628A\u7528\u6237\u6216\u5176\u4ED6\u4EFB\u52A1\u7684\u6587\u4EF6\u6DF7\u5165 feature \u63D0\u4EA4",
-        {
-          mode: "user-decision",
-          action: "\u5148\u5C06\u8DEF\u5F84\u660E\u786E\u7EB3\u5165\u5F53\u524D feature \u6216\u79FB\u51FA\u6682\u5B58\u533A\uFF1B\u672C\u4ED3\u5E93\u7981\u6B62\u667A\u80FD\u4F53\u63D0\u4EA4\u65F6\u4EA4\u7531\u7528\u6237\u5BA1\u6838",
-          retryOriginal: false
-        }
-      )
-    };
+async function buildGitIntent(command, root2) {
+  const gitKind = classifyGitCommandKind(command);
+  const localCommit = gitKind === "local-stage" || gitKind === "local-commit";
+  const unsafePathForm = localCommit && (/\bgit\s+add\s+(?:-A|--all|\.|-u\b)/.test(command) || /\bgit\s+commit\b[^;&|\n]*?\s(?:-a(?:m)?|--all)(?:\s|$)/.test(command));
+  if (gitKind === "external-publish") return { kind: "git", form: "publish" };
+  if (unsafePathForm) return { kind: "git", form: "unbounded" };
+  if (localCommit) {
+    const addMatch = command.match(/\bgit\s+add\s+([^;&|\n]+)/);
+    const explicitPaths = addMatch ? addMatch[1].split(/\s+/).filter((value) => value && !value.startsWith("-")) : await stagedGitPaths(root2);
+    return { kind: "git", paths: projectRelativePaths(root2, explicitPaths) };
   }
-  void command;
-  void root2;
-  if (startupExcluded.length) {
-    return {
-      advisory: {
-        code: "DEV_FLOW_GIT_STARTUP_EXCLUDED",
-        message: `\u8BE5\u8DEF\u5F84\u542F\u52A8\u524D\u5DF2\u6709\u6539\u52A8\u3001\u5DF2\u9ED8\u8BA4\u6392\u9664\u51FA\u4EA4\u4ED8\uFF1B\u672C\u6B21 Git \u64CD\u4F5C\u672A\u62E6\u622A\uFF0C\u4F46\u8FD9\u4E9B\u6587\u4EF6\u4E0D\u4F1A\u8FDB\u5165\u4EA4\u4ED8\u5FEB\u7167\u3002\u5982\u9700\u8BA1\u5165\u8BF7\u5148\u5728\u5DE5\u4F5C\u533A\u5BF9\u8D26\u7EB3\u5165\uFF1A${startupExcluded.join("\u3001")}`
-      }
-    };
-  }
-  return {};
+  return { kind: "git", form: "unbounded" };
 }
-function controlMutationBlock(relative) {
-  return createPreToolBlock(
-    "DEV_FLOW_STATE_MUTATION_FORBIDDEN",
-    `\u76EE\u6807 ${relative} \u662F Dev Flow \u63A7\u5236\u6587\u4EF6\uFF0C\u4E0D\u80FD\u7531\u666E\u901A\u6587\u4EF6\u5DE5\u5177\u76F4\u63A5\u4FEE\u6539`,
-    "\u539F\u5199\u5165\u672A\u6267\u884C\uFF1B\u5DE5\u4F5C\u6D41\u63A7\u5236\u72B6\u6001\u4FDD\u6301\u4E0D\u53D8",
-    {
-      mode: "user-decision",
-      action: `\u786E\u8BA4\u540E\u7531\u6A21\u578B\u8C03\u7528\u5BF9\u5E94 MCP \u5B8C\u6210\u5BF9 ${relative} \u7684\u540C\u4E00\u610F\u56FE\uFF1B\u4E0D\u8981\u91CD\u8BD5\u8FD9\u6B21\u63A7\u5236\u6587\u4EF6\u76F4\u63A5\u5199\u5165`,
-      retryOriginal: false
-    }
-  );
-}
-async function revokedImplementationApprovalHint(root2, featureId) {
-  const events = await readFeatureEvents(root2, featureId);
-  let lastConfirmedIndex = -1;
-  for (let index = events.length - 1; index >= 0; index--) {
-    const event2 = events[index];
-    const data = event2.data;
-    if ((event2.type === "approval-confirmed" || event2.type === "approval-interaction-resolved") && typeof data.approval === "string" && data.approval.startsWith("approval:")) {
-      lastConfirmedIndex = index;
-      break;
-    }
-  }
-  if (lastConfirmedIndex < 0) return void 0;
-  for (let index = events.length - 1; index >= lastConfirmedIndex; index--) {
-    const event2 = events[index];
-    const data = event2.data;
-    if ((event2.type === "artifact-recorded" || event2.type === "artifact-recorded-with-trace") && data.kind !== void 0 && approvalBasisArtifacts.includes(data.kind) && data.invalidationReason) {
-      return data.kind;
-    }
-  }
-  return void 0;
-}
-async function augmentApprovalBlock(root2, workflow, block) {
-  if (block.code !== "DEV_FLOW_IMPLEMENTATION_APPROVAL_REQUIRED") return block;
-  let revokedKind;
-  try {
-    revokedKind = await revokedImplementationApprovalHint(root2, workflow.featureId);
-  } catch {
-    return unreadableBlock("events.jsonl invalid or unreadable");
-  }
-  if (!revokedKind) return block;
-  const action = `\u8BA1\u5212\u4F9D\u636E\uFF08${revokedKind}\uFF09\u5DF2\u5728\u5B9E\u73B0\u6279\u51C6\u540E\u53D8\u66F4\uFF0C\u6279\u51C6\u5DF2\u4F5C\u5E9F\uFF1B\u8BF7\u5148\u5B8C\u6210\u76F8\u5173\u6B65\u9AA4\u5E76\u91CD\u65B0\u786E\u8BA4\u5B9E\u73B0\u6279\u51C6\u540E\u518D\u5199 governed \u6587\u4EF6${scratchHint}`;
-  return {
-    ...block,
-    reason: action,
-    recovery: { ...block.recovery, action },
-    recoveryHint: action
-  };
-}
-function annotatePreparationFailure(block, diagnostic) {
-  if (!diagnostic || block.code !== "DEV_FLOW_IMPLEMENTATION_UNIT_REQUIRED" && block.code !== "DEV_FLOW_IMPLEMENTATION_UNIT_OUT_OF_SCOPE") return block;
-  const reason = `${block.reason} Core \u81EA\u52A8\u51C6\u5907 implementation unit \u5931\u8D25\uFF1A${diagnostic}`;
-  const action = `${block.recovery.action}\uFF1B\u4E0D\u8981\u628A\u8BE5 Core \u9519\u8BEF\u89E3\u91CA\u4E3A workflow state unreadable`;
-  return { ...block, reason, recovery: { ...block.recovery, action }, recoveryHint: action };
+function artifactKind(relative) {
+  const displayName = path14.posix.basename(relative, ".md");
+  return displayName === "\u9700\u6C42\u6587\u6863" ? "requirements" : displayName === "\u5B9E\u65BD\u8BA1\u5212" ? "implementation-plan" : displayName;
 }
 function unreadableBlock(reason) {
   return createPreToolBlock(
@@ -4329,20 +4274,109 @@ function unreadableBlock(reason) {
     }
   );
 }
-function unreadableTargetBlock(root2, target, workflow) {
-  const relative = projectRelative(root2, target);
-  if (!relative) return void 0;
-  if (isControlPath(relative)) return controlMutationBlock(relative);
-  if (workflow.blockAllWrites) return unreadableBlock(workflow.reason);
-  if (isDevFlowPath(relative) || isGoverned(root2, target, workflow.governedRoots ?? [])) return unreadableBlock(workflow.reason);
-  return void 0;
+function formatWriteGateBlock(block2) {
+  const relative = block2.paths[0] ?? "";
+  const detail = block2.detail;
+  switch (block2.code) {
+    case "CONTROL_MUTATION_FORBIDDEN":
+      if (detail?.variant === "control-area") {
+        return createPreToolBlock(
+          "DEV_FLOW_STATE_MUTATION_FORBIDDEN",
+          `\u76EE\u6807 ${relative} \u4F4D\u4E8E Dev Flow \u63A7\u5236\u533A\uFF0C\u4E14\u4E0D\u662F active feature \u5DF2\u767B\u8BB0\u7684\u53EF\u7F16\u8F91 Markdown \u8D44\u4EA7`,
+          "\u539F\u5199\u5165\u672A\u6267\u884C\uFF1BDev Flow \u63A7\u5236\u533A\u6CA1\u6709\u88AB\u4FEE\u6539",
+          { mode: "user-decision", action: "\u786E\u8BA4\u540E\u7531\u6A21\u578B\u8C03\u7528\u5BF9\u5E94 MCP \u5B8C\u6210\u540C\u4E00\u5DE5\u4F5C\u6D41\u610F\u56FE\uFF1B\u4E0D\u8981\u76F4\u63A5\u7F16\u8F91\u63A7\u5236\u533A\u6587\u4EF6", retryOriginal: false }
+        );
+      }
+      return createPreToolBlock(
+        "DEV_FLOW_STATE_MUTATION_FORBIDDEN",
+        `\u76EE\u6807 ${relative} \u662F Dev Flow \u63A7\u5236\u6587\u4EF6\uFF0C\u4E0D\u80FD\u7531\u666E\u901A\u6587\u4EF6\u5DE5\u5177\u76F4\u63A5\u4FEE\u6539`,
+        "\u539F\u5199\u5165\u672A\u6267\u884C\uFF1B\u5DE5\u4F5C\u6D41\u63A7\u5236\u72B6\u6001\u4FDD\u6301\u4E0D\u53D8",
+        { mode: "user-decision", action: `\u786E\u8BA4\u540E\u7531\u6A21\u578B\u8C03\u7528\u5BF9\u5E94 MCP \u5B8C\u6210\u5BF9 ${relative} \u7684\u540C\u4E00\u610F\u56FE\uFF1B\u4E0D\u8981\u91CD\u8BD5\u8FD9\u6B21\u63A7\u5236\u6587\u4EF6\u76F4\u63A5\u5199\u5165`, retryOriginal: false }
+      );
+    case "ARTIFACT_NOT_REGISTERED": {
+      const kind = artifactKind(relative);
+      return createPreToolBlock(
+        "DEV_FLOW_ARTIFACT_NOT_REGISTERED",
+        `\u76EE\u6807 ${relative} \u662F active feature \u7684 ${kind} Markdown \u8D44\u4EA7\uFF0C\u4F46\u5C1A\u672A\u767B\u8BB0`,
+        "\u539F\u5199\u5165\u672A\u6267\u884C\uFF1B\u8BE5\u8D44\u4EA7\u4E0D\u4F1A\u8FDB\u5165 feature \u8BC1\u636E\u8D26\u672C",
+        { mode: "guided", action: `\u5148\u901A\u8FC7 MCP scaffold/register ${kind} \u8D44\u4EA7 ${relative}\uFF0C\u518D\u81EA\u52A8\u91CD\u8BD5\u539F\u5199\u5165`, retryOriginal: true }
+      );
+    }
+    case "IMPLEMENTATION_APPROVAL_REQUIRED": {
+      const impact = "\u539F\u5199\u5165\u672A\u6267\u884C\uFF1B\u76EE\u6807\u6587\u4EF6\u548C\u5F53\u524D feature \u72B6\u6001\u672A\u6539\u53D8";
+      if (detail?.revokedKind) {
+        const action = `\u8BA1\u5212\u4F9D\u636E\uFF08${detail.revokedKind}\uFF09\u5DF2\u5728\u5B9E\u73B0\u6279\u51C6\u540E\u53D8\u66F4\uFF0C\u6279\u51C6\u5DF2\u4F5C\u5E9F\uFF1B\u8BF7\u5148\u5B8C\u6210\u76F8\u5173\u6B65\u9AA4\u5E76\u91CD\u65B0\u786E\u8BA4\u5B9E\u73B0\u6279\u51C6\u540E\u518D\u5199 governed \u6587\u4EF6${scratchHint}`;
+        return createPreToolBlock("DEV_FLOW_IMPLEMENTATION_APPROVAL_REQUIRED", action, impact, { mode: "user-decision", action, retryOriginal: true });
+      }
+      if (detail?.variant === "approval") {
+        return createPreToolBlock(
+          "DEV_FLOW_IMPLEMENTATION_APPROVAL_REQUIRED",
+          `\u5F53\u524D open step \u662F implementation\uFF0C\u4F46\u76EE\u6807 ${relative} \u4F4D\u4E8E governed root\uFF0C\u6267\u884C\u6279\u51C6\u4E49\u52A1\u5C1A\u672A\u6EE1\u8DB3`,
+          impact,
+          { mode: "user-decision", action: `\u5411\u7528\u6237\u5C55\u793A\u5F53\u524D\u5B9E\u73B0\u6279\u51C6\u95EE\u9898\u5E76\u8BF7\u6C42\u4E00\u6B21\u786E\u8BA4\uFF1B\u786E\u8BA4\u540E\u81EA\u52A8\u91CD\u8BD5\u539F\u5199\u5165${scratchHint}`, retryOriginal: true }
+        );
+      }
+      return createPreToolBlock(
+        "DEV_FLOW_IMPLEMENTATION_APPROVAL_REQUIRED",
+        `feature \u4ECD\u5904\u4E8E intake\uFF0C\u76EE\u6807 ${relative} \u4F4D\u4E8E governed root\uFF0C\u5C1A\u672A\u8FDB\u5165\u53EF\u6267\u884C\u5B9E\u73B0\u9636\u6BB5`,
+        "\u539F\u5199\u5165\u672A\u6267\u884C\uFF1Bgoverned \u76EE\u6807\u4FDD\u6301\u4E0D\u53D8",
+        { mode: "user-decision", action: "\u5148\u5B8C\u6210 intake \u8C03\u67E5\u3001\u89E3\u51B3\u5206\u7C7B\u51B3\u7B56\u5E76\u9501\u5B9A\u57FA\u7840\u8DEF\u7EBF\uFF1B\u6EE1\u8DB3\u5B9E\u73B0\u6279\u51C6\u6761\u4EF6\u540E\u81EA\u52A8\u91CD\u8BD5\u539F\u5199\u5165", retryOriginal: true }
+      );
+    }
+    case "IMPLEMENTATION_UNIT_REQUIRED": {
+      const base = createPreToolBlock(
+        "DEV_FLOW_IMPLEMENTATION_UNIT_REQUIRED",
+        `\u76EE\u6807 ${relative} \u5DF2\u901A\u8FC7\u5B9E\u73B0\u6279\u51C6\uFF0C\u4F46\u5F53\u524D\u6CA1\u6709\u6D3B\u52A8\u7684 implementation unit`,
+        "\u539F\u5199\u5165\u672A\u6267\u884C\uFF1Bgoverned \u76EE\u6807\u4FDD\u6301\u4E0D\u53D8",
+        { mode: "automatic", action: "\u8C03\u7528 dev_flow_begin_implementation_unit \u51C6\u5907\u5F53\u524D implementation unit\uFF1B\u6210\u529F\u540E\u81EA\u52A8\u91CD\u8BD5\u539F\u5199\u5165", retryOriginal: true }
+      );
+      if (!detail?.beginFailed) return base;
+      const reason = `${base.reason} Core \u81EA\u52A8\u51C6\u5907 implementation unit \u5931\u8D25\uFF1A${detail.beginFailed}`;
+      const action = `${base.recovery.action}\uFF1B\u4E0D\u8981\u628A\u8BE5 Core \u9519\u8BEF\u89E3\u91CA\u4E3A workflow state unreadable`;
+      return { ...base, reason, recovery: { ...base.recovery, action }, recoveryHint: action };
+    }
+    case "IMPLEMENTATION_UNIT_OUT_OF_SCOPE":
+      return createPreToolBlock(
+        "DEV_FLOW_IMPLEMENTATION_UNIT_OUT_OF_SCOPE",
+        `\u5F53\u524D implementation unit \u5728 Trace \u4E2D\u5DF2\u5931\u6548\uFF0C\u65E0\u6CD5\u8BC1\u660E\u76EE\u6807 ${relative} \u5C5E\u4E8E\u5F53\u524D\u5B9E\u73B0\u4F9D\u636E`,
+        "\u539F\u5199\u5165\u672A\u6267\u884C\uFF1B\u76EE\u6807\u6587\u4EF6\u548C Trace \u72B6\u6001\u672A\u6539\u53D8",
+        { mode: "user-decision", action: "\u5237\u65B0 Trace\uFF1B\u80FD\u81EA\u52A8\u4FEE\u590D\u5931\u6548\u5F15\u7528\u65F6\u5148\u4FEE\u590D\uFF0C\u5426\u5219\u5C55\u793A\u5DEE\u5F02\u5E76\u5411\u7528\u6237\u8BE2\u95EE\u4E00\u6B21\uFF1B\u89E3\u51B3\u540E\u81EA\u52A8\u91CD\u8BD5\u539F\u5199\u5165", retryOriginal: true }
+      );
+    case "GIT_GUARD":
+      if (detail?.variant === "paths") {
+        return createPreToolBlock(
+          "DEV_FLOW_GIT_GUARD",
+          "Git \u547D\u4EE4\u5305\u542B\u672A\u5F52\u5C5E\u6216\u5DF2\u6392\u9664\u7684\u8DEF\u5F84",
+          "\u539F Git \u64CD\u4F5C\u672A\u6267\u884C\uFF1B\u4E0D\u4F1A\u628A\u7528\u6237\u6216\u5176\u4ED6\u4EFB\u52A1\u7684\u6587\u4EF6\u6DF7\u5165 feature \u63D0\u4EA4",
+          { mode: "user-decision", action: "\u5148\u5C06\u8DEF\u5F84\u660E\u786E\u7EB3\u5165\u5F53\u524D feature \u6216\u79FB\u51FA\u6682\u5B58\u533A\uFF1B\u672C\u4ED3\u5E93\u7981\u6B62\u667A\u80FD\u4F53\u63D0\u4EA4\u65F6\u4EA4\u7531\u7528\u6237\u5BA1\u6838", retryOriginal: false }
+        );
+      }
+      if (detail?.variant === "publish") {
+        return createPreToolBlock(
+          "DEV_FLOW_GIT_GUARD",
+          "\u5916\u90E8\u53D1\u5E03\u4ECD\u7136\u88AB\u7981\u6B62",
+          "\u539F Git \u64CD\u4F5C\u672A\u6267\u884C\uFF1B\u5DE5\u4F5C\u6811\u548C Git \u5386\u53F2\u6CA1\u6709\u88AB\u8FD9\u6B21\u547D\u4EE4\u4FEE\u6539",
+          { mode: "guided", action: "\u4E0D\u8981\u6267\u884C push \u6216\u5176\u4ED6\u5916\u90E8\u53D1\u5E03\uFF1B\u672C\u4ED3\u5E93\u7531\u7528\u6237\u5BA1\u6838\u540E\u624B\u52A8\u53D1\u5E03", retryOriginal: true }
+        );
+      }
+      return createPreToolBlock(
+        "DEV_FLOW_GIT_GUARD",
+        "\u5F53\u524D Git \u5199\u5165\u4E0D\u6EE1\u8DB3\u9636\u6BB5\u3001\u6279\u51C6\u6216\u8DEF\u5F84\u5F52\u5C5E\u6761\u4EF6",
+        "\u539F Git \u64CD\u4F5C\u672A\u6267\u884C\uFF1B\u5DE5\u4F5C\u6811\u548C Git \u5386\u53F2\u6CA1\u6709\u88AB\u8FD9\u6B21\u547D\u4EE4\u4FEE\u6539",
+        { mode: "guided", action: "\u5148\u5B8C\u6210\u5B9E\u73B0\u6279\u51C6\u5E76\u53EA\u6682\u5B58 feature-owned \u8DEF\u5F84\uFF1B\u4ED3\u5E93\u89C4\u5219\u7981\u6B62\u667A\u80FD\u4F53\u63D0\u4EA4\u65F6\u4EA4\u7531\u7528\u6237\u6267\u884C", retryOriginal: true }
+      );
+    case "WORKFLOW_STATE_UNREADABLE":
+      return unreadableBlock(detail?.unreadableReason ?? block2.reason);
+    default:
+      return unreadableBlock(block2.reason);
+  }
 }
 async function evaluatePreToolUse(root2, event2) {
   if (!isRelevantPreToolUse(event2)) return { kind: "allow" };
   const advisoryOut = {};
   try {
-    const block = await evaluatePreToolUseInternal(root2, event2, advisoryOut);
-    if (block) return { kind: "block", block };
+    const block2 = await evaluatePreToolUseInternal(root2, event2, advisoryOut);
+    if (block2) return { kind: "block", block: block2 };
     return advisoryOut.advisory ? { kind: "allow", advisory: advisoryOut.advisory } : { kind: "allow" };
   } catch (error) {
     const detail = error instanceof Error ? error.message : String(error);
@@ -4357,108 +4391,47 @@ async function evaluatePreToolUse(root2, event2) {
 }
 async function evaluatePreToolUseInternal(root2, event2, advisoryOut = {}) {
   if (!isRelevantPreToolUse(event2)) return void 0;
-  const knownTargets = knownWriteTargets(event2);
-  if (knownTargets) {
-    for (const target of knownTargets) {
-      const relative = projectRelative(root2, target);
-      if (relative && isControlPath(relative)) return controlMutationBlock(relative);
-    }
-  }
-  const loaded = await loadActiveWorkflow(root2);
-  if (loaded.kind === "none") {
-    return void 0;
-  }
-  if (loaded.kind === "unreadable") {
-    if (toolName(event2) === "bash") {
-      const command2 = typeof event2.tool_input?.command === "string" ? event2.tool_input.command : "";
-      if (classifyGitCommand(command2) === "write") return unreadableBlock(loaded.reason);
-      const analysis = analyzeBashWriteTargets(command2);
-      if (analysis.kind === "read-only") return void 0;
-      if (analysis.kind === "unresolved") return void 0;
-      for (const target of analysis.targets) {
-        const block = unreadableTargetBlock(root2, target, loaded);
-        if (block) return block;
-      }
-      return void 0;
-    }
-    const targets2 = directTargets(event2);
-    if (!targets2.length) return void 0;
-    for (const target of targets2) {
-      const block = unreadableTargetBlock(root2, target, loaded);
-      if (block) return block;
-    }
-    return void 0;
-  }
-  let { workflow } = loaded;
   const command = typeof event2.tool_input?.command === "string" ? event2.tool_input.command : "";
-  const prepareImplementationWrite = async (targets2) => {
-    if (workflow.state?.mode !== "routed" || currentOpenStep(workflow.state) !== "implementation" || !targets2.some((target) => isGoverned(root2, target, workflow.governedRoots))) return void 0;
-    try {
-      const prepared = await ensureActiveImplementationUnit(root2, workflow.featureId, workflow.state);
-      if (prepared.revision !== workflow.state.revision) {
-        const refreshed = await loadActiveWorkflow(root2);
-        if (refreshed.kind === "ready") workflow = refreshed.workflow;
-        else return "active workflow refresh after implementation-unit preparation did not produce a readable state";
-      }
-      return void 0;
-    } catch (error) {
-      return error instanceof Error ? error.message : String(error);
-    }
-  };
   if (toolName(event2) === "bash" && classifyGitCommand(command) === "write") {
-    const gitKind = classifyGitCommandKind(command);
-    const localCommit = gitKind === "local-stage" || gitKind === "local-commit";
-    const implementationReady = workflow.state?.mode === "routed" && currentOpenStep(workflow.state) === "implementation" && workflow.approvalConfirmed;
-    const unsafePathForm = localCommit && /\bgit\s+add\s+(?:-A|--all|\.|-u\b)|\bgit\s+commit\s+[^\n]*\s-a(?:\s|$)/.test(command);
-    if (localCommit && workflow.state?.lifecycle === "active" && (workflow.logicComplete || implementationReady) && !unsafePathForm) {
-      const addMatch = command.match(/\bgit\s+add\s+([^;&|\n]+)/);
-      const explicitPaths = addMatch ? addMatch[1].split(/\s+/).filter((value) => value && !value.startsWith("-")) : await stagedGitPaths(root2);
-      const pathDecision = gitPathPolicy(command, root2, workflow, explicitPaths.map((value) => projectRelative(root2, value) ?? value));
-      if (pathDecision.advisory) advisoryOut.advisory = pathDecision.advisory;
-      if (!pathDecision.block) return void 0;
-      return pathDecision.block;
+    const intent = await buildGitIntent(command, root2);
+    const verdict2 = await writeGate(root2, intent);
+    if (verdict2.decision === "allow") return void 0;
+    if (verdict2.decision === "audit") {
+      advisoryOut.advisory = {
+        code: "DEV_FLOW_GIT_STARTUP_EXCLUDED",
+        message: `\u8BE5\u8DEF\u5F84\u542F\u52A8\u524D\u5DF2\u6709\u6539\u52A8\u3001\u5DF2\u9ED8\u8BA4\u6392\u9664\u51FA\u4EA4\u4ED8\uFF1B\u672C\u6B21 Git \u64CD\u4F5C\u672A\u62E6\u622A\uFF0C\u4F46\u8FD9\u4E9B\u6587\u4EF6\u4E0D\u4F1A\u8FDB\u5165\u4EA4\u4ED8\u5FEB\u7167\u3002\u5982\u9700\u8BA1\u5165\u8BF7\u5148\u5728\u5DE5\u4F5C\u533A\u5BF9\u8D26\u7EB3\u5165\uFF1A${verdict2.block.paths.join("\u3001")}`
+      };
+      return void 0;
     }
-    return createPreToolBlock(
-      "DEV_FLOW_GIT_GUARD",
-      gitKind === "external-publish" ? "\u5916\u90E8\u53D1\u5E03\u4ECD\u7136\u88AB\u7981\u6B62" : "\u5F53\u524D Git \u5199\u5165\u4E0D\u6EE1\u8DB3\u9636\u6BB5\u3001\u6279\u51C6\u6216\u8DEF\u5F84\u5F52\u5C5E\u6761\u4EF6",
-      "\u539F Git \u64CD\u4F5C\u672A\u6267\u884C\uFF1B\u5DE5\u4F5C\u6811\u548C Git \u5386\u53F2\u6CA1\u6709\u88AB\u8FD9\u6B21\u547D\u4EE4\u4FEE\u6539",
-      {
-        mode: "guided",
-        action: gitKind === "external-publish" ? "\u4E0D\u8981\u6267\u884C push \u6216\u5176\u4ED6\u5916\u90E8\u53D1\u5E03\uFF1B\u672C\u4ED3\u5E93\u7531\u7528\u6237\u5BA1\u6838\u540E\u624B\u52A8\u53D1\u5E03" : "\u5148\u5B8C\u6210\u5B9E\u73B0\u6279\u51C6\u5E76\u53EA\u6682\u5B58 feature-owned \u8DEF\u5F84\uFF1B\u4ED3\u5E93\u89C4\u5219\u7981\u6B62\u667A\u80FD\u4F53\u63D0\u4EA4\u65F6\u4EA4\u7531\u7528\u6237\u6267\u884C",
-        retryOriginal: true
-      }
-    );
+    return formatWriteGateBlock(verdict2.block);
   }
   if (toolName(event2) === "bash") {
     const analysis = analyzeBashWriteTargets(command);
     if (analysis.kind === "read-only") return void 0;
     if (analysis.kind === "unresolved") {
-      advisoryOut.advisory = {
-        code: "DEV_FLOW_HOOK_UNRESOLVED_WRITE",
-        message: "DEV_FLOW_HOOK_UNRESOLVED_WRITE: \u65E0\u6CD5\u4ECE\u547D\u4EE4\u6587\u672C\u786E\u8BA4\u672C\u6B21\u5199\u5165\u6D89\u53CA\u54EA\u4E9B\u6587\u4EF6\uFF0C\u56E0\u6B64\u6CA1\u6709\u81EA\u52A8\u628A\u8FD9\u4E9B\u6587\u4EF6\u8BB0\u5165\u5F53\u524D\u4EFB\u52A1\uFF1B\u5982\u679C\u6D89\u53CA\u9879\u76EE\u6587\u4EF6\uFF0C\u7A0D\u540E\u4F1A\u8BF7\u4F60\u786E\u8BA4\u8FD9\u4E9B\u6587\u4EF6\u662F\u5426\u5C5E\u4E8E\u5F53\u524D\u4EFB\u52A1\u3002"
-      };
+      const verdict3 = await writeGate(root2, { kind: "file", unresolved: true });
+      if (verdict3.decision === "allow" && verdict3.advisory === "unresolved-write") {
+        advisoryOut.advisory = {
+          code: "DEV_FLOW_HOOK_UNRESOLVED_WRITE",
+          message: "DEV_FLOW_HOOK_UNRESOLVED_WRITE: \u65E0\u6CD5\u4ECE\u547D\u4EE4\u6587\u672C\u786E\u8BA4\u672C\u6B21\u5199\u5165\u6D89\u53CA\u54EA\u4E9B\u6587\u4EF6\uFF0C\u56E0\u6B64\u6CA1\u6709\u81EA\u52A8\u628A\u8FD9\u4E9B\u6587\u4EF6\u8BB0\u5165\u5F53\u524D\u4EFB\u52A1\uFF1B\u5982\u679C\u6D89\u53CA\u9879\u76EE\u6587\u4EF6\uFF0C\u7A0D\u540E\u4F1A\u8BF7\u4F60\u786E\u8BA4\u8FD9\u4E9B\u6587\u4EF6\u662F\u5426\u5C5E\u4E8E\u5F53\u524D\u4EFB\u52A1\u3002"
+        };
+      }
       return void 0;
     }
-    const preparationDiagnostic2 = await prepareImplementationWrite(analysis.targets);
-    for (const target of analysis.targets) {
-      const block = classifyTarget(root2, target, workflow);
-      if (block) return augmentApprovalBlock(root2, workflow, annotatePreparationFailure(block, preparationDiagnostic2));
-    }
+    const verdict2 = await writeGate(root2, { kind: "file", paths: projectRelativePaths(root2, analysis.targets) });
+    if (verdict2.decision === "block") return formatWriteGateBlock(verdict2.block);
     return void 0;
   }
   const targets = directTargets(event2);
   if (!targets.length) return void 0;
-  const preparationDiagnostic = await prepareImplementationWrite(targets);
-  for (const target of targets) {
-    const block = classifyTarget(root2, target, workflow);
-    if (block) return augmentApprovalBlock(root2, workflow, annotatePreparationFailure(block, preparationDiagnostic));
-  }
+  const verdict = await writeGate(root2, { kind: "file", paths: projectRelativePaths(root2, targets) });
+  if (verdict.decision === "block") return formatWriteGateBlock(verdict.block);
   return void 0;
 }
 
 // plugins/dev-flow/src/hosts/risk-policy.ts
 import { createHash as createHash15 } from "node:crypto";
-import path14 from "node:path";
+import path15 from "node:path";
 function canonical(value) {
   if (value === null || typeof value !== "object") return JSON.stringify(value);
   if (Array.isArray(value)) return `[${value.map(canonical).join(",")}]`;
@@ -4473,9 +4446,9 @@ function targetScope(command, root2) {
   if (/[$`*?{]/.test(command) || /(?:^|\s)~(?:\/|\s|$)/.test(command)) return "unknown";
   const candidates = [...command.matchAll(/(?:^|[\s"'=])((?:\/|(?:\.\.\/)+)[^\s'"`;|&]*)/g)].map((match) => match[1]);
   for (const target of candidates) {
-    const absolute = path14.resolve(root2, target);
-    const relative = path14.relative(root2, absolute);
-    if (relative.startsWith("..") || path14.isAbsolute(relative)) return "outside";
+    const absolute = path15.resolve(root2, target);
+    const relative = path15.relative(root2, absolute);
+    if (relative.startsWith("..") || path15.isAbsolute(relative)) return "outside";
   }
   return "inside";
 }
@@ -4672,10 +4645,10 @@ function structuredAnswers(response, questions) {
   const answers = root2.answers;
   if (!answers || typeof answers !== "object" || Array.isArray(answers)) return [];
   return questions.flatMap((question) => {
-    const answer = answers[question];
-    if (typeof answer === "string" && answer.trim()) return [{ question, answer }];
-    if (Array.isArray(answer) && answer.every((item) => typeof item === "string")) {
-      const text = answer.join(", ").trim();
+    const answer2 = answers[question];
+    if (typeof answer2 === "string" && answer2.trim()) return [{ question, answer: answer2 }];
+    if (Array.isArray(answer2) && answer2.every((item) => typeof item === "string")) {
+      const text = answer2.join(", ").trim();
       return text ? [{ question, answer: text }] : [];
     }
     return [];
@@ -4688,8 +4661,8 @@ function parseQuotedPairs(response) {
     try {
       const decode = (value) => JSON.parse(`"${value.replace(/\r/g, "\\r").replace(/\n/g, "\\n")}"`);
       const question = decode(match[1]);
-      const answer = decode(match[2]);
-      if (question.trim() && answer.trim()) pairs.push({ question, answer });
+      const answer2 = decode(match[2]);
+      if (question.trim() && answer2.trim()) pairs.push({ question, answer: answer2 });
     } catch {
     }
   }
@@ -4713,11 +4686,11 @@ function claudeNativeQuestionAnswers(event2) {
 
 // plugins/dev-flow/src/hosts/project-root.ts
 import { access as access3 } from "node:fs/promises";
-import path15 from "node:path";
+import path16 from "node:path";
 async function hasDevFlowMarker(directory) {
   for (const marker of ["project.json", "active.json"]) {
     try {
-      await access3(path15.join(directory, ".dev-flow", marker));
+      await access3(path16.join(directory, ".dev-flow", marker));
       return true;
     } catch {
     }
@@ -4725,11 +4698,11 @@ async function hasDevFlowMarker(directory) {
   return false;
 }
 async function resolveDevFlowRoot(cwd) {
-  const original = path15.resolve(cwd);
+  const original = path16.resolve(cwd);
   let current = original;
   for (; ; ) {
     if (await hasDevFlowMarker(current)) return current;
-    const parent = path15.dirname(current);
+    const parent = path16.dirname(current);
     if (parent === current) return original;
     current = parent;
   }
@@ -4797,14 +4770,14 @@ if (event.hook_event_name === "UserPromptSubmit" || event.hook_event_name === "S
       const sourceEventId = event.event_id ?? event.tool_use_id ?? `native-question-${Date.now()}`;
       const nativeAnswers = claudeNativeQuestionAnswers(event);
       if (nativeAnswers.length) await recordNativePromptHealth(root, { ...event, event_id: sourceEventId }, "claude");
-      for (const [index, answer] of nativeAnswers.entries()) {
+      for (const [index, answer2] of nativeAnswers.entries()) {
         try {
           await recordHostEvent(root, {
             eventId: `${sourceEventId}:answer:${index}`,
             type: "user-prompt",
             host: "claude",
-            text: answer.answer,
-            ...answer.question ? { question: answer.question } : {}
+            text: answer2.answer,
+            ...answer2.question ? { question: answer2.question } : {}
           });
         } catch {
         }

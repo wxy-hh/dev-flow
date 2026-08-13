@@ -53,7 +53,7 @@ test("带后缀事件 + 精简 userReply 仍可确认路线（回归 m-level-iss
   try {
     const pending = await lockRouteConfirmation(fixture, "route-sem-b");
     await store.recordHostEvent(fixture.root, { eventId: "answer-suffixed", type: "user-prompt", host: "claude", text: "确认这条路线（推荐）" });
-    const routed = await store.confirmRouteClassification(fixture.root, pending.featureId, pending.revision, "确认这条路线", "claude");
+    const routed = (await store.answer({ root: fixture.root, featureId: pending.featureId, expectedRevision: pending.revision, host: "claude", credential: { source: "text", userReply: "确认这条路线" } })).state;
     assert.equal(routed.mode, "routed");
     assert.equal(routed.route, "m");
     assert.equal(decisions.pendingDecisionForState(routed), undefined);
@@ -65,7 +65,7 @@ test("带后缀 userReply 原样回传仍可确认路线（回归 m-level-issue-
   try {
     const pending = await lockRouteConfirmation(fixture, "route-sem-c");
     await store.recordHostEvent(fixture.root, { eventId: "answer-full", type: "user-prompt", host: "claude", text: "确认这条路线（推荐）" });
-    const routed = await store.confirmRouteClassification(fixture.root, pending.featureId, pending.revision, "确认这条路线（推荐）", "claude");
+    const routed = (await store.answer({ root: fixture.root, featureId: pending.featureId, expectedRevision: pending.revision, host: "claude", credential: { source: "text", userReply: "确认这条路线（推荐）" } })).state;
     assert.equal(routed.mode, "routed");
   } finally { await fixture.dispose(); }
 });
@@ -75,7 +75,7 @@ test("短答「可以」确认当前唯一待决的路线", async () => {
   try {
     const pending = await lockRouteConfirmation(fixture, "route-sem-short");
     await store.recordHostEvent(fixture.root, { eventId: "answer-short", type: "user-prompt", host: "claude", text: "可以" });
-    const routed = await store.confirmRouteClassification(fixture.root, pending.featureId, pending.revision, "可以", "claude");
+    const routed = (await store.answer({ root: fixture.root, featureId: pending.featureId, expectedRevision: pending.revision, host: "claude", credential: { source: "text", userReply: "可以" } })).state;
     assert.equal(routed.mode, "routed");
   } finally { await fixture.dispose(); }
 });
@@ -86,7 +86,7 @@ test("无确认语义文本「等等」拒绝且不改变状态", async () => {
     const pending = await lockRouteConfirmation(fixture, "route-sem-neg");
     await store.recordHostEvent(fixture.root, { eventId: "answer-neg", type: "user-prompt", host: "claude", text: "等等" });
     await assert.rejects(
-      () => store.confirmRouteClassification(fixture.root, pending.featureId, pending.revision, "等等", "claude"),
+      () => store.answer({ root: fixture.root, featureId: pending.featureId, expectedRevision: pending.revision, host: "claude", credential: { source: "text", userReply: "等等" } }),
       (error) => error.code === "DECISION_REPLY_NOT_RECOGNIZED",
     );
     const unchanged = await store.readState(fixture.root, pending.featureId);
@@ -102,12 +102,12 @@ test("否定前缀文本不与肯定事件兼容（拒绝不能被误判为确�
     const pending = await lockRouteConfirmation(fixture, "route-sem-negprefix");
     await store.recordHostEvent(fixture.root, { eventId: "answer-affirm", type: "user-prompt", host: "claude", text: "确认这条路线" });
     await assert.rejects(
-      () => store.confirmRouteClassification(fixture.root, pending.featureId, pending.revision, "不确认这条路线", "claude"),
+      () => store.answer({ root: fixture.root, featureId: pending.featureId, expectedRevision: pending.revision, host: "claude", credential: { source: "text", userReply: "不确认这条路线" } }),
       (error) => error.code === "INTERACTION_PROVENANCE_UNAVAILABLE",
     );
     await store.recordHostEvent(fixture.root, { eventId: "answer-affirm-short", type: "user-prompt", host: "claude", text: "可以" });
     await assert.rejects(
-      () => store.confirmRouteClassification(fixture.root, pending.featureId, pending.revision, "不可以", "claude"),
+      () => store.answer({ root: fixture.root, featureId: pending.featureId, expectedRevision: pending.revision, host: "claude", credential: { source: "text", userReply: "不可以" } }),
       (error) => error.code === "INTERACTION_PROVENANCE_UNAVAILABLE",
     );
     const unchanged = await store.readState(fixture.root, pending.featureId);

@@ -40,19 +40,20 @@ test("inspect and the advance gate read the same unresolved blocking set", async
     const completed = await completeReviewJobs(root, state.featureId, created.state, created.batch, {
       completions: { "requirements-coverage": { coverageSummary: "reviewed", findings: [blockingFinding] } },
     });
-    const ledger = await (await loadSource("plugins/dev-flow/src/core/review-store.ts")).readReviewLedger(root, completed.state);
-    const current = ledger.batches.find((batch) => batch.validity === "current");
-    const unresolved = jobs.currentUnresolvedBlocking(ledger, current, completed.state);
 
-    // inspect 与门禁一致：同一集合、同一数量。
+    // gate 是唯一归约：inspect 与推进门禁读到同一 findingIds 集合。
+    const gate = await jobs.reviewGate(root, completed.state);
+    assert.equal(gate.status, "blocking");
+    assert.equal(gate.findingIds.length, 1);
+
     const view = await inspection.inspectFeature(root, state.featureId, "review");
-    assert.equal(view.content.unresolvedBlockingCount, unresolved.length);
+    assert.equal(view.content.unresolvedBlockingCount, gate.findingIds.length);
     assert.equal(view.content.unresolvedBlockingCount, 1);
     await assert.rejects(
-      () => jobs.assertReviewComplete(root, completed.state),
+      () => jobs.requireReviewReady(root, completed.state),
       (error) => {
         assert.equal(error.code, "REVIEW_BLOCKING_FINDINGS");
-        assert.deepEqual(error.details.findingIds, unresolved.map((finding) => finding.findingId));
+        assert.deepEqual(error.details.findingIds, gate.findingIds);
         return true;
       },
     );

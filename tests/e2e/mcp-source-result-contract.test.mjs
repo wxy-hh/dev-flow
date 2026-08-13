@@ -318,13 +318,13 @@ test("workspace ownership answer fails closed when reconciliation adds an unknow
       featureId: "stale-ownership", expectedRevision: started.control.expectedRevision, host: "codex",
     });
     await writeFile(path.join(fixture.root, "src/new.js"), "export const newFile = true;\n", "utf8");
-    await mcpCall(server, fixture.root, "dev_flow_reconcile_workspace", {
+    const secondReconcile = await mcpCall(server, fixture.root, "dev_flow_reconcile_workspace", {
       featureId: "stale-ownership", expectedRevision: firstReconcile.control.expectedRevision, host: "codex",
     });
     await store.recordHostEvent(fixture.root, { eventId: "stale-answer", type: "user-prompt", host: "codex", text: "全部纳入当前任务" });
     await assert.rejects(
       () => mcpCall(server, fixture.root, "dev_flow_answer", {
-        featureId: "stale-ownership", expectedRevision: firstReconcile.control.expectedRevision,
+        featureId: "stale-ownership", expectedRevision: secondReconcile.control.expectedRevision,
         userReply: "全部纳入当前任务", host: "codex",
       }),
       (error) => error.code === "WORKSPACE_OWNERSHIP_STALE",

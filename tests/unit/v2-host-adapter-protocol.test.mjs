@@ -193,14 +193,13 @@ test("Claude AskUserQuestion 的真实用户选择可直接消解已呈现的 wo
     const promptHealth = [...await state.readHostHealth(fixture.root)].reverse().find((signal) => signal.host === "claude" && signal.kind === "user-prompt-submit");
     assert.equal(promptHealth?.eventId, "ask-ownership:answer");
 
-    const resolved = await state.resolveWorkspaceOwnershipText(
-      fixture.root,
-      pending.featureId,
-      pending.revision,
-      interaction.id,
-      answer,
-      "claude",
-    );
+    const resolved = await state.answer({
+      root: fixture.root,
+      featureId: pending.featureId,
+      expectedRevision: pending.revision,
+      host: "claude",
+      credential: { source: "text", userReply: answer },
+    });
     assert.equal(resolved.action, "adopt-all");
     assert.equal(Object.values(resolved.state.interactions ?? {}).some((item) => item.status === "pending"), false);
   } finally {

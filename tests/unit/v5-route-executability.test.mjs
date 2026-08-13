@@ -41,7 +41,7 @@ async function setup(prefix) {
 
 async function confirm(root, state, host = "codex", eventId = "route-confirm") {
   await store.recordHostEvent(root, { eventId, type: "user-prompt", host, text: "确认这条路线" });
-  return store.confirmRouteClassification(root, "f", state.revision, "确认这条路线", host);
+  return (await store.answer({ root, featureId: "f", expectedRevision: state.revision, host, credential: { source: "text", userReply: "确认这条路线" } })).state;
 }
 
 test("route confirmation binds user-visible route content, not the whole project config hash", async () => {
@@ -77,7 +77,7 @@ test("missing verification capability blocks confirmation without deleting the s
 
     await store.recordHostEvent(root, { eventId: "route-confirm", type: "user-prompt", host: "codex", text: "确认这条路线" });
     await assert.rejects(
-      () => store.confirmRouteClassification(root, "f", state.revision, "确认这条路线", "codex"),
+      () => store.answer({ root, featureId: "f", expectedRevision: state.revision, host: "codex", credential: { source: "text", userReply: "确认这条路线" } }),
       (error) => error.code === "VERIFICATION_GUARANTEE_UNCONFIGURED" && Array.isArray(error.details.missingGuarantees),
     );
     // 路线确认未被删除，仍是 pending：执行条件失败不影响用户可见决定。
@@ -93,7 +93,7 @@ test("reclassify presents a fresh route confirmation when user-visible content c
   const { root, state } = await setup("dev-flow-route-exec-reclass-");
   try {
     await store.recordHostEvent(root, { eventId: "route-confirm", type: "user-prompt", host: "codex", text: "确认这条路线" });
-    const routed = await store.confirmRouteClassification(root, "f", state.revision, "确认这条路线", "codex");
+    const routed = (await store.answer({ root, featureId: "f", expectedRevision: state.revision, host: "codex", credential: { source: "text", userReply: "确认这条路线" } })).state;
     const reclassified = await store.reclassifyFeature(root, "f", routed.revision, {
       level: "L", topology: "local", requirements: "provided-confirmed",
       classificationBasis: {

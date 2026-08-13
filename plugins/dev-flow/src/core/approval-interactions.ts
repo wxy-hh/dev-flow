@@ -9,7 +9,7 @@ import {
 } from "./approval.js";
 import { approvalBasis, approvalIds } from "./approval-basis.js";
 import { assertRequirementsGrillSatisfied } from "./requirements-grill.js";
-import { mutate, readFeatureEvents, readState, type FeatureState } from "./state-store.js";
+import { mutate, mutatePrepared, readFeatureEvents, readState, type FeatureState } from "./state-store.js";
 import { assertTraceGateCurrent } from "./traceability-gates.js";
 import { assertCurrentReviewProjection } from "./review-projection.js";
 import { routeDefinitionForState } from "./step-order.js";
@@ -19,14 +19,13 @@ import {
   createInteraction,
   decisionHint,
   getInteraction,
-  normalizeReplyText,
   textCompatible,
-  resolveNativeInteraction,
-  resolveTextInteraction,
+  resolveResponseForAnswer,
   toPublicInteraction,
   type InteractionResponse,
   type PublicInteraction,
 } from "./user-interactions.js";
+import type { AnswerResolveContext, AnswerResolveResult } from "./interaction-answer.js";
 
 const digest = (value: unknown) => createHash("sha256").update(JSON.stringify(value)).digest("hex");
 export type ApprovalPresentation = FeatureState & { approvalReplyHint: string; approvalInteraction: PublicInteraction; approvalId: ApprovalId; interactionId: string };
@@ -239,133 +238,101 @@ function assertTokenEvidence(
   return resolved;
 }
 
-async function resolveApprovalResponse(
-  root: string,
-  id: string,
-  expectedRevision: number,
-  interactionId: string,
-  host: "claude" | "codex",
-  input: { action: string; comment?: string; source: "elicitation" }
-    | { userReply: string; provenance: ApprovalConfirmation; source: "text" },
-): Promise<FeatureState> {
-  const initial = await readState(root, id);
-  if (initial.revision !== expectedRevision) {
-    throw new DevFlowError("STATE_REVISION_CONFLICT", "state revision changed", { currentRevision: initial.revision });
+/** 执行批准经统一回答入口落账（ADR-0019）：只有明确整句批准才能开始执行。 */
+export async function resolveApprovalForAnswer(ctx: AnswerResolveContext): Promise<AnswerResolveResult> {
+  const { root, featureId, expectedRevision, host, credential, interaction, state } = ctx;
+  if (interaction.kind !== "approval" || interaction.status !== "pending") {
+    throw new DevFlowError("INTERACTION_NOT_PENDING", "当前没有待确认的执行批准。", { interactionId: interaction.id });
   }
-  const approval = approvalFromInteraction(initial, interactionId);
-  const events = input.source === "text" ? await readFeatureEvents(root, id) : [];
-  const provenance = input.source === "text"
-    ? assertTokenEvidence(events, initial, approval, input.userReply, input.provenance, host)
-    : undefined;
-  // 选项判定以事件文本为准：结构化/文本凭证都取宿主捕获的原话，agent 转述不参与内容判定。
-  const promptText = input.source === "text" && provenance?.promptEventId
-    ? (events.find((item) => item.type === "host-event"
-      && (item.data as { eventId?: string }).eventId === provenance!.promptEventId)?.data as { text?: string } | undefined)?.text
-    : undefined;
+  const approval = approvalId(interaction.target.slice("approval:".length));
+  let provenance: ApprovalConfirmation | undefined;
+  let promptText: string | undefined;
+  let promptEventId: string | undefined;
+  if (credential.source === "text") {
+    const events = await readFeatureEvents(root, featureId);
+    provenance = assertTokenEvidence(events, state, approval, credential.userReply, {}, host);
+    promptEventId = provenance.promptEventId;
+    promptText = provenance.promptEventId
+      ? (events.find((item) => item.type === "host-event"
+        && (item.data as { eventId?: string }).eventId === provenance!.promptEventId)?.data as { text?: string } | undefined)?.text
+      : undefined;
+  }
   let response: InteractionResponse | undefined;
-  return mutate(root, id, expectedRevision, "approval-interaction-resolved", async (state) => {
-    await assertRequirementsGrillSatisfied(root, id, state);
-    await assertTraceGateCurrent(root, state, "planning");
-    await assertReviewProjectionForApproval(root, state);
-    const current = state.humanGates[approval] as {
+  const next = await mutatePrepared(root, featureId, expectedRevision, "approval-interaction-resolved", async (current) => {
+    await assertRequirementsGrillSatisfied(root, featureId, current);
+    await assertTraceGateCurrent(root, current, "planning");
+    await assertReviewProjectionForApproval(root, current);
+    const gate = current.humanGates[approval] as {
       status?: string;
       basisHash?: string;
       presentedRevision?: number;
       lastResponse?: InteractionResponse;
     } | undefined;
-    if (current?.status !== "pending") throw new DevFlowError("APPROVAL_NOT_PENDING", approval);
-    const interaction = getInteraction(state, interactionId);
-    if (interaction.kind !== "approval" || interaction.target !== `approval:${approval}` || interaction.status !== "pending") {
-      throw new DevFlowError("INTERACTION_NOT_PENDING", interactionId);
+    if (gate?.status !== "pending") throw new DevFlowError("APPROVAL_NOT_PENDING", approval);
+    const live = current.interactions?.[interaction.id] as import("./user-interactions.js").UserInteraction | undefined;
+    if (live?.kind !== "approval" || live?.target !== `approval:${approval}` || live?.status !== "pending") {
+      throw new DevFlowError("INTERACTION_NOT_PENDING", interaction.id);
     }
-    const basisHash = digest(approvalBasis(state, approval));
-    if (basisHash !== current.basisHash || basisHash !== interaction.basisHash) {
+    const basisHash = digest(approvalBasis(current, approval));
+    if (basisHash !== gate.basisHash || basisHash !== live.basisHash) {
       throw new DevFlowError("APPROVAL_BASIS_CHANGED", approval, {
         recoveryHint: "门禁依据已变更，请更新并登记相关资产后重新呈现门禁",
       });
     }
-    if (input.source === "text") {
+    if (credential.source === "text") {
       // 与 confirmApproval 相同的跨门禁防重放：任一 provenance id 已被其他门禁消费即拒绝。
       const ids = [
         ...(provenance?.promptEventId ? [provenance.promptEventId] : []),
         ...(provenance?.turnBoundaryEventId ? [provenance.turnBoundaryEventId] : []),
       ];
-      for (const [otherApproval, value] of Object.entries(state.humanGates)) {
+      for (const [otherApproval, value] of Object.entries(current.humanGates)) {
         if (otherApproval === approval) continue;
         const replayed = confirmationEventIds(value).find((eventId) => ids.includes(eventId));
         if (replayed) throw new DevFlowError("APPROVAL_EVENT_CONSUMED", replayed);
       }
     }
-    response = input.source === "elicitation"
-      ? resolveNativeInteraction(state, interactionId, input.action, input.comment, host)
-      : resolveTextInteraction(
-          state,
-          interactionId,
-          promptText ?? input.userReply,
+    return {
+      mutate: (draft) => {
+        const phraseText = promptText ?? (credential.source === "text" ? credential.userReply : undefined);
+        response = resolveResponseForAnswer(draft, interaction, {
+          source: credential.source,
+          action: credential.source === "elicitation" ? credential.action : undefined,
+          comment: credential.source === "elicitation" ? credential.comment : undefined,
+          userReply: credential.source === "text" ? credential.userReply : undefined,
+          promptText,
+          promptEventId,
           host,
-          provenance!,
-          // 动态 approval 支持自然语言批准词（如“确认需求”“批准实现”），映射为 confirm 选项；
-          // Approval phrases are handled by the single natural-language answer path.
-          isExplicitApproval(promptText ?? input.userReply) ? "confirm" : undefined,
-        );
-    if (response.action === "confirm") {
-      state.humanGates[approval] = {
-        ...current,
-        status: "confirmed",
-        confirmation: {
-          interactionId,
-          ...response,
-          confirmedAt: new Date().toISOString(),
-        },
-      };
-      state.obligations = satisfyObligations(state.obligations, ["approval"]);
-    } else if (response.action === "request-changes") {
-      state.humanGates[approval] = { ...current, status: "returned", lastResponse: response };
-    } else {
-      throw new DevFlowError("INTERACTION_ACTION_INVALID", response.action);
-    }
-    state.lastUpdatedBy = { host, pluginVersion: __DEV_FLOW_VERSION__ };
-  }, () => ({ approval, interactionId, response }));
-}
-
-export async function resolveApprovalElicitation(
-  root: string,
-  id: string,
-  expectedRevision: number,
-  interactionId: string,
-  action: string,
-  comment: string | undefined,
-  host: "claude" | "codex",
-): Promise<FeatureState> {
-  return resolveApprovalResponse(root, id, expectedRevision, interactionId, host, { action, comment, source: "elicitation" });
-}
-
-export async function resolveApprovalToken(
-  root: string,
-  id: string,
-  expectedRevision: number,
-  interactionId: string,
-  userReply: string,
-  provenance: ApprovalConfirmation,
-  host: "claude" | "codex",
-): Promise<FeatureState> {
-  return resolveApprovalResponse(root, id, expectedRevision, interactionId, host, { userReply, provenance, source: "text" });
-}
-
-/** Public answer path: Core resolves prompt provenance from the trusted host event ledger. */
-export async function resolveApprovalAnswer(
-  root: string,
-  id: string,
-  expectedRevision: number,
-  interactionId: string,
-  userReply: string,
-  host: "claude" | "codex",
-): Promise<FeatureState> {
-  return resolveApprovalResponse(root, id, expectedRevision, interactionId, host, {
-    userReply,
-    provenance: {},
-    source: "text",
+          phraseAction: phraseText && isExplicitApproval(phraseText) ? "confirm" : undefined,
+        });
+        const currentGate = draft.humanGates[approval] as {
+          status?: string;
+          basisHash?: string;
+          presentedRevision?: number;
+          lastResponse?: InteractionResponse;
+        } | undefined;
+        if (response.action === "confirm") {
+          draft.humanGates[approval] = {
+            ...currentGate,
+            status: "confirmed",
+            confirmation: {
+              interactionId: interaction.id,
+              ...response,
+              confirmedAt: new Date().toISOString(),
+            },
+          };
+          draft.obligations = satisfyObligations(draft.obligations, ["approval"]);
+        } else if (response.action === "request-changes") {
+          draft.humanGates[approval] = { ...currentGate, status: "returned", lastResponse: response };
+        } else {
+          throw new DevFlowError("INTERACTION_ACTION_INVALID", response.action);
+        }
+        draft.lastUpdatedBy = { host, pluginVersion: __DEV_FLOW_VERSION__ };
+      },
+      eventData: () => ({ approval, interactionId: interaction.id, response }),
+    };
   });
+  if (!response) throw new DevFlowError("INTERACTION_NOT_RESOLVED", interaction.id);
+  return { state: next, action: response.action, ...(response.comment ? { comment: response.comment } : {}) };
 }
 
 export async function confirmApproval(

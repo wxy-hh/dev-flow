@@ -8,6 +8,7 @@ import { loadSource } from "../helpers/load-source.mjs";
 import { registerTraceFixture } from "../helpers/trace-fixtures.mjs";
 
 const stateStore = await loadSource("plugins/dev-flow/src/core/state-store.ts");
+const rollbackJournal = await loadSource("plugins/dev-flow/src/core/rollback-journal.ts");
 const contract = await loadSource("plugins/dev-flow/src/policy/contract.ts");
 const units = await loadSource("plugins/dev-flow/src/core/implementation-units.ts");
 const checkpoints = await loadSource("plugins/dev-flow/src/core/checkpoints.ts");
@@ -631,7 +632,7 @@ test("a fresh local drive heartbeat prevents an old acquisition timestamp from b
     })}\n`);
 
     await assert.rejects(
-      () => stateStore.claimRollbackDriveLease(root, "f", journal.transactionId),
+      () => rollbackJournal.claimRollbackDriveLease(root, "f", journal.transactionId),
       (error) => error.code === "ROLLBACK_TRANSACTION_BUSY",
     );
   });
@@ -658,9 +659,9 @@ test("a stale local drive heartbeat is reclaimable even when its pid is wedged",
       heartbeatAt: oldTimestamp,
     })}\n`);
 
-    const replacement = await stateStore.claimRollbackDriveLease(root, "f", journal.transactionId);
+    const replacement = await rollbackJournal.claimRollbackDriveLease(root, "f", journal.transactionId);
     assert.notEqual(replacement.ownerId, "wedged-owner");
-    await stateStore.releaseRollbackDriveLease(root, "f", replacement);
+    await rollbackJournal.releaseRollbackDriveLease(root, "f", replacement);
   });
 });
 
@@ -685,7 +686,7 @@ test("a fresh remote drive heartbeat prevents a stale acquisition timestamp from
     })}\n`);
 
     await assert.rejects(
-      () => stateStore.claimRollbackDriveLease(root, "f", journal.transactionId),
+      () => rollbackJournal.claimRollbackDriveLease(root, "f", journal.transactionId),
       (error) => error.code === "ROLLBACK_TRANSACTION_BUSY",
     );
   });
@@ -715,7 +716,7 @@ test("an active legacy lease (pre-1.7.x path) blocks new-host claim without migr
 
     // New-host claim must see the active legacy lease and return BUSY.
     await assert.rejects(
-      () => stateStore.claimRollbackDriveLease(root, "f", journal.transactionId),
+      () => rollbackJournal.claimRollbackDriveLease(root, "f", journal.transactionId),
       (error) => error.code === "ROLLBACK_TRANSACTION_BUSY",
     );
 
@@ -752,7 +753,7 @@ test("a stale legacy lease is reclaimed into a dual lease so an old host sees th
     })}\n`);
 
     // Claim should succeed and reclaim the stale lease.
-    const lease = await stateStore.claimRollbackDriveLease(root, "f", journal.transactionId);
+    const lease = await rollbackJournal.claimRollbackDriveLease(root, "f", journal.transactionId);
     assert.equal(lease.transactionId, journal.transactionId);
 
     // A current host keeps the legacy mirror while the transaction is open so
@@ -769,7 +770,7 @@ test("a stale legacy lease is reclaimed into a dual lease so an old host sees th
 
     // Renewal maintains both mirrors, rather than silently leaving the old
     // path stale after the first claim.
-    await stateStore.renewRollbackDriveLease(root, "f", lease);
+    await rollbackJournal.renewRollbackDriveLease(root, "f", lease);
     const renewedLegacy = JSON.parse(await readFile(legacyFile, "utf8"));
     const renewedSidecar = JSON.parse(await readFile(sidecarFile, "utf8"));
     assert.equal(renewedLegacy.ownerId, lease.ownerId);
@@ -777,7 +778,7 @@ test("a stale legacy lease is reclaimed into a dual lease so an old host sees th
     assert.equal(renewedLegacy.heartbeatAt, renewedSidecar.heartbeatAt, "both mirrors renew together");
 
     // Clean up.
-    await stateStore.releaseRollbackDriveLease(root, "f", lease);
+    await rollbackJournal.releaseRollbackDriveLease(root, "f", lease);
     assert.equal(await pathExists(legacyFile), false, "release removes legacy mirror after the driver stops");
     assert.equal(await pathExists(sidecarFile), false, "release removes sidecar after the driver stops");
   });
@@ -836,7 +837,7 @@ test("an open transaction blocks a fresh execute on another feature", async () =
 
     // Fresh begin for any other feature id is rejected project-wide (atomic prepare).
     await assert.rejects(
-      () => stateStore.prepareRollbackTransaction(root, "g", stateG.revision, {
+      () => rollbackJournal.prepareRollbackTransaction(root, "g", stateG.revision, {
         schemaVersion: 1,
         transactionId: "should-not-land",
         featureId: "g",

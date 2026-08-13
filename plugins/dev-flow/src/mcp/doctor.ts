@@ -5,7 +5,8 @@ import { reviewEnforcementRequired, traceEnforcementRequired } from "../policy/c
 import { listOrphanTraceSnapshots, readTraceability } from "../core/traceability-store.js";
 import { listOrphanReviewSnapshots, readReviewLedger } from "../core/review-store.js";
 import { readHostHealth } from "../core/host-health.js";
-import { assertActivePointerConsistent, readProjectConfig, readState, readActive, readRecoveryTransaction, readRollbackTransaction, readFeatureEvents, rollbackTransactionFinished, stateFileSha256, type FeatureState, type RollbackTransaction } from "../core/state-store.js";
+import { assertActivePointerConsistent, readProjectConfig, readState, readActive, readRecoveryTransaction, readFeatureEvents, stateFileSha256, type FeatureState } from "../core/state-store.js";
+import { readRollbackTransaction, rollbackTransactionFinished, type RollbackTransaction } from "../core/rollback-journal.js";
 import { pendingDecisionForState } from "../core/decision-interactions.js";
 import { gitBranchAndHead, isAncestor } from "../core/git-reconciliation.js";
 
@@ -33,7 +34,7 @@ function projectActiveWorkflow(state: FeatureState): {
       : state.mode === "intake"
         ? "完成调查后调用 dev_flow_lock_classification"
         : state.mode === "routed"
-          ? `继续 ${state.currentStage ?? "当前阶段"}（详情看 dev_flow_status）`
+          ? "详情看 dev_flow_status"
           : "查看 dev_flow_status";
   return {
     mode: state.mode,

@@ -29,7 +29,10 @@ test("real drift revokes a finalized claim and atomically restores the active po
     assert.equal(state.deliverySnapshot, undefined);
     assert.equal(state.currentStage, "verification");
     assert.equal((await store.readActive(fixture.root)).featureId, state.featureId);
-    assert.equal((await next.nextAction(fixture.root, state.featureId)).kind, "run-step");
+    // 漂移把变更文件变成未知归属 → 待决归属题压过一切下一步（issue 02）。
+    const recovered = await next.nextAction(fixture.root, state.featureId);
+    assert.equal(recovered.kind, "intake");
+    assert.equal(recovered.activity, "resolve-decision");
   } finally {
     await fixture.dispose();
   }

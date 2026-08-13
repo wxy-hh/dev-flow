@@ -92,7 +92,7 @@ test("M route confirmation atomically locks through a trusted later host event",
     assert.equal(pending.mode, "intake");
     assert.equal(decisions.pendingDecisionForState(pending).kind, "route-confirmation");
     await store.recordHostEvent(fixture.root, { eventId: "route-confirm-user", type: "user-prompt", host: "codex", text: "确认这条路线" });
-    const routed = await store.confirmRouteClassification(fixture.root, pending.featureId, pending.revision, "确认这条路线", "codex");
+    const routed = (await store.answer({ root: fixture.root, featureId: pending.featureId, expectedRevision: pending.revision, host: "codex", credential: { source: "text", userReply: "确认这条路线" } })).state;
     assert.equal(routed.mode, "routed");
     assert.equal(routed.route, "m");
     assert.equal(decisions.pendingDecisionForState(routed), undefined);

@@ -355,6 +355,42 @@ export function resolveTextInteraction(
   return response;
 }
 
+/**
+ * 统一回答的响应解析（ADR-0019）：结构化凭证按选中即信任，文本凭证用
+ * 事件原文（promptText）而非 agent 转述做受控等价匹配。与
+ * 标记 interaction resolved、写入 response 在同一笔事务内完成。
+ */
+export function resolveResponseForAnswer(
+  draft: FeatureState,
+  interaction: UserInteraction,
+  input: {
+    source: "elicitation" | "text";
+    action?: string;
+    comment?: string;
+    userReply?: string;
+    promptText?: string;
+    promptEventId?: string;
+    host: "claude" | "codex";
+    phraseAction?: string;
+  },
+): InteractionResponse {
+  const live = draft.interactions?.[interaction.id] as UserInteraction | undefined;
+  if (!live || live.status !== "pending") {
+    throw new DevFlowError("INTERACTION_ALREADY_RESOLVED", interaction.id);
+  }
+  if (input.source === "elicitation") {
+    return resolveNativeInteraction(draft, interaction.id, input.action!, input.comment, input.host);
+  }
+  return resolveTextInteraction(
+    draft,
+    interaction.id,
+    input.promptText ?? input.userReply!,
+    input.host,
+    { promptEventId: input.promptEventId },
+    input.phraseAction,
+  );
+}
+
 export function toPublicInteraction(interaction: UserInteraction): PublicInteraction {
   if (interaction.kind === "grill") {
     if (!interaction.recommendation) throw new DevFlowError("GRILL_RECOMMENDATION_REQUIRED", interaction.id);

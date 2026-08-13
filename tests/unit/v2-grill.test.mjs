@@ -79,7 +79,7 @@ test("routed pending requirements can request grill directly and resolve interac
       host: "codex",
     });
     assert.equal(requested.state.interactions[requested.interactionId].status, "pending");
-    const resolved = await grill.resolveGrillElicitation(root, state.featureId, requested.state.revision, requested.interactionId, "answer", undefined, "codex");
+    const resolved = await stateStore.answer({ root, featureId: state.featureId, expectedRevision: requested.state.revision, host: "codex", credential: { source: "elicitation", action: "answer" } });
     assert.equal(resolved.state.governance.decisions.find((item) => item.recordId === "G-001").conclusion, "answer");
     assert.equal(resolved.state.interactions[requested.interactionId].status, "resolved");
   } finally {
@@ -108,7 +108,7 @@ test("intake grill request reopens a previously resolved decision", async () => 
       host: "codex",
     };
     const first = await grill.requestGrillDecision(root, state.featureId, state.revision, input);
-    const resolved = await grill.resolveGrillElicitation(root, state.featureId, first.state.revision, first.interactionId, "yes", undefined, "codex");
+    const resolved = await stateStore.answer({ root, featureId: state.featureId, expectedRevision: first.state.revision, host: "codex", credential: { source: "elicitation", action: "yes" } });
     const second = await grill.requestGrillDecision(root, state.featureId, resolved.state.revision, input);
     state = second.state;
     assert.equal(state.interactions[second.interactionId].status, "pending");
@@ -142,7 +142,7 @@ test("intake grill token requires a matching host user-prompt event", async () =
     const at = new Date(Date.now() + 1000).toISOString();
     await stateStore.recordHostEvent(root, { eventId: "prompt-wrong-host", type: "user-prompt", host: "claude", text: "确认", at });
     await assert.rejects(
-      () => grill.resolveGrillAnswer(root, state.featureId, requested.state.revision, requested.interactionId, "确认", "codex"),
+      () => stateStore.answer({ root, featureId: state.featureId, expectedRevision: requested.state.revision, host: "codex", credential: { source: "text", userReply: "确认" } }),
       (error) => error.code === "HOST_EVENT_HOST_MISMATCH",
     );
   } finally {

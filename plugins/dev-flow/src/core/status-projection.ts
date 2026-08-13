@@ -57,7 +57,7 @@ function actionText(state: FeatureState, action: NextAction): string {
     case "checkpoint-implementation-unit": return "保存当前实现单元并完成单元验证。";
     case "finalize": return "进入交付收尾并生成最终交付快照。";
     case "run-step": return `继续${stageLabel(action.step)}。`;
-    default: return "继续当前阶段。";
+    default: return "详情查看 dev_flow_status。";
   }
 }
 
