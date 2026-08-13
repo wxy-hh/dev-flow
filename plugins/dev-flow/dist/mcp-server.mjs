@@ -1,4 +1,4 @@
-/* dev-flow 5.0.7; built from source, deterministic build */
+/* dev-flow 5.0.8; built from source, deterministic build */
 
 // plugins/dev-flow/src/mcp/server.ts
 import readline from "node:readline";
@@ -747,10 +747,8 @@ function repositoryFactRecord(input, observedFingerprint, recordedAt) {
     recordedAt
   };
 }
-async function registerRepositoryFact(root2, id, expectedRevision, input, host) {
-  const initial = await readState(root2, id);
-  if (initial.revision !== expectedRevision) throw new DevFlowError("STATE_REVISION_CONFLICT", "state revision changed", { currentRevision: initial.revision });
-  const config = await readProjectConfig(root2);
+var MAX_REPOSITORY_FACT_BATCH = 50;
+async function normalizeRepositoryFact(root2, input, config) {
   const observation = input.observation ? normalizeRepositoryObservation(input.observation, config.governedRoots) : void 0;
   const location = input.location ? normalizeFactLocation(input.location, config.governedRoots) : observation?.kind === "search-absent" ? { kind: "negative", checkedScope: observation.checkedScope, conditions: `${observation.patternKind}:${observation.pattern}` } : observation && "path" in observation ? { kind: "positive", path: observation.path, ...observation.kind === "text-present" ? { anchor: observation.text } : observation.kind === "symbol-present" ? { anchor: observation.symbol } : {} } : void 0;
   if (!location) throw new DevFlowError("INVALID_REPOSITORY_FACT", "repository fact requires a structured location or observation");
@@ -760,14 +758,51 @@ async function registerRepositoryFact(root2, id, expectedRevision, input, host) 
   const observationResult = observation ? await executeRepositoryObservation(root2, observation) : void 0;
   const observedFingerprint = observationResult ? observationResult.observedFingerprint : await computeFactFingerprint(root2, { ...normalized, location });
   if (observationResult && !observationResult.confirmed) throw new DevFlowError("BOUNDARY_FACT_UNCONFIRMED", "repository observation is not satisfied", { summary: observationResult.summary, recoveryHint: "\u4FEE\u6B63\u89C2\u5BDF\u5B9A\u4E49\u6216\u5148\u4FEE\u6B63\u4ED3\u5E93\u540E\u91CD\u8BD5\u3002" });
-  const record = repositoryFactRecord(normalized, observedFingerprint, (/* @__PURE__ */ new Date()).toISOString());
-  return mutate(root2, id, expectedRevision, "repository-fact-recorded", (draft) => {
-    const ledger = draft.governance ?? EMPTY_GOVERNANCE_LEDGER;
-    const facts = [...ledger.repositoryFacts];
-    if (!facts.some((existing) => existing.recordId === record.recordId)) facts.push(record);
-    draft.governance = { ...ledger, repositoryFacts: facts };
-    draft.lastUpdatedBy = { host, pluginVersion: "5.0.7" };
+  return repositoryFactRecord(normalized, observedFingerprint, (/* @__PURE__ */ new Date()).toISOString());
+}
+function applyRepositoryFacts(draft, records, host) {
+  const ledger = draft.governance ?? EMPTY_GOVERNANCE_LEDGER;
+  const facts = [...ledger.repositoryFacts];
+  const created = [];
+  const existing = [];
+  for (const record of records) {
+    if (facts.some((item) => item.recordId === record.recordId)) existing.push(record.recordId);
+    else {
+      facts.push(record);
+      created.push(record.recordId);
+    }
+  }
+  draft.governance = { ...ledger, repositoryFacts: facts };
+  draft.lastUpdatedBy = { host, pluginVersion: "5.0.8" };
+  return { created, existing };
+}
+async function registerRepositoryFact(root2, id, expectedRevision, input, host) {
+  const initial = await readState(root2, id);
+  if (initial.revision !== expectedRevision) throw new DevFlowError("STATE_REVISION_CONFLICT", "state revision changed", { currentRevision: initial.revision });
+  const config = await readProjectConfig(root2);
+  const record = await normalizeRepositoryFact(root2, input, config);
+  const state = await mutate(root2, id, expectedRevision, "repository-fact-recorded", (draft) => {
+    applyRepositoryFacts(draft, [record], host);
   });
+  return { state, recordId: record.recordId };
+}
+async function registerRepositoryFacts(root2, id, expectedRevision, inputs, host) {
+  if (!inputs.length) throw new DevFlowError("INVALID_REPOSITORY_FACT", "repository fact batch must not be empty");
+  if (inputs.length > MAX_REPOSITORY_FACT_BATCH) {
+    throw new DevFlowError("INVALID_REPOSITORY_FACT", `repository fact batch cannot exceed ${MAX_REPOSITORY_FACT_BATCH} items`, { limit: MAX_REPOSITORY_FACT_BATCH });
+  }
+  const initial = await readState(root2, id);
+  if (initial.revision !== expectedRevision) throw new DevFlowError("STATE_REVISION_CONFLICT", "state revision changed", { currentRevision: initial.revision });
+  const config = await readProjectConfig(root2);
+  const records = await Promise.all(inputs.map((input) => normalizeRepositoryFact(root2, input, config)));
+  let created = [];
+  let existing = [];
+  const state = await mutate(root2, id, expectedRevision, "repository-facts-recorded", (draft) => {
+    const applied = applyRepositoryFacts(draft, records, host);
+    created = applied.created;
+    existing = applied.existing;
+  });
+  return { state, recordIds: records.map((record) => record.recordId), created, existing };
 }
 
 // plugins/dev-flow/src/core/fingerprint.ts
@@ -3093,9 +3128,13 @@ function ownershipForScope(lineage, inScope, outOfScope) {
   const ownership = { ...lineage.ownership };
   const ownershipSource = { ...lineage.ownershipSource };
   for (const file of Object.keys(lineage.startedDirty)) {
+    if (ownership[file] !== void 0) continue;
     if (outOfScope.some((scope) => scope === "." || file === scope || file.startsWith(`${scope}/`))) {
       ownership[file] = "excluded";
+      continue;
     }
+    ownership[file] = "excluded";
+    ownershipSource[file] = "startup-excluded";
   }
   void inScope;
   return { ...lineage, ownership, ownershipSource };
@@ -3902,6 +3941,18 @@ function resolveInteractionPromptEvent(events, state, interaction, input) {
     ...interaction.question ? { question: interaction.question } : {}
   });
 }
+function consumedPromptEventIds(events) {
+  const ids = /* @__PURE__ */ new Set();
+  for (const event of events) {
+    if (!event.data || typeof event.data !== "object" || Array.isArray(event.data)) continue;
+    const data = event.data;
+    for (const key of ["promptEventId", "eventId"]) {
+      if (key === "eventId") continue;
+      if (typeof data[key] === "string") ids.add(data[key]);
+    }
+  }
+  return ids;
+}
 
 // plugins/dev-flow/src/policy/obligations.ts
 import { createHash as createHash11 } from "node:crypto";
@@ -4103,7 +4154,7 @@ async function resolveWorkspaceOwnershipText(root2, id, expectedRevision, intera
       const next = presentWorkspaceOwnership(draft, [remaining[0]], { batchPaths: remaining, remainingPaths: remaining.slice(1), single: true });
       nextPresentationEventId = next.presentationEventId;
     }
-    draft.lastUpdatedBy = { host, pluginVersion: "5.0.7" };
+    draft.lastUpdatedBy = { host, pluginVersion: "5.0.8" };
   }, () => ({
     promptEventId: prompt.eventId,
     action: matched.option.id,
@@ -4144,7 +4195,7 @@ async function reconcileWorkspace(root2, id, expectedRevision, host) {
     draft.workspace = workspace;
     if (contentChanged) markAffectedEvidenceStale(draft, changedPaths2, reopenedLifecycle, legalCheckpointPaths);
     presentationEventId = queueNextOwnershipDecision(draft);
-    draft.lastUpdatedBy = { host, pluginVersion: "5.0.7" };
+    draft.lastUpdatedBy = { host, pluginVersion: "5.0.8" };
   }, () => ({
     observedHead: workspace.observedHead,
     commitCount: workspace.observedCommits.length,
@@ -4603,7 +4654,18 @@ function assertBoundaryAuditComplete(audit, decisionRefsOrIndex, repositoryFacts
     const decision = item.disposition === "resolved-decision" && typeof item.decisionRef === "string" && index.decisionRefs.includes(item.decisionRef) && decisionRecord !== void 0 && decisionRecord.currency === "current" && decisionRecord.supersededBy === void 0;
     if (!fact && !decision) {
       const code = decisionRecord?.supersededBy ? "BOUNDARY_DECISION_SUPERSEDED" : "BOUNDARY_AUDIT_UNRESOLVED";
-      throw new PolicyError(code, "every boundary item needs a current repository fact or a current resolved decision", { itemId: item.id, ...typeof item.decisionRef === "string" ? { decisionRef: item.decisionRef } : {}, ...typeof item.factRef === "string" ? { factRef: item.factRef } : {} });
+      const unresolvedRefs = [item.factRef, item.decisionRef].filter((ref) => typeof ref === "string");
+      const registeredIds = [
+        ...index.repositoryFacts.map((record) => record.recordId),
+        ...index.decisions.map((record) => record.recordId)
+      ];
+      throw new PolicyError(code, "every boundary item needs a current repository fact or a current resolved decision", {
+        itemId: item.id,
+        unresolvedRefs,
+        registeredIds,
+        ...typeof item.decisionRef === "string" ? { decisionRef: item.decisionRef } : {},
+        ...typeof item.factRef === "string" ? { factRef: item.factRef } : {}
+      });
     }
   }
 }
@@ -4663,9 +4725,20 @@ async function lockClassification(root2, id, expectedRevision, facts, boundaryAu
     ...Object.values(facts.riskFactRefs).flatMap((refs) => refs ?? [])
   ];
   const factRefs = [.../* @__PURE__ */ new Set([...auditFactRefs, ...basisFactRefs])];
+  const registeredIds = [
+    ...repositoryFacts.map((record) => record.recordId),
+    ...(initial.governance?.decisions ?? []).map((record) => record.recordId)
+  ];
+  const unresolvedFactRefs = factRefs.filter((ref) => !repositoryFacts.some((record) => record.recordId === ref));
+  if (unresolvedFactRefs.length) {
+    throw new DevFlowError("BOUNDARY_AUDIT_UNRESOLVED", "classification references a repository fact that is not in the governance ledger", {
+      factRef: unresolvedFactRefs[0],
+      unresolvedRefs: unresolvedFactRefs,
+      registeredIds
+    });
+  }
   for (const ref of factRefs) {
     const fact = repositoryFacts.find((record) => record.recordId === ref);
-    if (!fact) throw new DevFlowError("BOUNDARY_AUDIT_UNRESOLVED", "classification references a repository fact that is not in the governance ledger", { factRef: ref });
     await assertRepositoryFactCurrent(root2, fact);
   }
   const configForBasis = await readProjectConfig(root2);
@@ -4677,14 +4750,26 @@ async function lockClassification(root2, id, expectedRevision, facts, boundaryAu
     currency: deriveCurrency(decision, { contentFingerprint: currentFingerprint, eventIds })
   }));
   const factRecords = repositoryFacts.map((fact) => ({ recordId: fact.recordId, currency: factRefs.includes(fact.recordId) ? "current" : "unconfirmed" }));
-  for (const auditRef of auditFactRefs) {
-    if (!basisFactRefs.includes(auditRef)) throw new DevFlowError("BOUNDARY_AUDIT_UNRESOLVED", "boundary audit fact must be included in classification basis", { factRef: auditRef });
+  const auditMissingFromBasis = auditFactRefs.filter((auditRef) => !basisFactRefs.includes(auditRef));
+  if (auditMissingFromBasis.length) {
+    throw new DevFlowError("BOUNDARY_AUDIT_UNRESOLVED", "boundary audit fact must be included in classification basis", {
+      factRef: auditMissingFromBasis[0],
+      unresolvedRefs: auditMissingFromBasis,
+      registeredIds
+    });
   }
   const boundaryIndex = { decisionRefs: [...facts.decisionRefs], decisions: decisionRecords, repositoryFacts: factRecords };
   assertBoundaryAuditComplete(boundaryAudit, boundaryIndex);
+  const unresolvedDecisionRefs = facts.decisionRefs.filter((decisionRef) => !decisionRecords.some((record) => record.recordId === decisionRef));
+  if (unresolvedDecisionRefs.length) {
+    throw new DevFlowError("BOUNDARY_AUDIT_UNRESOLVED", "classification references a decision that is not in the governance ledger", {
+      decisionRef: unresolvedDecisionRefs[0],
+      unresolvedRefs: unresolvedDecisionRefs,
+      registeredIds
+    });
+  }
   for (const decisionRef of facts.decisionRefs) {
     const decision = decisionRecords.find((record) => record.recordId === decisionRef);
-    if (!decision) throw new DevFlowError("BOUNDARY_AUDIT_UNRESOLVED", "classification references a decision that is not in the governance ledger", { decisionRef });
     if (decision.supersededBy) throw new DevFlowError("BOUNDARY_DECISION_SUPERSEDED", "classification references a superseded decision", { decisionRef, successorId: decision.supersededBy });
     if (decision.currency !== "current") throw new DevFlowError("BOUNDARY_DECISION_NOT_CURRENT", "classification references a decision whose basis is not current", { decisionRef, currency: decision.currency });
   }
@@ -4801,7 +4886,7 @@ async function confirmRouteClassification(root2, id, expectedRevision, userReply
     if (review2) draft.review = review2;
     delete draft.pendingDecision;
     delete draft.routeConfirmation;
-    draft.lastUpdatedBy = { host, pluginVersion: "5.0.7" };
+    draft.lastUpdatedBy = { host, pluginVersion: "5.0.8" };
   }, { promptEventId: prompt.eventId, level: selected.classification.level, orderedRoute: selected.classification.orderedRoute });
 }
 async function assertRouteExecutable(root2, selected) {
@@ -4844,7 +4929,7 @@ async function resolveRouteClassificationElicitation(root2, id, expectedRevision
     if (traceability) draft.traceability = traceability;
     if (review2) draft.review = review2;
     delete draft.routeConfirmation;
-    draft.lastUpdatedBy = { host, pluginVersion: "5.0.7" };
+    draft.lastUpdatedBy = { host, pluginVersion: "5.0.8" };
   }, { interactionId, action, level: selected.classification.level, orderedRoute: selected.classification.orderedRoute });
 }
 var levelRank2 = { XS: 0, S: 1, M: 2, L: 3 };
@@ -4972,11 +5057,88 @@ function resolveDecision(decision, evidence, conclusion) {
 }
 
 // plugins/dev-flow/src/core/decision-workflow.ts
+function commitDecision(draft, input) {
+  const ledgerAfter = draft.governance ?? EMPTY_GOVERNANCE_LEDGER;
+  const credentials = [...ledgerAfter.credentials];
+  if (!credentials.some((existing) => existing.recordId === input.credentialId)) {
+    credentials.push({
+      recordId: input.credentialId,
+      kind: "credential",
+      source: input.source,
+      host: input.host,
+      interactionId: input.interactionId,
+      ...input.optionId ? { optionId: input.optionId } : {},
+      ...input.rawText ? { rawText: input.rawText } : {},
+      ...input.promptEventId ? { basis: { kind: "event", eventId: input.promptEventId } } : input.presentationEventId ? { basis: { kind: "event", eventId: input.presentationEventId } } : {},
+      recordedAt: input.recordedAt
+    });
+  }
+  const decisions = [...ledgerAfter.decisions];
+  if (!decisions.some((existing) => existing.recordId === input.decisionId)) {
+    decisions.push({
+      recordId: input.decisionId,
+      kind: "decision",
+      question: input.question,
+      conclusion: input.conclusion,
+      credentialId: input.credentialId,
+      ...input.promptEventId ? { basis: { kind: "event", eventId: input.promptEventId } } : input.presentationEventId ? { basis: { kind: "event", eventId: input.presentationEventId } } : {},
+      recordedAt: input.recordedAt
+    });
+  }
+  draft.governance = { ...ledgerAfter, credentials, decisions };
+}
+function latestUnconsumedPrompt(events, host) {
+  const consumed = consumedPromptEventIds(events);
+  const matches = events.flatMap((record) => {
+    const prompt = promptFrom(record);
+    if (!prompt || prompt.host !== host || consumed.has(prompt.eventId)) return [];
+    return [{ eventId: prompt.eventId, text: prompt.text, revision: record.revision, at: prompt.at }];
+  });
+  matches.sort((left, right) => right.revision - left.revision || Date.parse(right.at) - Date.parse(left.at));
+  return matches[0];
+}
 async function recordDecision(root2, id, expectedRevision, question, evidence, conclusion, factRefs = [], host) {
   if (!question.trim()) throw new DevFlowError("DECISION_QUESTION_REQUIRED", "decision question cannot be empty");
   if (!evidence.trim() || !conclusion.trim()) throw new DevFlowError("DECISION_EVIDENCE_REQUIRED", "ratified decisions require the user's original words and the intended conclusion");
+  const initial = await readState(root2, id);
+  if (initial.revision !== expectedRevision) throw new DevFlowError("STATE_REVISION_CONFLICT", "state revision changed", { currentRevision: initial.revision });
   const decision = resolveDecision(createDecision(question, factRefs), evidence, conclusion);
   const target = `decision-ratification:${decision.id}`;
+  let existingPending = false;
+  try {
+    existingPending = Boolean(pendingDecisionForState(initial));
+  } catch {
+    existingPending = true;
+  }
+  const events = await readFeatureEvents(root2, id);
+  const latest = existingPending ? void 0 : latestUnconsumedPrompt(events, host);
+  const exactMatch = latest && normalizeReplyText(latest.text) === normalizeReplyText(evidence);
+  if (latest && exactMatch) {
+    const recordedAt = (/* @__PURE__ */ new Date()).toISOString();
+    const state2 = await mutate(root2, id, expectedRevision, "decision-auto-ratified", (draft) => {
+      commitDecision(draft, {
+        decisionId: decision.id,
+        question: question.trim(),
+        conclusion: conclusion.trim(),
+        credentialId: `CRED-auto-ratify-${decision.id}`,
+        host,
+        recordedAt,
+        source: "text",
+        interactionId: `auto-ratify:${decision.id}`,
+        promptEventId: latest.eventId,
+        rawText: evidence.trim()
+      });
+      draft.lastUpdatedBy = { host, pluginVersion: "5.0.8" };
+    }, { decisionId: decision.id, promptEventId: latest.eventId });
+    return {
+      state: state2,
+      decisionId: decision.id,
+      ratifiedFrom: latest.eventId,
+      question: question.trim(),
+      evidence: evidence.trim(),
+      conclusion: conclusion.trim()
+    };
+  }
   let interaction;
   const state = await mutate(root2, id, expectedRevision, "decision-ratification-presented", (draft) => {
     interaction = createInteraction(draft, {
@@ -4992,7 +5154,7 @@ ${conclusion.trim()}`).digest("hex"),
       ],
       ratification: { question: question.trim(), evidence: evidence.trim(), conclusion: conclusion.trim(), factRefs: [...factRefs] }
     });
-    draft.lastUpdatedBy = { host, pluginVersion: "5.0.7" };
+    draft.lastUpdatedBy = { host, pluginVersion: "5.0.8" };
   }, () => ({ decisionId: decision.id, presentationEventId: interaction?.presentationEventId }));
   if (!interaction) throw new DevFlowError("INTERACTION_NOT_CREATED", target);
   return { state, interaction: toPublicInteraction(interaction), decisionId: decision.id, interactionId: interaction.id };
@@ -5001,35 +5163,20 @@ function ratifyDecision(draft, interaction, response, promptEventId, host) {
   const candidate = interaction.ratification;
   if (!candidate) throw new DevFlowError("INTERACTION_INVALID", "decision-ratification interaction is missing its candidate content", { interactionId: interaction.id });
   const decision = resolveDecision(createDecision(candidate.question, candidate.factRefs), candidate.evidence, candidate.conclusion);
-  const ledgerAfter = draft.governance ?? EMPTY_GOVERNANCE_LEDGER;
-  const credentialId = `CRED-ratify-${interaction.id}`;
-  const credentials = [...ledgerAfter.credentials];
-  if (!credentials.some((existing) => existing.recordId === credentialId)) {
-    credentials.push({
-      recordId: credentialId,
-      kind: "credential",
-      source: response.source === "elicitation" ? "native-form" : "text",
-      host,
-      interactionId: interaction.id,
-      ...response.source === "elicitation" ? { optionId: response.selectedOptionId ?? response.action } : response.selectedOptionId ? { optionId: response.selectedOptionId } : {},
-      ...response.rawReply ? { rawText: response.rawReply } : {},
-      ...promptEventId ? { basis: { kind: "event", eventId: promptEventId } } : interaction.presentationEventId ? { basis: { kind: "event", eventId: interaction.presentationEventId } } : {},
-      recordedAt: response.respondedAt
-    });
-  }
-  const decisions = [...ledgerAfter.decisions];
-  if (!decisions.some((existing) => existing.recordId === decision.id)) {
-    decisions.push({
-      recordId: decision.id,
-      kind: "decision",
-      question: candidate.question,
-      conclusion: candidate.conclusion,
-      credentialId,
-      ...promptEventId ? { basis: { kind: "event", eventId: promptEventId } } : interaction.presentationEventId ? { basis: { kind: "event", eventId: interaction.presentationEventId } } : {},
-      recordedAt: response.respondedAt
-    });
-  }
-  draft.governance = { ...ledgerAfter, credentials, decisions };
+  commitDecision(draft, {
+    decisionId: decision.id,
+    question: candidate.question,
+    conclusion: candidate.conclusion,
+    credentialId: `CRED-ratify-${interaction.id}`,
+    host,
+    recordedAt: response.respondedAt,
+    source: response.source === "elicitation" ? "native-form" : "text",
+    interactionId: interaction.id,
+    promptEventId,
+    presentationEventId: interaction.presentationEventId,
+    optionId: response.source === "elicitation" ? response.selectedOptionId ?? response.action : response.selectedOptionId,
+    rawText: response.rawReply
+  });
 }
 async function resolveInteractionDecision(root2, id, expectedRevision, interactionId, host, input, config) {
   const initial = await readState(root2, id);
@@ -5055,7 +5202,7 @@ async function resolveInteractionDecision(root2, id, expectedRevision, interacti
     if (!live || live.status !== "pending") throw new DevFlowError("INTERACTION_ALREADY_RESOLVED", interactionId);
     response = input.source === "elicitation" ? resolveNativeInteraction(draft, interactionId, input.action, input.comment, host) : resolveTextInteraction(draft, interactionId, promptText ?? input.userReply, host, { promptEventId });
     if (matched.option.id === "confirm") config.apply(draft, live, response, promptEventId);
-    draft.lastUpdatedBy = { host, pluginVersion: "5.0.7" };
+    draft.lastUpdatedBy = { host, pluginVersion: "5.0.8" };
   }, { interactionId, action: matched.option.id });
   if (!response) throw new DevFlowError("INTERACTION_NOT_RESOLVED", interactionId);
   return { state, response, interaction };
@@ -5124,7 +5271,7 @@ ${reason.trim()}`).digest("hex"),
       ],
       revision: { decisionId, oldConclusion: old.conclusion ?? old.question, newConclusion: newConclusion.trim(), reason: reason.trim(), affected }
     });
-    draft.lastUpdatedBy = { host, pluginVersion: "5.0.7" };
+    draft.lastUpdatedBy = { host, pluginVersion: "5.0.8" };
   }, () => ({ decisionId, successorId, presentationEventId: interaction?.presentationEventId }));
   if (!interaction) throw new DevFlowError("INTERACTION_NOT_CREATED", target);
   return { state, interaction: toPublicInteraction(interaction), decisionId: successorId, interactionId: interaction.id };
@@ -5477,7 +5624,7 @@ ${impactLines.join("\n")}
         traceabilitySha256: initial.traceability?.sha256 ?? "none"
       }
     });
-    draft.lastUpdatedBy = { host, pluginVersion: "5.0.7" };
+    draft.lastUpdatedBy = { host, pluginVersion: "5.0.8" };
   }, () => ({ presentationEventId: interaction?.presentationEventId }));
   if (!interaction) throw new DevFlowError("INTERACTION_NOT_CREATED", target);
   return { state, interaction: toPublicInteraction(interaction), interactionId: interaction.id };
@@ -5499,7 +5646,7 @@ function applyPlanRevision(draft, interaction, host) {
   delete draft.steps.implementation;
   delete draft.steps.code_review;
   draft.currentStage = "planning";
-  draft.lastUpdatedBy = { host, pluginVersion: "5.0.7" };
+  draft.lastUpdatedBy = { host, pluginVersion: "5.0.8" };
 }
 async function resolvePlanRevisionDecision(root2, id, expectedRevision, interactionId, host, input) {
   const initial = await readState(root2, id);
@@ -6295,7 +6442,16 @@ async function startFeature(root2, input, options = {}) {
     const lifecycle = input.activation ?? "active";
     if (lifecycle === "active" && active) {
       const activeState = await readState(root2, active.featureId);
-      if (!pendingDecisionForState(activeState)) {
+      let existingPending;
+      let pendingUnreadable = false;
+      try {
+        existingPending = pendingDecisionForState(activeState);
+      } catch {
+        pendingUnreadable = true;
+        existingPending = void 0;
+      }
+      const switchInteractionCreated = !existingPending && !pendingUnreadable;
+      if (switchInteractionCreated) {
         const pendingState = structuredClone(activeState);
         const interaction = createInteraction(pendingState, {
           kind: "task-switch",
@@ -6317,13 +6473,14 @@ ${objectiveForSwitch(input)}`).digest("hex"),
       }
       throw new DevFlowError("TASK_SWITCH_REQUIRED", "\u53E6\u4E00\u4E2A feature \u5F53\u524D\u5904\u4E8E active \u72B6\u6001\u3002", {
         userMessage: "\u5F53\u524D\u5DF2\u6709\u4E00\u4E2A\u8FDB\u884C\u4E2D\u7684\u4EFB\u52A1\uFF0C\u8BF7\u5148\u51B3\u5B9A\u5982\u4F55\u5904\u7406\u5B83\u3002",
-        cause: "\u7CFB\u7EDF\u4E0D\u4F1A\u540E\u53F0 finalize\u3001\u6682\u505C\u3001\u7EC8\u6B62\u6216\u5207\u6362\u65E7\u4EFB\u52A1\u3002",
+        cause: switchInteractionCreated ? "\u7CFB\u7EDF\u4E0D\u4F1A\u540E\u53F0 finalize\u3001\u6682\u505C\u3001\u7EC8\u6B62\u6216\u5207\u6362\u65E7\u4EFB\u52A1\u3002" : "\u65E7\u4EFB\u52A1\u4ECD\u6709\u5F85\u51B3\u95EE\u9898\uFF0C\u7CFB\u7EDF\u6CA1\u6709\u521B\u5EFA task-switch \u4EA4\u4E92\uFF0C\u4E5F\u4E0D\u4F1A\u540E\u53F0\u5207\u6362\u4EFB\u52A1\u3002",
         impact: "\u65B0\u4EFB\u52A1\u5C1A\u672A\u521B\u5EFA\uFF0C\u4E5F\u6CA1\u6709\u6539\u53D8\u65E7\u4EFB\u52A1\u7684\u6267\u884C\u72B6\u6001\u3002",
         recoveryKind: "ask-user",
-        recoveryInstruction: "\u8BF7\u901A\u8FC7 dev_flow_answer \u9010\u9898\u9009\u62E9\u5904\u7406\u65E7\u4EFB\u52A1\u7684\u65B9\u5F0F\u3002",
+        recoveryInstruction: switchInteractionCreated ? "\u8BF7\u901A\u8FC7 dev_flow_answer \u9010\u9898\u9009\u62E9\u5904\u7406\u65E7\u4EFB\u52A1\u7684\u65B9\u5F0F\u3002" : "\u65E7\u4EFB\u52A1\u6709\u5F85\u51B3\u95EE\u9898\u672A\u89E3\u51B3\u3002\u5148\u8C03\u7528 dev_flow_answer \u56DE\u7B54\u8BE5\u95EE\u9898\uFF0C\u518D\u91CD\u8BD5\u5F00\u59CB\u65B0\u4EFB\u52A1\u3002",
         requiresUserDecision: true,
         retryOriginal: false,
-        activeFeatureId: active.featureId
+        activeFeatureId: active.featureId,
+        ...existingPending ? { kind: existingPending.kind, question: existingPending.question } : {}
       });
     }
     const objective = typeof input.objective === "string" && input.objective.trim().length > 0 ? input.objective.trim() : "\u672A\u547D\u540D\u9700\u6C42";
@@ -6365,15 +6522,10 @@ ${objectiveForSwitch(input)}`).digest("hex"),
         blockingFindings: [],
         logicComplete: false,
         governance: { decisions: [], claims: [], authorizations: [], credentials: [], repositoryFacts: [] },
-        lastUpdatedBy: { host: input.host, pluginVersion: "5.0.7" }
+        lastUpdatedBy: { host: input.host, pluginVersion: "5.0.8" }
       };
       const ownershipPaths = unknownOwnershipPaths(state);
       state.workspace.unownedPaths = ownershipPaths;
-      let presentationEventId;
-      if (ownershipPaths.length) {
-        const presentation = presentWorkspaceOwnership(state, ownershipPaths);
-        presentationEventId = presentation.presentationEventId;
-      }
       validateFeatureState(state);
       await options.fault?.("before-state-commit");
       await writeAtomic(statePath(root2, id), state);
@@ -6389,8 +6541,7 @@ ${objectiveForSwitch(input)}`).digest("hex"),
         await appendEvent(root2, id, state.revision, "started", {
           lifecycle,
           mode: state.mode,
-          objective,
-          ...presentationEventId ? { presentationEventId } : {}
+          objective
         });
       } catch {
         failures.push("event");
@@ -6482,7 +6633,7 @@ async function pauseFeature(root2, id, expectedRevision, reason, host) {
     if (state.lifecycle !== "active") throw new DevFlowError("INVALID_LIFECYCLE", "\u53EA\u6709\u8FDB\u884C\u4E2D\u7684 feature \u53EF\u4EE5\u6682\u505C\u3002", { userMessage: "\u5F53\u524D feature \u4E0D\u80FD\u6682\u505C\u3002", recoveryKind: "refresh", recoveryInstruction: "\u5237\u65B0\u72B6\u6001\u540E\u4ECE\u5F53\u524D\u9636\u6BB5\u7EE7\u7EED\u3002", retryOriginal: false });
     state.lifecycle = "paused";
     state.resumeSummary = `\u6682\u505C\u539F\u56E0\uFF1A${reason.trim()}\u3002\u6062\u590D\u540E\u5148\u5BF9\u8D26\u5DE5\u4F5C\u533A\uFF0C\u518D\u4ECE${state.currentStage ? `\u201C${state.currentStage}\u201D` : "\u5F53\u524D\u9636\u6BB5"}\u7EE7\u7EED\u3002`;
-    state.lastUpdatedBy = { host, pluginVersion: "5.0.7" };
+    state.lastUpdatedBy = { host, pluginVersion: "5.0.8" };
   }, { reason: reason.trim() });
 }
 async function resumeFeature(root2, id, host) {
@@ -6514,7 +6665,7 @@ async function resumeFeature(root2, id, host) {
     }
     presentationEventId = queueNextOwnershipDecision(state);
     state.resumeSummary = `\u5DF2\u6062\u590D${state.currentStage ? `\uFF0C\u4ECE\u201C${state.currentStage}\u201D\u7EE7\u7EED` : "\u5F53\u524D\u4EFB\u52A1"}\u3002${contentChanged ? "\u5DE5\u4F5C\u533A\u5185\u5BB9\u6709\u53D8\u5316\uFF0C\u76F8\u5173\u8BC1\u636E\u5DF2\u6807\u8BB0\u4E3A\u5F85\u66F4\u65B0\u3002" : ""}`;
-    state.lastUpdatedBy = { host, pluginVersion: "5.0.7" };
+    state.lastUpdatedBy = { host, pluginVersion: "5.0.8" };
   }, () => ({ observedHead: workspace.observedHead, contentChanged, checkpointAffected, ...presentationEventId ? { presentationEventId } : {} }));
 }
 async function abandonFeature(root2, id, expectedRevision, reason, userEvidence) {
@@ -6570,7 +6721,7 @@ async function repairFeature(root2, id, expectedRevision, host) {
       state.logicComplete = state.lifecycle === "finalized" && finalEvidenceCurrent;
       state.currentStage = state.logicComplete ? "complete" : definition.orderedSteps.find((step) => state.steps[step]?.status !== "satisfied") ?? "finalize";
     }
-    state.lastUpdatedBy = { host, pluginVersion: "5.0.7" };
+    state.lastUpdatedBy = { host, pluginVersion: "5.0.8" };
   }, { repaired: ["active-pointer", "current-stage", "freshness", "review/status-projection"] });
 }
 function isRecoveryPhase(value) {
@@ -7839,6 +7990,9 @@ async function createDeliverySnapshot(root2, featureId, state, config) {
     `- \u7528\u6237\u624B\u52A8\u63A5\u7EB3\u8DEF\u5F84\uFF1A${Object.entries(lineage.ownershipSource).filter(([, source]) => source === "user-adopted").map(([file]) => file).join(", ") || "\u65E0"}`,
     `- \u672A\u63D0\u4EA4\u8DEF\u5F84\uFF1A${currentDirty.filter((file) => featureOwned.has(file)).join(", ") || "\u65E0"}`,
     `- \u7528\u6237\u63A5\u53D7\u98CE\u9669\uFF1A${currentRiskAuthorizations(state, { contentFingerprint: state.businessFingerprint }).map((authorization) => authorization.target).join(", ") || "\u65E0"}`,
+    ...files.filter((file) => initialDirty.has(file) && lineage.ownershipSource[file] === "trusted-hook").length ? [
+      `- \u5305\u542B\u542F\u52A8\u524D\u5DF2\u5B58\u5728\u6539\u52A8\u7684\u6587\u4EF6\uFF1A${files.filter((file) => initialDirty.has(file) && lineage.ownershipSource[file] === "trusted-hook").join(", ")}`
+    ] : [],
     ...excludedChangedPaths.length ? [
       "",
       "## \u975E\u4EA4\u4ED8\u6539\u52A8",
@@ -7902,7 +8056,7 @@ async function requestGrillDecision(root2, id, expectedRevision, input) {
       options: input.options,
       recommendation: input.recommendation
     });
-    draft.lastUpdatedBy = { host: input.host, pluginVersion: "5.0.7" };
+    draft.lastUpdatedBy = { host: input.host, pluginVersion: "5.0.8" };
   }, () => ({ questionId: input.questionId, mode: "decision", presentationEventId: interaction?.presentationEventId }));
   if (!interaction) throw new DevFlowError("INTERACTION_NOT_CREATED", target);
   return { state, interaction: toPublicInteraction(interaction), interactionId: interaction.id };
@@ -7964,7 +8118,7 @@ async function resolveGrillDecision(root2, id, expectedRevision, interactionId, 
       }
       draft.governance = { ...existingGovernance, decisions, credentials };
     }
-    draft.lastUpdatedBy = { host, pluginVersion: "5.0.7" };
+    draft.lastUpdatedBy = { host, pluginVersion: "5.0.8" };
   }, { interactionId, mode: "decision" });
   if (!response) throw new DevFlowError("INTERACTION_NOT_RESOLVED", "\u5F53\u524D\u95EE\u9898\u6CA1\u6709\u5B8C\u6210\u56DE\u7B54\u3002", { interactionId });
   return { state, interaction: toPublicInteraction(getInteraction(state, interactionId)), response, interactionId };
@@ -8120,7 +8274,7 @@ async function resolveQualityExceptionResponse(root2, featureId, expectedRevisio
         state.obligations = satisfyObligations(state.obligations, [kind]);
       }
     }
-    state.lastUpdatedBy = { host, pluginVersion: "5.0.7" };
+    state.lastUpdatedBy = { host, pluginVersion: "5.0.8" };
   }, { interactionId });
 }
 
@@ -9446,7 +9600,7 @@ async function invalidateAffectedClaims(root2, id, expectedRevision) {
       fallback,
       reason
     };
-    draft.lastUpdatedBy = { host: state.lastUpdatedBy.host, pluginVersion: "5.0.7" };
+    draft.lastUpdatedBy = { host: state.lastUpdatedBy.host, pluginVersion: "5.0.8" };
   }, { changedFiles, reopenedUnits, reviewReopened, verificationReopened, fallback, reason });
   return invalidated;
 }
@@ -9849,7 +10003,7 @@ async function resolveApprovalResponse(root2, id, expectedRevision, interactionI
     } else {
       throw new DevFlowError("INTERACTION_ACTION_INVALID", response.action);
     }
-    state.lastUpdatedBy = { host, pluginVersion: "5.0.7" };
+    state.lastUpdatedBy = { host, pluginVersion: "5.0.8" };
   }, () => ({ approval, interactionId, response }));
 }
 async function resolveApprovalElicitation(root2, id, expectedRevision, interactionId, action, comment, host) {
@@ -10253,7 +10407,7 @@ async function runVerification(root2, id, expectedRevision, host, commandIds) {
       const signature = `${exitReason}:${createHash25("sha256").update(fullOutput).digest("hex").slice(0, 16)}`;
       state.repair = recordRepairAttempt(state.repair ?? startRepairLoop(), signature, output.slice(-3));
     }
-    state.lastUpdatedBy = { host, pluginVersion: "5.0.7" };
+    state.lastUpdatedBy = { host, pluginVersion: "5.0.8" };
   });
 }
 async function readVerificationFreshness(root2, state) {
@@ -11757,7 +11911,7 @@ async function resolveRollbackGateResponse(root2, featureId, expectedRevision, i
     } else {
       throw new DevFlowError("INTERACTION_ACTION_INVALID", response.action);
     }
-    state.lastUpdatedBy = { host, pluginVersion: "5.0.7" };
+    state.lastUpdatedBy = { host, pluginVersion: "5.0.8" };
   }, () => ({ gate: "rollback-confirmation", interactionId, response }));
 }
 async function resolveRollbackGateElicitation(root2, featureId, expectedRevision, interactionId, action, comment, host) {
@@ -12645,7 +12799,7 @@ async function recordAcceptanceEvidence(root2, id, expectedRevision, input) {
     };
     acceptance.evidence.push(record);
     upsertDisposition(state, record.acceptanceCriterionId, input.evidence.kind === "agent-self-check" ? "pending" : "satisfied", fingerprint2, [...acceptance.dispositions.find((item) => item.acceptanceCriterionId === record.acceptanceCriterionId)?.evidenceRefs ?? [], evidenceId]);
-    state.lastUpdatedBy = { host: input.host, pluginVersion: "5.0.7" };
+    state.lastUpdatedBy = { host: input.host, pluginVersion: "5.0.8" };
   });
 }
 function dispositionHash(state, criterionIds, fingerprint2) {
@@ -12731,6 +12885,23 @@ async function resolveAcceptanceConfirmationElicitation(root2, id, expectedRevis
 import { lstat as lstat8, readdir as readdir7, readFile as readFile17 } from "node:fs/promises";
 import path20 from "node:path";
 import { createHash as createHash31 } from "node:crypto";
+function projectActiveWorkflow(state) {
+  let pending;
+  let pendingUnreadable = false;
+  try {
+    const decision = pendingDecisionForState(state);
+    if (decision) pending = { kind: decision.kind, question: decision.question };
+  } catch {
+    pendingUnreadable = true;
+  }
+  const nextStep = pendingUnreadable ? "\u5F85\u51B3\u95EE\u9898\u4E0D\u53EF\u8BFB\uFF0C\u67E5\u770B dev_flow_status" : pending ? `\u56DE\u7B54\u5F85\u51B3\u95EE\u9898\uFF1A${pending.question}` : state.mode === "intake" ? "\u5B8C\u6210\u8C03\u67E5\u540E\u8C03\u7528 dev_flow_lock_classification" : state.mode === "routed" ? `\u7EE7\u7EED ${state.currentStage ?? "\u5F53\u524D\u9636\u6BB5"}\uFF08\u8BE6\u60C5\u770B dev_flow_status\uFF09` : "\u67E5\u770B dev_flow_status";
+  return {
+    mode: state.mode,
+    ...state.mode === "routed" && state.currentStage ? { stage: state.currentStage } : {},
+    ...pending ? { pendingDecision: pending } : {},
+    nextStep
+  };
+}
 async function readable(file) {
   try {
     await lstat8(file);
@@ -12817,11 +12988,22 @@ async function collectDoctorReport(root2, pluginRoot2, version, tools) {
         const state = await readState(root2, active.featureId);
         await assertActivePointerConsistent(root2);
         traceState = state;
-        activeFeature = { present: true, featureId: state.featureId, valid: state.lifecycle === "active" };
+        const projection = projectActiveWorkflow(state);
+        activeFeature = {
+          present: true,
+          featureId: state.featureId,
+          valid: state.lifecycle === "active",
+          ...projection
+        };
         add2(
           activeFeature.valid ? "ACTIVE_FEATURE_VALID" : "ACTIVE_FEATURE_INVALID",
           activeFeature.valid ? "ok" : "error",
           activeFeature.valid ? `active feature ${state.featureId} is valid` : `active feature ${state.featureId} is not active`
+        );
+        add2(
+          "ACTIVE_FEATURE_STATE",
+          "ok",
+          `active feature ${state.featureId} \u5904\u4E8E ${projection.mode}${projection.pendingDecision ? "\uFF0C\u6709\u5F85\u51B3\u95EE\u9898" : ""}\uFF1B\u4E0B\u4E00\u6B65\uFF1A${projection.nextStep}\u3002\u65E5\u5E38\u770B dev_flow_status\uFF0Cdoctor \u53EA\u662F\u9644\u5E26\u6295\u5F71`
         );
       } catch (error) {
         let digest13;
@@ -13717,6 +13899,13 @@ var toolSchemas = {
       host: { enum: ["claude", "codex"] }
     }, ["observation", "host"])
   },
+  dev_flow_record_repository_facts: {
+    description: "Execute and register many reproducible repository observations in one CAS write; BoundaryAudit only accepts current fact records.",
+    inputSchema: featureMutation({
+      observations: { type: "array", minItems: 1, maxItems: 50, items: repositoryObservationSchema },
+      host: { enum: ["claude", "codex"] }
+    }, ["observations", "host"])
+  },
   dev_flow_revise_decision: {
     description: "Revise a registered decision before implementation: show the old decision, new conclusion, and affected work, then ratify with one confirmation.",
     inputSchema: featureMutation({
@@ -13964,7 +14153,8 @@ function compactMutationResult(toolName, value) {
   if (isFeatureState(record.state)) {
     const summary = buildFeatureMutationSummary(record.state);
     const content = mutationContent(summary, record.interaction);
-    return { contentView: record.decisionId ? { \u51B3\u7B56ID: record.decisionId, ...content } : content, structuredContentView: { ...record, ...summary, state: summary, control: { featureId: summary.featureId, expectedRevision: summary.revision, stage: summary.stage, lifecycle: summary.lifecycle } } };
+    const highlighted = record.ratifiedFrom ? { \u51B3\u7B56ID: record.decisionId, \u767B\u8BB0\u65B9\u5F0F: "\u5DF2\u4F9D\u636E\u4F60\u6700\u8FD1\u7684\u56DE\u7B54\u81EA\u52A8\u767B\u8BB0", \u95EE\u9898: record.question, \u539F\u8BDD: record.evidence, \u7ED3\u8BBA: record.conclusion, ...content } : record.recordIds ? { \u4E8B\u5B9EID: record.recordIds, \u65B0\u5EFA: record.created, \u5DF2\u5B58\u5728: record.existing, ...content } : record.recordId ? { \u4E8B\u5B9EID: record.recordId, ...content } : record.decisionId ? { \u51B3\u7B56ID: record.decisionId, ...content } : content;
+    return { contentView: highlighted, structuredContentView: { ...record, ...summary, state: summary, control: { featureId: summary.featureId, expectedRevision: summary.revision, stage: summary.stage, lifecycle: summary.lifecycle } } };
   }
   return value;
 }
@@ -14337,6 +14527,11 @@ async function dispatch(name, a, connection2) {
       return startFeature(root, { ...a, host: a.host });
     case "dev_flow_record_repository_fact":
       return registerRepositoryFact(root, a.featureId, a.expectedRevision, { observation: a.observation }, a.host);
+    case "dev_flow_record_repository_facts": {
+      if (!Array.isArray(a.observations)) throw new DevFlowError("INVALID_TOOL_INPUT", "dev_flow_record_repository_facts requires observations[]");
+      const observations = a.observations;
+      return registerRepositoryFacts(root, a.featureId, a.expectedRevision, observations.map((observation) => ({ observation })), a.host);
+    }
     case "dev_flow_revise_decision": {
       const result = await reviseDecision(root, a.featureId, a.expectedRevision, a.decisionId, a.newConclusion, a.reason, a.host);
       emitAttentionNotification({ kind: "decision-required", featureId: a.featureId, decision: "decision-revision" });
@@ -14495,6 +14690,16 @@ async function dispatch(name, a, connection2) {
     }
     case "dev_flow_record_decision": {
       const result = await recordDecision(root, a.featureId, a.expectedRevision, a.question, a.evidence, a.conclusion, a.factRefs ?? [], a.host);
+      if (!result.interaction || !result.interactionId) {
+        return {
+          state: result.state,
+          decisionId: result.decisionId,
+          ratifiedFrom: result.ratifiedFrom,
+          question: result.question,
+          evidence: result.evidence,
+          conclusion: result.conclusion
+        };
+      }
       emitAttentionNotification({ kind: "decision-required", featureId: a.featureId, decision: "decision-ratification" });
       const selection = await connection2.elicit(result.interaction, result.interaction.question ?? "\u8BF7\u786E\u8BA4\u662F\u5426\u767B\u8BB0\u8BE5\u51B3\u5B9A\u3002");
       if (!selection) return { ...interactionEnvelope(result.state, result.interaction, "pending"), decisionId: result.decisionId };
@@ -14886,7 +15091,7 @@ async function dispatch(name, a, connection2) {
     case "dev_flow_enable_windows_notifications":
       return enableWindowsNotifications({ nodeExecutable: process.execPath });
     case "dev_flow_doctor":
-      return collectDoctorReport(root, pluginRoot, "5.0.7", publicTools);
+      return collectDoctorReport(root, pluginRoot, "5.0.8", publicTools);
     case "dev_flow_recover_corrupt_feature":
       return recoverCorruptFeature(root, {
         featureId: a.featureId,
@@ -14912,7 +15117,7 @@ async function dispatchRequest(message) {
       connection.configure(message.params?.capabilities, message.params?.clientInfo);
       protocolResult(message.id, {
         protocolVersion: message.params?.protocolVersion || "2024-11-05",
-        serverInfo: { name: "dev-flow", version: "5.0.7" },
+        serverInfo: { name: "dev-flow", version: "5.0.8" },
         capabilities: { tools: {} },
         instructions: "\u5148\u5B8C\u6210\u4E8B\u5B9E\u8C03\u67E5\u548C\u8DEF\u7EBF\u5206\u7C7B\u3002\u65E5\u5E38\u8BFB\u53D6 dev_flow_status\uFF1B\u5B83\u4F1A\u663E\u793A\u4E2D\u6587\u9636\u6BB5\u3001\u5F53\u524D\u4E0B\u4E00\u6B65\u548C\u552F\u4E00\u5F85\u51B3\u95EE\u9898\u3002\u6240\u6709\u7528\u6237\u51B3\u5B9A\u7EDF\u4E00\u4F7F\u7528 dev_flow_answer\uFF0C\u7CFB\u7EDF\u4F1A\u81EA\u52A8\u6309\u95EE\u9898\u7C7B\u578B\u5904\u7406\u3002\u6CA1\u6709\u771F\u5B9E\u51B3\u7B56\u7F3A\u53E3\u65F6\u6D41\u7A0B\u4F1A\u81EA\u52A8\u63A8\u8FDB\u3002\u5148\u8C03\u7528 dev_flow_init_project\uFF0C\u518D\u5F00\u59CB feature\u3002"
       });

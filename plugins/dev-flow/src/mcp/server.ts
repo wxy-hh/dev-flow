@@ -7,7 +7,7 @@ import { DevFlowError, failureFrom } from "../core/errors.js";
 import { finalize, recordStep } from "../core/feature-check.js";
 import { presentApproval, resolveApprovalAnswer, resolveApprovalElicitation } from "../core/approval-interactions.js";
 import {
-  initProject, updateProjectConfig, startFeature, lockClassification, confirmRouteClassification, resolveRouteClassificationElicitation, resolveWorkspaceOwnershipText, resolveTaskSwitchAnswer, recordDecision, resolveRatificationAnswer, resolveRatificationElicitation, reviseDecision, resolveRevisionAnswer, resolveRevisionElicitation, revisePlanDuringImplementation, resolvePlanRevisionAnswer, resolvePlanRevisionElicitation, resolveSideEffectRerunAnswer, abandonFeature, reclassifyFeature, recoverCorruptFeature, repairFeature, readState, readFeatureEvents, mutate, pauseFeature, resumeFeature, reconcileWorkspace, assertHostHealth, registerRepositoryFact,
+  initProject, updateProjectConfig, startFeature, lockClassification, confirmRouteClassification, resolveRouteClassificationElicitation, resolveWorkspaceOwnershipText, resolveTaskSwitchAnswer, recordDecision, resolveRatificationAnswer, resolveRatificationElicitation, reviseDecision, resolveRevisionAnswer, resolveRevisionElicitation, revisePlanDuringImplementation, resolvePlanRevisionAnswer, resolvePlanRevisionElicitation, resolveSideEffectRerunAnswer, abandonFeature, reclassifyFeature, recoverCorruptFeature, repairFeature, readState, readFeatureEvents, mutate, pauseFeature, resumeFeature, reconcileWorkspace, assertHostHealth, registerRepositoryFact, registerRepositoryFacts,
 } from "../core/state-store.js";
 import type { FeatureState } from "../core/state-store.js";
 import { buildFeatureMutationSummary } from "../core/execution-brief.js";
@@ -21,7 +21,7 @@ import { executeRollback, presentRollbackGate, previewRollback, resolveRollbackG
 import { runVerification } from "../core/verification.js";
 import { presentAcceptanceConfirmation, recordAcceptanceEvidence, resolveAcceptanceConfirmationAnswer, resolveAcceptanceConfirmationElicitation } from "../core/acceptance.js";
 import { allowedRiskLabels, normalizeWorkflowCapabilities, reviewEnforcementRequired, routeDefinitionForFeature, traceEnforcementRequired } from "../policy/contract.js";
-import { SUPPORTED_WORKFLOW_CAPABILITIES } from "../policy/types.js";
+import { SUPPORTED_WORKFLOW_CAPABILITIES, type RepositoryObservation } from "../policy/types.js";
 import { emptyTraceabilityLedger } from "../core/traceability.js";
 import { readProjectConfigSnapshot, writeTraceSnapshot } from "../core/traceability-store.js";
 import { emptyReviewLedger, writeReviewSnapshot } from "../core/review-store.js";
@@ -297,6 +297,13 @@ const toolSchemas = {
       host: { enum: ["claude", "codex"] },
     }, ["observation", "host"]),
   },
+  dev_flow_record_repository_facts: {
+    description: "Execute and register many reproducible repository observations in one CAS write; BoundaryAudit only accepts current fact records.",
+    inputSchema: featureMutation({
+      observations: { type: "array", minItems: 1, maxItems: 50, items: repositoryObservationSchema },
+      host: { enum: ["claude", "codex"] },
+    }, ["observations", "host"]),
+  },
   dev_flow_revise_decision: {
     description: "Revise a registered decision before implementation: show the old decision, new conclusion, and affected work, then ratify with one confirmation.",
     inputSchema: featureMutation({
@@ -559,7 +566,16 @@ function compactMutationResult(toolName: string, value: unknown): unknown {
   if (isFeatureState(record.state)) {
     const summary = buildFeatureMutationSummary(record.state);
     const content = mutationContent(summary, record.interaction as PublicInteraction | undefined);
-    return { contentView: record.decisionId ? { 决策ID: record.decisionId, ...content } : content, structuredContentView: { ...record, ...summary, state: summary, control: { featureId: summary.featureId, expectedRevision: summary.revision, stage: summary.stage, lifecycle: summary.lifecycle } } };
+    const highlighted = record.ratifiedFrom
+      ? { 决策ID: record.decisionId, 登记方式: "已依据你最近的回答自动登记", 问题: record.question, 原话: record.evidence, 结论: record.conclusion, ...content }
+      : record.recordIds
+        ? { 事实ID: record.recordIds, 新建: record.created, 已存在: record.existing, ...content }
+        : record.recordId
+          ? { 事实ID: record.recordId, ...content }
+          : record.decisionId
+            ? { 决策ID: record.decisionId, ...content }
+            : content;
+    return { contentView: highlighted, structuredContentView: { ...record, ...summary, state: summary, control: { featureId: summary.featureId, expectedRevision: summary.revision, stage: summary.stage, lifecycle: summary.lifecycle } } };
   }
   return value;
 }
@@ -1010,6 +1026,11 @@ async function dispatch(name: PublicToolName, a: any, connection: McpConnection)
     }
     case "dev_flow_start": return startFeature(root, { ...a, host: a.host });
     case "dev_flow_record_repository_fact": return registerRepositoryFact(root, a.featureId, a.expectedRevision, { observation: a.observation }, a.host);
+    case "dev_flow_record_repository_facts": {
+      if (!Array.isArray(a.observations)) throw new DevFlowError("INVALID_TOOL_INPUT", "dev_flow_record_repository_facts requires observations[]");
+      const observations = a.observations as Array<RepositoryObservation>;
+      return registerRepositoryFacts(root, a.featureId, a.expectedRevision, observations.map((observation) => ({ observation })), a.host);
+    }
     case "dev_flow_revise_decision": {
       const result = await reviseDecision(root, a.featureId, a.expectedRevision, a.decisionId, a.newConclusion, a.reason, a.host);
       emitAttentionNotification({ kind: "decision-required", featureId: a.featureId, decision: "decision-revision" });
@@ -1141,8 +1162,18 @@ async function dispatch(name: PublicToolName, a: any, connection: McpConnection)
     }
     }
     case "dev_flow_record_decision": {
-      // ADR-0008：较早聊天中的决定先追认，不直接落账。
+      // ADR-0008：较早聊天中的决定先追认；整句命中最近未消费消息时可自动落账。
       const result = await recordDecision(root, a.featureId, a.expectedRevision, a.question, a.evidence, a.conclusion, a.factRefs ?? [], a.host);
+      if (!result.interaction || !result.interactionId) {
+        return {
+          state: result.state,
+          decisionId: result.decisionId,
+          ratifiedFrom: result.ratifiedFrom,
+          question: result.question,
+          evidence: result.evidence,
+          conclusion: result.conclusion,
+        };
+      }
       emitAttentionNotification({ kind: "decision-required", featureId: a.featureId, decision: "decision-ratification" });
       const selection = await connection.elicit(result.interaction, result.interaction.question ?? "请确认是否登记该决定。");
       if (!selection) return { ...interactionEnvelope(result.state, result.interaction, "pending"), decisionId: result.decisionId };

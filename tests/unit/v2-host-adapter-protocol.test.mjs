@@ -163,14 +163,15 @@ test("Claude AskUserQuestion 的真实用户选择可直接消解已呈现的 wo
   const fixture = await createTinyApp();
   try {
     await state.initProject(fixture.root, strictProjectConfig);
-    await writeFile(`${fixture.root}/src/started-a.js`, "export const startedA = true;\n");
-    await writeFile(`${fixture.root}/src/started-b.js`, "export const startedB = true;\n");
     const started = await state.startFeature(fixture.root, {
       featureId: "native-question",
       objective: "验证原生问题回答只需一次",
       host: "claude",
     });
-    const interaction = Object.values(started.interactions ?? {}).find((item) => item.kind === "workspace-ownership" && item.status === "pending");
+    await writeFile(`${fixture.root}/src/started-a.js`, "export const startedA = true;\n");
+    await writeFile(`${fixture.root}/src/started-b.js`, "export const startedB = true;\n");
+    const pending = await state.reconcileWorkspace(fixture.root, "native-question", started.revision, "claude");
+    const interaction = Object.values(pending.interactions ?? {}).find((item) => item.kind === "workspace-ownership" && item.status === "pending");
     assert.ok(interaction);
 
     const answer = "全部纳入当前任务";
@@ -194,8 +195,8 @@ test("Claude AskUserQuestion 的真实用户选择可直接消解已呈现的 wo
 
     const resolved = await state.resolveWorkspaceOwnershipText(
       fixture.root,
-      started.featureId,
-      started.revision,
+      pending.featureId,
+      pending.revision,
       interaction.id,
       answer,
       "claude",

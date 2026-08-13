@@ -29,8 +29,8 @@ async function registerFixtureFact(root, featureId, revision) {
     location: { kind: "positive", path: "src/semantic-fact.txt" },
   }, "claude");
   return {
-    factRef: withFact.governance.repositoryFacts[withFact.governance.repositoryFacts.length - 1].recordId,
-    revision: withFact.revision,
+    factRef: withFact.recordId,
+    revision: withFact.state.revision,
   };
 }
 
@@ -120,20 +120,21 @@ test("确认语义词不误伤多意图问题（workspace-ownership「可以」�
   try {
     await store.initProject(fixture.root, strictProjectConfig);
     const { mkdir, writeFile } = await import("node:fs/promises");
+    const started = await store.startFeature(fixture.root, { featureId: "route-sem-own", objective: "测试归属问题语义边界", host: "claude" });
     for (const file of ["src/extra-a.ts", "src/extra-b.ts"]) {
       const target = new URL(`file://${fixture.root}/${file}`);
       await mkdir(new URL(".", target), { recursive: true });
       await writeFile(target, `// ${file}\n`);
     }
-    const started = await store.startFeature(fixture.root, { featureId: "route-sem-own", objective: "测试归属问题语义边界", host: "claude" });
+    const pending = await store.reconcileWorkspace(fixture.root, "route-sem-own", started.revision, "claude");
     await store.recordHostEvent(fixture.root, { eventId: "own-can", type: "user-prompt", host: "claude", text: "可以" });
     await assert.rejects(
       () => mcpCall(server, fixture.root, "dev_flow_answer", {
-        featureId: "route-sem-own", expectedRevision: started.revision, userReply: "可以", host: "claude",
+        featureId: "route-sem-own", expectedRevision: pending.revision, userReply: "可以", host: "claude",
       }),
       (error) => error.code === "DECISION_REPLY_NOT_RECOGNIZED",
     );
     const unchanged = await store.readState(fixture.root, "route-sem-own");
-    assert.equal(unchanged.revision, started.revision);
+    assert.equal(unchanged.revision, pending.revision);
   } finally { await fixture.dispose(); }
 });

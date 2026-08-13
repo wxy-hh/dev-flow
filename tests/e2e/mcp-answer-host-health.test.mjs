@@ -31,15 +31,18 @@ async function ageHostHealth(root, minutes = 20) {
 
 async function startWithOwnershipDecision() {
   const fixture = await createTinyApp();
+  await mcpCall(server, fixture.root, "dev_flow_init_project", { config: strictProjectConfig });
+  const started = await mcpCall(server, fixture.root, "dev_flow_start", {
+    featureId: "issue-host-health", objective: "测试回答前置健康检查", host: "claude",
+    scope: { inScope: ["src"], outOfScope: [] },
+  });
   for (const file of dirtyPaths) {
     const target = path.join(fixture.root, file);
     await mkdir(path.dirname(target), { recursive: true });
     await writeFile(target, `// ${file}\n`);
   }
-  await mcpCall(server, fixture.root, "dev_flow_init_project", { config: strictProjectConfig });
-  const started = await mcpCall(server, fixture.root, "dev_flow_start", {
-    featureId: "issue-host-health", objective: "测试回答前置健康检查", host: "claude",
-    scope: { inScope: ["src"], outOfScope: [] },
+  await mcpCall(server, fixture.root, "dev_flow_reconcile_workspace", {
+    featureId: "issue-host-health", expectedRevision: started.control.expectedRevision, host: "claude",
   });
   const status = await mcpCall(server, fixture.root, "dev_flow_status", { featureId: "issue-host-health" });
   return { fixture, started, status };

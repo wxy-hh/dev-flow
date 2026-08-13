@@ -405,7 +405,18 @@ export function assertBoundaryAuditComplete(
       && decisionRecord.supersededBy === undefined;
     if (!fact && !decision) {
       const code = decisionRecord?.supersededBy ? "BOUNDARY_DECISION_SUPERSEDED" : "BOUNDARY_AUDIT_UNRESOLVED";
-      throw new PolicyError(code, "every boundary item needs a current repository fact or a current resolved decision", { itemId: item.id, ...(typeof item.decisionRef === "string" ? { decisionRef: item.decisionRef } : {}), ...(typeof item.factRef === "string" ? { factRef: item.factRef } : {}) });
+      const unresolvedRefs = [item.factRef, item.decisionRef].filter((ref): ref is string => typeof ref === "string");
+      const registeredIds = [
+        ...index.repositoryFacts.map((record) => record.recordId),
+        ...index.decisions.map((record) => record.recordId),
+      ];
+      throw new PolicyError(code, "every boundary item needs a current repository fact or a current resolved decision", {
+        itemId: item.id,
+        unresolvedRefs,
+        registeredIds,
+        ...(typeof item.decisionRef === "string" ? { decisionRef: item.decisionRef } : {}),
+        ...(typeof item.factRef === "string" ? { factRef: item.factRef } : {}),
+      });
     }
   }
 }

@@ -93,11 +93,12 @@ export async function loadSource(relativePath) {
         if (legacyBasis.scopeFactRefs) {
           facts = { ...legacyBasis, signals };
         } else {
-          lockedState = await module.registerRepositoryFact(root, state.featureId, state.revision, {
+          const registered = await module.registerRepositoryFact(root, state.featureId, state.revision, {
             assertion: "legacy test fixture repository fact",
             location: { kind: "positive", path: factPath },
           }, input.host ?? "codex");
-          const factRef = lockedState.governance.repositoryFacts[lockedState.governance.repositoryFacts.length - 1].recordId;
+          lockedState = registered.state;
+          const factRef = registered.recordId;
           const refLabels = riskLabels.length ? riskLabels : Object.keys(legacyBasis.riskFacts ?? {});
           facts = {
             scopeFactRefs: [factRef],

@@ -1,4 +1,4 @@
-/* dev-flow 5.0.7; built from source, deterministic build */
+/* dev-flow 5.0.8; built from source, deterministic build */
 
 // plugins/dev-flow/src/core/state-store.ts
 import { randomUUID as randomUUID6, createHash as createHash11 } from "node:crypto";
@@ -2168,7 +2168,7 @@ async function reconcileWorkspace(root2, id, expectedRevision, host) {
     draft.workspace = workspace;
     if (contentChanged) markAffectedEvidenceStale(draft, changedPaths, reopenedLifecycle, legalCheckpointPaths);
     presentationEventId = queueNextOwnershipDecision(draft);
-    draft.lastUpdatedBy = { host, pluginVersion: "5.0.7" };
+    draft.lastUpdatedBy = { host, pluginVersion: "5.0.8" };
   }, () => ({
     observedHead: workspace.observedHead,
     commitCount: workspace.observedCommits.length,
@@ -2857,7 +2857,7 @@ async function recordTrustedWriteOwnership(root2, paths, host, eventId2) {
       draft.workspace.ownershipSource[file] = "trusted-hook";
     }
     draft.workspace.unownedPaths = (draft.workspace.unownedPaths ?? []).filter((file) => !governed.includes(file));
-    draft.lastUpdatedBy = { host, pluginVersion: "5.0.7" };
+    draft.lastUpdatedBy = { host, pluginVersion: "5.0.8" };
   }, { eventId: eventId2, host, paths: governed, after });
 }
 async function recordHostAuthorizationEvent(root2, type, record) {
@@ -4230,24 +4230,36 @@ function inFeatureScope(relative, state) {
 }
 function gitPathPolicy(command, root2, workflow, paths) {
   const state = workflow.state;
-  if (!state) return void 0;
-  const excluded = paths.filter((relative) => state.workspace.ownership[relative] === "excluded");
-  const unknown = paths.filter((relative) => state.workspace.ownership[relative] !== "feature" && !inFeatureScope(relative, state));
+  if (!state) return {};
+  const startedDirty = state.workspace.startedDirty ?? {};
+  const startupExcluded = paths.filter((relative) => state.workspace.ownership[relative] === "excluded" && startedDirty[relative] !== void 0);
+  const excluded = paths.filter((relative) => state.workspace.ownership[relative] === "excluded" && startedDirty[relative] === void 0);
+  const unknown = paths.filter((relative) => state.workspace.ownership[relative] !== "feature" && state.workspace.ownership[relative] !== "excluded" && !inFeatureScope(relative, state));
   if (excluded.length || unknown.length) {
-    return createPreToolBlock(
-      "DEV_FLOW_GIT_GUARD",
-      "Git \u547D\u4EE4\u5305\u542B\u672A\u5F52\u5C5E\u6216\u5DF2\u6392\u9664\u7684\u8DEF\u5F84",
-      "\u539F Git \u64CD\u4F5C\u672A\u6267\u884C\uFF1B\u4E0D\u4F1A\u628A\u7528\u6237\u6216\u5176\u4ED6\u4EFB\u52A1\u7684\u6587\u4EF6\u6DF7\u5165 feature \u63D0\u4EA4",
-      {
-        mode: "user-decision",
-        action: "\u5148\u5C06\u8DEF\u5F84\u660E\u786E\u7EB3\u5165\u5F53\u524D feature \u6216\u79FB\u51FA\u6682\u5B58\u533A\uFF1B\u672C\u4ED3\u5E93\u7981\u6B62\u667A\u80FD\u4F53\u63D0\u4EA4\u65F6\u4EA4\u7531\u7528\u6237\u5BA1\u6838",
-        retryOriginal: false
-      }
-    );
+    return {
+      block: createPreToolBlock(
+        "DEV_FLOW_GIT_GUARD",
+        "Git \u547D\u4EE4\u5305\u542B\u672A\u5F52\u5C5E\u6216\u5DF2\u6392\u9664\u7684\u8DEF\u5F84",
+        "\u539F Git \u64CD\u4F5C\u672A\u6267\u884C\uFF1B\u4E0D\u4F1A\u628A\u7528\u6237\u6216\u5176\u4ED6\u4EFB\u52A1\u7684\u6587\u4EF6\u6DF7\u5165 feature \u63D0\u4EA4",
+        {
+          mode: "user-decision",
+          action: "\u5148\u5C06\u8DEF\u5F84\u660E\u786E\u7EB3\u5165\u5F53\u524D feature \u6216\u79FB\u51FA\u6682\u5B58\u533A\uFF1B\u672C\u4ED3\u5E93\u7981\u6B62\u667A\u80FD\u4F53\u63D0\u4EA4\u65F6\u4EA4\u7531\u7528\u6237\u5BA1\u6838",
+          retryOriginal: false
+        }
+      )
+    };
   }
   void command;
   void root2;
-  return void 0;
+  if (startupExcluded.length) {
+    return {
+      advisory: {
+        code: "DEV_FLOW_GIT_STARTUP_EXCLUDED",
+        message: `\u8BE5\u8DEF\u5F84\u542F\u52A8\u524D\u5DF2\u6709\u6539\u52A8\u3001\u5DF2\u9ED8\u8BA4\u6392\u9664\u51FA\u4EA4\u4ED8\uFF1B\u672C\u6B21 Git \u64CD\u4F5C\u672A\u62E6\u622A\uFF0C\u4F46\u8FD9\u4E9B\u6587\u4EF6\u4E0D\u4F1A\u8FDB\u5165\u4EA4\u4ED8\u5FEB\u7167\u3002\u5982\u9700\u8BA1\u5165\u8BF7\u5148\u5728\u5DE5\u4F5C\u533A\u5BF9\u8D26\u7EB3\u5165\uFF1A${startupExcluded.join("\u3001")}`
+      }
+    };
+  }
+  return {};
 }
 function controlMutationBlock(relative) {
   return createPreToolBlock(
@@ -4401,9 +4413,10 @@ async function evaluatePreToolUseInternal(root2, event2, advisoryOut = {}) {
     if (localCommit && workflow.state?.lifecycle === "active" && (workflow.logicComplete || implementationReady) && !unsafePathForm) {
       const addMatch = command.match(/\bgit\s+add\s+([^;&|\n]+)/);
       const explicitPaths = addMatch ? addMatch[1].split(/\s+/).filter((value) => value && !value.startsWith("-")) : await stagedGitPaths(root2);
-      const pathBlock = gitPathPolicy(command, root2, workflow, explicitPaths.map((value) => projectRelative(root2, value) ?? value));
-      if (!pathBlock) return void 0;
-      return pathBlock;
+      const pathDecision = gitPathPolicy(command, root2, workflow, explicitPaths.map((value) => projectRelative(root2, value) ?? value));
+      if (pathDecision.advisory) advisoryOut.advisory = pathDecision.advisory;
+      if (!pathDecision.block) return void 0;
+      return pathDecision.block;
     }
     return createPreToolBlock(
       "DEV_FLOW_GIT_GUARD",

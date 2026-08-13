@@ -41,9 +41,20 @@ export async function lockClassification(
     ...Object.values(facts.riskFactRefs).flatMap((refs) => refs ?? []),
   ];
   const factRefs = [...new Set([...auditFactRefs, ...basisFactRefs])];
+  const registeredIds = [
+    ...repositoryFacts.map((record) => record.recordId),
+    ...(initial.governance?.decisions ?? []).map((record) => record.recordId),
+  ];
+  const unresolvedFactRefs = factRefs.filter((ref) => !repositoryFacts.some((record) => record.recordId === ref));
+  if (unresolvedFactRefs.length) {
+    throw new DevFlowError("BOUNDARY_AUDIT_UNRESOLVED", "classification references a repository fact that is not in the governance ledger", {
+      factRef: unresolvedFactRefs[0],
+      unresolvedRefs: unresolvedFactRefs,
+      registeredIds,
+    });
+  }
   for (const ref of factRefs) {
-    const fact = repositoryFacts.find((record) => record.recordId === ref);
-    if (!fact) throw new DevFlowError("BOUNDARY_AUDIT_UNRESOLVED", "classification references a repository fact that is not in the governance ledger", { factRef: ref });
+    const fact = repositoryFacts.find((record) => record.recordId === ref)!;
     await assertRepositoryFactCurrent(root, fact);
   }
   const configForBasis = await readProjectConfig(root);
@@ -55,14 +66,26 @@ export async function lockClassification(
     currency: deriveCurrency(decision, { contentFingerprint: currentFingerprint, eventIds }),
   }));
   const factRecords = repositoryFacts.map((fact) => ({ recordId: fact.recordId, currency: factRefs.includes(fact.recordId) ? "current" as const : "unconfirmed" as const }));
-  for (const auditRef of auditFactRefs) {
-    if (!basisFactRefs.includes(auditRef)) throw new DevFlowError("BOUNDARY_AUDIT_UNRESOLVED", "boundary audit fact must be included in classification basis", { factRef: auditRef });
+  const auditMissingFromBasis = auditFactRefs.filter((auditRef) => !basisFactRefs.includes(auditRef));
+  if (auditMissingFromBasis.length) {
+    throw new DevFlowError("BOUNDARY_AUDIT_UNRESOLVED", "boundary audit fact must be included in classification basis", {
+      factRef: auditMissingFromBasis[0],
+      unresolvedRefs: auditMissingFromBasis,
+      registeredIds,
+    });
   }
   const boundaryIndex: BoundaryResolutionIndex = { decisionRefs: [...facts.decisionRefs], decisions: decisionRecords, repositoryFacts: factRecords };
   assertBoundaryAuditComplete(boundaryAudit, boundaryIndex);
+  const unresolvedDecisionRefs = facts.decisionRefs.filter((decisionRef) => !decisionRecords.some((record) => record.recordId === decisionRef));
+  if (unresolvedDecisionRefs.length) {
+    throw new DevFlowError("BOUNDARY_AUDIT_UNRESOLVED", "classification references a decision that is not in the governance ledger", {
+      decisionRef: unresolvedDecisionRefs[0],
+      unresolvedRefs: unresolvedDecisionRefs,
+      registeredIds,
+    });
+  }
   for (const decisionRef of facts.decisionRefs) {
-    const decision = decisionRecords.find((record) => record.recordId === decisionRef);
-    if (!decision) throw new DevFlowError("BOUNDARY_AUDIT_UNRESOLVED", "classification references a decision that is not in the governance ledger", { decisionRef });
+    const decision = decisionRecords.find((record) => record.recordId === decisionRef)!;
     if (decision.supersededBy) throw new DevFlowError("BOUNDARY_DECISION_SUPERSEDED", "classification references a superseded decision", { decisionRef, successorId: decision.supersededBy });
     if (decision.currency !== "current") throw new DevFlowError("BOUNDARY_DECISION_NOT_CURRENT", "classification references a decision whose basis is not current", { decisionRef, currency: decision.currency });
   }

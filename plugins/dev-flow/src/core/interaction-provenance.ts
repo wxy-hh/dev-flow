@@ -32,7 +32,7 @@ function presentationEventIndex(
   return index >= 0 ? index : undefined;
 }
 
-function promptFrom(record: HostEventRecord): { eventId: string; text: string; host: "claude" | "codex"; at: string; question?: string } | undefined {
+export function promptFrom(record: HostEventRecord): { eventId: string; text: string; host: "claude" | "codex"; at: string; question?: string } | undefined {
   if (record.type !== "host-event" || !record.data || typeof record.data !== "object" || Array.isArray(record.data)) return undefined;
   const data = record.data as { eventId?: unknown; type?: unknown; text?: unknown; host?: unknown; at?: unknown; question?: unknown };
   if (data.type !== "user-prompt" || typeof data.eventId !== "string" || typeof data.text !== "string" || (data.host !== "claude" && data.host !== "codex")) return undefined;

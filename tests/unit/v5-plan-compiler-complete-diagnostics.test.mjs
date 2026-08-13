@@ -36,8 +36,8 @@ async function setup() {
     assertion: "src/migrate.js 包含数据迁移入口",
     location: { kind: "positive", path: "src/migrate.js" },
   }, "codex");
-  const factId = fact.governance.repositoryFacts[0].recordId;
-  state = fact;
+  const factId = fact.recordId;
+  state = fact.state;
   state = await stateStore.lockClassification(root, "diag", state.revision, {
     level: "M",
     topology: "shared-contract",

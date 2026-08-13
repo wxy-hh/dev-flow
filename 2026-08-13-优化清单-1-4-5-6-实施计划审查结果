@@ -1,0 +1,225 @@
+## User
+
+@docs/8-13-优化清单.md @docs/plans/2026-08-13-优化清单-1-4-5-6-实施计划.md 这是优化清单中 1,4,5,6 条的决策意见和实施计划,你评审一下
+
+## Tools
+
+- Lifecycle event
+
+## Assistant
+
+先通读清单决策和计划，再对照 Core/MCP 里相关实现，判断这四条定案是否站得住、计划有没有漏项或误判。
+
+## Tools
+
+- Read: /Users/weixiaoyu/.agents/skills/code-review/SKILL.md
+- Read: /Users/weixiaoyu/Desktop/practice/dev-flow/docs/8-13-优化清单.md
+- IntegrationSearch (MCP tool discovery)
+
+## Assistant
+
+对照 Core 里归属、doctor、追认和事实登记几条路径，核对计划里的文件、行号和语义是否还成立。
+
+## Tools
+
+- UseTool: codegraph__codegraph_explore
+- UseTool: codegraph__codegraph_explore
+- UseTool: codegraph__codegraph_explore
+
+## Assistant
+
+接下来核对 doctor、交付快照、事实登记和 schema 里 `ownershipSource` 的实际约束。
+
+## Tools
+
+- UseTool: codegraph__codegraph_explore
+- UseTool: codegraph__codegraph_explore
+- UseTool: codegraph__codegraph_explore
+
+## Assistant
+
+doctor 源码刚才没对上，改读关键文件和 schema，确认计划里的行号与枚举是否还准。
+
+## Tools
+
+- Read: /Users/weixiaoyu/Desktop/practice/dev-flow/plugins/dev-flow/src/mcp/doctor.ts
+- Read: /Users/weixiaoyu/Desktop/practice/dev-flow/plugins/dev-flow/src/core/state-store.ts (881-1000)
+- Read: /Users/weixiaoyu/Desktop/practice/dev-flow/plugins/dev-flow/src/core/git-reconciliation.ts (201-280)
+- Read: /Users/weixiaoyu/Desktop/practice/dev-flow/plugins/dev-flow/src/core/delivery-snapshot.ts (261-360)
+- UseTool: codegraph__codegraph_explore
+- UseTool: codegraph__codegraph_explore
+- UseTool: codegraph__codegraph_explore
+- Search: ownershipSource
+- Search: DEV_FLOW_GIT_GUARD|logic-complete
+- Search: recordDecision\(
+- Search: BOUNDARY_AUDIT_UNRESOLVED
+- Read: /Users/weixiaoyu/Desktop/practice/dev-flow/plugins/dev-flow/src/hosts/adapter-policy.ts (701-780)
+- Read: /Users/weixiaoyu/Desktop/practice/dev-flow/plugins/dev-flow/src/hosts/adapter-policy.ts (921-999)
+- Read: /Users/weixiaoyu/Desktop/practice/dev-flow/plugins/dev-flow/src/policy/types.ts (71-100)
+- Read: /Users/weixiaoyu/Desktop/practice/dev-flow/plugins/dev-flow/src/core/route-workflow.ts (2-91)
+- Read: /Users/weixiaoyu/Desktop/practice/dev-flow/plugins/dev-flow/src/mcp/server.ts (1126-1175)
+- Search: ownershipForScope
+- Search: consumedPromptEventIds
+- Search: workspace-ownership|presentWorkspaceOwnership|归属
+- Read: /Users/weixiaoyu/Desktop/practice/dev-flow/plugins/dev-flow/src/mcp/server.ts (991-1030)
+- Read: /Users/weixiaoyu/Desktop/practice/dev-flow/plugins/dev-flow/src/core/state-store.ts (201-230)
+- Read: /Users/weixiaoyu/Desktop/practice/dev-flow/plugins/dev-flow/src/core/interaction-provenance.ts (141-170)
+- Search: ownershipSource
+- Search: classifyTarget|ownership\[|excluded
+- Search: dev_flow_record_repository_fact|record_repository_facts
+- Read: /Users/weixiaoyu/Desktop/practice/dev-flow/plugins/dev-flow/skills/task/SKILL.md
+- Read: /Users/weixiaoyu/Desktop/practice/dev-flow/plugins/dev-flow/src/hosts/adapter-policy.ts (581-710)
+- Read: /Users/weixiaoyu/Desktop/practice/dev-flow/plugins/dev-flow/src/mcp/server.ts (281-320)
+- Search: workspace-ownership|startedDirty|unownedPaths|presentWorkspace
+- Read: /Users/weixiaoyu/Desktop/practice/dev-flow/plugins/dev-flow/src/core/repository-facts.ts (121-175)
+- Search: recordDecision
+- Search: collectDoctorReport|ACTIVE_FEATURE
+- Search: nextAction|pendingDecision
+- Read: /Users/weixiaoyu/Desktop/practice/dev-flow/plugins/dev-flow/src/policy/route.ts (391-427)
+- Read: /Users/weixiaoyu/Desktop/practice/dev-flow/plugins/dev-flow/skills/grillme/SKILL.md
+- Search: export.*recordDecision|recordDecision
+- Search: pendingDecision|下一步|nextStep
+- Search: function featureStatus|pendingDecision|下一步
+- Read: /Users/weixiaoyu/Desktop/practice/dev-flow/docs/architecture.md (2-51)
+
+## Assistant
+
+对照了清单定案、实施计划和当前 Core 实现。四条决策方向成立，工作顺序也对；但计划和定案有几处对不上，还有几处按现在代码实现会出行为错误。建议先改计划，再动手。
+
+## 总评
+
+| 条目 | 决策 | 计划保真度 | 能否按计划直接开工 |
+| --- | --- | --- | --- |
+| 4 启动失败可见性 | 收窄正确 | 大体对 | 有两处要先改 |
+| 5 确认次数 | 拆分正确 | 比决策表更严，这是好事 | 有一处会抢答，必须补约束 |
+| 6 事实登记 | 批量工具正确 | 方向对，细节有坑 | `recordId` 算法写错了 |
+| 1 归属零提问 | 产品取舍清楚 | 和定案在 git 门禁上打架 | schema 是必改，不是脚注 |
+
+先做 4 → 5 → 6、最后做 1，这个风险隔离是对的。第 2 条被第 1 条覆盖、第 3 条只做 skill，判断也对。
+
+---
+
+## 第 4 条：启动失败状态可见性
+
+**决策成立。** `dev_flow_status` 已经投影了路线/下一步/待决问题（`status-projection.ts`）。模型却去 doctor 里猜「feature 是不是没了」，这是误用入口，不是状态机缺中间态。`decline → exclude` 不改 lifecycle，「拒绝后 feature 消失」确是误判。收成两处小修是对的。
+
+**1b（task-switch 文案）是真 bug，修法也对。** `startFeature` 在已有 pending 时跳过创建 task-switch 交互，却仍抛 `TASK_SWITCH_REQUIRED`，`recoveryInstruction` 指向不存在的题（`state-store.ts:905-929`）。按「是否新建了交互」分支文案，正确。
+
+建议补一句：错误详情里带上当前 pending 的 `{ kind, question }`。否则模型看到 `TASK_SWITCH_REQUIRED` 还是会再调一次 doctor。
+
+**1a 有两处设计问题。**
+
+1. **不要把 pending 标成 doctor warning。** 计划写 `ACTIVE_FEATURE_STATE`「有 pending → warning」。Pending 是正常工作流，不是健康故障。Doctor 一 warning，模型更容易走 recover / 重建——这正是本条要消掉的行为。这条诊断应始终 `ok`，只陈述「intake / 待决问题 / 建议下一步」。
+
+2. **`pendingDecisionForState` 会抛。** 旧版 grill 会走 `rejectLegacyGrill()`（`decision-interactions.ts:38`）。Doctor 现在能读损坏态而不崩；计划说「不调 `nextAction` 以免抛错」，却没包这层。必须 try/catch，失败时只报 `pendingDecision` 不可读，不要让整个 doctor 挂掉。
+
+另外：doctor 加工作流投影是权宜之计，会继续强化「有问题先 doctor」。可以做，但文案应写「日常看 `dev_flow_status`；doctor 只是附带投影」。
+
+---
+
+## 第 5 条：同一批确认次数
+
+**决策拆分成立。** 预览确认是模型自加的，正式 gate 在 `lockClassification` 之后；skill 硬化够用。路线 gate 保留一次，对。
+
+**计划和决策表有一处关键不一致，计划更对，应回写决策表。**
+
+决策表写：「整句级（`textCompatible`）匹配」。`textCompatible` 实际是前缀兼容（`a === b || startsWith`），不是整句。计划改用 `normalizeReplyText` 精确相等、不用 `textCompatible`，这才挡住片段误配。把决策表里的 `textCompatible` 改掉，避免实现时按表回退。
+
+**自动追认有一个会踩到的坑：会抢走待决题的答句。**
+
+`createInteraction` 在已有 pending 时抛 `MULTIPLE_PENDING_DECISIONS`。自动追认绕过建交互，于是这种序列会成功：
+
+1. 已有 route-confirmation / grill 待决
+2. 用户回「确认」
+3. 模型用 `evidence="确认"` 调 `recordDecision`
+4. 最新未消费消息整句命中 → 自动落账并消费该事件
+5. 真正的待决题再也绑不上这条消息
+
+必须加硬约束：**已有 pending interaction 时禁止自动追认**，维持现状建 ratification 或直接失败。否则第 5 条会把第 3 条刚稳住的绑定再打穿。
+
+另外几处计划没写全：
+
+- **只匹配 evidence，不匹配 conclusion。** 用户说「全部解决一下」，模型可以把 conclusion 写成「含破坏性改动的 12 项全做」。追认的本意是确认「原话 → 结构化结论」的解释，不是确认这句话存在过。至少在返回面写清 `question` / `conclusion`，并在计划里把这记成已接受风险；更稳的是 conclusion 也必须是该消息的子串，否则仍走交互。
+- **`server.ts:1146-1148` 在 `recordDecision` 之后无条件 `emitAttentionNotification` + `elicit(result.interaction)`。** 无交互时不但不能 elicit，也不能发「需要确认」通知。
+- **`ratifyDecision` 依赖 `interaction.id` 生成 `CRED-ratify-...`。** 自动路径应抽出「只写 credential + decision」的 helper，不要为了复用去造幽灵交互。消费事件必须把 `promptEventId` 写进 mutate 的 event data——`consumedPromptEventIds` 只认这个字段，不认 `eventId`。
+- **grillme SKILL 第 8 行现在写着「不会仅凭历史消息中的相同文字自动落账」。** 2a 会直接反转这句话。2b 只补了「不得转述自答」，没改这句。必须一起改，否则 skill 和 Core 打架。
+
+现有 ratification 单测里通常没有匹配的 user-prompt，行为还能绿；但 `DecisionRatificationResult.interaction` 变成可选后，所有 `presented.interaction` 断言都要过一遍。
+
+---
+
+## 第 6 条：事实登记往返
+
+**决策成立。** 冲突根因是模型用固定 `expectedRevision` 连发，不是 MCP 真并行。一次 mutate + recordId 去重，结构上不会 CAS 打架。比「同 ID 不推进 revision」的单条特例更干净。
+
+**3b 的 `recordId` 算法是错的，按计划做会继续让 lock 对不上。**
+
+`repositoryFactId` 吃的是**规范化后**的 assertion + location（`repository-facts.ts:160-166`）。计划让 MCP 对**原始 input** 离线算 `repositoryFactId(input)`。路径斜杠、unicode、anchor 派生（`text-present` → location.anchor）一对不齐，返回的 ID 就不是账本 ID。模型拿着假 ID 去 lock，还是 `BOUNDARY_AUDIT_UNRESOLVED`。
+
+正确做法：`registerRepositoryFact` / 批量函数在 normalize 之后返回 `record.recordId`。单条和批量共用，不要在 server 层对 raw input 哈希。
+
+其它应写进计划的缺口：
+
+- **行号写的是 dist。** 源码在 `route-workflow.ts:46 / :59 / :65`，不是 `:4666/:4681/:4687`（那是 `mcp-server.mjs`）。
+- **`assertBoundaryAuditComplete`（`policy/route.ts:407`）也会抛同一个错误码**，而且只有 `itemId` / `factRef`。只改 route-workflow 三处，模型在 audit 项对不上时仍看不到已登记 ID。失败诊断应集中做一次（或两处都带 `unresolvedRefs` + `registeredIds`）。
+- **批量语义没写：** 应先算完全部指纹，任一观察不成立则整批不 mutate（全成或全败）。空数组拒绝；建议设上限（例如 50）。
+- **task SKILL 仍是「先登记再 lock」的单条心智。** 不改 skill，模型不会改用批量工具。
+- 返回里仍带完整 `state` 的话，token 只是从 N 次变成 1 次。`structuredContentView` 突出 `recordIds` / `created` / `existing` 是对的，视图里不要再倾倒整个 ledger。
+
+---
+
+## 第 1 条：归属零提问
+
+**决策本身清楚，也和代码对得上。**
+
+- 「零提问自动纳入」实际是：启动默认排除，任务写入时 `trusted-hook` 再纳入。标题略混，表里的正文是准的。
+- `DELIVERY_FILE_PREEXISTING_DIRTY` 不必收窄，核对正确。`claimedDirty` 只从 `featureOwned` 里滤，`excluded` 进不去（`delivery-snapshot.ts:260-279`）。
+- 写入门禁不会挡住 excluded 文件：`classifyTarget` 在 implementation 阶段不按 ownership 拦写；`recordTrustedWriteOwnership` 会把 excluded 盖成 feature。这条链路不用改。
+- `ownershipForScope` 只在 `startFeature` 调用，改它不会在 reconcile 时把已有 `trusted-hook` 打回去。
+
+**计划和定案在 git 门禁上直接冲突，不能带着开工。**
+
+| | 定案 | 计划 | 现状 |
+| --- | --- | --- | --- |
+| 未触碰的预存脏文件被 `git add/commit` | **提示不拦** | **不改阻断语义**，只加一行提示 | `gitPathPolicy` **已经拦** excluded 路径（`adapter-policy.ts:731-743`） |
+
+启动后所有 `startedDirty` 都会变成 `excluded`。若按计划保持拦截，摩擦只是从「开场问归属」挪到「提交时全被拦」。这和定案相反。
+
+需要先选定一种：
+
+1. **跟定案：excluded + `initialDirty` 只提示不拦。** 用户可以提交自己的预存改动；交付快照仍不含这些文件。代价是一次 commit 可能混进非 feature 文件（`git add -A` 本来就被拦，风险限于显式路径）。
+2. **改定案：继续拦，提示里说明先对账纳入。** 更保交付纯度，但零提问的收益会少一块。
+
+在选定之前不要写 4d。
+
+**`ownershipSource: "startup-excluded"` 是必改合同，不是脚注。**
+
+已经枚举死了：
+
+- `policy/types.ts:88`：`"user-adopted" \| "trusted-hook"`
+- `policy/state.schema.json:41`：同样的 enum
+
+`validateFeatureState` 没校验这个枚举，但 schema 测试会。4a 必须同步改 types + schema；这不是「实现时再看」。
+
+其它缺口：
+
+- **4c 提示条件对。** `initialDirty ∩ ownershipSource==trusted-hook` 正好是「预存脏 + 任务写过」。不要塞进 patch，也不要挡 finalize。
+- **测试面比计划写的大。** 至少这些现在断言「启动即出现归属交互」：`mcp-answer-host-health`、`mcp-source-result-contract`、`trustworthy-audit-journeys`、`interaction-semantic-resolution`、`v2-host-adapter-protocol`、`v3-lifecycle`、`v3-git-reconciliation`。启动默认排除后，它们应改成测「任务期间新出现的未知路径仍会问」。
+- **文档/技能没列。** `README.md:125`、`architecture.md:33`、`status`/`finish` 技能仍写「启动后未知路径必须正式交互」。行为变了却不改这些，模型会继续开场对账。
+- **已接受风险应写进计划：** 任务写过预存脏文件时，启动前的改动会静默进入交付，只靠 finalize 一行提示。这是用户明确放弃「写入时懒提问」的代价。`recordTrustedWriteOwnership` 只在 `implementation` 生效；intake 本身不能写 governed 文件，所以和当前写门禁是对齐的。
+
+---
+
+## 建议改计划的清单
+
+按优先级：
+
+1. **第 1 条 git 门禁：先对齐定案再写 4d。** 现在计划和决策表相反。
+2. **第 5 条：有 pending 时禁止自动追认**；consume 必须写 `promptEventId`；跳过 elicit 和 attention。
+3. **第 6 条：`recordId` 用 normalize 之后的记录，禁止对 raw input 离线哈希。**
+4. **第 1 条：把 `ownershipSource` 的 types + `state.schema.json` 写成 4a 正式步骤。**
+5. **第 4 条：doctor 的状态投影用 `ok`，包住 `pendingDecisionForState`；`TASK_SWITCH_REQUIRED` 带上当前问题。**
+6. **回写决策表：** 第 5 条删掉错误的 `textCompatible`；第 1 条 git 语义以最终选择为准。
+7. **补技能/文档：** grillme 第 8 行、task 批量登记、README/architecture 的启动归属表述。
+
+这四条决策可以执行。计划作为施工图还差上述对齐；修完这些再开 PR，比做到一半再改合同便宜。需要的话我可以按上面的意见直接改实施计划文案。

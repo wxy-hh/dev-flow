@@ -42,9 +42,9 @@ test("Claude/Codex 共享 intake、可信 decision 与锁定后的 v5 状态", a
     assertion: "共享契约会影响多个调用方",
     location: { kind: "positive", path: "src/feature-fact.txt" },
   }, "codex");
-  const factRef = withFact.governance.repositoryFacts[withFact.governance.repositoryFacts.length - 1].recordId;
+  const factRef = withFact.recordId;
   await state.recordHostEvent(root, { eventId: "codex-existing-conclusion", type: "user-prompt", host: "codex", text: "允许共享契约变更" });
-  const recorded = await state.recordDecision(root, intake.featureId, withFact.revision, "是否允许共享契约变更？", "调用方兼容性已核实", "允许共享契约变更", [factRef], "codex");
+  const recorded = await state.recordDecision(root, intake.featureId, withFact.state.revision, "是否允许共享契约变更？", "调用方兼容性已核实", "允许共享契约变更", [factRef], "codex");
   // 较早对话的决定需要用户追认（issue 08）：确认后才是 resolved 决定
   await state.recordHostEvent(root, { eventId: "codex-ratify", type: "user-prompt", host: "codex", text: "确认登记" });
   const ratified = await state.resolveRatificationAnswer(root, intake.featureId, recorded.state.revision, recorded.interactionId, "确认登记", "codex");

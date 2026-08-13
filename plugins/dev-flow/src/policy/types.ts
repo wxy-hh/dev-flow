@@ -85,7 +85,7 @@ export interface WorkspaceLineage {
   observedHead: string;
   startedDirty: Record<string, StartedDirtyPath>;
   ownership: Record<string, "feature" | "excluded">;
-  ownershipSource: Record<string, "user-adopted" | "trusted-hook">;
+  ownershipSource: Record<string, "user-adopted" | "trusted-hook" | "startup-excluded">;
   observedCommits: ObservedCommit[];
   /** Last reconciled per-path content/type/mode basis for precise freshness. */
   observedPathFingerprints: Record<string, string>;

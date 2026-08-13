@@ -20,9 +20,10 @@ import {
   normalizeRepositoryObservation,
   repositoryFactRecord,
   registerRepositoryFact,
+  registerRepositoryFacts,
   type RepositoryFactInput,
 } from "./repository-facts.js";
-export { registerRepositoryFact } from "./repository-facts.js";
+export { registerRepositoryFact, registerRepositoryFacts } from "./repository-facts.js";
 import type { DeliveryBaseline, DeliverySnapshot } from "./delivery-snapshot.js";
 import { fingerprintGovernedRoots } from "./fingerprint.js";
 import { projectConfigImpact, validateProjectConfig, type ProjectConfig } from "./project-config.js";
@@ -42,7 +43,7 @@ import { pendingDecisionForState } from "./decision-interactions.js";
 import { assertHostHealth } from "./host-health.js";
 import { collectProjectConfigAffectedEvidence, type ProjectConfigAffectedEvidence } from "./project-config-impact.js";
 import { executeRepositoryObservation } from "./repository-fact-store.js";
-import { checkpointAffectedByPaths, legalActiveUnitChanges, markAffectedEvidenceStale, objectiveForSwitch, presentWorkspaceOwnership, queueNextOwnershipDecision, unknownOwnershipPaths } from "./ownership-workflow.js";
+import { checkpointAffectedByPaths, legalActiveUnitChanges, markAffectedEvidenceStale, objectiveForSwitch, queueNextOwnershipDecision, unknownOwnershipPaths } from "./ownership-workflow.js";
 
 export { presentWorkspaceOwnership, resolveWorkspaceOwnershipText } from "./ownership-workflow.js";
 export { resolveTaskSwitchAnswer } from "./ownership-workflow.js";
@@ -902,7 +903,16 @@ export async function startFeature(
     const lifecycle = input.activation ?? "active";
     if (lifecycle === "active" && active) {
       const activeState = await readState(root, active.featureId);
-      if (!pendingDecisionForState(activeState)) {
+      let existingPending: ReturnType<typeof pendingDecisionForState>;
+      let pendingUnreadable = false;
+      try {
+        existingPending = pendingDecisionForState(activeState);
+      } catch {
+        pendingUnreadable = true;
+        existingPending = undefined;
+      }
+      const switchInteractionCreated = !existingPending && !pendingUnreadable;
+      if (switchInteractionCreated) {
         const pendingState = structuredClone(activeState) as FeatureState;
         const interaction = createInteraction(pendingState, {
           kind: "task-switch",
@@ -923,13 +933,18 @@ export async function startFeature(
       }
       throw new DevFlowError("TASK_SWITCH_REQUIRED", "另一个 feature 当前处于 active 状态。", {
         userMessage: "当前已有一个进行中的任务，请先决定如何处理它。",
-        cause: "系统不会后台 finalize、暂停、终止或切换旧任务。",
+        cause: switchInteractionCreated
+          ? "系统不会后台 finalize、暂停、终止或切换旧任务。"
+          : "旧任务仍有待决问题，系统没有创建 task-switch 交互，也不会后台切换任务。",
         impact: "新任务尚未创建，也没有改变旧任务的执行状态。",
         recoveryKind: "ask-user",
-        recoveryInstruction: "请通过 dev_flow_answer 逐题选择处理旧任务的方式。",
+        recoveryInstruction: switchInteractionCreated
+          ? "请通过 dev_flow_answer 逐题选择处理旧任务的方式。"
+          : "旧任务有待决问题未解决。先调用 dev_flow_answer 回答该问题，再重试开始新任务。",
         requiresUserDecision: true,
         retryOriginal: false,
         activeFeatureId: active.featureId,
+        ...(existingPending ? { kind: existingPending.kind, question: existingPending.question } : {}),
       });
     }
     const objective = typeof input.objective === "string" && input.objective.trim().length > 0
@@ -958,11 +973,6 @@ export async function startFeature(
       } as unknown as FeatureState;
       const ownershipPaths = unknownOwnershipPaths(state);
       state.workspace.unownedPaths = ownershipPaths;
-      let presentationEventId: string | undefined;
-      if (ownershipPaths.length) {
-        const presentation = presentWorkspaceOwnership(state, ownershipPaths);
-        presentationEventId = presentation.presentationEventId;
-      }
       // v3 always starts in intake. Classification is an explicit, atomic
       // lock after repository investigation and user-owned decisions converge.
       validateFeatureState(state);
@@ -977,7 +987,6 @@ export async function startFeature(
         await options.fault?.("before-event");
         await appendEvent(root, id, state.revision, "started", {
           lifecycle, mode: state.mode, objective,
-          ...(presentationEventId ? { presentationEventId } : {}),
         });
       } catch { failures.push("event"); }
       if (lifecycle === "active") {

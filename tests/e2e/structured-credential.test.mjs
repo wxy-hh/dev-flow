@@ -22,8 +22,8 @@ async function lockRouteConfirmation(fixture, featureId) {
     assertion: "只改一个模块",
     location: { kind: "positive", path: "src/counter.js" },
   }, "claude");
-  const factRef = withFact.governance.repositoryFacts[withFact.governance.repositoryFacts.length - 1].recordId;
-  const pending = await store.lockClassification(fixture.root, featureId, withFact.revision, {
+  const factRef = withFact.recordId;
+  const pending = await store.lockClassification(fixture.root, featureId, withFact.state.revision, {
     scopeFactRefs: [factRef], topologyFactRefs: [factRef], uncertaintyFactRefs: [],
     riskFactRefs: {}, decisionRefs: [],
     signals: { changeSurface: "multi-component", behaviorChange: "new-capability", topology: "local", unitCount: 1, requirements: "provided-confirmed", operationalRecovery: false, executableRollback: false },

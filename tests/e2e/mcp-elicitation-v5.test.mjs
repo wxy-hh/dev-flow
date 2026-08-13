@@ -297,10 +297,10 @@ test("route confirmation uses the same native form and resolves in one MCP call"
       assertion: "只改一个模块",
       location: { kind: "positive", path: "src/route-fact.txt" },
     }, "codex");
-    const factRef = withFact.governance.repositoryFacts[withFact.governance.repositoryFacts.length - 1].recordId;
+    const factRef = withFact.recordId;
     await store.recordHostEvent(fixture.root, { eventId: "route-decision", type: "user-prompt", host: "codex", text: "保留" });
     const recorded = await mcpCall(server, fixture.root, "dev_flow_record_decision", {
-      featureId: "route-form", expectedRevision: withFact.revision,
+      featureId: "route-form", expectedRevision: withFact.state.revision,
       question: "是否保留兼容行为？", evidence: "用户已有明确结论", conclusion: "保留", factRefs: [], host: "codex",
     });
     // issue 08：较早对话的决定需要用户追认后才成为当前决定

@@ -336,6 +336,9 @@ export async function createDeliverySnapshot(
     `- 用户手动接纳路径：${Object.entries(lineage.ownershipSource).filter(([, source]) => source === "user-adopted").map(([file]) => file).join(", ") || "无"}`,
     `- 未提交路径：${currentDirty.filter((file) => featureOwned.has(file)).join(", ") || "无"}`,
     `- 用户接受风险：${currentRiskAuthorizations(state, { contentFingerprint: state.businessFingerprint }).map((authorization) => authorization.target).join(", ") || "无"}`,
+    ...(files.filter((file) => initialDirty.has(file) && lineage.ownershipSource[file] === "trusted-hook").length ? [
+      `- 包含启动前已存在改动的文件：${files.filter((file) => initialDirty.has(file) && lineage.ownershipSource[file] === "trusted-hook").join(", ")}`,
+    ] : []),
     ...(excludedChangedPaths.length ? [
       "",
       "## 非交付改动",

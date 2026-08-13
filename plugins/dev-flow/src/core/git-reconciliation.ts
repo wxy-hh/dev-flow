@@ -227,9 +227,13 @@ export function ownershipForScope(
   const ownership = { ...lineage.ownership };
   const ownershipSource = { ...lineage.ownershipSource };
   for (const file of Object.keys(lineage.startedDirty)) {
+    if (ownership[file] !== undefined) continue;
     if (outOfScope.some((scope) => scope === "." || file === scope || file.startsWith(`${scope}/`))) {
       ownership[file] = "excluded";
+      continue;
     }
+    ownership[file] = "excluded";
+    ownershipSource[file] = "startup-excluded";
   }
   void inScope;
   return { ...lineage, ownership, ownershipSource };

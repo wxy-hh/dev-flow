@@ -2,8 +2,9 @@ import { createHash } from "node:crypto";
 import { EMPTY_GOVERNANCE_LEDGER } from "../policy/types.js";
 import { createDecision, resolveDecision } from "./decision-ledger.js";
 import { DevFlowError } from "./errors.js";
-import { resolveInteractionPromptEvent } from "./interaction-provenance.js";
+import { consumedPromptEventIds, promptFrom, resolveInteractionPromptEvent } from "./interaction-provenance.js";
 import { matchDecisionReply, pendingDecisionForState } from "./decision-interactions.js";
+import { normalizeReplyText } from "./text-normalization.js";
 import {
   createInteraction,
   getInteraction,
@@ -19,9 +20,82 @@ import { mutate, readFeatureEvents, readState, type FeatureState } from "./state
 
 export interface DecisionRatificationResult {
   state: FeatureState;
-  interaction: PublicInteraction;
+  interaction?: PublicInteraction;
   decisionId: string;
-  interactionId: string;
+  interactionId?: string;
+  ratifiedFrom?: string;
+  question?: string;
+  evidence?: string;
+  conclusion?: string;
+}
+
+function commitDecision(
+  draft: FeatureState,
+  input: {
+    decisionId: string;
+    question: string;
+    conclusion: string;
+    credentialId: string;
+    host: "claude" | "codex";
+    recordedAt: string;
+    source: "native-form" | "text";
+    interactionId: string;
+    promptEventId?: string;
+    presentationEventId?: string;
+    optionId?: string;
+    rawText?: string;
+  },
+): void {
+  const ledgerAfter = draft.governance ?? EMPTY_GOVERNANCE_LEDGER;
+  const credentials = [...ledgerAfter.credentials];
+  if (!credentials.some((existing) => existing.recordId === input.credentialId)) {
+    credentials.push({
+      recordId: input.credentialId,
+      kind: "credential",
+      source: input.source,
+      host: input.host,
+      interactionId: input.interactionId,
+      ...(input.optionId ? { optionId: input.optionId } : {}),
+      ...(input.rawText ? { rawText: input.rawText } : {}),
+      ...(input.promptEventId
+        ? { basis: { kind: "event" as const, eventId: input.promptEventId } }
+        : input.presentationEventId
+          ? { basis: { kind: "event" as const, eventId: input.presentationEventId } }
+          : {}),
+      recordedAt: input.recordedAt,
+    });
+  }
+  const decisions = [...ledgerAfter.decisions];
+  if (!decisions.some((existing) => existing.recordId === input.decisionId)) {
+    decisions.push({
+      recordId: input.decisionId,
+      kind: "decision",
+      question: input.question,
+      conclusion: input.conclusion,
+      credentialId: input.credentialId,
+      ...(input.promptEventId
+        ? { basis: { kind: "event" as const, eventId: input.promptEventId } }
+        : input.presentationEventId
+          ? { basis: { kind: "event" as const, eventId: input.presentationEventId } }
+          : {}),
+      recordedAt: input.recordedAt,
+    });
+  }
+  draft.governance = { ...ledgerAfter, credentials, decisions };
+}
+
+function latestUnconsumedPrompt(
+  events: Awaited<ReturnType<typeof readFeatureEvents>>,
+  host: "claude" | "codex",
+): { eventId: string; text: string; revision: number } | undefined {
+  const consumed = consumedPromptEventIds(events);
+  const matches = events.flatMap((record) => {
+    const prompt = promptFrom(record);
+    if (!prompt || prompt.host !== host || consumed.has(prompt.eventId)) return [];
+    return [{ eventId: prompt.eventId, text: prompt.text, revision: record.revision, at: prompt.at }];
+  });
+  matches.sort((left, right) => right.revision - left.revision || Date.parse(right.at) - Date.parse(left.at));
+  return matches[0];
 }
 
 export async function recordDecision(
@@ -36,8 +110,45 @@ export async function recordDecision(
 ): Promise<DecisionRatificationResult> {
   if (!question.trim()) throw new DevFlowError("DECISION_QUESTION_REQUIRED", "decision question cannot be empty");
   if (!evidence.trim() || !conclusion.trim()) throw new DevFlowError("DECISION_EVIDENCE_REQUIRED", "ratified decisions require the user's original words and the intended conclusion");
+  const initial = await readState(root, id);
+  if (initial.revision !== expectedRevision) throw new DevFlowError("STATE_REVISION_CONFLICT", "state revision changed", { currentRevision: initial.revision });
   const decision = resolveDecision(createDecision(question, factRefs), evidence, conclusion);
   const target = `decision-ratification:${decision.id}`;
+  let existingPending = false;
+  try {
+    existingPending = Boolean(pendingDecisionForState(initial));
+  } catch {
+    existingPending = true;
+  }
+  const events = await readFeatureEvents(root, id);
+  const latest = existingPending ? undefined : latestUnconsumedPrompt(events, host);
+  const exactMatch = latest && normalizeReplyText(latest.text) === normalizeReplyText(evidence);
+  if (latest && exactMatch) {
+    const recordedAt = new Date().toISOString();
+    const state = await mutate(root, id, expectedRevision, "decision-auto-ratified", (draft) => {
+      commitDecision(draft, {
+        decisionId: decision.id,
+        question: question.trim(),
+        conclusion: conclusion.trim(),
+        credentialId: `CRED-auto-ratify-${decision.id}`,
+        host,
+        recordedAt,
+        source: "text",
+        interactionId: `auto-ratify:${decision.id}`,
+        promptEventId: latest.eventId,
+        rawText: evidence.trim(),
+      });
+      draft.lastUpdatedBy = { host, pluginVersion: __DEV_FLOW_VERSION__ };
+    }, { decisionId: decision.id, promptEventId: latest.eventId });
+    return {
+      state,
+      decisionId: decision.id,
+      ratifiedFrom: latest.eventId,
+      question: question.trim(),
+      evidence: evidence.trim(),
+      conclusion: conclusion.trim(),
+    };
+  }
   let interaction: UserInteraction | undefined;
   const state = await mutate(root, id, expectedRevision, "decision-ratification-presented", (draft) => {
     interaction = createInteraction(draft, {
@@ -61,35 +172,20 @@ function ratifyDecision(draft: FeatureState, interaction: UserInteraction, respo
   const candidate = interaction.ratification;
   if (!candidate) throw new DevFlowError("INTERACTION_INVALID", "decision-ratification interaction is missing its candidate content", { interactionId: interaction.id });
   const decision = resolveDecision(createDecision(candidate.question, candidate.factRefs), candidate.evidence, candidate.conclusion);
-  const ledgerAfter = draft.governance ?? EMPTY_GOVERNANCE_LEDGER;
-  const credentialId = `CRED-ratify-${interaction.id}`;
-  const credentials = [...ledgerAfter.credentials];
-  if (!credentials.some((existing) => existing.recordId === credentialId)) {
-    credentials.push({
-      recordId: credentialId,
-      kind: "credential",
-      source: response.source === "elicitation" ? "native-form" : "text",
-      host,
-      interactionId: interaction.id,
-      ...(response.source === "elicitation" ? { optionId: response.selectedOptionId ?? response.action } : response.selectedOptionId ? { optionId: response.selectedOptionId } : {}),
-      ...(response.rawReply ? { rawText: response.rawReply } : {}),
-      ...(promptEventId ? { basis: { kind: "event" as const, eventId: promptEventId } } : interaction.presentationEventId ? { basis: { kind: "event" as const, eventId: interaction.presentationEventId } } : {}),
-      recordedAt: response.respondedAt,
-    });
-  }
-  const decisions = [...ledgerAfter.decisions];
-  if (!decisions.some((existing) => existing.recordId === decision.id)) {
-    decisions.push({
-      recordId: decision.id,
-      kind: "decision",
-      question: candidate.question,
-      conclusion: candidate.conclusion,
-      credentialId,
-      ...(promptEventId ? { basis: { kind: "event" as const, eventId: promptEventId } } : interaction.presentationEventId ? { basis: { kind: "event" as const, eventId: interaction.presentationEventId } } : {}),
-      recordedAt: response.respondedAt,
-    });
-  }
-  draft.governance = { ...ledgerAfter, credentials, decisions };
+  commitDecision(draft, {
+    decisionId: decision.id,
+    question: candidate.question,
+    conclusion: candidate.conclusion,
+    credentialId: `CRED-ratify-${interaction.id}`,
+    host,
+    recordedAt: response.respondedAt,
+    source: response.source === "elicitation" ? "native-form" : "text",
+    interactionId: interaction.id,
+    promptEventId,
+    presentationEventId: interaction.presentationEventId,
+    optionId: response.source === "elicitation" ? (response.selectedOptionId ?? response.action) : response.selectedOptionId,
+    rawText: response.rawReply,
+  });
 }
 
 /** 交互回答的统一解析骨架：领域模块共享同一可信回答与 CAS seam。 */

@@ -23,8 +23,8 @@ async function registerFixtureFact(root, featureId, revision) {
     location: { kind: "positive", path: "src/drift-fact.txt" },
   }, "claude");
   return {
-    factRef: withFact.governance.repositoryFacts[withFact.governance.repositoryFacts.length - 1].recordId,
-    revision: withFact.revision,
+    factRef: withFact.recordId,
+    revision: withFact.state.revision,
   };
 }
 

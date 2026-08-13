@@ -122,7 +122,7 @@ Core 使用三个下限的最高值：
 - `governedRoots` 同时决定写门禁、ownership、fingerprint、checkpoint、verification 和 delivery snapshot；exclude 先于 symlink 安全检查。
 - 只允许 Git tracked、目标仍在仓内且不进入 `.git/.dev-flow` 的 symlink。checkpoint 保存链接类型与 link target，rollback 重建链接本身。
 - Hook 为可信智能体写入记录规范化路径、宿主、事件和前后摘要，并自动归属。implementation 不接受手填 files。
-- IDE、人工与无法归因的变化创建唯一 ownership decision；多个路径先展示完整清单，可一次选择“全部纳入当前任务”“全部排除并先处理”或“逐个确认”。位于 scope 内不代表自动接纳；已观察但未归属的路径会持续待决。
+- 启动时预存脏文件默认排除出交付（`startup-excluded`），不弹归属问题。任务在 implementation 写入时由可信 hook 静默纳入。任务期间新出现的未知路径才创建 ownership decision；多个路径先展示完整清单，可一次选择“全部纳入当前任务”“全部排除并先处理”或“逐个确认”。
 - grill 的文本、表单和状态读取共享同一 presentation：A/B/C、唯一推荐项、推荐理由和“其他”出口不会因宿主切换而变化。其他普通决策继续接受唯一可判定的标签、简称和登记同义表达；执行批准仍使用严格整句白名单。
 - `.git`、`.dev-flow` 和 `node_modules` 是业务指纹的内建排除项，即使 governed root 是仓库根目录、且这些路径未写入 `.gitignore` 也不会污染证据。
 - 所有任务都有自动 baseline 和 delivery reverse。只有真实可逆且有 unit-chain 时才声明 executable rollback；不可逆变更使用 backup/preview/abort/compensation/full verification。

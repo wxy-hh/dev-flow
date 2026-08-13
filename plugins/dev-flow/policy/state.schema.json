@@ -38,7 +38,7 @@
         "observedHead": { "type": "string" },
         "startedDirty": { "type": "object" },
         "ownership": { "type": "object", "additionalProperties": { "enum": ["feature", "excluded"] } },
-        "ownershipSource": { "type": "object", "additionalProperties": { "enum": ["user-adopted", "trusted-hook"] } },
+        "ownershipSource": { "type": "object", "additionalProperties": { "enum": ["user-adopted", "trusted-hook", "startup-excluded"] } },
         "observedCommits": { "type": "array" },
         "observedPathFingerprints": { "type": "object", "additionalProperties": { "type": "string" } },
         "unownedPaths": { "type": "array", "items": { "type": "string" }, "uniqueItems": true },

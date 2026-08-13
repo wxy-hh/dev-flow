@@ -7,6 +7,7 @@ import { loadSource } from "../helpers/load-source.mjs";
 
 const store = await loadSource("plugins/dev-flow/src/core/state-store.ts");
 const decisions = await loadSource("plugins/dev-flow/src/core/decision-interactions.ts");
+const provenance = await loadSource("plugins/dev-flow/src/core/interaction-provenance.ts");
 
 const config = {
   schemaVersion: 2,
@@ -144,6 +145,80 @@ test("native form answer ratifies even when the displayed question is reformulat
     assert.equal(ratified.state.governance.decisions.length, 1);
     assert.equal(ratified.state.governance.decisions[0].conclusion, "仅产出计划");
     assert.equal(ratified.state.governance.decisions[0].basis.eventId, "ratify-reform");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("whole-sentence match on the latest unconsumed prompt auto-ratifies without an interaction", async () => {
+  const { root, state } = await setup("dev-flow-auto-ratify-exact-");
+  try {
+    await store.recordHostEvent(root, { eventId: "scope-yes", type: "user-prompt", host: "codex", text: "全部解决一下" });
+    const recorded = await store.recordDecision(root, "f", state.revision, "范围是什么？", "全部解决一下", "覆盖审查全部问题", [], "codex");
+    assert.equal(recorded.interaction, undefined);
+    assert.equal(recorded.ratifiedFrom, "scope-yes");
+    assert.equal(recorded.state.governance.decisions.length, 1);
+    assert.equal(recorded.state.governance.decisions[0].conclusion, "覆盖审查全部问题");
+    assert.equal(recorded.state.governance.decisions[0].basis.eventId, "scope-yes");
+    assert.equal(recorded.state.governance.credentials[0].basis.eventId, "scope-yes");
+    assert.match(recorded.state.governance.credentials[0].recordId, /^CRED-auto-ratify-/);
+    const events = await store.readFeatureEvents(root, "f");
+    assert.equal(provenance.consumedPromptEventIds(events).has("scope-yes"), true);
+    assert.equal(decisions.pendingDecisionForState(recorded.state), undefined);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("prefix or fragment evidence still presents a ratification interaction", async () => {
+  const { root, state } = await setup("dev-flow-auto-ratify-fragment-");
+  try {
+    await store.recordHostEvent(root, { eventId: "full", type: "user-prompt", host: "codex", text: "全部解决一下，另外补测试" });
+    const presented = await store.recordDecision(root, "f", state.revision, "范围是什么？", "全部解决一下", "覆盖全部问题", [], "codex");
+    assert.equal(decisions.pendingDecisionForState(presented.state).kind, "decision-ratification");
+    assert.ok(presented.interaction);
+    assert.equal(presented.state.governance.decisions.length, 0);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("an older matching prompt is ignored when the latest unconsumed message differs", async () => {
+  const { root, state } = await setup("dev-flow-auto-ratify-stale-");
+  try {
+    await store.recordHostEvent(root, { eventId: "old", type: "user-prompt", host: "codex", text: "全部解决一下" });
+    await store.recordHostEvent(root, { eventId: "new", type: "user-prompt", host: "codex", text: "继续" });
+    const presented = await store.recordDecision(root, "f", state.revision, "范围是什么？", "全部解决一下", "覆盖全部问题", [], "codex");
+    assert.equal(decisions.pendingDecisionForState(presented.state).kind, "decision-ratification");
+    assert.equal(presented.state.governance.decisions.length, 0);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("no unconsumed prompt still presents a ratification interaction", async () => {
+  const { root, state } = await setup("dev-flow-auto-ratify-none-");
+  try {
+    const presented = await store.recordDecision(root, "f", state.revision, "范围是什么？", "全部解决一下", "覆盖全部问题", [], "codex");
+    assert.equal(decisions.pendingDecisionForState(presented.state).kind, "decision-ratification");
+    assert.ok(presented.interactionId);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("a pending interaction blocks auto-ratify and does not consume the matching prompt", async () => {
+  const { root, state } = await setup("dev-flow-auto-ratify-pending-");
+  try {
+    const first = await store.recordDecision(root, "f", state.revision, "是否保留兼容？", "历史兼容测试仍存在", "保留兼容行为", [], "codex");
+    await store.recordHostEvent(root, { eventId: "confirm-now", type: "user-prompt", host: "codex", text: "确认" });
+    await assert.rejects(
+      () => store.recordDecision(root, "f", first.state.revision, "范围是什么？", "确认", "覆盖全部问题", [], "codex"),
+      (error) => error.code === "MULTIPLE_PENDING_DECISIONS",
+    );
+    const events = await store.readFeatureEvents(root, "f");
+    assert.equal(provenance.consumedPromptEventIds(events).has("confirm-now"), false);
+    assert.equal(decisions.pendingDecisionForState(await store.readState(root, "f")).kind, "decision-ratification");
   } finally {
     await rm(root, { recursive: true, force: true });
   }

@@ -17,7 +17,12 @@ test("doctor reports project, active state, bundles and wiring without mutating 
     await store.startFeature(fixture.root, { featureId: "feature", host: "claude", level: "XS", topology: "local" });
     const report = await collectDoctorReport(fixture.root, pluginRoot, "1.0.0", ["dev_flow_doctor"]);
     assert.equal(report.project.valid, true);
-    assert.deepEqual(report.activeFeature, { present: true, featureId: "feature", valid: true });
+    assert.equal(report.activeFeature.present, true);
+    assert.equal(report.activeFeature.featureId, "feature");
+    assert.equal(report.activeFeature.valid, true);
+    assert.equal(report.activeFeature.mode, "routed");
+    assert.ok(report.activeFeature.nextStep);
+    assert.ok(report.diagnostics.some((item) => item.code === "ACTIVE_FEATURE_STATE" && item.status === "ok"));
     assert.equal(report.mcp.server, "running");
     assert.ok(report.diagnostics.some((item) => item.code === "PLUGIN_WIRING_VALID" && item.status === "ok"));
   } finally { await fixture.dispose(); }
@@ -264,5 +269,53 @@ test("doctor reports a completed rollback transaction as audit and an unreadable
     report = await collectDoctorReport(fixture.root, pluginRoot, "1.0.0", ["dev_flow_doctor"]);
     assert.ok(report.diagnostics.some((item) => item.code === "ROLLBACK_TRANSACTION_UNREADABLE" && item.status === "error"));
     assert.deepEqual(report.rollbackTransactions, [], "an unreadable journal is only a diagnostic, never a parsed entry");
+  } finally { await fixture.dispose(); }
+});
+
+test("doctor projects intake pending decision as ok state, not a health warning", async () => {
+  const fixture = await createTinyApp();
+  try {
+    await store.initProject(fixture.root, strictProjectConfig);
+    const started = await store.startFeature(fixture.root, { featureId: "intake-pending", host: "codex" });
+    await store.recordDecision(fixture.root, "intake-pending", started.revision, "范围是什么？", "全部解决一下", "覆盖全部问题", [], "codex");
+    const report = await collectDoctorReport(fixture.root, pluginRoot, "5.0.0", ["dev_flow_doctor"]);
+    assert.equal(report.activeFeature.mode, "intake");
+    assert.equal(report.activeFeature.pendingDecision.kind, "decision-ratification");
+    assert.match(report.activeFeature.pendingDecision.question, /全部解决一下/);
+    assert.match(report.activeFeature.nextStep, /回答待决问题/);
+    const stateDiag = report.diagnostics.find((item) => item.code === "ACTIVE_FEATURE_STATE");
+    assert.equal(stateDiag.status, "ok");
+    assert.match(stateDiag.message, /日常看 dev_flow_status/);
+  } finally { await fixture.dispose(); }
+});
+
+test("doctor stays successful when pendingDecisionForState rejects a legacy grill", async () => {
+  const fixture = await createTinyApp();
+  try {
+    await store.initProject(fixture.root, strictProjectConfig);
+    await store.startFeature(fixture.root, { featureId: "legacy-grill", host: "codex" });
+    const statePath = path.join(fixture.root, ".dev-flow", "features", "legacy-grill", "state.json");
+    const raw = JSON.parse(await readFile(statePath, "utf8"));
+    raw.interactions = {
+      legacy: {
+        id: "legacy",
+        kind: "grill",
+        target: "grill:legacy",
+        basisHash: "c".repeat(64),
+        question: "旧问题",
+        options: [
+          { id: "yes", label: "确认" },
+          { id: "no", label: "拒绝" },
+        ],
+        status: "pending",
+        presentedAt: "2026-08-01T00:00:00.000Z",
+      },
+    };
+    await writeFile(statePath, JSON.stringify(raw));
+    const report = await collectDoctorReport(fixture.root, pluginRoot, "5.0.0", ["dev_flow_doctor"]);
+    assert.equal(report.activeFeature.valid, true);
+    assert.equal(report.activeFeature.pendingDecision, undefined);
+    assert.match(report.activeFeature.nextStep, /待决问题不可读/);
+    assert.ok(report.diagnostics.some((item) => item.code === "ACTIVE_FEATURE_STATE" && item.status === "ok"));
   } finally { await fixture.dispose(); }
 });

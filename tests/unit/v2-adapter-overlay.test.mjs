@@ -185,3 +185,44 @@ test("高风险 XS 的确认义务在 implementation 写入前生效", async () 
   const allowed = await adapter.preToolBlock(root, { tool_name: "write", tool_input: { file_path: "src/feature.txt" } });
   assert.equal(allowed, undefined);
 });
+
+test("implementation 阶段 git 门禁：startup-excluded 预存脏文件提示不拦，未知/显式排除路径仍拦", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "dev-flow-v2-adapter-gitguard-"));
+  await mkdir(path.join(root, "src"));
+  await writeFile(path.join(root, "src/pre-existing.js"), "export const old = 1;\n", "utf8");
+  await state.initProject(root, config);
+  let current = await state.startFeature(root, {
+    featureId: "git-guard",
+    objective: "验证 git 门禁收窄",
+    scope: { inScope: ["src/feature.txt"], outOfScope: [] },
+    level: "XS",
+    topology: "local",
+    requirements: "provided-confirmed",
+    riskLabels: ["security"],
+    host: "codex",
+  });
+  assert.equal(current.workspace.ownership["src/pre-existing.js"], "excluded");
+  assert.equal(current.workspace.ownershipSource["src/pre-existing.js"], "startup-excluded");
+
+  current = await steps.recordStep(root, "git-guard", current.revision, "locate", undefined);
+  const action = await next.nextAction(root, "git-guard");
+  const presentation = await gates.presentApproval(root, "git-guard", current.revision, action.step);
+  current = await gates.resolveApprovalElicitation(root, "git-guard", presentation.revision, presentation.interactionId, "confirm", undefined, "codex");
+
+  const startupExcluded = await adapter.evaluatePreToolUse(root, { tool_name: "bash", tool_input: { command: "git add src/pre-existing.js" } });
+  assert.equal(startupExcluded.kind, "allow");
+  if (startupExcluded.kind !== "allow") return;
+  assert.equal(startupExcluded.advisory?.code, "DEV_FLOW_GIT_STARTUP_EXCLUDED");
+  assert.match(startupExcluded.advisory?.message ?? "", /不会进入交付快照/);
+
+  await writeFile(path.join(root, "src/unknown.js"), "export const u = 1;\n", "utf8");
+  const unknownBlocked = await adapter.preToolBlock(root, { tool_name: "bash", tool_input: { command: "git add src/unknown.js" } });
+  assert.equal(unknownBlocked?.code, "DEV_FLOW_GIT_GUARD");
+
+  await writeFile(path.join(root, "src/user-excluded.js"), "export const e = 1;\n", "utf8");
+  await state.mutate(root, "git-guard", current.revision, "test-ownership", (draft) => {
+    draft.workspace.ownership["src/user-excluded.js"] = "excluded";
+  });
+  const excludedBlocked = await adapter.preToolBlock(root, { tool_name: "bash", tool_input: { command: "git add src/user-excluded.js" } });
+  assert.equal(excludedBlocked?.code, "DEV_FLOW_GIT_GUARD");
+});

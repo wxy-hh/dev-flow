@@ -70,7 +70,7 @@ export interface PreToolBlock {
 }
 
 export interface PreToolAdvisory {
-  code: "DEV_FLOW_HOOK_EVALUATION_FAILED" | "DEV_FLOW_HOOK_UNRESOLVED_WRITE";
+  code: "DEV_FLOW_HOOK_EVALUATION_FAILED" | "DEV_FLOW_HOOK_UNRESOLVED_WRITE" | "DEV_FLOW_GIT_STARTUP_EXCLUDED";
   message: string;
 }
 
@@ -725,26 +725,43 @@ function inFeatureScope(relative: string, state: FeatureState): boolean {
   return state.scope.inScope.some((scope) => scope === "." || relative === scope || relative.startsWith(`${scope}/`));
 }
 
-function gitPathPolicy(command: string, root: string, workflow: ActiveWorkflow, paths: string[]): PreToolBlock | undefined {
+function gitPathPolicy(
+  command: string,
+  root: string,
+  workflow: ActiveWorkflow,
+  paths: string[],
+): { block?: PreToolBlock; advisory?: PreToolAdvisory } {
   const state = workflow.state;
-  if (!state) return undefined;
-  const excluded = paths.filter((relative) => state.workspace.ownership[relative] === "excluded");
-  const unknown = paths.filter((relative) => state.workspace.ownership[relative] !== "feature" && !inFeatureScope(relative, state));
+  if (!state) return {};
+  const startedDirty = state.workspace.startedDirty ?? {};
+  const startupExcluded = paths.filter((relative) => state.workspace.ownership[relative] === "excluded" && startedDirty[relative] !== undefined);
+  const excluded = paths.filter((relative) => state.workspace.ownership[relative] === "excluded" && startedDirty[relative] === undefined);
+  const unknown = paths.filter((relative) => state.workspace.ownership[relative] !== "feature" && state.workspace.ownership[relative] !== "excluded" && !inFeatureScope(relative, state));
   if (excluded.length || unknown.length) {
-    return createPreToolBlock(
-      "DEV_FLOW_GIT_GUARD",
-      "Git 命令包含未归属或已排除的路径",
-      "原 Git 操作未执行；不会把用户或其他任务的文件混入 feature 提交",
-      {
-        mode: "user-decision",
-        action: "先将路径明确纳入当前 feature 或移出暂存区；本仓库禁止智能体提交时交由用户审核",
-        retryOriginal: false,
-      },
-    );
+    return {
+      block: createPreToolBlock(
+        "DEV_FLOW_GIT_GUARD",
+        "Git 命令包含未归属或已排除的路径",
+        "原 Git 操作未执行；不会把用户或其他任务的文件混入 feature 提交",
+        {
+          mode: "user-decision",
+          action: "先将路径明确纳入当前 feature 或移出暂存区；本仓库禁止智能体提交时交由用户审核",
+          retryOriginal: false,
+        },
+      ),
+    };
   }
   void command;
   void root;
-  return undefined;
+  if (startupExcluded.length) {
+    return {
+      advisory: {
+        code: "DEV_FLOW_GIT_STARTUP_EXCLUDED",
+        message: `该路径启动前已有改动、已默认排除出交付；本次 Git 操作未拦截，但这些文件不会进入交付快照。如需计入请先在工作区对账纳入：${startupExcluded.join("、")}`,
+      },
+    };
+  }
+  return {};
 }
 
 function controlMutationBlock(relative: string): PreToolBlock {
@@ -948,9 +965,10 @@ async function evaluatePreToolUseInternal(
       const explicitPaths = addMatch
         ? addMatch[1].split(/\s+/).filter((value) => value && !value.startsWith("-"))
         : await stagedGitPaths(root);
-      const pathBlock = gitPathPolicy(command, root, workflow, explicitPaths.map((value) => projectRelative(root, value) ?? value));
-      if (!pathBlock) return undefined;
-      return pathBlock;
+      const pathDecision = gitPathPolicy(command, root, workflow, explicitPaths.map((value) => projectRelative(root, value) ?? value));
+      if (pathDecision.advisory) advisoryOut.advisory = pathDecision.advisory;
+      if (!pathDecision.block) return undefined;
+      return pathDecision.block;
     }
     return createPreToolBlock(
       "DEV_FLOW_GIT_GUARD",

@@ -6,10 +6,42 @@ import { listOrphanTraceSnapshots, readTraceability } from "../core/traceability
 import { listOrphanReviewSnapshots, readReviewLedger } from "../core/review-store.js";
 import { readHostHealth } from "../core/host-health.js";
 import { assertActivePointerConsistent, readProjectConfig, readState, readActive, readRecoveryTransaction, readRollbackTransaction, readFeatureEvents, rollbackTransactionFinished, stateFileSha256, type FeatureState, type RollbackTransaction } from "../core/state-store.js";
+import { pendingDecisionForState } from "../core/decision-interactions.js";
 import { gitBranchAndHead, isAncestor } from "../core/git-reconciliation.js";
 
 type Status = "ok" | "error" | "warning";
 type Diagnostic = { code: string; status: Status; message: string; recoveryHint?: string };
+
+function projectActiveWorkflow(state: FeatureState): {
+  mode: FeatureState["mode"];
+  stage?: string;
+  pendingDecision?: { kind: string; question: string };
+  nextStep: string;
+} {
+  let pending: { kind: string; question: string } | undefined;
+  let pendingUnreadable = false;
+  try {
+    const decision = pendingDecisionForState(state);
+    if (decision) pending = { kind: decision.kind, question: decision.question };
+  } catch {
+    pendingUnreadable = true;
+  }
+  const nextStep = pendingUnreadable
+    ? "待决问题不可读，查看 dev_flow_status"
+    : pending
+      ? `回答待决问题：${pending.question}`
+      : state.mode === "intake"
+        ? "完成调查后调用 dev_flow_lock_classification"
+        : state.mode === "routed"
+          ? `继续 ${state.currentStage ?? "当前阶段"}（详情看 dev_flow_status）`
+          : "查看 dev_flow_status";
+  return {
+    mode: state.mode,
+    ...(state.mode === "routed" && state.currentStage ? { stage: state.currentStage } : {}),
+    ...(pending ? { pendingDecision: pending } : {}),
+    nextStep,
+  };
+}
 
 async function readable(file: string): Promise<boolean> {
   try { await lstat(file); return true; } catch { return false; }
@@ -81,6 +113,10 @@ export async function collectDoctorReport(root: string, pluginRoot: string, vers
     corrupt?: boolean;
     stateSha256?: string;
     recoveryAction?: string;
+    mode?: FeatureState["mode"];
+    stage?: string;
+    pendingDecision?: { kind: string; question: string };
+    nextStep?: string;
   } = { present: await readable(activeFile), valid: false };
 
   let corruptFeature: {
@@ -104,11 +140,22 @@ export async function collectDoctorReport(root: string, pluginRoot: string, vers
         const state = await readState(root, active.featureId);
         await assertActivePointerConsistent(root);
         traceState = state;
-        activeFeature = { present: true, featureId: state.featureId, valid: state.lifecycle === "active" };
+        const projection = projectActiveWorkflow(state);
+        activeFeature = {
+          present: true,
+          featureId: state.featureId,
+          valid: state.lifecycle === "active",
+          ...projection,
+        };
         add(
           activeFeature.valid ? "ACTIVE_FEATURE_VALID" : "ACTIVE_FEATURE_INVALID",
           activeFeature.valid ? "ok" : "error",
           activeFeature.valid ? `active feature ${state.featureId} is valid` : `active feature ${state.featureId} is not active`,
+        );
+        add(
+          "ACTIVE_FEATURE_STATE",
+          "ok",
+          `active feature ${state.featureId} 处于 ${projection.mode}${projection.pendingDecision ? "，有待决问题" : ""}；下一步：${projection.nextStep}。日常看 dev_flow_status，doctor 只是附带投影`,
         );
       } catch (error) {
         let digest: string | undefined;

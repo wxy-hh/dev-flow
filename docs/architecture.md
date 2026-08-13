@@ -30,7 +30,7 @@ BoundaryAudit 是锁定硬门禁。M/L 或风险任务先持久化 route-confirm
 
 `governedRoots` 是写门禁、ownership、fingerprint、checkpoint、verification 与 delivery 的单一范围，支持目录和精确文件。Exclude 先过滤。Git worktree 枚举以 `git ls-files --cached --others --exclude-standard` 为准。
 
-可信 Hook 写入保存规范化路径、host、event 与 before/after 内容摘要，并自动归属。人工/IDE/未知变化创建 ownership decision。安全 symlink 以 link target blob 参与指纹和 checkpoint，不跟随读写目标；rollback 原子重建 symlink。
+可信 Hook 写入保存规范化路径、host、event 与 before/after 内容摘要，并自动归属。启动时预存脏文件默认排除；任务期间新出现的人工/IDE/未知变化才创建 ownership decision。安全 symlink 以 link target blob 参与指纹和 checkpoint，不跟随读写目标；rollback 原子重建 symlink。
 
 ## Freshness 与恢复
 

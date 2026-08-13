@@ -11,6 +11,7 @@ import { registerTraceFixture, traceDeltaFor } from "../helpers/trace-fixtures.m
 import { loadSource } from "../helpers/load-source.mjs";
 
 const store = await loadSource("plugins/dev-flow/src/core/state-store.ts");
+const decisions = await loadSource("plugins/dev-flow/src/core/decision-interactions.ts");
 const jobs = await loadSource("plugins/dev-flow/src/core/review-jobs.ts");
 const traceStore = await loadSource("plugins/dev-flow/src/core/traceability-store.ts");
 
@@ -32,8 +33,8 @@ async function registerFixtureFact(root, featureId, revision, host) {
     location: { kind: "positive", path: "src/counter.js" },
   }, host);
   return {
-    factRef: withFact.governance.repositoryFacts[withFact.governance.repositoryFacts.length - 1].recordId,
-    revision: withFact.revision,
+    factRef: withFact.recordId,
+    revision: withFact.state.revision,
   };
 }
 
@@ -108,7 +109,9 @@ test("audit journey 1: revision-0 ownership, hook recovery, stable control finge
     await writeFile(path.join(fixture.root, "src", "started-b.js"), "export const b = 1;\n");
     let state = await store.startFeature(fixture.root, { featureId: "audit-one", objective: "重放第一条审计旅程", host: "codex" });
     assert.equal(state.revision, 0);
-    state = await answerOwnership(hook, fixture.root, state, "这些都算当前任务的", "revision-zero-answer");
+    assert.equal(state.workspace.ownership["src/started-a.js"], "excluded");
+    assert.equal(state.workspace.ownershipSource["src/started-a.js"], "startup-excluded");
+    assert.equal(decisions.pendingDecisionForState(state), undefined);
 
     // Simulate a dead hook interval: writes happen with no PostToolUse event.
     await store.recordHostHealth(fixture.root, { host: "codex", kind: "session-start", eventId: "stale-gap", at: "2020-01-01T00:00:00.000Z" });

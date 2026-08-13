@@ -47,12 +47,11 @@ async function registerFixtureFacts(root, featureId, revision) {
   await writeFile(path.join(root, factPath), "fixture classification facts\n");
   await run("git", ["add", "--", factPath], { cwd: root });
   await run("git", ["-c", "user.name=Dev Flow Tests", "-c", "user.email=tests@example.invalid", "commit", "--quiet", "-m", "fixture classification facts", "--", factPath], { cwd: root });
-  const state = await store.registerRepositoryFact(root, featureId, revision, {
+  const registered = await store.registerRepositoryFact(root, featureId, revision, {
     assertion: "fixture classification facts",
     location: { kind: "positive", path: factPath },
   }, "codex");
-  const factRef = state.governance.repositoryFacts[state.governance.repositoryFacts.length - 1].recordId;
-  return { state, factRef };
+  return { state: registered.state, factRef: registered.recordId };
 }
 
 test("5.0 classification matrix derives four levels and risk only adds controls", () => {

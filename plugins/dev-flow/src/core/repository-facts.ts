@@ -137,17 +137,14 @@ export function repositoryFactRecord(input: Required<Pick<RepositoryFactInput, "
   };
 }
 
-/** 登记一条绑定当前观察指纹的仓库事实，并通过状态模块的 CAS 接缝落账。 */
-export async function registerRepositoryFact(
+const MAX_REPOSITORY_FACT_BATCH = 50;
+
+/** 规范化 + 观察指纹。recordId 只从规范化后的 assertion/location 计算。 */
+export async function normalizeRepositoryFact(
   root: string,
-  id: string,
-  expectedRevision: number,
   input: RepositoryFactInput,
-  host: "claude" | "codex",
-): Promise<FeatureState> {
-  const initial = await readState(root, id);
-  if (initial.revision !== expectedRevision) throw new DevFlowError("STATE_REVISION_CONFLICT", "state revision changed", { currentRevision: initial.revision });
-  const config = await readProjectConfig(root);
+  config: { governedRoots: string[] },
+): Promise<GovernanceRepositoryFact> {
   const observation = input.observation ? normalizeRepositoryObservation(input.observation, config.governedRoots) : undefined;
   const location = input.location
     ? normalizeFactLocation(input.location, config.governedRoots)
@@ -163,12 +160,78 @@ export async function registerRepositoryFact(
   const observationResult = observation ? await executeRepositoryObservation(root, observation) : undefined;
   const observedFingerprint = observationResult ? observationResult.observedFingerprint : await computeFactFingerprint(root, { ...normalized, location });
   if (observationResult && !observationResult.confirmed) throw new DevFlowError("BOUNDARY_FACT_UNCONFIRMED", "repository observation is not satisfied", { summary: observationResult.summary, recoveryHint: "修正观察定义或先修正仓库后重试。" });
-  const record = repositoryFactRecord(normalized, observedFingerprint, new Date().toISOString());
-  return mutate(root, id, expectedRevision, "repository-fact-recorded", (draft) => {
-    const ledger = draft.governance ?? EMPTY_GOVERNANCE_LEDGER;
-    const facts = [...ledger.repositoryFacts];
-    if (!facts.some((existing) => existing.recordId === record.recordId)) facts.push(record);
-    draft.governance = { ...ledger, repositoryFacts: facts };
-    draft.lastUpdatedBy = { host, pluginVersion: __DEV_FLOW_VERSION__ };
+  return repositoryFactRecord(normalized, observedFingerprint, new Date().toISOString());
+}
+
+export interface RepositoryFactRegistration {
+  state: FeatureState;
+  recordId: string;
+}
+
+export interface RepositoryFactsRegistration {
+  state: FeatureState;
+  recordIds: string[];
+  created: string[];
+  existing: string[];
+}
+
+function applyRepositoryFacts(draft: FeatureState, records: GovernanceRepositoryFact[], host: "claude" | "codex"): { created: string[]; existing: string[] } {
+  const ledger = draft.governance ?? EMPTY_GOVERNANCE_LEDGER;
+  const facts = [...ledger.repositoryFacts];
+  const created: string[] = [];
+  const existing: string[] = [];
+  for (const record of records) {
+    if (facts.some((item) => item.recordId === record.recordId)) existing.push(record.recordId);
+    else {
+      facts.push(record);
+      created.push(record.recordId);
+    }
+  }
+  draft.governance = { ...ledger, repositoryFacts: facts };
+  draft.lastUpdatedBy = { host, pluginVersion: __DEV_FLOW_VERSION__ };
+  return { created, existing };
+}
+
+/** 登记一条绑定当前观察指纹的仓库事实，并通过状态模块的 CAS 接缝落账。 */
+export async function registerRepositoryFact(
+  root: string,
+  id: string,
+  expectedRevision: number,
+  input: RepositoryFactInput,
+  host: "claude" | "codex",
+): Promise<RepositoryFactRegistration> {
+  const initial = await readState(root, id);
+  if (initial.revision !== expectedRevision) throw new DevFlowError("STATE_REVISION_CONFLICT", "state revision changed", { currentRevision: initial.revision });
+  const config = await readProjectConfig(root);
+  const record = await normalizeRepositoryFact(root, input, config);
+  const state = await mutate(root, id, expectedRevision, "repository-fact-recorded", (draft) => {
+    applyRepositoryFacts(draft, [record], host);
   });
+  return { state, recordId: record.recordId };
+}
+
+/** 一次 CAS 登记多条仓库事实；任一观察失败则整批不落账。 */
+export async function registerRepositoryFacts(
+  root: string,
+  id: string,
+  expectedRevision: number,
+  inputs: RepositoryFactInput[],
+  host: "claude" | "codex",
+): Promise<RepositoryFactsRegistration> {
+  if (!inputs.length) throw new DevFlowError("INVALID_REPOSITORY_FACT", "repository fact batch must not be empty");
+  if (inputs.length > MAX_REPOSITORY_FACT_BATCH) {
+    throw new DevFlowError("INVALID_REPOSITORY_FACT", `repository fact batch cannot exceed ${MAX_REPOSITORY_FACT_BATCH} items`, { limit: MAX_REPOSITORY_FACT_BATCH });
+  }
+  const initial = await readState(root, id);
+  if (initial.revision !== expectedRevision) throw new DevFlowError("STATE_REVISION_CONFLICT", "state revision changed", { currentRevision: initial.revision });
+  const config = await readProjectConfig(root);
+  const records = await Promise.all(inputs.map((input) => normalizeRepositoryFact(root, input, config)));
+  let created: string[] = [];
+  let existing: string[] = [];
+  const state = await mutate(root, id, expectedRevision, "repository-facts-recorded", (draft) => {
+    const applied = applyRepositoryFacts(draft, records, host);
+    created = applied.created;
+    existing = applied.existing;
+  });
+  return { state, recordIds: records.map((record) => record.recordId), created, existing };
 }

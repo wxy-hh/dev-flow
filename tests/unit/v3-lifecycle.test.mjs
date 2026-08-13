@@ -60,12 +60,41 @@ test("starting another task never silently switches the active feature", async (
     await store.startFeature(fixture.root, { featureId: "old", host: "codex" });
     await assert.rejects(
       () => store.startFeature(fixture.root, { featureId: "new", objective: "新任务", host: "codex" }),
-      (error) => error.code === "TASK_SWITCH_REQUIRED",
+      (error) => {
+        assert.equal(error.code, "TASK_SWITCH_REQUIRED");
+        assert.match(error.recovery.instruction, /逐题选择处理旧任务的方式/);
+        return true;
+      },
     );
     const old = await store.readState(fixture.root, "old");
     assert.equal(old.lifecycle, "active");
     assert.equal(decisions.pendingDecisionForState(old).kind, "task-switch");
     await assert.rejects(() => store.readState(fixture.root, "new"), (error) => error.code === "FEATURE_NOT_FOUND");
+  } finally {
+    await fixture.dispose();
+  }
+});
+
+test("task-switch recovery points at the existing pending question instead of a missing switch prompt", async () => {
+  const fixture = await createTinyApp();
+  try {
+    await store.initProject(fixture.root, strictProjectConfig);
+    const started = await store.startFeature(fixture.root, { featureId: "old-pending", host: "codex" });
+    await store.recordDecision(fixture.root, "old-pending", started.revision, "范围是什么？", "全部解决一下", "覆盖全部问题", [], "codex");
+    await assert.rejects(
+      () => store.startFeature(fixture.root, { featureId: "new-pending", objective: "新任务", host: "codex" }),
+      (error) => {
+        assert.equal(error.code, "TASK_SWITCH_REQUIRED");
+        assert.match(error.recovery.instruction, /旧任务有待决问题未解决/);
+        assert.match(error.cause, /没有创建 task-switch/);
+        assert.equal(error.details.kind, "decision-ratification");
+        assert.match(error.details.question, /全部解决一下/);
+        return true;
+      },
+    );
+    const old = await store.readState(fixture.root, "old-pending");
+    assert.equal(decisions.pendingDecisionForState(old).kind, "decision-ratification");
+    await assert.rejects(() => store.readState(fixture.root, "new-pending"), (error) => error.code === "FEATURE_NOT_FOUND");
   } finally {
     await fixture.dispose();
   }

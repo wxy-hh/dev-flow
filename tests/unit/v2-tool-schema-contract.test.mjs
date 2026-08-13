@@ -91,6 +91,7 @@ test("v5 governance tools record_repository_fact / revise_decision / revise_plan
   const names = new Set(tools.map((tool) => tool.name));
   for (const expected of [
     "dev_flow_record_repository_fact",
+    "dev_flow_record_repository_facts",
     "dev_flow_revise_decision",
     "dev_flow_revise_plan",
     "dev_flow_validate_plan",

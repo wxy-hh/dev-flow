@@ -37,6 +37,7 @@ test("治理领域模块通过 store seam 访问文件系统", async () => {
     "resolveWorkspaceOwnershipText",
     "reconcileWorkspace",
     "registerRepositoryFact",
+    "registerRepositoryFacts",
   ]) {
     assert.doesNotMatch(stateStore, new RegExp(`^export (?:async )?function ${name}\\b`, "mu"), `state-store must not own ${name}`);
   }

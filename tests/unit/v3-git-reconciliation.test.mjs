@@ -64,13 +64,15 @@ test("commits that return governed bytes to the last observed basis update linea
   } finally { await fixture.dispose(); }
 });
 
-test("an in-scope pre-existing dirty path creates one ownership decision instead of guessing", async () => {
+test("an in-scope pre-existing dirty path is excluded at start instead of asking ownership", async () => {
   const fixture = await createTinyApp();
   try {
     await store.initProject(fixture.root, strictProjectConfig);
     await writeFile(`${fixture.root}/src/counter.js`, "export const count = 99;\n");
     const state = await store.startFeature(fixture.root, { featureId: "dirty", host: "codex", scope: { inScope: ["src"], outOfScope: [] } });
-    assert.equal(decisions.pendingDecisionForState(state).kind, "workspace-ownership");
+    assert.equal(decisions.pendingDecisionForState(state), undefined);
+    assert.equal(state.workspace.ownership["src/counter.js"], "excluded");
+    assert.equal(state.workspace.ownershipSource["src/counter.js"], "startup-excluded");
     assert.equal(Object.values(state.workspace.ownership).filter((owner) => owner === "feature").length, 0);
   } finally {
     await fixture.dispose();

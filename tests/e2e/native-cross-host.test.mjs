@@ -17,13 +17,13 @@ const boundaryAudit = {
 
 /** 登记一条绑定既有受管文件的仓库事实（v5 分类引用事实记录，ADR-0018）。 */
 async function registerFixtureFact(root, featureId, revision, host) {
-  const state = await store.registerRepositoryFact(root, featureId, revision, {
+  const registered = await store.registerRepositoryFact(root, featureId, revision, {
     assertion: "计数器组件及其测试",
     location: { kind: "positive", path: "src/counter.js" },
   }, host);
   return {
-    factRef: state.governance.repositoryFacts[state.governance.repositoryFacts.length - 1].recordId,
-    revision: state.revision,
+    factRef: registered.recordId,
+    revision: registered.state.revision,
   };
 }
 

@@ -161,10 +161,10 @@ test("dev_flow_record_decision exposes a decisionId usable end-to-end (P5)", asy
       assertion: "只改一个模块",
       location: { kind: "positive", path: "src/decision-fact.txt" },
     }, "codex");
-    const factRef = withFact.governance.repositoryFacts[withFact.governance.repositoryFacts.length - 1].recordId;
+    const factRef = withFact.recordId;
     await store.recordHostEvent(fixture.root, { eventId: "known-conclusion", type: "user-prompt", host: "codex", text: "保留" });
     const recorded = await mcpCall(server, fixture.root, "dev_flow_record_decision", {
-      featureId: "decisions", expectedRevision: withFact.revision,
+      featureId: "decisions", expectedRevision: withFact.state.revision,
       question: "是否保留兼容行为？", evidence: "用户已有明确结论", conclusion: "保留", factRefs: [factRef], host: "codex",
     });
     assert.match(recorded.decisionId, /^DEC-[0-9a-f]{16}$/);
@@ -194,10 +194,9 @@ test("dev_flow_record_decision exposes a decisionId usable end-to-end (P5)", asy
   }
 });
 
-test("same-revision host answer resolves the initial workspace ownership question (P1)", async () => {
+test("same-revision host answer resolves a mid-task workspace ownership question (P1)", async () => {
   const fixture = await createTinyApp();
   try {
-    await writeFile(path.join(fixture.root, "src/counter.js"), "export const counter = 1;\n", "utf8");
     await mcpCall(server, fixture.root, "dev_flow_init_project", { config: strictProjectConfig });
     await invokeHook(codexHook, fixture.root, {
       hook_event_name: "SessionStart",
@@ -205,9 +204,13 @@ test("same-revision host answer resolves the initial workspace ownership questio
     });
     const started = await mcpCall(server, fixture.root, "dev_flow_start", {
       featureId: "same-revision-ownership", objective: "验证同一 revision 的回答", host: "codex",
-      scope: { inScope: ["src/counter.js"], outOfScope: [] },
+      scope: { inScope: ["src"], outOfScope: [] },
     }, { requireRealHostHealth: true });
     assert.equal(started.control.expectedRevision, 0);
+    await writeFile(path.join(fixture.root, "src/new.js"), "export const n = 1;\n", "utf8");
+    const pending = await mcpCall(server, fixture.root, "dev_flow_reconcile_workspace", {
+      featureId: "same-revision-ownership", expectedRevision: started.control.expectedRevision, host: "codex",
+    });
     await invokeHook(codexHook, fixture.root, {
       hook_event_name: "UserPromptSubmit",
       event_id: "ownership-answer",
@@ -215,14 +218,14 @@ test("same-revision host answer resolves the initial workspace ownership questio
     });
     const answered = await mcpCall(server, fixture.root, "dev_flow_answer", {
       featureId: "same-revision-ownership",
-      expectedRevision: started.control.expectedRevision,
+      expectedRevision: pending.control.expectedRevision,
       userReply: "纳入当前任务",
       host: "codex",
     });
-    assert.equal(answered.control.expectedRevision, 1);
+    assert.ok(answered.control.expectedRevision > pending.control.expectedRevision);
     const resolvedState = await store.readState(fixture.root, "same-revision-ownership");
     assert.equal(resolvedState.pendingDecision, undefined);
-    assert.equal(resolvedState.workspace.ownership["src/counter.js"], "feature");
+    assert.equal(resolvedState.workspace.ownership["src/new.js"], "feature");
   } finally {
     await fixture.dispose();
   }
@@ -231,22 +234,25 @@ test("same-revision host answer resolves the initial workspace ownership questio
 test("workspace ownership presents a batch and supports one-by-one resolution", async () => {
   const fixture = await createTinyApp();
   try {
-    await writeFile(path.join(fixture.root, "src/counter.js"), "export const counter = 2;\n", "utf8");
-    await writeFile(path.join(fixture.root, "src/extra.js"), "export const extra = true;\n", "utf8");
     await mcpCall(server, fixture.root, "dev_flow_init_project", { config: strictProjectConfig });
     const started = await mcpCall(server, fixture.root, "dev_flow_start", {
       featureId: "batch-ownership", objective: "批量确认工作区归属", host: "codex",
       scope: { inScope: ["src"], outOfScope: [] },
+    });
+    await writeFile(path.join(fixture.root, "src/counter.js"), "export const counter = 2;\n", "utf8");
+    await writeFile(path.join(fixture.root, "src/extra.js"), "export const extra = true;\n", "utf8");
+    await mcpCall(server, fixture.root, "dev_flow_reconcile_workspace", {
+      featureId: "batch-ownership", expectedRevision: started.control.expectedRevision, host: "codex",
     });
     const before = await store.readState(fixture.root, "batch-ownership");
     assert.equal(decisions.pendingDecisionForState(before).options.length, 3);
     assert.deepEqual(before.interactions[Object.keys(before.interactions)[0]].workspaceBatchPaths, ["src/counter.js", "src/extra.js"]);
     await store.recordHostEvent(fixture.root, { eventId: "batch-adopt", type: "user-prompt", host: "codex", text: "这些都算当前任务的" });
     const answered = await mcpCall(server, fixture.root, "dev_flow_answer", {
-      featureId: "batch-ownership", expectedRevision: started.control.expectedRevision,
+      featureId: "batch-ownership", expectedRevision: before.revision,
       userReply: "这些都算当前任务的", host: "codex",
     });
-    assert.equal(answered.control.expectedRevision, 1);
+    assert.ok(answered.control.expectedRevision > before.revision);
     const adopted = await store.readState(fixture.root, "batch-ownership");
     assert.equal(decisions.pendingDecisionForState(adopted), undefined);
     assert.equal(adopted.workspace.ownership["src/counter.js"], "feature");
@@ -257,19 +263,22 @@ test("workspace ownership presents a batch and supports one-by-one resolution", 
 
   const second = await createTinyApp();
   try {
-    await writeFile(path.join(second.root, "src/counter.js"), "export const counter = 3;\n", "utf8");
-    await writeFile(path.join(second.root, "src/extra.js"), "export const extra = false;\n", "utf8");
     await mcpCall(server, second.root, "dev_flow_init_project", { config: strictProjectConfig });
     const started = await mcpCall(server, second.root, "dev_flow_start", {
       featureId: "one-by-one-ownership", objective: "逐个确认工作区归属", host: "codex",
       scope: { inScope: ["src"], outOfScope: [] },
     });
+    await writeFile(path.join(second.root, "src/counter.js"), "export const counter = 3;\n", "utf8");
+    await writeFile(path.join(second.root, "src/extra.js"), "export const extra = false;\n", "utf8");
+    const pendingStart = await mcpCall(server, second.root, "dev_flow_reconcile_workspace", {
+      featureId: "one-by-one-ownership", expectedRevision: started.control.expectedRevision, host: "codex",
+    });
     await store.recordHostEvent(second.root, { eventId: "one-by-one", type: "user-prompt", host: "codex", text: "逐个确认" });
     const first = await mcpCall(server, second.root, "dev_flow_answer", {
-      featureId: "one-by-one-ownership", expectedRevision: started.control.expectedRevision,
+      featureId: "one-by-one-ownership", expectedRevision: pendingStart.control.expectedRevision,
       userReply: "逐个确认", host: "codex",
     });
-    assert.equal(first.control.expectedRevision, 1);
+    assert.ok(first.control.expectedRevision > pendingStart.control.expectedRevision);
     const pending = await store.readState(second.root, "one-by-one-ownership");
     assert.equal(decisions.pendingDecisionForState(pending).kind, "workspace-ownership");
     const firstPath = pending.interactions[Object.keys(pending.interactions).find((key) => pending.interactions[key].status === "pending")].workspacePaths[0];
@@ -299,20 +308,23 @@ test("workspace ownership presents a batch and supports one-by-one resolution", 
 test("workspace ownership answer fails closed when reconciliation adds an unknown path", async () => {
   const fixture = await createTinyApp();
   try {
-    await writeFile(path.join(fixture.root, "src/counter.js"), "export const counter = 4;\n", "utf8");
     await mcpCall(server, fixture.root, "dev_flow_init_project", { config: strictProjectConfig });
     const started = await mcpCall(server, fixture.root, "dev_flow_start", {
       featureId: "stale-ownership", objective: "验证归属问题的陈旧保护", host: "codex",
       scope: { inScope: ["src"], outOfScope: [] },
     });
+    await writeFile(path.join(fixture.root, "src/counter.js"), "export const counter = 4;\n", "utf8");
+    const firstReconcile = await mcpCall(server, fixture.root, "dev_flow_reconcile_workspace", {
+      featureId: "stale-ownership", expectedRevision: started.control.expectedRevision, host: "codex",
+    });
     await writeFile(path.join(fixture.root, "src/new.js"), "export const newFile = true;\n", "utf8");
     await mcpCall(server, fixture.root, "dev_flow_reconcile_workspace", {
-      featureId: "stale-ownership", expectedRevision: started.control.expectedRevision, host: "codex",
+      featureId: "stale-ownership", expectedRevision: firstReconcile.control.expectedRevision, host: "codex",
     });
     await store.recordHostEvent(fixture.root, { eventId: "stale-answer", type: "user-prompt", host: "codex", text: "全部纳入当前任务" });
     await assert.rejects(
       () => mcpCall(server, fixture.root, "dev_flow_answer", {
-        featureId: "stale-ownership", expectedRevision: 1,
+        featureId: "stale-ownership", expectedRevision: firstReconcile.control.expectedRevision,
         userReply: "全部纳入当前任务", host: "codex",
       }),
       (error) => error.code === "WORKSPACE_OWNERSHIP_STALE",

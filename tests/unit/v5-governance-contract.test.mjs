@@ -122,8 +122,8 @@ test("each governance record kind is written only to its own ledger", async () =
       assertion: "共享接口定义在 src/counter.js",
       location: { kind: "positive", path: "src/counter.js" },
     }, "codex");
-    assert.ok(registered.governance.repositoryFacts.length >= 1);
-    assert.equal(registered.governance.authorizations.length, 1, "risk-acceptance authorization remains in its own ledger");
+    assert.ok(registered.state.governance.repositoryFacts.length >= 1);
+    assert.equal(registered.state.governance.authorizations.length, 1, "risk-acceptance authorization remains in its own ledger");
   } finally {
     await fixture.dispose();
   }
@@ -155,10 +155,10 @@ test("inspect classification reports repository fact freshness from current cont
     await store.initProject(fixture.root, strictProjectConfig);
     const inspection = await loadSource("plugins/dev-flow/src/core/inspection.ts");
     let state = await store.startFeature(fixture.root, { featureId: "freshness", host: "codex" });
-    state = await store.registerRepositoryFact(fixture.root, "freshness", state.revision, {
+    state = (await store.registerRepositoryFact(fixture.root, "freshness", state.revision, {
       assertion: "共享接口定义在 src/counter.js",
       location: { kind: "positive", path: "src/counter.js" },
-    }, "codex");
+    }, "codex")).state;
     const current = await inspection.inspectFeature(fixture.root, "freshness", "classification");
     assert.equal(current.content.repositoryFacts[0].freshness, "current");
     // 内容变化后同一事实变 stale
