@@ -2,7 +2,8 @@ import { isExplicitApproval } from "./approval.js";
 import { matchNaturalDecision } from "./decision-language.js";
 import { DevFlowError } from "./errors.js";
 import { buildGrillPresentation } from "./grill-interaction.js";
-import { normalizeReplyText, type InteractionOption, type UserInteraction } from "./user-interactions.js";
+import { normalizeReplyText } from "./user-interactions.js";
+import type { InteractionOption, UserInteraction } from "../policy/interaction.js";
 import type { FeatureState } from "./state-store.js";
 import type { PendingDecision, PendingDecisionKind } from "../policy/types.js";
 
@@ -20,7 +21,7 @@ export interface MatchedDecision {
 }
 
 function pendingInteraction(state: FeatureState): UserInteraction | undefined {
-  return Object.values(state.interactions ?? {}).find((value) => (value as UserInteraction).status === "pending") as UserInteraction | undefined;
+  return Object.values(state.interactions ?? {}).find((value) => value.status === "pending");
 }
 
 function rejectLegacyGrill(): never {
@@ -110,6 +111,6 @@ export function matchDecisionReply(
 
 export function pendingInteractionForDecision(state: FeatureState, decision: PendingDecision): UserInteraction | undefined {
   return pendingInteraction(state) ?? (decision.target
-    ? Object.values(state.interactions ?? {}).find((value) => (value as UserInteraction).target === decision.target) as UserInteraction | undefined
+    ? Object.values(state.interactions ?? {}).find((value) => value.target === decision.target)
     : undefined);
 }

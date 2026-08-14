@@ -166,10 +166,16 @@ test("可信用户确认绑定当前依据且只能消费一次", async () => {
   try {
     const presented = await acceptance.presentAcceptanceConfirmation(root, "acceptance", state.revision, ["AC-001"]);
     await store.recordHostEvent(root, { eventId: "accept-prompt", type: "user-prompt", host: "codex", text: "确认验收" });
-    const confirmed = await acceptance.resolveAcceptanceConfirmationAnswer(root, "acceptance", presented.state.revision, presented.interactionId, "确认验收", "codex");
-    assert.equal(confirmed.response.action, "confirm");
+    const confirmed = await store.answer({
+      root, featureId: "acceptance", expectedRevision: presented.state.revision, host: "codex",
+      credential: { source: "text", userReply: "确认验收" },
+    });
+    assert.equal(confirmed.action, "confirm");
     await assert.rejects(
-      () => acceptance.resolveAcceptanceConfirmationAnswer(root, "acceptance", confirmed.state.revision, presented.interactionId, "确认验收", "codex"),
+      () => store.answer({
+        root, featureId: "acceptance", expectedRevision: confirmed.state.revision, host: "codex",
+        credential: { source: "text", userReply: "确认验收" },
+      }),
       (error) => error.code === "INTERACTION_NOT_PENDING",
     );
   } finally {

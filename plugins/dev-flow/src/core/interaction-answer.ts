@@ -13,13 +13,17 @@ import {
 } from "./plan-revision.js";
 import { resolveGrillForAnswer } from "./requirements-grill.js";
 import { resolveApprovalForAnswer } from "./approval-interactions.js";
-import { resolveOwnershipForAnswer } from "./ownership-workflow.js";
+import { resolveOwnershipForAnswer, resolveTaskSwitchForAnswer } from "./ownership-workflow.js";
 import { resolveRouteConfirmationForAnswer } from "./route-workflow.js";
+import { resolveQualityExceptionForAnswer } from "./quality-exceptions.js";
+import { resolveAcceptanceConfirmationForAnswer } from "./acceptance.js";
+import { resolveRollbackGateForAnswer } from "./rollback.js";
+import { resolveReviewRiskAcceptanceForAnswer } from "./review-jobs.js";
 import {
   toPublicInteraction,
   type PublicInteraction,
-  type UserInteraction,
 } from "./user-interactions.js";
+import type { UserInteraction } from "../policy/interaction.js";
 import { readState, type FeatureState } from "./state-store.js";
 
 /**
@@ -71,7 +75,7 @@ export interface AnswerResolveResult {
 
 export type AnswerKindResolver = (ctx: AnswerResolveContext) => Promise<AnswerResolveResult>;
 
-/** 第一刀 kind 表：新增验收/回撤等只加行，不改 answer 或调用方。 */
+/** kind 表：13 种交互全部经统一入口落账；新增 kind 只加行，不改 answer 或调用方。 */
 const kindResolvers: Record<string, AnswerKindResolver> = {
   "decision-ratification": resolveRatificationForAnswer,
   "decision-revision": resolveRevisionForAnswer,
@@ -81,6 +85,11 @@ const kindResolvers: Record<string, AnswerKindResolver> = {
   approval: resolveApprovalForAnswer,
   "workspace-ownership": resolveOwnershipForAnswer,
   "route-confirmation": resolveRouteConfirmationForAnswer,
+  "quality-exception": resolveQualityExceptionForAnswer,
+  "acceptance-confirmation": resolveAcceptanceConfirmationForAnswer,
+  "rollback-confirmation": resolveRollbackGateForAnswer,
+  "risk-acceptance": resolveReviewRiskAcceptanceForAnswer,
+  "task-switch": resolveTaskSwitchForAnswer,
 };
 
 function pendingInteraction(state: FeatureState): UserInteraction | undefined {

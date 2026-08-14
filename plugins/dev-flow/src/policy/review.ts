@@ -1,17 +1,68 @@
 import type {
-  ReviewAssurance,
-  ReviewDepth,
-  ReviewExecutionMode,
-  ReviewFinding,
-  ReviewFindingInput,
-  ReviewFindingResolutionInput,
-  ReviewFindingSeverity,
-  ReviewJobCompletion,
-  ReviewJobRequirement,
-  ReviewRole,
   RiskLabel,
   RouteId,
 } from "./types.js";
+
+export type ReviewAssurance =
+  | "multi-perspective"
+  | "independent-sampling"
+  | "multi-agent-verified";
+
+export type ReviewExecutionMode =
+  | "isolated-sequential"
+  | "parallel-safe"
+  | "mcp-sampling"
+  | "native-subagent";
+
+export type ReviewRole =
+  | "code-quality"
+  | "requirement-fidelity"
+  | "requirements-coverage"
+  | "architecture-testability"
+  | "rollback-operability"
+  | "security"
+  | "data-irreversibility"
+  | "money-safety"
+  | "contract-failure"
+  | "recovery-observability"
+  | "critical-correctness";
+
+/** Review 2a keeps finding categories aligned with the role that produced them. */
+export type ReviewFindingCategory = ReviewRole;
+export type ReviewDepth = "standard" | "full";
+export type ReviewFindingSeverity = "blocking" | "warning" | "note";
+
+export interface ReviewJobRequirement {
+  role: ReviewRole;
+  reviewDepth: ReviewDepth;
+}
+
+export interface ReviewJobCompletion {
+  coverageSummary: string;
+  findings: ReviewFindingInput[];
+  resolutions?: ReviewFindingResolutionInput[];
+}
+
+export interface ReviewFindingInput {
+  severity: ReviewFindingSeverity;
+  category: ReviewFindingCategory;
+  targets: string[];
+  evidence: Array<{ path: string; line?: number }>;
+  claim: string;
+  recommendation: string;
+}
+
+export interface ReviewFinding extends ReviewFindingInput {
+  findingId: string;
+  jobId: string;
+}
+
+export interface ReviewFindingResolutionInput {
+  findingId: string;
+  evidence: Array<{ path: string; line?: number }>;
+  note: string;
+  outcome?: "resolved" | "still-blocking" | "risk-acceptance-required";
+}
 
 export interface ReviewSummary {
   batches: number;

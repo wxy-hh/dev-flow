@@ -122,21 +122,19 @@ async function completeReviewJobs(root, featureId, state, batch, options = {}) {
 
 async function satisfyHumanGate(root, featureId, state, step, options = {}) {
   await assertNext(root, featureId, { kind: "present-human-gate", step });
-  const current = await gates.presentApproval(root, featureId, state.revision, step);
+  const presented = await gates.presentApproval(root, featureId, state.revision);
   const reply = "批准实现";
-  const eventId = `${step}-prompt-${current.revision}`;
+  const eventId = `${step}-prompt-${presented.state.revision}`;
   const host = options.gateHosts?.[step] ?? options.host ?? "claude";
   if (options.recordPrompt) await options.recordPrompt({ root, eventId, host, text: reply });
   else await store.recordHostEvent(root, { eventId, type: "user-prompt", host, text: reply });
-  return gates.confirmApproval(
+  return (await store.answer({
     root,
     featureId,
-    current.revision,
-    step,
-    reply,
-    { promptEventId: eventId },
+    expectedRevision: presented.state.revision,
     host,
-  );
+    credential: { source: "text", userReply: reply },
+  })).state;
 }
 
 async function materializeScaffold(root, featureId, state, kind, requirementsState, options = {}) {

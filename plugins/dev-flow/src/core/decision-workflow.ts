@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { EMPTY_GOVERNANCE_LEDGER } from "../policy/types.js";
+import { EMPTY_GOVERNANCE_LEDGER } from "../policy/governance-records.js";
 import { createDecision, resolveDecision } from "./decision-ledger.js";
 import { DevFlowError } from "./errors.js";
 import { consumedPromptEventIds, promptFrom, resolveInteractionPromptEvent } from "./interaction-provenance.js";
@@ -10,10 +10,10 @@ import {
   getInteraction,
   resolveResponseForAnswer,
   toPublicInteraction,
-  type InteractionResponse,
+  type PresentedInteraction,
   type PublicInteraction,
-  type UserInteraction,
 } from "./user-interactions.js";
+import type { InteractionResponse, UserInteraction } from "../policy/interaction.js";
 import { mutate, mutatePrepared, readFeatureEvents, readState, type FeatureState } from "./state-store.js";
 import type { AnswerResolveContext, AnswerResolveResult } from "./interaction-answer.js";
 
@@ -187,11 +187,8 @@ export function ratifyDecision(draft: FeatureState, interaction: UserInteraction
   });
 }
 
-export interface DecisionRevisionResult {
-  state: FeatureState;
-  interaction: PublicInteraction;
+export interface DecisionRevisionResult extends PresentedInteraction {
   decisionId: string;
-  interactionId: string;
 }
 
 const revisionAffectedLabels: Record<string, string> = {
@@ -292,7 +289,6 @@ export function applyDecisionRevision(draft: FeatureState, interaction: UserInte
       delete intakeDraft.classification;
       delete intakeDraft.classificationBasis;
       delete intakeDraft.obligations;
-      delete intakeDraft.currentStage;
       delete intakeDraft.routeConfirmation;
       delete intakeDraft.traceability;
       delete intakeDraft.review;
@@ -331,7 +327,7 @@ export async function resolveRatificationForAnswer(ctx: AnswerResolveContext): P
   const next = await mutatePrepared(root, featureId, expectedRevision, confirms ? "decision-ratified" : "decision-ratification-rejected", async () => ({
     mutate: (draft) => {
       response = resolveResponseForAnswer(draft, interaction, { source: credential.source, action: credential.source === "elicitation" ? credential.action : undefined, comment: credential.source === "elicitation" ? credential.comment : undefined, userReply: credential.source === "text" ? credential.userReply : undefined, promptText, promptEventId, host });
-      if (confirms) ratifyDecision(draft, draft.interactions![interaction.id] as UserInteraction, response, promptEventId, host);
+      if (confirms) ratifyDecision(draft, draft.interactions![interaction.id], response, promptEventId, host);
       draft.lastUpdatedBy = { host, pluginVersion: __DEV_FLOW_VERSION__ };
     },
     eventData: () => ({ interactionId: interaction.id, action: matchedId }),
@@ -363,7 +359,7 @@ export async function resolveRevisionForAnswer(ctx: AnswerResolveContext): Promi
   const next = await mutatePrepared(root, featureId, expectedRevision, confirms ? "decision-revised" : "decision-revision-cancelled", async () => ({
     mutate: (draft) => {
       response = resolveResponseForAnswer(draft, interaction, { source: credential.source, action: credential.source === "elicitation" ? credential.action : undefined, comment: credential.source === "elicitation" ? credential.comment : undefined, userReply: credential.source === "text" ? credential.userReply : undefined, promptText, promptEventId, host });
-      if (confirms) applyDecisionRevision(draft, draft.interactions![interaction.id] as UserInteraction, response, promptEventId, host);
+      if (confirms) applyDecisionRevision(draft, draft.interactions![interaction.id], response, promptEventId, host);
       draft.lastUpdatedBy = { host, pluginVersion: __DEV_FLOW_VERSION__ };
     },
     eventData: () => ({ interactionId: interaction.id, action: matchedId }),

@@ -1,4 +1,5 @@
 import { routeDefinitionForFeature } from "../policy/contract.js";
+import { firstOpenStep } from "../policy/stages.js";
 import type { RouteDefinition } from "../policy/types.js";
 import { DevFlowError } from "./errors.js";
 import type { FeatureState } from "./state-store.js";
@@ -23,7 +24,7 @@ export function currentOpenStep(state: FeatureState): string | undefined {
   // Intake deliberately has no route. FeatureState keeps route required for
   // the routed branch for now, so this runtime guard documents that type debt.
   if (state.mode !== "routed") return undefined;
-  return routeDefinitionForFeature(state.route, state.classification.controls).orderedSteps.find((step) => state.steps[step]?.status !== "satisfied");
+  return firstOpenStep(routeDefinitionForFeature(state.route, state.classification.controls).orderedSteps, state.steps);
 }
 
 export function assertCurrentStep(state: FeatureState, step: string): void {

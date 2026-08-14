@@ -32,8 +32,10 @@ test("grill decision rejects an unavailable code and accepts a complete option l
       },
     },
   };
-  assert.throws(() => interactions.resolveTextInteraction(state, "i-1", "C", "codex", { promptEventId: "prompt" }), /DECISION_REPLY_NOT_RECOGNIZED/);
-  const response = interactions.resolveTextInteraction(state, "i-1", "扩大范围", "codex", { promptEventId: "prompt" });
+  // 统一回答 seam（ADR-0019）：纯函数匹配经 resolveResponseForAnswer 打，
+  // 不再直调私有化的 resolveTextInteraction。
+  assert.throws(() => interactions.resolveResponseForAnswer(state, state.interactions["i-1"], { source: "text", userReply: "C", host: "codex" }), /DECISION_REPLY_NOT_RECOGNIZED/);
+  const response = interactions.resolveResponseForAnswer(state, state.interactions["i-1"], { source: "text", userReply: "扩大范围", host: "codex" });
   assert.equal(response.action, "expand");
 });
 

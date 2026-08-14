@@ -8,6 +8,7 @@ import { loadSource } from "../helpers/load-source.mjs";
 const store = await loadSource("plugins/dev-flow/src/core/state-store.ts");
 const artifacts = await loadSource("plugins/dev-flow/src/core/artifacts.ts");
 const decisions = await loadSource("plugins/dev-flow/src/core/decision-interactions.ts");
+const stepOrder = await loadSource("plugins/dev-flow/src/core/step-order.ts");
 
 const config = {
   schemaVersion: 2,
@@ -117,7 +118,7 @@ test("revising a decision that does not affect classification keeps the confirme
     assert.equal(revised.state.routeConfirmation, undefined, "已确认的路线确认状态保持消费后形态");
     assert.equal(revised.state.governance.decisions.length, 2);
     assert.ok(revised.state.governance.decisions[0].supersededBy);
-    assert.equal(revised.state.currentStage, "requirements_alignment");
+    assert.equal(stepOrder.currentOpenStep(revised.state), "requirements_alignment");
   } finally {
     await rm(root, { recursive: true, force: true });
   }

@@ -1,4 +1,4 @@
-import type { HookEvent } from "./adapter-policy.js";
+import type { HookEvent } from "./bash-syntax.js";
 import { classifyRisk, type RiskAssessment } from "./risk-policy.js";
 import {
   readActive,

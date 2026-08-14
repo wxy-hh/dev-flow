@@ -1,4 +1,4 @@
-import type { ReviewFinding, } from "../policy/types.js";
+import type { ReviewFinding, } from "../policy/review.js";
 import type { ReviewFindingEvent, ReviewLedger } from "../policy/review.js";
 
 export type EffectiveFindingStatus = "unresolved" | "resolved" | "needs-revalidation" | "still-blocking" | "risk-accepted";

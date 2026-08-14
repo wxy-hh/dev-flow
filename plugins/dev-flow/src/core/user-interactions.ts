@@ -1,82 +1,19 @@
 import { randomUUID } from "node:crypto";
 import { matchNaturalDecision } from "./decision-language.js";
 import { DevFlowError } from "./errors.js";
-import {
-  buildGrillPresentation,
-  matchGrillReply,
-  type GrillAnswerCode,
-  type GrillRecommendation,
-} from "./grill-interaction.js";
+import { buildGrillPresentation, matchGrillReply } from "./grill-interaction.js";
+import type {
+  GrillAnswerCode,
+  GrillRecommendation,
+  InteractionKind,
+  InteractionOption,
+  InteractionResponse,
+  UserInteraction,
+} from "../policy/interaction.js";
 import type { FeatureState } from "./state-store.js";
-
-export type InteractionKind = "approval" | "grill" | "risk-acceptance" | "rollback-confirmation" | "quality-exception" | "workspace-ownership" | "route-confirmation" | "task-switch" | "decision-ratification" | "decision-revision" | "plan-revision" | "side-effect-rerun" | "acceptance-confirmation";
-export type InteractionSource = "elicitation" | "text";
 
 /** 比较用归一化与语义兼容判定：仅用于匹配比较，存储始终保留原始输入。 */
 export { normalizeReplyText, textCompatible } from "./text-normalization.js";
-
-export interface InteractionOption {
-  id: string;
-  label: string;
-  description?: string;
-  requiresComment?: boolean;
-}
-
-export interface InteractionResponse {
-  action: string;
-  kind?: "option" | "other";
-  answerCode?: GrillAnswerCode;
-  selectedOptionId?: string;
-  rawReply?: string;
-  comment?: string;
-  source: InteractionSource;
-  promptEventId?: string;
-  turnBoundaryEventId?: string;
-  userReply?: string;
-  host: "claude" | "codex";
-  respondedAt: string;
-}
-
-export interface UserInteraction {
-  id: string;
-  kind: InteractionKind;
-  target: string;
-  basisHash: string;
-  /** Immutable, Core-owned context for a one-time risk-acceptance decision. */
-  binding?: {
-    batchId: string;
-    findingIds: string[];
-    findingSetHash: string;
-  };
-  question?: string;
-  options: InteractionOption[];
-  recommendation?: GrillRecommendation;
-  presentedAt: string;
-  /** State revision captured when the question was presented. */
-  presentedRevision?: number;
-  /** Append-only ledger cursor identifying the event that presented this interaction. */
-  presentationEventId?: string;
-  /** Immutable workspace paths bound to an ownership question. */
-  workspacePaths?: string[];
-  /** Full unknown-path set captured when a batch ownership question was shown. */
-  workspaceBatchPaths?: string[];
-  /** Remaining paths for an explicit one-by-one ownership flow. */
-  workspaceRemainingPaths?: string[];
-  status: "pending" | "resolved";
-  response?: InteractionResponse;
-  /** 决策追认候选内容（kind === "decision-ratification" 时存在）。 */
-  ratification?: { question: string; evidence: string; conclusion: string; factRefs: string[] };
-  /** 决策修订候选内容（kind === "decision-revision" 时存在）。 */
-  revision?: { decisionId: string; oldConclusion: string; newConclusion: string; reason: string; affected: string[] };
-  /** 实施中计划修订候选（kind === "plan-revision" 时存在）。 */
-  planRevision?: { affectedUnits: string[]; redoUnits: string[]; sideEffectUnits: string[]; reviewInvalidated: boolean; fallbackReason?: string };
-  /** Internal immutable inputs used to reject a stale plan-revision preview. */
-  planRevisionBasis?: { artifactSha256: string; projectConfigSha256: string; traceabilitySha256: string };
-  /** 副作用单元重跑确认（kind === "side-effect-rerun" 时存在）。 */
-  sideEffectRerun?: { units: string[] };
-  /** 验收确认只证明用户确认当前 AC 结果，不证明浏览器或代码操作发生。 */
-  acceptanceConfirmation?: { acceptanceCriterionIds: string[]; deliveryFingerprint: string; dispositionHash: string };
-}
 
 export interface PublicInteraction {
   kind: InteractionKind;
@@ -92,6 +29,17 @@ export interface PublicInteraction {
   /** 副作用单元重跑确认候选（kind === "side-effect-rerun" 时存在）。 */
   sideEffectRerun?: { units: string[] };
   acceptanceConfirmation?: { acceptanceCriterionIds: string[]; deliveryFingerprint: string; dispositionHash: string };
+}
+
+/**
+ * 呈现门禁的统一返回基座（ADR-0019）：状态 + 已公开交互 + 关联 id。
+ * 各 present 函数返回 PresentedInteraction & 各自 extras——MCP 管道的
+ * elicitAndAnswer 只消费这个基座，不再感知 per-case 形状。
+ */
+export interface PresentedInteraction {
+  state: FeatureState;
+  interaction: PublicInteraction;
+  interactionId: string;
 }
 
 export interface InteractionInput {
@@ -120,7 +68,7 @@ export interface InteractionInput {
 
 function interactions(state: FeatureState): Record<string, UserInteraction> {
   if (!state.interactions) state.interactions = {};
-  return state.interactions as Record<string, UserInteraction>;
+  return state.interactions;
 }
 
 function validateOptions(options: InteractionOption[]): void {
@@ -142,7 +90,7 @@ export function createInteraction(state: FeatureState, input: InteractionInput):
     if (!input.recommendation) throw new DevFlowError("GRILL_RECOMMENDATION_REQUIRED", "grill requires one explicit recommendation");
     buildGrillPresentation({ question: input.question ?? "", options: input.options, recommendation: input.recommendation });
   }
-  const pending = Object.values(state.interactions ?? {}).filter((value) => (value as UserInteraction).status === "pending");
+  const pending = Object.values(state.interactions ?? {}).filter((value) => value.status === "pending");
   if (pending.length) throw new DevFlowError("MULTIPLE_PENDING_DECISIONS", "同一 feature 只能存在一个待决问题。", { userMessage: "当前已有一个问题等待回答。", cause: "系统拒绝并行创建第二个 pending decision。", impact: "新问题没有被创建，原问题仍等待回答。", recoveryKind: "refresh", recoveryInstruction: "先回答当前问题，下一回合再处理新问题。", retryOriginal: false });
   const current = findInteractionForTarget(state, input.target);
   if (current?.status === "pending") {
@@ -182,7 +130,7 @@ export function createInteraction(state: FeatureState, input: InteractionInput):
 }
 
 export function getInteraction(state: FeatureState, interactionId: string): UserInteraction {
-  const interaction = state.interactions?.[interactionId] as UserInteraction | undefined;
+  const interaction = state.interactions?.[interactionId];
   if (!interaction) throw new DevFlowError("INTERACTION_NOT_FOUND", interactionId);
   return interaction;
 }
@@ -194,16 +142,14 @@ export function interactionResponse(state: FeatureState, interactionId: string):
 }
 
 export function findInteractionForTarget(state: FeatureState, target: string): UserInteraction | undefined {
-  return Object.values(state.interactions ?? {}).find((value) => {
-    const interaction = value as UserInteraction;
-    return interaction.target === target && interaction.status === "pending";
-  }) as UserInteraction | undefined;
+  return Object.values(state.interactions ?? {}).find(
+    (interaction) => interaction.target === target && interaction.status === "pending",
+  );
 }
 
 export function clearInteractionsForTarget(state: FeatureState, target: string): void {
   if (!state.interactions) return;
-  for (const [id, value] of Object.entries(state.interactions)) {
-    const interaction = value as UserInteraction;
+  for (const [id, interaction] of Object.entries(state.interactions)) {
     if (interaction.target === target) delete state.interactions[id];
   }
   if (state.pendingDecision?.target === target) delete state.pendingDecision;
@@ -211,8 +157,8 @@ export function clearInteractionsForTarget(state: FeatureState, target: string):
 
 export function clearInteractionsByKind(state: FeatureState, kind: InteractionKind): void {
   if (!state.interactions) return;
-  for (const [id, value] of Object.entries(state.interactions)) {
-    if ((value as UserInteraction).kind === kind) delete state.interactions[id];
+  for (const [id, interaction] of Object.entries(state.interactions)) {
+    if (interaction.kind === kind) delete state.interactions[id];
   }
   if (state.pendingDecision?.kind === (kind === "risk-acceptance" ? "review-risk" : kind)) delete state.pendingDecision;
 }
@@ -235,7 +181,7 @@ function validateComment(option: InteractionOption, comment: string | undefined)
   return normalized || undefined;
 }
 
-export function resolveNativeInteraction(
+function resolveNativeInteraction(
   state: FeatureState,
   interactionId: string,
   action: string,
@@ -291,7 +237,7 @@ export function resolveNativeInteraction(
   return response;
 }
 
-export function resolveTextInteraction(
+function resolveTextInteraction(
   state: FeatureState,
   interactionId: string,
   userReply: string,
@@ -374,7 +320,7 @@ export function resolveResponseForAnswer(
     phraseAction?: string;
   },
 ): InteractionResponse {
-  const live = draft.interactions?.[interaction.id] as UserInteraction | undefined;
+  const live = draft.interactions?.[interaction.id];
   if (!live || live.status !== "pending") {
     throw new DevFlowError("INTERACTION_ALREADY_RESOLVED", interaction.id);
   }

@@ -210,9 +210,6 @@ export async function invalidateAffectedClaims(
     // 检查；问题在新内容上仍存在时才需要用户再次接受。
     draft.logicComplete = false;
     delete draft.steps.finalize;
-    const definition = routeDefinitionForState(draft);
-    draft.currentStage = definition.orderedSteps.find((step) => draft.steps[step]?.status !== "satisfied")
-      ?? definition.orderedSteps[0];
     draft.lastInvalidation = {
       at: new Date().toISOString(),
       ...(changedFiles ? { changedFiles } : {}),

@@ -61,7 +61,10 @@ test("a trusted user event is bound to one interaction and cannot be replayed fo
       riskSummary: "验证证据需要用户明确接受。",
     });
     await assert.rejects(
-      () => quality.resolveQualityExceptionAnswer(fixture.root, "credential-contract", presented.state.revision, presented.interactionId, "确认登记", "codex"),
+      () => store.answer({
+        root: fixture.root, featureId: "credential-contract", expectedRevision: presented.state.revision, host: "codex",
+        credential: { source: "text", userReply: "确认登记" },
+      }),
       (error) => error.code === "INTERACTION_PROVENANCE_UNAVAILABLE",
     );
     // 交互保持 pending，事件未被重复消费
@@ -113,12 +116,15 @@ test("each governance record kind is written only to its own ledger", async () =
       fingerprint: "d".repeat(64),
       riskSummary: "验证证据需要用户明确接受。",
     });
-    const accepted = await quality.resolveQualityExceptionElicitation(fixture.root, "ledger-contract", presented.state.revision, presented.interactionId, "accept", "接受验证风险", "codex");
-    assert.ok(accepted.governance.authorizations.some((authorization) => authorization.authorizationType === "risk-acceptance"));
-    assert.equal(accepted.governance.decisions.filter((decision) => decision.recordId !== recorded.decisionId).length, 0);
-    assert.equal(accepted.governance.repositoryFacts.length, 0);
+    const accepted = await store.answer({
+      root: fixture.root, featureId: "ledger-contract", expectedRevision: presented.state.revision, host: "codex",
+      credential: { source: "elicitation", action: "accept", comment: "接受验证风险" },
+    });
+    assert.ok(accepted.state.governance.authorizations.some((authorization) => authorization.authorizationType === "risk-acceptance"));
+    assert.equal(accepted.state.governance.decisions.filter((decision) => decision.recordId !== recorded.decisionId).length, 0);
+    assert.equal(accepted.state.governance.repositoryFacts.length, 0);
     // 仓库事实 → 只进 repositoryFacts
-    const registered = await store.registerRepositoryFact(fixture.root, "ledger-contract", accepted.revision, {
+    const registered = await store.registerRepositoryFact(fixture.root, "ledger-contract", accepted.state.revision, {
       assertion: "共享接口定义在 src/counter.js",
       location: { kind: "positive", path: "src/counter.js" },
     }, "codex");

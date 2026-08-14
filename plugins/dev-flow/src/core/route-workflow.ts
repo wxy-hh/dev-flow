@@ -91,18 +91,6 @@ export async function lockClassification(
     if (decision.currency !== "current") throw new DevFlowError("BOUNDARY_DECISION_NOT_CURRENT", "classification references a decision whose basis is not current", { decisionRef, currency: decision.currency });
   }
   const selected = selectBaseRoute(facts);
-  if (selected.contradictions.length) {
-    throw new DevFlowError("CLASSIFICATION_CONTRADICTION", "classification facts contain unresolved contradictions", {
-      contradictions: selected.contradictions,
-      userMessage: "分类参数存在冲突或缺失，无法锁定路线。",
-      cause: `分类事实存在 ${selected.contradictions.length} 处矛盾：${selected.contradictions.join("；")}`,
-      impact: "路线不会锁定，仍停留在 intake 阶段。",
-      recoveryKind: "retry",
-      recoveryInstruction: "修正分类参数（补齐结构化 signals、避免字段重复或与 classificationBasis 冲突）后重新 dev_flow_lock_classification。",
-      retryOriginal: true,
-      requiresUserDecision: false,
-    });
-  }
   const current = await readState(root, id);
   if (current.revision !== expectedRevision) throw new DevFlowError("STATE_REVISION_CONFLICT", "state revision changed", { currentRevision: current.revision });
   if (current.mode !== "intake") throw new DevFlowError("CLASSIFICATION_ALREADY_LOCKED", "classification is already locked");
@@ -218,18 +206,6 @@ export function applyLock(
   return async (current, nextRevision) => {
     if (current.mode !== "intake") throw new DevFlowError("CLASSIFICATION_ALREADY_LOCKED", "classification is already locked");
     const selected = selectBaseRoute(facts);
-    if (selected.contradictions.length) {
-      throw new DevFlowError("CLASSIFICATION_CONTRADICTION", "classification facts contain unresolved contradictions", {
-        contradictions: selected.contradictions,
-        userMessage: "分类参数存在冲突或缺失，无法锁定路线。",
-        cause: `分类事实存在 ${selected.contradictions.length} 处矛盾：${selected.contradictions.join("；")}`,
-        impact: "路线不会锁定，仍停留在 intake 阶段。",
-        recoveryKind: "retry",
-        recoveryInstruction: "修正分类参数后重新锁定分类。",
-        retryOriginal: true,
-        requiresUserDecision: false,
-      });
-    }
     if (confirmationBasisHash(facts, selected) !== basisHash) {
       throw new DevFlowError("ROUTE_CONFIRMATION_STALE", "路线确认依据已变化。", {
         userMessage: "确认依据已变化，需要重新确认当前路线。",
@@ -270,7 +246,6 @@ export function applyLock(
         draft.classification = selected.classification;
         draft.classificationBasis = selected.classificationBasis;
         draft.obligations = selected.obligations;
-        draft.currentStage = definition.orderedSteps[0];
         draft.workflowCapabilities = normalizeWorkflowCapabilities(SUPPORTED_WORKFLOW_CAPABILITIES);
         draft.steps = Object.fromEntries(definition.orderedSteps.map((step) => [step, { status: "pending" as const }]));
         draft.humanGates = {};
@@ -315,7 +290,7 @@ export async function resolveRouteConfirmationForAnswer(ctx: AnswerResolveContex
     throw new DevFlowError("ROUTE_CONFIRMATION_CORRECTION_REQUIRED", "路线需要修正，不能按当前分类锁定。", { comment: matched.comment });
   }
   const confirmation = state.routeConfirmation;
-  let response: import("./user-interactions.js").InteractionResponse | undefined;
+  let response: import("../policy/interaction.js").InteractionResponse | undefined;
   let transitionData: { previousRoute?: string; invalidatedSteps?: string[]; invalidatedArtifacts?: string[] } | undefined;
 
   if (state.mode === "intake") {
@@ -457,7 +432,6 @@ function applyRouteTransition(state: FeatureState, selected: ReturnType<typeof s
   state.interactions = {};
   state.verification = { attempts: [] };
   state.logicComplete = false;
-  state.currentStage = nextDefinition.orderedSteps.find((step) => retainedSteps[step]?.status !== "satisfied") ?? nextDefinition.orderedSteps[0];
   if (!selected.classification.controls.trace) delete state.traceability;
   if (!reviewLedgerRequired(selected.route, selected.classification.controls)) delete state.review;
   return { previousRoute, invalidatedSteps, invalidatedArtifacts };

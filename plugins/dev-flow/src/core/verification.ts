@@ -1,12 +1,13 @@
 import { createHash } from "node:crypto";
-import { EMPTY_GOVERNANCE_LEDGER, type VerificationKind } from "../policy/types.js";
+import { type VerificationKind } from "../policy/types.js";
+import { EMPTY_GOVERNANCE_LEDGER } from "../policy/governance-records.js";
 import { DevFlowError } from "./errors.js";
 import { fingerprintFeatureOwned, snapshotGovernedRoots } from "./fingerprint.js";
 import { assertRequirementsGrillSatisfied } from "./requirements-grill.js";
 import { mutate, readProjectConfig, readState, type FeatureState } from "./state-store.js";
 import { verificationCommandHashesForRefs, type ProjectConfig, type VerificationCommand } from "./project-config.js";
 import { readTraceability } from "./traceability-store.js";
-import type { AcceptanceDispositionState } from "../policy/types.js";
+import type { AcceptanceDispositionState } from "../policy/governance-records.js";
 import type { TraceabilityLedger } from "../policy/traceability.js";
 import { assertCurrentStep, currentOpenStep } from "./step-order.js";
 import { recordRepairAttempt, startRepairLoop, markRepairCompleted } from "./repair-loop.js";
@@ -339,9 +340,6 @@ export async function runVerification(
       if (state.classification.riskLabels.includes("irreversible_consequence")) {
         state.obligations = satisfyObligations(state.obligations, ["rollback"]);
       }
-      // Keep the persisted cache aligned with the route-derived public stage.
-      // The steps remain the source of truth for ordering.
-      state.currentStage = "finalize";
     } else if (exitCode === 0) {
       // 自动命令成功不代表人工验收已经完成；保留尝试记录但不写
       // verification-current claim，也不满足 verification 步骤。

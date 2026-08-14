@@ -1,4 +1,5 @@
-import { normalizeReplyText, textCompatible, type UserInteraction } from "./user-interactions.js";
+import { normalizeReplyText, textCompatible } from "./user-interactions.js";
+import type { UserInteraction } from "../policy/interaction.js";
 import { DevFlowError } from "./errors.js";
 
 export interface HostEventRecord {

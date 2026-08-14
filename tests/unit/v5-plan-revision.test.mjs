@@ -12,6 +12,7 @@ const steps = await loadSource("plugins/dev-flow/src/core/feature-check.ts");
 const units = await loadSource("plugins/dev-flow/src/core/implementation-units.ts");
 const checkpoints = await loadSource("plugins/dev-flow/src/core/checkpoints.ts");
 const decisions = await loadSource("plugins/dev-flow/src/core/decision-interactions.ts");
+const stepOrder = await loadSource("plugins/dev-flow/src/core/step-order.ts");
 
 const projectConfig = {
   schemaVersion: 2,
@@ -105,7 +106,7 @@ test("revising the plan during implementation pauses the step, shows the impact,
     const revised = await store.answer({ root, featureId: id, expectedRevision: preview2.state.revision, host: "codex", credential: { source: "text", userReply: "确认修订" } });
     assert.equal(revised.state.implementationUnits.find((u) => u.unitId === "UNIT-001").status, "pending");
     assert.equal(revised.state.implementationUnits.find((u) => u.unitId === "UNIT-002").status, "pending");
-    assert.equal(revised.state.currentStage, "planning");
+    assert.equal(stepOrder.currentOpenStep(revised.state), "planning");
     assert.equal(revised.state.steps.planning, undefined);
     assert.ok(revised.state.traceability, "trace pointer stays until the revised plan is re-registered");
     // 重新登记修订后的计划并推进，重做受影响单元（implementation 步骤在单元完成后登记）
@@ -143,6 +144,10 @@ test("side-effect units are flagged, kept, and only re-run after explicit user c
     const revised = await store.answer({ root, featureId: id, expectedRevision: preview.state.revision, host: "codex", credential: { source: "text", userReply: "确认修订" } });
     assert.equal(revised.state.implementationUnits.find((u) => u.unitId === "UNIT-001").status, "checkpointed");
     assert.equal(decisions.pendingDecisionForState(revised.state).kind, "side-effect-rerun");
+    // answer 返回契约：下一题经 result.pending 给出（dev_flow_answer 消费同一字段，不再自行重推导）。
+    assert.ok(revised.pending, "answering the revision must surface the next question via result.pending");
+    assert.equal(revised.pending.kind, "side-effect-rerun");
+    assert.equal(revised.pending.status, "pending");
     const rerun = Object.values(revised.state.interactions).find((value) => value.kind === "side-effect-rerun" && value.status === "pending");
     assert.ok(rerun, "side-effect-rerun interaction must be presented");
     assert.match(rerun.question, /有副作用的操作/);
@@ -211,7 +216,7 @@ test("plan revision confirmation rejects a preview whose plan file changed witho
       (error) => error.code === "PLAN_REVISION_STALE",
     );
     const unchanged = await store.readState(root, id);
-    assert.equal(unchanged.currentStage, "implementation");
+    assert.equal(stepOrder.currentOpenStep(unchanged), "implementation");
     assert.equal(unchanged.interactions[preview.interactionId].status, "pending");
   } finally {
     await rm(root, { recursive: true, force: true });

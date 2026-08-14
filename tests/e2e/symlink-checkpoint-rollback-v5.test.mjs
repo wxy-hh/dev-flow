@@ -60,7 +60,10 @@ test("tracked in-repository symlink survives checkpoint and is atomically restor
     assert.ok(first.checkpointId);
     assert.ok(second.checkpointId);
     const presented = await rollback.presentRollbackGate(fixture.root, state.featureId, state.revision, first.checkpointId);
-    state = await rollback.resolveRollbackGateElicitation(fixture.root, state.featureId, presented.state.revision, presented.interactionId, "confirm", undefined, "codex");
+    state = (await store.answer({
+      root: fixture.root, featureId: state.featureId, expectedRevision: presented.state.revision, host: "codex",
+      credential: { source: "elicitation", action: "confirm" },
+    })).state;
     const result = await rollback.executeRollback(fixture.root, state.featureId, state.revision, first.checkpointId);
     assert.equal(result.outcome, "committed");
     assert.equal(await readlink(path.join(fixture.root, "src", "two.ts")), "../target-a.js");

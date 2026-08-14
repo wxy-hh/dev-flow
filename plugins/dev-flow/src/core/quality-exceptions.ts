@@ -1,26 +1,24 @@
 import { resolveInteractionPromptEvent } from "./interaction-provenance.js";
 import { createHash } from "node:crypto";
 import { DevFlowError } from "./errors.js";
-import { mutate, readFeatureEvents, readProjectConfig, readState, type FeatureState } from "./state-store.js";
+import { mutate, mutatePrepared, readFeatureEvents, readProjectConfig, readState, type FeatureState } from "./state-store.js";
 import { fingerprintFeatureOwned, fingerprintGovernedRoots } from "./fingerprint.js";
-import { EMPTY_GOVERNANCE_LEDGER } from "../policy/types.js";
+import { EMPTY_GOVERNANCE_LEDGER } from "../policy/governance-records.js";
 import {
   createInteraction,
   getInteraction,
-  resolveNativeInteraction,
-  resolveTextInteraction,
+  resolveResponseForAnswer,
   toPublicInteraction,
+  type PresentedInteraction,
   type PublicInteraction,
 } from "./user-interactions.js";
+import type { InteractionResponse } from "../policy/interaction.js";
 import type { QualityException } from "../policy/types.js";
+import type { AnswerResolveContext, AnswerResolveResult } from "./interaction-answer.js";
 import { satisfyObligations } from "../policy/obligations.js";
 import { currentRiskAuthorizations } from "./governance-state.js";
 
-export interface QualityExceptionPresentation {
-  state: FeatureState;
-  interaction: PublicInteraction;
-  interactionId: string;
-}
+export type QualityExceptionPresentation = PresentedInteraction;
 
 function validKind(kind: string): QualityException["kind"] {
   if (kind === "review" || kind === "verification" || kind === "checkpoint" || kind === "implementation-evidence") return kind;
@@ -96,116 +94,95 @@ export async function presentQualityException(
   return { state, interaction: toPublicInteraction(interaction), interactionId };
 }
 
-export async function resolveQualityExceptionAnswer(
-  root: string,
-  featureId: string,
-  expectedRevision: number,
-  interactionId: string,
-  userReply: string,
-  host: "claude" | "codex",
-): Promise<FeatureState> {
-  const initial = await readState(root, featureId);
-  const interaction = getInteraction(initial, interactionId);
-  if (interaction.kind !== "quality-exception" || interaction.status !== "pending") throw new DevFlowError("INTERACTION_NOT_PENDING", "当前风险问题已经处理。", { interactionId });
-  const match = resolveInteractionPromptEvent(await readFeatureEvents(root, featureId), initial, interaction, {
-    host,
-    userReply,
-  });
-  return resolveQualityExceptionResponse(root, featureId, expectedRevision, interactionId, host, {
-    source: "text",
-    userReply,
-    promptEventId: match.eventId,
-    promptText: match.text,
-  });
-}
-
-/** 原生表单来源：用户选择即可信落账，不需要宿主 user-prompt 事件。 */
-export async function resolveQualityExceptionElicitation(
-  root: string,
-  featureId: string,
-  expectedRevision: number,
-  interactionId: string,
-  action: string,
-  comment: string | undefined,
-  host: "claude" | "codex",
-): Promise<FeatureState> {
-  return resolveQualityExceptionResponse(root, featureId, expectedRevision, interactionId, host, {
-    source: "elicitation",
-    action,
-    comment,
-  });
-}
-
-type QualityExceptionResolution =
-  | { source: "text"; userReply: string; promptEventId: string; promptText?: string }
-  | { source: "elicitation"; action: string; comment?: string };
-
-async function resolveQualityExceptionResponse(
-  root: string,
-  featureId: string,
-  expectedRevision: number,
-  interactionId: string,
-  host: "claude" | "codex",
-  input: QualityExceptionResolution,
-): Promise<FeatureState> {
-  const initial = await readState(root, featureId);
-  const interaction = getInteraction(initial, interactionId);
-  if (interaction.kind !== "quality-exception" || interaction.status !== "pending") throw new DevFlowError("INTERACTION_NOT_PENDING", "当前风险问题已经处理。", { interactionId });
-  return mutate(root, featureId, expectedRevision, "quality-exception-answered", async (state) => {
-    const response = input.source === "text"
-      ? resolveTextInteraction(state, interactionId, input.promptText ?? input.userReply, host, { promptEventId: input.promptEventId })
-      : resolveNativeInteraction(state, interactionId, input.action, input.comment, host);
-    const kind = interaction.target.slice("quality-exception:".length) as QualityException["kind"];
-    if (response.action === "accept") {
-      // 风险接受绑定接受时刻的实时交付内容（issue 22）：lastWorkspaceFingerprint
-      // 可能滞后于实际写入，旧指纹会让内容变化检测失效。
-      const config = await readProjectConfig(root);
-      const fingerprint = await fingerprintFeatureOwned(root, config, state.workspace.ownership);
-      const fullFingerprint = await fingerprintGovernedRoots(root, config);
-      // 风险接受建立新的内容基线；否则后续 finalize 会把“已接受的旧变化”
-      // 误判成又一次工作区变化。
-      state.startBusinessFingerprint = fullFingerprint;
-      state.businessFingerprint = fingerprint;
-      // 治理账本：风险接受是"授权"记录，追加到不可变 authorizations 账本并
-      // 绑定本次交互凭证（spec §202；与 recordDecision 的账本模式一致）。
-      const gov = state.governance ?? EMPTY_GOVERNANCE_LEDGER;
-      const credentialId = `CRED-qe-${interaction.id}`;
-      const authorizationId = `AUTH-${createHash("sha256").update(`${kind}|${fingerprint}|${response.respondedAt}`).digest("hex").slice(0, 16)}`;
-      const authorizations = [...gov.authorizations];
-      if (!authorizations.some((authorization) => authorization.recordId === authorizationId)) {
-        authorizations.push({
-          recordId: authorizationId,
-          kind: "authorization",
-          authorizationType: "risk-acceptance",
-          target: kind,
-          credentialId,
-          basis: { kind: "content", sha256: fingerprint },
-          recordedAt: response.respondedAt,
-        });
-      }
-      const credentials = [...gov.credentials];
-      if (!credentials.some((credential) => credential.recordId === credentialId)) {
-        credentials.push({
-          recordId: credentialId,
-          kind: "credential",
-          source: input.source === "elicitation" ? "native-form" : "text",
-          host,
-          interactionId,
-          ...(response.selectedOptionId ? { optionId: response.selectedOptionId } : {}),
-          // Native forms do not have a raw user-prompt reply. Preserve the
-          // supplied comment as the credential's user-visible text so the
-          // acceptance record remains auditable after legacy projections are
-          // rebuilt from the governance ledger.
-          ...((response.rawReply ?? response.comment) ? { rawText: response.rawReply ?? response.comment } : {}),
-          basis: interaction.presentationEventId ? { kind: "event", eventId: interaction.presentationEventId } : undefined,
-          recordedAt: response.respondedAt,
-        });
-      }
-      state.governance = { ...gov, authorizations, credentials };
-      if (kind === "review" || kind === "verification" || kind === "checkpoint") {
-        state.obligations = satisfyObligations(state.obligations, [kind]);
-      }
+/** 质量例外（风险接受）经统一回答入口落账（ADR-0019）：accept 时追加风险授权账本。 */
+export async function resolveQualityExceptionForAnswer(ctx: AnswerResolveContext): Promise<AnswerResolveResult> {
+  const { root, featureId, expectedRevision, host, credential, interaction, state } = ctx;
+  if (interaction.kind !== "quality-exception" || interaction.status !== "pending") {
+    throw new DevFlowError("INTERACTION_NOT_PENDING", "当前风险问题已经处理。", { interactionId: interaction.id });
+  }
+  let promptEventId: string | undefined;
+  let promptText: string | undefined;
+  if (credential.source === "text") {
+    const match = resolveInteractionPromptEvent(await readFeatureEvents(root, featureId), state, interaction, {
+      host,
+      userReply: credential.userReply,
+    });
+    promptEventId = match.eventId;
+    promptText = match.text;
+  }
+  let response: InteractionResponse | undefined;
+  const next = await mutatePrepared(root, featureId, expectedRevision, "quality-exception-answered", async (current) => {
+    const live = getInteraction(current as FeatureState, interaction.id);
+    if (live.kind !== "quality-exception" || live.status !== "pending") {
+      throw new DevFlowError("INTERACTION_NOT_PENDING", "当前风险问题已经处理。", { interactionId: interaction.id });
     }
-    state.lastUpdatedBy = { host, pluginVersion: __DEV_FLOW_VERSION__ };
-  }, { interactionId });
+    return {
+      mutate: async (draft) => {
+        response = resolveResponseForAnswer(draft, interaction, {
+          source: credential.source,
+          action: credential.source === "elicitation" ? credential.action : undefined,
+          comment: credential.source === "elicitation" ? credential.comment : undefined,
+          userReply: credential.source === "text" ? credential.userReply : undefined,
+          promptText,
+          promptEventId,
+          host,
+        });
+        const kind = interaction.target.slice("quality-exception:".length) as QualityException["kind"];
+        if (response.action === "accept") {
+          // 风险接受绑定接受时刻的实时交付内容（issue 22）：lastWorkspaceFingerprint
+          // 可能滞后于实际写入，旧指纹会让内容变化检测失效。
+          const config = await readProjectConfig(root);
+          const fingerprint = await fingerprintFeatureOwned(root, config, draft.workspace.ownership);
+          const fullFingerprint = await fingerprintGovernedRoots(root, config);
+          // 风险接受建立新的内容基线；否则后续 finalize 会把“已接受的旧变化”
+          // 误判成又一次工作区变化。
+          draft.startBusinessFingerprint = fullFingerprint;
+          draft.businessFingerprint = fingerprint;
+          // 治理账本：风险接受是"授权"记录，追加到不可变 authorizations 账本并
+          // 绑定本次交互凭证（spec §202；与 recordDecision 的账本模式一致）。
+          const gov = draft.governance ?? EMPTY_GOVERNANCE_LEDGER;
+          const credentialId = `CRED-qe-${interaction.id}`;
+          const authorizationId = `AUTH-${createHash("sha256").update(`${kind}|${fingerprint}|${response.respondedAt}`).digest("hex").slice(0, 16)}`;
+          const authorizations = [...gov.authorizations];
+          if (!authorizations.some((authorization) => authorization.recordId === authorizationId)) {
+            authorizations.push({
+              recordId: authorizationId,
+              kind: "authorization",
+              authorizationType: "risk-acceptance",
+              target: kind,
+              credentialId,
+              basis: { kind: "content", sha256: fingerprint },
+              recordedAt: response.respondedAt,
+            });
+          }
+          const credentials = [...gov.credentials];
+          if (!credentials.some((existing) => existing.recordId === credentialId)) {
+            credentials.push({
+              recordId: credentialId,
+              kind: "credential",
+              source: credential.source === "elicitation" ? "native-form" : "text",
+              host,
+              interactionId: interaction.id,
+              ...(response.selectedOptionId ? { optionId: response.selectedOptionId } : {}),
+              // Native forms do not have a raw user-prompt reply. Preserve the
+              // supplied comment as the credential's user-visible text so the
+              // acceptance record remains auditable after legacy projections are
+              // rebuilt from the governance ledger.
+              ...((response.rawReply ?? response.comment) ? { rawText: response.rawReply ?? response.comment } : {}),
+              basis: interaction.presentationEventId ? { kind: "event", eventId: interaction.presentationEventId } : undefined,
+              recordedAt: response.respondedAt,
+            });
+          }
+          draft.governance = { ...gov, authorizations, credentials };
+          if (kind === "review" || kind === "verification" || kind === "checkpoint") {
+            draft.obligations = satisfyObligations(draft.obligations, [kind]);
+          }
+        }
+        draft.lastUpdatedBy = { host, pluginVersion: __DEV_FLOW_VERSION__ };
+      },
+      eventData: { interactionId: interaction.id },
+    };
+  });
+  if (!response) throw new DevFlowError("INTERACTION_NOT_RESOLVED", interaction.id);
+  return { state: next, action: response.action, ...(response.comment ? { comment: response.comment } : {}) };
 }

@@ -4,7 +4,7 @@ import path from "node:path";
 import { reviewEnforcementRequired } from "../policy/contract.js";
 import { deriveReviewJobRequirements, evidenceSourcesForReviewBatch } from "../policy/review.js";
 import type { ReviewBatch, ReviewEvidenceSource, ReviewFindingDisposition, ReviewJob, ReviewLedger } from "../policy/review.js";
-import type { ReviewFinding } from "../policy/types.js";
+import type { ReviewFinding } from "../policy/review.js";
 import { DevFlowError } from "./errors.js";
 import { readReviewLedger } from "./review-store.js";
 import type { FeatureState } from "./state-store.js";

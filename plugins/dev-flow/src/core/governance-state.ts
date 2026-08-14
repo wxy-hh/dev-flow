@@ -2,7 +2,7 @@ import type {
   CurrentBasis,
 } from "./basis-state.js";
 import { deriveCurrency } from "./basis-state.js";
-import { EMPTY_GOVERNANCE_LEDGER, type GovernanceAuthorization, type GovernanceDecision, type GovernanceLedger } from "../policy/types.js";
+import { EMPTY_GOVERNANCE_LEDGER, type GovernanceAuthorization, type GovernanceDecision, type GovernanceLedger } from "../policy/governance-records.js";
 import type { FeatureState } from "./state-store.js";
 
 export function governanceLedger(state: Pick<FeatureState, "governance">): GovernanceLedger {

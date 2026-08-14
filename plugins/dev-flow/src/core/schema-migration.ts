@@ -1,12 +1,14 @@
 import { createHash } from "node:crypto";
 import type {
   DecisionRecord,
+  QualityException,
+} from "../policy/types.js";
+import type {
   GovernanceAuthorization,
   GovernanceCredential,
   GovernanceDecision,
   GovernanceLedger,
-  QualityException,
-} from "../policy/types.js";
+} from "../policy/governance-records.js";
 import { DevFlowError } from "./errors.js";
 import type { FeatureState } from "./state-store.js";
 

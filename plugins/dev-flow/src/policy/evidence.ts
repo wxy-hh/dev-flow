@@ -1,6 +1,6 @@
-import { routeDefinitionForFeature } from "./contract.js";
+import { checkpointsEnforcementRequired, routeDefinitionForFeature } from "./contract.js";
 import { deriveRiskRequirements } from "./route.js";
-import type { GovernanceControls, RequiredEvidence, RiskLabel, RouteId, VerificationKind, WorkflowCapabilities } from "./types.js";
+import type { GovernanceControls, RequiredEvidence, RiskLabel, RouteId, VerificationKind } from "./types.js";
 
 const emptyEvidence = (): RequiredEvidence => ({
   fields: {},
@@ -16,23 +16,23 @@ export function requiredEvidenceForStep(
   route: RouteId,
   riskLabels: RiskLabel[],
   step: string,
-  workflowCapabilities?: WorkflowCapabilities | GovernanceControls,
+  controls?: GovernanceControls,
 ): RequiredEvidence {
   const required = emptyEvidence();
   // Risk evidence must follow the compiled route. A dynamically strengthened
   // XS/S route can contain planning or an independent code-review stage even
   // though the base route does not.
-  const orderedSteps = routeDefinitionForFeature(route, workflowCapabilities).orderedSteps;
+  const orderedSteps = routeDefinitionForFeature(route, controls).orderedSteps;
   const risk = deriveRiskRequirements(riskLabels);
 
   if (step === "planning") {
-    const effectiveRoute = routeDefinitionForFeature(route, workflowCapabilities);
+    const effectiveRoute = routeDefinitionForFeature(route, controls);
     if (effectiveRoute.generatedArtifacts?.includes("plan-review")) required.fields.reviewBatch = true;
     else required.fields.reviewType = "plan";
     if (route === "l") addChecks(required.checks, ["rollback-strategy"]);
   }
   if (step === "code_review") required.fields.reviewBatch = true;
-  if (step === "implementation" && workflowCapabilities?.checkpoints === 1) {
+  if (step === "implementation" && controls && checkpointsEnforcementRequired(route, controls)) {
     required.fields.files = "governed-root-paths";
   }
 
@@ -62,8 +62,8 @@ export function requiredEvidenceForStep(
   }
 
   if (step === "verification") {
-    required.verificationKinds = workflowCapabilities && "plan" in workflowCapabilities
-      ? [...workflowCapabilities.verification]
+    required.verificationKinds = controls
+      ? [...controls.verification]
       : riskLabels.length ? [...risk.verification] : ["targeted"];
   }
 

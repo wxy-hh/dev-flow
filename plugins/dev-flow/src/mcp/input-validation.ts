@@ -1,4 +1,5 @@
 import { DevFlowError } from "../core/errors.js";
+import { stableJson } from "../policy/stable-json.js";
 
 type JsonPrimitive = string | number | boolean | null;
 type JsonValue = JsonPrimitive | JsonValue[] | { [key: string]: JsonValue };
@@ -16,12 +17,6 @@ function typeOf(value: unknown): string {
   if (value === null) return "null";
   if (Array.isArray(value)) return "array";
   return typeof value;
-}
-
-function stable(value: unknown): string {
-  if (value === null || typeof value !== "object") return JSON.stringify(value);
-  if (Array.isArray(value)) return `[${value.map(stable).join(",")}]`;
-  return `{${Object.keys(value as Record<string, unknown>).sort().map((key) => `${JSON.stringify(key)}:${stable((value as Record<string, unknown>)[key])}`).join(",")}}`;
 }
 
 function childPath(path: string, key: string | number): string {
@@ -47,10 +42,10 @@ function discriminatorMatches(value: unknown, schema: JsonSchema): boolean {
     if (!(key in record) || !candidate || typeof candidate !== "object") continue;
     if (candidate.const !== undefined) {
       constrained = true;
-      if (stable(record[key]) !== stable(candidate.const)) return false;
+      if (stableJson(record[key]) !== stableJson(candidate.const)) return false;
     } else if (Array.isArray(candidate.enum)) {
       constrained = true;
-      if (!candidate.enum.some((allowed) => stable(record[key]) === stable(allowed))) return false;
+      if (!candidate.enum.some((allowed) => stableJson(record[key]) === stableJson(allowed))) return false;
     }
   }
   return constrained;
@@ -66,10 +61,10 @@ function validate(value: unknown, schema: JsonSchema, path: string): InputValida
   if (Array.isArray(expectedType) && !expectedType.some((candidate) => typeof candidate === "string" && matchesType(value, candidate))) {
     return [issue(path, "type", `expected one of ${expectedType.join(", ")}, got ${typeOf(value)}`)];
   }
-  if (schema.const !== undefined && stable(value) !== stable(schema.const)) {
-    issues.push(issue(path, "const", `must equal ${stable(schema.const)}`));
+  if (schema.const !== undefined && stableJson(value) !== stableJson(schema.const)) {
+    issues.push(issue(path, "const", `must equal ${stableJson(schema.const)}`));
   }
-  if (Array.isArray(schema.enum) && !schema.enum.some((candidate) => stable(value) === stable(candidate))) {
+  if (Array.isArray(schema.enum) && !schema.enum.some((candidate) => stableJson(value) === stableJson(candidate))) {
     issues.push(issue(path, "enum", "must be one of the allowed values"));
   }
   if (typeof value === "string") {
@@ -87,7 +82,7 @@ function validate(value: unknown, schema: JsonSchema, path: string): InputValida
     if (typeof schema.minItems === "number" && value.length < schema.minItems) issues.push(issue(path, "minItems", `must contain at least ${schema.minItems} items`));
     if (typeof schema.maxItems === "number" && value.length > schema.maxItems) issues.push(issue(path, "maxItems", `must contain at most ${schema.maxItems} items`));
     if (schema.uniqueItems === true) {
-      const seen = new Set(value.map(stable));
+      const seen = new Set(value.map(stableJson));
       if (seen.size !== value.length) issues.push(issue(path, "uniqueItems", "items must be unique"));
     }
     if (schema.items && typeof schema.items === "object" && !Array.isArray(schema.items)) {

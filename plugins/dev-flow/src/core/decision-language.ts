@@ -1,4 +1,4 @@
-import type { InteractionKind, InteractionOption } from "./user-interactions.js";
+import type { InteractionKind, InteractionOption } from "../policy/interaction.js";
 import { normalizeReplyText } from "./text-normalization.js";
 
 export interface NaturalOptionMatch {

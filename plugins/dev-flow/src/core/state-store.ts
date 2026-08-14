@@ -4,7 +4,9 @@ import { hostname } from "node:os";
 import path from "node:path";
 import { normalizeWorkflowCapabilities, reviewLedgerRequired, routeDefinition, routeDefinitionForFeature, traceEnforcementRequired } from "../policy/contract.js";
 import { deriveObligations, reopenObligations } from "../policy/obligations.js";
-import { SUPPORTED_WORKFLOW_CAPABILITIES, EMPTY_GOVERNANCE_LEDGER, type AcceptanceState, type Classification, type ClassificationBasis, type ClassificationFacts, type ClassificationInput, type ClassificationObligation, type EvidenceFreshness, type FeatureLifecycle, type GovernanceLedger, type PendingDecision, type RouteId, type WorkspaceLineage, type WorkflowCapabilities } from "../policy/types.js";
+import { SUPPORTED_WORKFLOW_CAPABILITIES, type Classification, type ClassificationBasis, type ClassificationFacts, type ClassificationInput, type ClassificationObligation, type EvidenceFreshness, type FeatureLifecycle, type PendingDecision, type RouteId, type WorkspaceLineage, type WorkflowCapabilities } from "../policy/types.js";
+import { EMPTY_GOVERNANCE_LEDGER, type AcceptanceState, type GovernanceLedger } from "../policy/governance-records.js";
+import type { InteractionKind, UserInteraction } from "../policy/interaction.js";
 import type { TraceabilityPointer } from "../policy/traceability.js";
 import type { ReviewPointer } from "../policy/review.js";
 import type { ImplementationUnitState } from "../policy/rollback.js";
@@ -38,15 +40,13 @@ import type { RepairState } from "./repair-loop.js";
 import { approvalIds } from "./approval-basis.js";
 import { normalizeUnicode } from "./path-normalization.js";
 import { captureWorkspaceLineage, ownershipForScope, reconcileWorkspaceForFeature, reconcileWorkspaceLineage } from "./git-reconciliation.js";
-import { createInteraction } from "./user-interactions.js";
 import { pendingDecisionForState } from "./decision-interactions.js";
 import { assertHostHealth } from "./host-health.js";
 import { collectProjectConfigAffectedEvidence, type ProjectConfigAffectedEvidence } from "./project-config-impact.js";
 import { executeRepositoryObservation } from "./repository-fact-store.js";
-import { checkpointAffectedByPaths, legalActiveUnitChanges, markAffectedEvidenceStale, objectiveForSwitch, queueNextOwnershipDecision, unknownOwnershipPaths } from "./ownership-workflow.js";
+import { checkpointAffectedByPaths, legalActiveUnitChanges, markAffectedEvidenceStale, objectiveForSwitch, presentTaskSwitch, queueNextOwnershipDecision, TASK_SWITCH_QUESTION, unknownOwnershipPaths } from "./ownership-workflow.js";
 
 export { presentWorkspaceOwnership } from "./ownership-workflow.js";
-export { resolveTaskSwitchAnswer } from "./ownership-workflow.js";
 export { reconcileWorkspace } from "./ownership-workflow.js";
 export { lockClassification, reclassifyFeature } from "./route-workflow.js";
 
@@ -65,13 +65,13 @@ export type { HostHealthKind, HostHealthSignal } from "./host-health.js";
 export type Lifecycle = FeatureLifecycle;
 export interface FeatureState {
   schemaVersion: 5; mode: "intake" | "routed"; featureId: string; revision: number; lifecycle: Lifecycle; route: RouteId; classification: Classification;
-  objective?: string; investigationSummary?: string; classificationBasis?: ClassificationBasis; obligations?: ClassificationObligation[]; currentStage?: string; repair?: RepairState;
+  objective?: string; investigationSummary?: string; classificationBasis?: ClassificationBasis; obligations?: ClassificationObligation[]; repair?: RepairState;
   /** Core-owned automatic checkpoint summaries for v3 implementation boundaries. */
   checkpoints?: Array<{ checkpointId: string; stage: string; capturedAt: string; fingerprint: string; files: string[]; basisHash: string }>;
   scope: { inScope: string[]; outOfScope: string[] }; steps: Record<string, { status: "pending" | "satisfied"; evidence?: unknown }>;
   humanGates: Record<string, unknown>; artifacts: Record<string, { path: string; sha256: string }>; verification: { attempts: unknown[]; satisfiedByAttemptId?: number; verifiedFingerprint?: string };
   /** Interactive controls are retained as a projection of the decision ledger. */
-  interactions?: Record<string, unknown>;
+  interactions?: Record<string, UserInteraction>;
   /** v5 类型隔离的治理记录层：决策/治理声明/授权/凭证/已确认仓库事实。 */
   governance?: GovernanceLedger;
   /** 逐项验收记录与处置状态；与 verification command result 分开存储。 */
@@ -175,6 +175,21 @@ function validateAcceptanceState(value: unknown): asserts value is AcceptanceSta
     dispositionIds.add(disposition.acceptanceCriterionId);
   }
 }
+const interactionKinds = new Set<InteractionKind>(["approval", "grill", "risk-acceptance", "rollback-confirmation", "quality-exception", "workspace-ownership", "route-confirmation", "task-switch", "decision-ratification", "decision-revision", "plan-revision", "side-effect-rerun", "acceptance-confirmation"]);
+function validateInteractionRecords(interactions: Record<string, unknown>): void {
+  for (const value of Object.values(interactions)) {
+    const record = value as Partial<UserInteraction> | undefined;
+    if (!record || typeof record !== "object" || Array.isArray(record)
+      || typeof record.id !== "string" || !record.id
+      || typeof record.kind !== "string" || !interactionKinds.has(record.kind as InteractionKind)
+      || typeof record.target !== "string"
+      || typeof record.basisHash !== "string"
+      || !Array.isArray(record.options)
+      || (record.status !== "pending" && record.status !== "resolved")) {
+      throw new DevFlowError("INVALID_STATE_SCHEMA", "interaction record is invalid");
+    }
+  }
+}
 export function validateFeatureState(value: unknown): asserts value is FeatureState {
   const state = value as Partial<FeatureState>;
   if ([1, 2, 3].includes(Number((state as { schemaVersion?: unknown }).schemaVersion))) throw new DevFlowError("UNSUPPORTED_FEATURE_SCHEMA", "检测到 Dev Flow 4.x 或更早的 active state。", { userMessage: "旧 feature 不能在 Dev Flow 5.0 中继续。", cause: "5.0 不迁移旧 active state。", impact: "系统不会覆盖或猜测旧审计状态。", recoveryKind: "repair", recoveryInstruction: "回到 4.x 完成或放弃该 feature，备份 .dev-flow 后重新初始化。", retryOriginal: false, schemaVersion: (state as { schemaVersion?: unknown }).schemaVersion });
@@ -195,7 +210,8 @@ export function validateFeatureState(value: unknown): asserts value is FeatureSt
     throw new DevFlowError("INVALID_STATE_SCHEMA", "状态不是合法的 feature state。");
   }
   if (state.lastUpdatedBy.host !== "claude" && state.lastUpdatedBy.host !== "codex") throw new DevFlowError("INVALID_STATE_SCHEMA", "lastUpdatedBy host is invalid");
-  const pendingInteractions = Object.values(state.interactions ?? {}).filter((item) => (item as { status?: unknown }).status === "pending");
+  if (state.interactions !== undefined) validateInteractionRecords(state.interactions);
+  const pendingInteractions = Object.values(state.interactions ?? {}).filter((item) => item.status === "pending");
   if (pendingInteractions.length > 1) throw new DevFlowError("MULTIPLE_PENDING_DECISIONS", "schema v4 状态包含多个待决问题。", { userMessage: "当前状态同时存在多个待决问题，流程已安全停止。", cause: "决策账本不是单一待决问题。", impact: "系统不会任选一个问题消费。", recoveryKind: "repair", recoveryInstruction: "运行 doctor 检查决策账本，然后通过公开回答接口恢复。", retryOriginal: false });
   if (state.pendingDecision !== undefined) {
     const decision = state.pendingDecision;
@@ -788,7 +804,7 @@ export async function recordTrustedWriteIntent(root: string, paths: string[], ho
   const active = await readActive(root);
   if (!active || paths.length === 0) return;
   const state = await readState(root, active.featureId);
-  if (state.mode !== "routed" || state.lifecycle !== "active" || state.currentStage !== "implementation") return;
+  if (state.mode !== "routed" || state.lifecycle !== "active" || currentOpenStep(state) !== "implementation") return;
   const config = await readProjectConfig(root);
   const governed = paths.filter((file) => config.governedRoots.some((entry) => entry === "." || file === entry || file.startsWith(`${entry}/`)));
   if (!governed.length) return;
@@ -800,7 +816,7 @@ export async function recordTrustedWriteOwnership(root: string, paths: string[],
   const active = await readActive(root);
   if (!active || paths.length === 0) return;
   const state = await readState(root, active.featureId);
-  if (state.mode !== "routed" || state.lifecycle !== "active" || state.currentStage !== "implementation") return;
+  if (state.mode !== "routed" || state.lifecycle !== "active" || currentOpenStep(state) !== "implementation") return;
   const config = await readProjectConfig(root);
   const governed = paths.filter((file) => config.governedRoots.some((entry) => entry === "." || file === entry || file.startsWith(`${entry}/`)));
   if (!governed.length) return;
@@ -905,23 +921,15 @@ export async function startFeature(
       }
       const switchInteractionCreated = !existingPending && !pendingUnreadable;
       if (switchInteractionCreated) {
-        const pendingState = structuredClone(activeState) as FeatureState;
-        const interaction = createInteraction(pendingState, {
-          kind: "task-switch",
-          target: `task-switch:${id}`,
-          basisHash: createHash("sha256").update(`${active.featureId}\n${objectiveForSwitch(input)}`).digest("hex"),
-          question: "当前已有一个进行中的任务。开始新任务前，你希望如何处理旧任务？",
-          options: [
-            { id: "finish-old", label: "先完成当前任务" },
-            { id: "pause-old", label: "暂停当前任务后开始新任务" },
-            { id: "return-old", label: "返回当前任务" },
-          ],
-        });
-        pendingState.revision += 1;
-        validateFeatureState(pendingState);
-        await writeAtomic(statePath(root, active.featureId), pendingState);
-        await appendEvent(root, active.featureId, pendingState.revision, "task-switch-presented", { targetFeatureId: id, presentationEventId: interaction.presentationEventId });
-        await writeAtomic(activePath(root), { featureId: active.featureId, revision: pendingState.revision, updatedAt: new Date().toISOString() });
+        // 项目级锁不可重入，持锁期间不能调 mutate；走锁内统一模板，
+        // 呈现、校验、投影、事件与 active 指针同步与 mutatePrepared 同管线。
+        let presentationEventId: string | undefined;
+        await mutatePreparedLocked(root, active.featureId, activeState.revision, "task-switch-presented", async () => ({
+          mutate: (draft) => {
+            presentationEventId = presentTaskSwitch(draft, { targetFeatureId: id, objective: objectiveForSwitch(input) }).presentationEventId;
+          },
+          eventData: () => ({ targetFeatureId: id, presentationEventId }),
+        }));
       }
       throw new DevFlowError("TASK_SWITCH_REQUIRED", "另一个 feature 当前处于 active 状态。", {
         userMessage: "当前已有一个进行中的任务，请先决定如何处理它。",
@@ -931,11 +939,12 @@ export async function startFeature(
         impact: "新任务尚未创建，也没有改变旧任务的执行状态。",
         recoveryKind: "ask-user",
         recoveryInstruction: switchInteractionCreated
-          ? "旧任务当前有待处理的任务切换问题，当前版本暂不支持通过统一回答入口处理；请先完成或暂停旧任务，再重试开始新任务。"
+          ? "旧任务上有待处理的任务切换问题：先调用 dev_flow_answer 回答它（finish-old=先完成当前任务、pause-old=暂停当前任务后开始新任务、return-old=返回当前任务），再重试开始新任务。"
           : "旧任务有待决问题未解决。先调用 dev_flow_answer 回答该问题，再重试开始新任务。",
         requiresUserDecision: true,
         retryOriginal: false,
         activeFeatureId: active.featureId,
+        ...(switchInteractionCreated ? { kind: "task-switch", question: TASK_SWITCH_QUESTION } : {}),
         ...(existingPending ? { kind: existingPending.kind, question: existingPending.question } : {}),
       });
     }
@@ -1131,7 +1140,8 @@ export async function pauseFeature(
   return mutate(root, id, expectedRevision, "feature-paused", (state) => {
     if (state.lifecycle !== "active") throw new DevFlowError("INVALID_LIFECYCLE", "只有进行中的 feature 可以暂停。", { userMessage: "当前 feature 不能暂停。", recoveryKind: "refresh", recoveryInstruction: "刷新状态后从当前阶段继续。", retryOriginal: false });
     state.lifecycle = "paused";
-    state.resumeSummary = `暂停原因：${reason.trim()}。恢复后先对账工作区，再从${state.currentStage ? `“${state.currentStage}”` : "当前阶段"}继续。`;
+    const openStep = currentOpenStep(state);
+    state.resumeSummary = `暂停原因：${reason.trim()}。恢复后先对账工作区，再从${openStep ? `“${openStep}”` : "当前阶段"}继续。`;
     state.lastUpdatedBy = { host, pluginVersion: __DEV_FLOW_VERSION__ };
   }, { reason: reason.trim() });
 }
@@ -1168,7 +1178,8 @@ export async function resumeFeature(root: string, id: string, host: "claude" | "
       markAffectedEvidenceStale(state, changedPaths, undefined, legalCheckpointPaths);
     }
     presentationEventId = queueNextOwnershipDecision(state);
-    state.resumeSummary = `已恢复${state.currentStage ? `，从“${state.currentStage}”继续` : "当前任务"}。${contentChanged ? "工作区内容有变化，相关证据已标记为待更新。" : ""}`;
+    const openStep = currentOpenStep(state);
+    state.resumeSummary = `已恢复${openStep ? `，从“${openStep}”继续` : "当前任务"}。${contentChanged ? "工作区内容有变化，相关证据已标记为待更新。" : ""}`;
     state.lastUpdatedBy = { host, pluginVersion: __DEV_FLOW_VERSION__ };
   }, () => ({ observedHead: workspace.observedHead, contentChanged, checkpointAffected, ...(presentationEventId ? { presentationEventId } : {}) }));
 }
@@ -1198,7 +1209,6 @@ export async function repairFeature(root: string, id: string, expectedRevision: 
   }
   return mutate(root, id, expectedRevision, "feature-derived-state-repaired", async (state) => {
     if (state.mode === "routed") {
-      const definition = routeDefinitionForFeature(state.route, state.classification.controls);
       const fingerprint = await fingerprintGovernedRoots(root, await readProjectConfig(root));
       const events = await readFeatureEvents(root, id);
       state.evidenceFreshness.verification = state.verification.satisfiedByAttemptId === undefined
@@ -1236,12 +1246,9 @@ export async function repairFeature(root: string, id: string, expectedRevision: 
         delete state.deliverySnapshot;
       }
       state.logicComplete = state.lifecycle === "finalized" && finalEvidenceCurrent;
-      state.currentStage = state.logicComplete
-        ? "complete"
-        : definition.orderedSteps.find((step) => state.steps[step]?.status !== "satisfied") ?? "finalize";
     }
     state.lastUpdatedBy = { host, pluginVersion: __DEV_FLOW_VERSION__ };
-  }, { repaired: ["active-pointer", "current-stage", "freshness", "review/status-projection"] });
+  }, { repaired: ["active-pointer", "freshness", "review/status-projection"] });
 }
 
 type RecoveryPhase = "prepared" | "directory-moved" | "active-cleared" | "completed";

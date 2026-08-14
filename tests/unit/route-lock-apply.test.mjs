@@ -13,6 +13,7 @@ import { loadSource } from "../helpers/load-source.mjs";
 const store = await loadSource("plugins/dev-flow/src/core/state-store.ts");
 const routeWorkflow = await loadSource("plugins/dev-flow/src/core/route-workflow.ts");
 const route = await loadSource("plugins/dev-flow/src/policy/route.ts");
+const stepOrder = await loadSource("plugins/dev-flow/src/core/step-order.ts");
 const decisions = await loadSource("plugins/dev-flow/src/core/decision-interactions.ts");
 
 const fullConfig = {
@@ -63,7 +64,6 @@ const lockFields = (state) => ({
   classification: state.classification,
   classificationBasis: state.classificationBasis,
   obligations: state.obligations,
-  currentStage: state.currentStage,
   workflowCapabilities: state.workflowCapabilities,
   steps: state.steps,
   humanGates: state.humanGates,
@@ -84,7 +84,7 @@ test("applyLock 直锁：事实 + hash 进去，routed 出来，steps 为编译�
     assert.equal(routed.revision, state.revision + 1);
     assert.deepEqual(Object.keys(routed.steps), ["locate", "implementation", "verification", "finalize"]);
     assert.ok(Object.values(routed.steps).every((step) => step.status === "pending"));
-    assert.equal(routed.currentStage, "locate");
+    assert.equal(stepOrder.currentOpenStep(routed), "locate");
     assert.deepEqual(routed.humanGates, {});
     assert.deepEqual(routed.verification, { attempts: [] });
     assert.equal(routed.logicComplete, false);

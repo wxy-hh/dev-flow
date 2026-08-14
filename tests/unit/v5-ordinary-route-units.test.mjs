@@ -11,6 +11,7 @@ const steps = await loadSource("plugins/dev-flow/src/core/feature-check.ts");
 const units = await loadSource("plugins/dev-flow/src/core/implementation-units.ts");
 const checkpoints = await loadSource("plugins/dev-flow/src/core/checkpoints.ts");
 const jobs = await loadSource("plugins/dev-flow/src/core/review-jobs.ts");
+const stepOrder = await loadSource("plugins/dev-flow/src/core/step-order.ts");
 
 const config = {
   schemaVersion: 2,
@@ -144,7 +145,7 @@ test("ordinary tasks keep the original stages and verification guarantees", asyn
   try {
     const id = state.featureId;
     assert.equal(state.steps.planning.status, "satisfied");
-    assert.equal(state.currentStage, "implementation");
+    assert.equal(stepOrder.currentOpenStep(state), "implementation");
     // verification 保证不变：仍需 targeted/behavior/integration
     assert.deepEqual(state.classification.controls.verification, ["targeted", "behavior", "integration"]);
     // 推进到 verification 不因实现单元而减少

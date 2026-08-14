@@ -1,4 +1,6 @@
 import { createHash } from "node:crypto";
+import { stableJson } from "./stable-json.js";
+import type { ReviewRole } from "./review.js";
 import type {
   ClassificationBasis,
   ClassificationObligation,
@@ -8,29 +10,30 @@ import type {
   VerificationKind,
 } from "./types.js";
 
-function stable(value: unknown): string {
-  if (value === null || typeof value !== "object") return JSON.stringify(value);
-  if (Array.isArray(value)) return `[${value.map(stable).join(",")}]`;
-  return `{${Object.keys(value as Record<string, unknown>).sort().map((key) => `${JSON.stringify(key)}:${stable((value as Record<string, unknown>)[key])}`).join(",")}}`;
-}
-
 /** A deterministic hash used to make repeated decisions idempotent. */
 export function decisionBasisHash(decision: unknown): string {
-  return createHash("sha256").update(stable(decision)).digest("hex");
+  return createHash("sha256").update(stableJson(decision)).digest("hex");
 }
+
+/**
+ * 义务角色词表：ReviewRole 全集 + 义务特有的 execution/checkpoint/rollback-operability。
+ * data-integrity / irreversibility 曾是两个不在词表内的死词汇，已统一为
+ * data-irreversibility。roles 不再是 string[]，拼写错误会在编译期被捕获。
+ */
+type ObligationRole = "execution" | "checkpoint" | "rollback-operability" | ReviewRole;
 
 const riskRules: Record<RiskLabel, {
   kinds: Array<ClassificationObligation["kind"]>;
   verification: VerificationKind[];
-  roles: string[];
+  roles: ObligationRole[];
 }> = {
   security: { kinds: ["review", "verification", "approval"], verification: ["behavior"], roles: ["security"] },
-  data: { kinds: ["review", "verification"], verification: ["behavior", "integration"], roles: ["data-integrity"] },
+  data: { kinds: ["review", "verification"], verification: ["behavior", "integration"], roles: ["data-irreversibility"] },
   money: { kinds: ["review", "verification", "approval"], verification: ["behavior", "integration"], roles: ["money-safety"] },
   external: { kinds: ["review", "verification"], verification: ["integration"], roles: ["contract-failure"] },
   availability: { kinds: ["review", "verification"], verification: ["integration"], roles: ["recovery-observability"] },
   critical_correctness: { kinds: ["review", "verification", "approval"], verification: ["full"], roles: ["critical-correctness"] },
-  irreversible_consequence: { kinds: ["review", "verification", "rollback", "approval", "checkpoint"], verification: ["full"], roles: ["irreversibility"] },
+  irreversible_consequence: { kinds: ["review", "verification", "rollback", "approval", "checkpoint"], verification: ["full"], roles: ["data-irreversibility"] },
 };
 
 function add(
@@ -39,7 +42,7 @@ function add(
   source: ClassificationObligation["source"],
   reason: string,
   basis: unknown,
-  roles: string[] = [],
+  roles: ObligationRole[] = [],
   verificationKinds: VerificationKind[] = [],
 ): void {
   const basisHash = decisionBasisHash({ kind, source, reason, basis });

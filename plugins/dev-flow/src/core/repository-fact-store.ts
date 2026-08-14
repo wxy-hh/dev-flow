@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { lstat, readFile, readdir } from "node:fs/promises";
 import path from "node:path";
-import type { RepositoryObservation } from "../policy/types.js";
+import type { RepositoryObservation } from "../policy/governance-records.js";
 import { DevFlowError } from "./errors.js";
 
 const digest = (value: string | Buffer): string => createHash("sha256").update(value).digest("hex");

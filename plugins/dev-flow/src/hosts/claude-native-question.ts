@@ -1,4 +1,4 @@
-import type { HookEvent } from "./adapter-policy.js";
+import type { HookEvent } from "./bash-syntax.js";
 
 export interface ClaudeNativeQuestionAnswer {
   question: string;

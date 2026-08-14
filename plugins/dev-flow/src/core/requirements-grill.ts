@@ -4,17 +4,16 @@ import { mutate, mutatePrepared, readFeatureEvents, readState, type FeatureState
 import { decisionBasisHash } from "../policy/obligations.js";
 import { resolveInteractionPromptEvent } from "./interaction-provenance.js";
 import { pendingDecisionForState } from "./decision-interactions.js";
-import { EMPTY_GOVERNANCE_LEDGER } from "../policy/types.js";
+import { EMPTY_GOVERNANCE_LEDGER } from "../policy/governance-records.js";
 import {
   createInteraction,
   findInteractionForTarget,
   resolveResponseForAnswer,
   toPublicInteraction,
-  type InteractionOption,
-  type InteractionResponse,
+  type PresentedInteraction,
   type PublicInteraction,
 } from "./user-interactions.js";
-import type { GrillRecommendation } from "./grill-interaction.js";
+import type { GrillRecommendation, InteractionOption, InteractionResponse } from "../policy/interaction.js";
 import type { AnswerResolveContext, AnswerResolveResult } from "./interaction-answer.js";
 
 export interface GrillDecisionInput {
@@ -25,12 +24,8 @@ export interface GrillDecisionInput {
   host: "claude" | "codex";
 }
 
-export interface GrillDecisionResult {
-  state: FeatureState;
-  interaction: PublicInteraction;
+export interface GrillDecisionResult extends PresentedInteraction {
   response?: InteractionResponse;
-  /** Internal correlation used by the MCP server; never serialized in content. */
-  interactionId: string;
 }
 
 async function currentRequirements(root: string, id: string, state: FeatureState): Promise<void> {

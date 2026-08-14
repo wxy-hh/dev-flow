@@ -8,6 +8,7 @@ import { appendSecondTraceClosure, registerTraceFixture, traceDeltaFor, twoClosu
 
 const stateStore = await loadSource("plugins/dev-flow/src/core/state-store.ts");
 const artifacts = await loadSource("plugins/dev-flow/src/core/artifacts.ts");
+const planRevision = await loadSource("plugins/dev-flow/src/core/plan-revision.ts");
 const steps = await loadSource("plugins/dev-flow/src/core/feature-check.ts");
 
 const projectConfig = {
@@ -110,6 +111,15 @@ test("preflight and formal registration report the same diagnostic set for the s
       (error) => {
         assert.equal(error.code, "PLAN_INVALID");
         assert.deepEqual(error.details.diagnostics, preflight.diagnostics, "registration must surface the same diagnostics as preflight");
+        return true;
+      },
+    );
+    // 第三入口：计划修订预检经同一 compileArtifactPlan，同一坏计划必得同一诊断集。
+    await assert.rejects(
+      () => planRevision.revisePlanDuringImplementation(root, featureId, current.revision, badDelta, "codex"),
+      (error) => {
+        assert.equal(error.code, "PLAN_INVALID");
+        assert.deepEqual(error.details.diagnostics, preflight.diagnostics, "revision preflight must surface the same diagnostics as preflight");
         return true;
       },
     );

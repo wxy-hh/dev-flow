@@ -1,6 +1,6 @@
 import { routeDefinitionForFeature, checkpointsEnforcementRequired, reviewEnforcementRequired } from "../policy/contract.js";
 import { createHash } from "node:crypto";
-import { EMPTY_GOVERNANCE_LEDGER } from "../policy/types.js";
+import { EMPTY_GOVERNANCE_LEDGER } from "../policy/governance-records.js";
 import {
   missingRequiredEvidence,
   requiredEvidenceForStep,
@@ -161,10 +161,8 @@ export async function recordStep(
     }
     state.steps[step] = { status: "satisfied", evidence: normalizedEvidence };
     satisfyStepObligations(state, route, step);
-    const next = route.orderedSteps.find((candidate) => state.steps[candidate]?.status !== "satisfied");
-    state.currentStage = next;
   });
-  if ((Number(next.schemaVersion) === 4 || Number(next.schemaVersion) === 5) && next.currentStage === "implementation" && !next.checkpoints?.length) {
+  if ((Number(next.schemaVersion) === 4 || Number(next.schemaVersion) === 5) && currentOpenStep(next) === "implementation" && !next.checkpoints?.length) {
     return captureAutomaticCheckpoint(root, id, next.revision, "implementation", "implementation-entry");
   }
   if (step === "implementation" && (Number(next.schemaVersion) === 4 || Number(next.schemaVersion) === 5) && next.checkpoints?.length) {
@@ -246,6 +244,5 @@ export async function finalize(
     state.logicComplete = true;
     state.lifecycle = "finalized";
     state.steps.finalize = { status: "satisfied" };
-    state.currentStage = "complete";
   }, () => snapshot ? { deliverySnapshot: snapshot } : {});
 }

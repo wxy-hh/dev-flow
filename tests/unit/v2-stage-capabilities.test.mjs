@@ -11,7 +11,27 @@ test("intake exposes investigation and lock actions without a route", () => {
 });
 
 test("implementation capability allows equivalent writes and repair", () => {
-  const view = stages.deriveStageCapabilities({ route: "m", mode: "routed", currentStage: "implementation", obligations: [], workflowCapabilities: { checkpoints: 1 } });
+  const view = stages.deriveStageCapabilities({
+    route: "m",
+    mode: "routed",
+    steps: { requirements_alignment: { status: "satisfied" }, planning: { status: "satisfied" }, implementation: { status: "pending" } },
+    obligations: [],
+    classification: {
+      controls: {
+        requirements: true,
+        plan: "formal",
+        trace: true,
+        planReview: true,
+        reviewRoles: [],
+        executionApproval: true,
+        checkpoints: "unit-chain",
+        recovery: [],
+        codeReview: "independent",
+        verification: ["targeted"],
+        reasons: {},
+      },
+    },
+  });
   assert.ok(view.allowedActions.includes("write"));
   assert.ok(view.allowedActions.includes("repair-current-unit"));
   assert.equal(view.requiredEvidence.fields.files, "governed-root-paths");
@@ -21,7 +41,6 @@ test("pending approval obligations do not imply an immediate approval attention"
   const view = stages.deriveStageCapabilities({
     route: "m",
     mode: "routed",
-    currentStage: "requirements_alignment",
     lifecycle: "active",
     steps: { requirements_alignment: { status: "pending" } },
     obligations: [{ id: "approval:1", kind: "approval", status: "pending", reason: "later" }],
@@ -34,7 +53,6 @@ test("stage capability derives verification and terminal stages from lifecycle e
   const verification = stages.deriveStageCapabilities({
     route: "m",
     mode: "routed",
-    currentStage: "verification",
     lifecycle: "active",
     steps: {
       requirements_alignment: { status: "satisfied" },
@@ -52,7 +70,6 @@ test("stage capability derives verification and terminal stages from lifecycle e
     route: "m",
     mode: "routed",
     lifecycle: "finalized",
-    currentStage: "locate",
     obligations: [],
   });
   assert.equal(complete.stage, "complete");

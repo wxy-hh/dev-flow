@@ -3,6 +3,7 @@ import test from "node:test";
 import { loadSource } from "../helpers/load-source.mjs";
 
 const artifacts = await loadSource("plugins/dev-flow/src/core/artifacts.ts");
+const stepOrder = await loadSource("plugins/dev-flow/src/core/step-order.ts");
 
 function standardMState() {
   return {
@@ -18,7 +19,6 @@ function standardMState() {
       verification: { status: "satisfied" },
       finalize: { status: "satisfied" },
     },
-    currentStage: "finalize",
     humanGates: {},
     obligations: [],
     logicComplete: true,
@@ -34,7 +34,7 @@ test("review-enforced implementation-plan invalidation reopens planning and down
   assert.equal(state.steps.planning, undefined);
   assert.equal(state.steps.implementation, undefined);
   assert.equal(state.steps.finalize, undefined);
-  assert.equal(state.currentStage, "planning");
+  assert.equal(stepOrder.currentOpenStep(state), "planning");
   assert.equal(state.logicComplete, false);
 });
 
@@ -50,5 +50,5 @@ test("non-review implementation-plan invalidation keeps the source step satisfie
   assert.equal(result.planningReopened, false);
   assert.equal(state.steps.planning.status, "satisfied");
   assert.equal(state.steps.implementation, undefined);
-  assert.equal(state.currentStage, "implementation");
+  assert.equal(stepOrder.currentOpenStep(state), "implementation");
 });

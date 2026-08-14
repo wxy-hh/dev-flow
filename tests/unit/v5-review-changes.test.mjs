@@ -12,6 +12,7 @@ const jobs = await loadSource("plugins/dev-flow/src/core/review-jobs.ts");
 const units = await loadSource("plugins/dev-flow/src/core/implementation-units.ts");
 const checkpoints = await loadSource("plugins/dev-flow/src/core/checkpoints.ts");
 const verification = await loadSource("plugins/dev-flow/src/core/verification.ts");
+const stepOrder = await loadSource("plugins/dev-flow/src/core/step-order.ts");
 
 const okCommand = { id: "unit-ok", command: process.execPath, args: ["-e", "process.exit(0)"], cwd: ".", provides: ["targeted", "behavior", "integration", "full"] };
 const failCommand = { id: "unit-fail", command: process.execPath, args: ["-e", "process.exit(1)"], cwd: ".", provides: ["targeted", "behavior", "integration", "full"] };
@@ -149,7 +150,7 @@ test("changes after code review reopen the affected unit, review, and step chain
     assert.equal(statusByUnit.get("UNIT-001"), "pending");
     assert.equal(statusByUnit.get("UNIT-002"), "checkpointed");
     assert.equal(after.steps.implementation, undefined);
-    assert.equal(after.currentStage, "implementation");
+    assert.equal(stepOrder.currentOpenStep(after), "implementation");
     assert.equal(after.lastInvalidation.reopenedUnits.length, 1);
     assert.equal(after.lastInvalidation.reopenedUnits[0], "UNIT-001");
     assert.ok(after.lastInvalidation.changedFiles.includes("src/a.js"));

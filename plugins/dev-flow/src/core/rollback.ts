@@ -35,15 +35,15 @@ import { approvalIds } from "./approval-basis.js";
 import {
   clearInteractionsForTarget,
   createInteraction,
-  getInteraction,
-  resolveNativeInteraction,
-  resolveTextInteraction,
+  resolveResponseForAnswer,
   textCompatible,
   toPublicInteraction,
-  type InteractionResponse,
+  type PresentedInteraction,
   type PublicInteraction,
 } from "./user-interactions.js";
+import type { InteractionResponse } from "../policy/interaction.js";
 import { resolveInteractionPromptEvent } from "./interaction-provenance.js";
+import type { AnswerResolveContext, AnswerResolveResult } from "./interaction-answer.js";
 
 const digest = (value: string | Buffer) => createHash("sha256").update(value).digest("hex");
 
@@ -483,12 +483,17 @@ export async function rollbackChainView(root: string, state: FeatureState): Prom
 }
 
 /** Present a rollback confirmation gate with a preview basis and interaction. */
+/** 回撤门禁呈现：统一基座 + 用户将确认的精确回撤预览。 */
+export interface RollbackGatePresentation extends PresentedInteraction {
+  preview: RollbackPreview;
+}
+
 export async function presentRollbackGate(
   root: string,
   featureId: string,
   expectedRevision: number,
   targetCheckpointId: string,
-): Promise<{ state: FeatureState; interaction: PublicInteraction; interactionId: string; preview: RollbackPreview }> {
+): Promise<RollbackGatePresentation> {
   const initial = await readState(root, featureId);
   if (initial.revision !== expectedRevision) {
     throw new DevFlowError("STATE_REVISION_CONFLICT", "state revision changed", { currentRevision: initial.revision });
@@ -549,32 +554,18 @@ export async function presentRollbackGate(
 }
 
 /**
- * Shared resolution logic for rollback-confirmation interactions, dispatched
- * from the public elicitation and text-answer wrappers below.
+ * 回撤确认门禁经统一回答入口落账（ADR-0019）：依据已变时清门禁并失败关闭，
+ * 依据不变才允许 confirm/request-changes 在一笔 mutatePrepared 内落账。
  */
-async function resolveRollbackGateResponse(
-  root: string,
-  featureId: string,
-  expectedRevision: number,
-  interactionId: string,
-  host: "claude" | "codex",
-  input:
-    | { action: string; comment?: string; source: "elicitation" }
-    | { userReply: string; promptEventId?: string; source: "text" },
-): Promise<FeatureState> {
-  const initial = await readState(root, featureId);
-  if (initial.revision !== expectedRevision) {
-    throw new DevFlowError("STATE_REVISION_CONFLICT", "state revision changed", { currentRevision: initial.revision });
-  }
-
-  const gate = initial.rollbackGate;
-  if (!gate || gate.status !== "pending" || gate.interactionId !== interactionId) {
-    throw new DevFlowError("ROLLBACK_GATE_NOT_PENDING", "rollback gate is not pending or belongs to a different interaction");
-  }
-
-  const interaction = getInteraction(initial, interactionId);
+export async function resolveRollbackGateForAnswer(ctx: AnswerResolveContext): Promise<AnswerResolveResult> {
+  const { root, featureId, expectedRevision, host, credential, interaction, state } = ctx;
   if (interaction.kind !== "rollback-confirmation" || interaction.status !== "pending") {
-    throw new DevFlowError("INTERACTION_NOT_PENDING", interactionId);
+    throw new DevFlowError("INTERACTION_NOT_PENDING", interaction.id);
+  }
+
+  const gate = state.rollbackGate;
+  if (!gate || gate.status !== "pending" || gate.interactionId !== interaction.id) {
+    throw new DevFlowError("ROLLBACK_GATE_NOT_PENDING", "rollback gate is not pending or belongs to a different interaction");
   }
 
   // Re-compute preview to detect basis changes (new checkpoints, conflicts,
@@ -587,10 +578,10 @@ async function resolveRollbackGateResponse(
     currentPreview = await previewRollback(root, featureId, gate.targetCheckpointId);
   } catch (err) {
     if (err instanceof DevFlowError) {
-      await mutate(root, featureId, expectedRevision, "rollback-gate-stale", async (state) => {
-        if (state.rollbackGate?.interactionId === interactionId) {
-          delete state.rollbackGate;
-          clearInteractionsForTarget(state, `rollback:${gate.targetCheckpointId}`);
+      await mutate(root, featureId, expectedRevision, "rollback-gate-stale", async (draft) => {
+        if (draft.rollbackGate?.interactionId === interaction.id) {
+          delete draft.rollbackGate;
+          clearInteractionsForTarget(draft, `rollback:${gate.targetCheckpointId}`);
         }
       });
       throw new DevFlowError("ROLLBACK_GATE_BASIS_CHANGED", "rollback preview failed or basis changed since gate was presented; the pending gate has been cleared", {
@@ -601,10 +592,10 @@ async function resolveRollbackGateResponse(
     throw err;
   }
   if (currentPreview.previewBasisHash !== gate.previewBasisHash) {
-    await mutate(root, featureId, expectedRevision, "rollback-gate-stale", async (state) => {
-      if (state.rollbackGate?.interactionId === interactionId) {
-        delete state.rollbackGate;
-        clearInteractionsForTarget(state, `rollback:${gate.targetCheckpointId}`);
+    await mutate(root, featureId, expectedRevision, "rollback-gate-stale", async (draft) => {
+      if (draft.rollbackGate?.interactionId === interaction.id) {
+        delete draft.rollbackGate;
+        clearInteractionsForTarget(draft, `rollback:${gate.targetCheckpointId}`);
       }
     });
     throw new DevFlowError("ROLLBACK_GATE_BASIS_CHANGED", "rollback preview basis hash changed since gate was presented; the pending gate has been cleared", {
@@ -614,18 +605,18 @@ async function resolveRollbackGateResponse(
 
   // For text resolution, verify the confirming event is a real user
   // prompt from a later turn — not a tool event or a pre-presentation event.
-  let resolvedPromptEventId: string | undefined;
+  let promptEventId: string | undefined;
   let promptText: string | undefined;
-  if (input.source === "text") {
+  if (credential.source === "text") {
     const events = await readFeatureEvents(root, featureId);
-    resolvedPromptEventId = input.promptEventId ?? resolveInteractionPromptEvent(events, initial, interaction, {
+    promptEventId = resolveInteractionPromptEvent(events, state, interaction, {
       host,
-      userReply: input.userReply,
+      userReply: credential.userReply,
     }).eventId;
     const eventRecord = events.find(
       (item) =>
         item.type === "host-event"
-        && (item.data as { eventId?: string }).eventId === resolvedPromptEventId,
+        && (item.data as { eventId?: string }).eventId === promptEventId,
     );
     if (!eventRecord) {
       throw new DevFlowError("ROLLBACK_GATE_PROVENANCE_UNAVAILABLE", "no matching host event found for the given promptEventId", {
@@ -639,7 +630,7 @@ async function resolveRollbackGateResponse(
       throw new DevFlowError("HOST_EVENT_HOST_MISMATCH", "host event belongs to a different host", {
         expectedHost: host,
         actualHost: event.host,
-        eventId: resolvedPromptEventId,
+        eventId: promptEventId,
       });
     }
 
@@ -666,7 +657,7 @@ async function resolveRollbackGateResponse(
 
     // The reply text must be semantically compatible (prevents substituting a
     // different user prompt with the same eventId).
-    if (!textCompatible(event.text ?? "", input.userReply)) {
+    if (!textCompatible(event.text ?? "", credential.userReply)) {
       throw new DevFlowError("ROLLBACK_GATE_REPLY_MISMATCH", "userReply must be compatible with the captured prompt text", {
         recoveryHint: "Pass the user prompt text that was captured for this event",
       });
@@ -674,63 +665,41 @@ async function resolveRollbackGateResponse(
   }
 
   let response: InteractionResponse | undefined;
-  return mutate(root, featureId, expectedRevision, "rollback-gate-resolved", async (state) => {
-    const currentGate = state.rollbackGate;
-    if (!currentGate || currentGate.status !== "pending" || currentGate.interactionId !== interactionId) {
+  const next = await mutatePrepared(root, featureId, expectedRevision, "rollback-gate-resolved", async (current) => {
+    const currentGate = current.rollbackGate;
+    if (!currentGate || currentGate.status !== "pending" || currentGate.interactionId !== interaction.id) {
       throw new DevFlowError("ROLLBACK_GATE_NOT_PENDING", "rollback gate was resolved concurrently");
     }
-
-    response =
-      input.source === "elicitation"
-        ? resolveNativeInteraction(state, interactionId, input.action, input.comment, host)
-        : resolveTextInteraction(state, interactionId, promptText ?? input.userReply, host, { promptEventId: resolvedPromptEventId });
-
-    if (response.action === "confirm") {
-      state.rollbackGate = {
-        ...currentGate,
-        status: "confirmed",
-        confirmedAt: new Date().toISOString(),
-      };
-    } else if (response.action === "request-changes") {
-      delete state.rollbackGate;
-      clearInteractionsForTarget(state, `rollback:${gate.targetCheckpointId}`);
-    } else {
-      throw new DevFlowError("INTERACTION_ACTION_INVALID", response.action);
-    }
-    state.lastUpdatedBy = { host, pluginVersion: __DEV_FLOW_VERSION__ };
-  }, () => ({ gate: "rollback-confirmation", interactionId, response }));
-}
-
-/** Resolve a rollback confirmation gate through an elicitation response. */
-export async function resolveRollbackGateElicitation(
-  root: string,
-  featureId: string,
-  expectedRevision: number,
-  interactionId: string,
-  action: string,
-  comment: string | undefined,
-  host: "claude" | "codex",
-): Promise<FeatureState> {
-  return resolveRollbackGateResponse(root, featureId, expectedRevision, interactionId, host, {
-    action,
-    comment,
-    source: "elicitation",
+    return {
+      mutate: (draft) => {
+        response = resolveResponseForAnswer(draft, interaction, {
+          source: credential.source,
+          action: credential.source === "elicitation" ? credential.action : undefined,
+          comment: credential.source === "elicitation" ? credential.comment : undefined,
+          userReply: credential.source === "text" ? credential.userReply : undefined,
+          promptText,
+          promptEventId,
+          host,
+        });
+        if (response.action === "confirm") {
+          draft.rollbackGate = {
+            ...currentGate,
+            status: "confirmed",
+            confirmedAt: new Date().toISOString(),
+          };
+        } else if (response.action === "request-changes") {
+          delete draft.rollbackGate;
+          clearInteractionsForTarget(draft, `rollback:${gate.targetCheckpointId}`);
+        } else {
+          throw new DevFlowError("INTERACTION_ACTION_INVALID", response.action);
+        }
+        draft.lastUpdatedBy = { host, pluginVersion: __DEV_FLOW_VERSION__ };
+      },
+      eventData: () => ({ gate: "rollback-confirmation", interactionId: interaction.id, response }),
+    };
   });
-}
-
-/** Resolve a rollback confirmation gate through a natural-language reply. */
-export async function resolveRollbackGateAnswer(
-  root: string,
-  featureId: string,
-  expectedRevision: number,
-  interactionId: string,
-  userReply: string,
-  host: "claude" | "codex",
-): Promise<FeatureState> {
-  return resolveRollbackGateResponse(root, featureId, expectedRevision, interactionId, host, {
-    userReply,
-    source: "text",
-  });
+  if (!response) throw new DevFlowError("INTERACTION_NOT_RESOLVED", interaction.id);
+  return { state: next, action: response.action, ...(response.comment ? { comment: response.comment } : {}) };
 }
 
 // ─── Rollback execution engine ───────────────────────────────────────────────

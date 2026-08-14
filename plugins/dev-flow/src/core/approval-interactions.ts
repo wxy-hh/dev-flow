@@ -2,7 +2,6 @@ import { createHash } from "node:crypto";
 import { reviewEnforcementRequired } from "../policy/contract.js";
 import { DevFlowError } from "./errors.js";
 import {
-  approvalPhrases,
   approvalReplyHint,
   isExplicitApproval,
   type ApprovalId,
@@ -15,20 +14,25 @@ import { assertCurrentReviewProjection } from "./review-projection.js";
 import { routeDefinitionForState } from "./step-order.js";
 import { satisfyObligations } from "../policy/obligations.js";
 import {
-  clearInteractionsForTarget,
   createInteraction,
   decisionHint,
   getInteraction,
   textCompatible,
   resolveResponseForAnswer,
   toPublicInteraction,
-  type InteractionResponse,
+  type PresentedInteraction,
   type PublicInteraction,
 } from "./user-interactions.js";
+import type { InteractionResponse } from "../policy/interaction.js";
 import type { AnswerResolveContext, AnswerResolveResult } from "./interaction-answer.js";
 
 const digest = (value: unknown) => createHash("sha256").update(JSON.stringify(value)).digest("hex");
-export type ApprovalPresentation = FeatureState & { approvalReplyHint: string; approvalInteraction: PublicInteraction; approvalId: ApprovalId; interactionId: string };
+
+/** 审批呈现：统一 PresentedInteraction 基座 + 审批上下文（不再摊平进 FeatureState）。 */
+export interface ApprovalPresentation extends PresentedInteraction {
+  approvalId: ApprovalId;
+  approvalReplyHint: string;
+}
 
 function approvalId(value: string): ApprovalId {
   if (!/^approval:[a-f0-9]{16,}$/.test(value)) throw new DevFlowError("INVALID_APPROVAL", value);
@@ -99,7 +103,7 @@ export async function presentApproval(
     presentationEventId: interaction?.presentationEventId,
   }));
   if (!interaction) throw new DevFlowError("INTERACTION_NOT_CREATED", selectedApproval);
-  return { ...state, approvalId: selectedApproval, interactionId: interaction.id, approvalReplyHint: decisionHint(interaction), approvalInteraction: toPublicInteraction(interaction) };
+  return { state, approvalId: selectedApproval, interactionId: interaction.id, approvalReplyHint: decisionHint(interaction), interaction: toPublicInteraction(interaction) };
 }
 
 type ApprovalConfirmation = {
@@ -269,7 +273,7 @@ export async function resolveApprovalForAnswer(ctx: AnswerResolveContext): Promi
       lastResponse?: InteractionResponse;
     } | undefined;
     if (gate?.status !== "pending") throw new DevFlowError("APPROVAL_NOT_PENDING", approval);
-    const live = current.interactions?.[interaction.id] as import("./user-interactions.js").UserInteraction | undefined;
+    const live = current.interactions?.[interaction.id];
     if (live?.kind !== "approval" || live?.target !== `approval:${approval}` || live?.status !== "pending") {
       throw new DevFlowError("INTERACTION_NOT_PENDING", interaction.id);
     }
@@ -280,7 +284,7 @@ export async function resolveApprovalForAnswer(ctx: AnswerResolveContext): Promi
       });
     }
     if (credential.source === "text") {
-      // 与 confirmApproval 相同的跨门禁防重放：任一 provenance id 已被其他门禁消费即拒绝。
+      // 跨门禁防重放：任一 provenance id 已被其他门禁消费即拒绝。
       const ids = [
         ...(provenance?.promptEventId ? [provenance.promptEventId] : []),
         ...(provenance?.turnBoundaryEventId ? [provenance.turnBoundaryEventId] : []),
@@ -333,90 +337,4 @@ export async function resolveApprovalForAnswer(ctx: AnswerResolveContext): Promi
   });
   if (!response) throw new DevFlowError("INTERACTION_NOT_RESOLVED", interaction.id);
   return { state: next, action: response.action, ...(response.comment ? { comment: response.comment } : {}) };
-}
-
-export async function confirmApproval(
-  root: string,
-  id: string,
-  expectedRevision: number,
-  approval: string,
-  userReply: string,
-  provenance: ApprovalConfirmation,
-  host: "claude" | "codex",
-): Promise<FeatureState> {
-  const selectedApproval = approvalId(approval);
-  if (!userReply.trim()) throw new DevFlowError("APPROVAL_REPLY_REQUIRED", "userReply is required");
-  if (!isExplicitApproval(userReply)) {
-    throw new DevFlowError(
-      "APPROVAL_APPROVAL_NOT_EXPLICIT",
-      "userReply is not an exact approval phrase",
-      {
-        approval: selectedApproval,
-        allowed: approvalPhrases,
-        recoveryHint: "请在门禁呈现后输入一条准确批准词（如“确认需求”）或复制一次性回复整行",
-      },
-    );
-  }
-  const currentState = await readState(root, id);
-  const events = await readFeatureEvents(root, id);
-  const resolvedProvenance = resolveProvenance(events, currentState, selectedApproval, userReply, provenance, host);
-  const eventIds = [
-    ...(resolvedProvenance.promptEventId ? [resolvedProvenance.promptEventId] : []),
-    ...(resolvedProvenance.turnBoundaryEventId ? [resolvedProvenance.turnBoundaryEventId] : []),
-  ];
-  if (!eventIds.length) throw new DevFlowError("APPROVAL_PROVENANCE_UNAVAILABLE", "confirmation provenance is required");
-  return mutate(root, id, expectedRevision, "approval-confirmed", async (state) => {
-    await assertRequirementsGrillSatisfied(root, id, state);
-    await assertTraceGateCurrent(root, state, "planning");
-    await assertReviewProjectionForApproval(root, state);
-    const current = state.humanGates[selectedApproval] as {
-      status?: string;
-      basisHash?: string;
-      presentedRevision?: number;
-      presentedAt?: string;
-    } | undefined;
-    if (current?.status !== "pending") {
-      throw new DevFlowError("APPROVAL_NOT_PENDING", selectedApproval, {
-        recoveryHint: "请先呈现当前门禁再尝试确认",
-      });
-    }
-    if ((current.presentedRevision ?? state.revision) >= state.revision) {
-      throw new DevFlowError("APPROVAL_SAME_TURN", "confirmation must occur after presentation", {
-        recoveryHint: "请等待门禁呈现后的新回合再确认",
-      });
-    }
-    // Each event id is validated against its own event type and timing; a
-    // prompt id must be a user-prompt and a turn-boundary id must be a boundary.
-    if (resolvedProvenance.promptEventId) {
-      const eventRecord = hostEventRecord(events, resolvedProvenance.promptEventId, host);
-      const event = eventRecord?.data as { type?: string; text?: string; at?: string } | undefined;
-      assertApprovalEvidenceTiming(eventRecord, event, current, "请在确认呈现后的后续回合提交确认");
-      assertApprovalPromptEvidence(event, userReply, "请原样传递捕获到的用户回复文本（空格与大小写差异会自动归一化）");
-    }
-    if (resolvedProvenance.turnBoundaryEventId) {
-      const eventRecord = hostEventRecord(events, resolvedProvenance.turnBoundaryEventId, host);
-      const event = eventRecord?.data as { type?: string; text?: string; at?: string } | undefined;
-      assertApprovalEvidenceTiming(eventRecord, event, current, "请在确认呈现后的后续回合提交确认");
-      assertApprovalTurnBoundaryEvidence(event, "请使用已捕获的回合边界事件或后续用户回复");
-    }
-    for (const [otherApproval, value] of Object.entries(state.humanGates)) {
-      if (otherApproval === selectedApproval) continue;
-      const replayed = confirmationEventIds(value).find((eventId) => eventIds.includes(eventId));
-      if (replayed) throw new DevFlowError("APPROVAL_EVENT_CONSUMED", replayed);
-    }
-    const basisHash = digest(approvalBasis(state, selectedApproval));
-    if (basisHash !== current.basisHash) {
-      throw new DevFlowError("APPROVAL_BASIS_CHANGED", selectedApproval, {
-        recoveryHint: "门禁依据已变更，请更新并登记相关资产后重新呈现门禁",
-      });
-    }
-    state.humanGates[selectedApproval] = {
-      ...current,
-      status: "confirmed",
-      confirmation: { userReply, ...resolvedProvenance, host, confirmedAt: new Date().toISOString() },
-    };
-    clearInteractionsForTarget(state, `approval:${selectedApproval}`);
-    state.obligations = satisfyObligations(state.obligations, ["approval"]);
-    state.lastUpdatedBy = { host, pluginVersion: __DEV_FLOW_VERSION__ };
-  }, { approval: selectedApproval });
 }

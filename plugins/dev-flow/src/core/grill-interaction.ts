@@ -1,24 +1,11 @@
 import { DevFlowError } from "./errors.js";
-
-export type GrillAnswerCode = "A" | "B" | "C";
+import type { GrillAnswerCode, GrillRecommendation } from "../policy/interaction.js";
 
 export interface GrillOption {
   id: string;
   label: string;
   description?: string;
   requiresComment?: boolean;
-}
-
-export interface GrillRecommendation {
-  optionId: string;
-  reason: string;
-  /**
-   * 高影响提醒（CONTEXT.md"推荐提醒"）：推荐方案的主要缺点。
-   * 与 alternative 成对出现：提供其一就必须提供另一个，否则拒绝登记。
-   */
-  drawback?: string;
-  /** 高影响提醒：某个替代方案更适用的条件，让用户能判断推荐前提是否成立。 */
-  alternative?: { optionId: string; condition: string };
 }
 
 export interface GrillPresentationOption extends GrillOption {

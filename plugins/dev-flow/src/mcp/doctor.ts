@@ -2,6 +2,7 @@ import { lstat, readdir, readFile } from "node:fs/promises";
 import path from "node:path";
 import { createHash } from "node:crypto";
 import { reviewEnforcementRequired, traceEnforcementRequired } from "../policy/contract.js";
+import { effectiveStage } from "../policy/stages.js";
 import { listOrphanTraceSnapshots, readTraceability } from "../core/traceability-store.js";
 import { listOrphanReviewSnapshots, readReviewLedger } from "../core/review-store.js";
 import { readHostHealth } from "../core/host-health.js";
@@ -38,7 +39,7 @@ function projectActiveWorkflow(state: FeatureState): {
           : "查看 dev_flow_status";
   return {
     mode: state.mode,
-    ...(state.mode === "routed" && state.currentStage ? { stage: state.currentStage } : {}),
+    ...(state.mode === "routed" ? { stage: effectiveStage(state) } : {}),
     ...(pending ? { pendingDecision: pending } : {}),
     nextStep,
   };

@@ -3,9 +3,9 @@ import type {
   Lifecycle,
   ObligationStatus,
   RecoveryAction,
-  ReviewAssurance,
   RouteId,
 } from "./types.js";
+import type { ReviewAssurance } from "./review.js";
 
 const stageLabels: Record<string, string> = {
   intake: "需求了解",

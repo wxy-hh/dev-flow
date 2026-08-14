@@ -1,14 +1,16 @@
 import { createHash, randomUUID } from "node:crypto";
 import { DevFlowError } from "./errors.js";
-import { matchDecisionReply, pendingDecisionForState, pendingInteractionForDecision } from "./decision-interactions.js";
+import { matchDecisionReply, pendingDecisionForState } from "./decision-interactions.js";
 import { resolveInteractionPromptEvent } from "./interaction-provenance.js";
-import { resolveResponseForAnswer, resolveTextInteraction, createInteraction, type UserInteraction } from "./user-interactions.js";
+import { resolveResponseForAnswer, createInteraction } from "./user-interactions.js";
+import type { UserInteraction } from "../policy/interaction.js";
 import type { FeatureState } from "./state-store.js";
 import { mutate, mutatePrepared, readActive, readFeatureEvents, readProjectConfig, readState } from "./state-store.js";
 import { reconcileWorkspaceForFeature } from "./git-reconciliation.js";
 import { reopenObligations } from "../policy/obligations.js";
 import { pathWithinFileScope } from "../policy/rollback.js";
 import { readTraceability } from "./traceability-store.js";
+import { currentOpenStep } from "./step-order.js";
 import { trustedWriteSummary } from "./workspace-store.js";
 import type { AnswerResolveContext, AnswerResolveResult } from "./interaction-answer.js";
 
@@ -101,7 +103,7 @@ export async function resolveOwnershipForAnswer(ctx: AnswerResolveContext): Prom
     : matchDecisionReply(decision, promptText ?? credential.userReply).option.id;
   let nextPresentationEventId: string | undefined;
   const next = await mutatePrepared(root, featureId, expectedRevision, "workspace-ownership-answered", async (current) => {
-    const draftInteraction = current.interactions?.[interaction.id] as UserInteraction | undefined;
+    const draftInteraction = current.interactions?.[interaction.id];
     if (!draftInteraction || draftInteraction.status !== "pending" || pendingDecisionForState(current)?.basisHash !== decision.basisHash) {
       throw new DevFlowError("WORKSPACE_OWNERSHIP_STALE", "工作区归属问题的依据已变化，请重新对账后回答。");
     }
@@ -163,32 +165,64 @@ export async function resolveOwnershipForAnswer(ctx: AnswerResolveContext): Prom
   return { state: next, action: matchedId };
 }
 
-/** Resolve the active-feature switch question through the same interaction contract. */
-export async function resolveTaskSwitchAnswer(
-  root: string,
-  id: string,
-  expectedRevision: number,
-  userReply: string,
-  host: "claude" | "codex",
-): Promise<{ state: FeatureState; action: string }> {
-  const current = await readState(root, id);
-  const decision = pendingDecisionForState(current);
-  const interaction = decision ? pendingInteractionForDecision(current, decision) : undefined;
-  if (decision?.kind !== "task-switch" || !interaction || interaction.status !== "pending") {
+export const TASK_SWITCH_QUESTION = "当前已有一个进行中的任务。开始新任务前，你希望如何处理旧任务？";
+
+/** task-switch 呈现纯函数：选项文案与 basisHash 配方和回答路径同住一个模块。 */
+export function presentTaskSwitch(
+  state: FeatureState,
+  input: { targetFeatureId: string; objective: string },
+): { interaction: UserInteraction; presentationEventId: string } {
+  const presentationEventId = randomUUID();
+  const interaction = createInteraction(state, {
+    kind: "task-switch",
+    target: `task-switch:${input.targetFeatureId}`,
+    basisHash: createHash("sha256").update(`${state.featureId}\n${input.objective}`).digest("hex"),
+    question: TASK_SWITCH_QUESTION,
+    options: [
+      { id: "finish-old", label: "先完成当前任务" },
+      { id: "pause-old", label: "暂停当前任务后开始新任务" },
+      { id: "return-old", label: "返回当前任务" },
+    ],
+    presentationEventId,
+  });
+  return { interaction, presentationEventId };
+}
+
+/** 任务切换经统一回答入口落账（ADR-0019）：pause-old 暂停旧任务并释放 active 指针，其余选项只解除待决。 */
+export async function resolveTaskSwitchForAnswer(ctx: AnswerResolveContext): Promise<AnswerResolveResult> {
+  const { root, featureId, expectedRevision, host, credential, interaction, state } = ctx;
+  const decision = pendingDecisionForState(state);
+  if (decision?.kind !== "task-switch" || interaction.status !== "pending") {
     throw new DevFlowError("TASK_SWITCH_NOT_PENDING", "当前没有待处理的任务切换问题。", { recoveryHint: "刷新状态后继续当前任务" });
   }
-  const prompt = resolveInteractionPromptEvent(await readFeatureEvents(root, id), current, interaction, { host, userReply });
-  const match = matchDecisionReply(decision, prompt.text);
-  const state = await mutate(root, id, expectedRevision, "task-switch-answered", (draft) => {
-    const live = draft.interactions?.[interaction.id] as UserInteraction | undefined;
-    if (!live || live.status !== "pending") throw new DevFlowError("INTERACTION_ALREADY_RESOLVED", interaction.id);
-    resolveTextInteraction(draft, interaction.id, prompt.text, host, { promptEventId: prompt.eventId });
-    if (match.option.id === "pause-old") {
+  let promptEventId: string | undefined;
+  let promptText: string | undefined;
+  if (credential.source === "text") {
+    const events = await readFeatureEvents(root, featureId);
+    const prompt = resolveInteractionPromptEvent(events, state, interaction, { host, userReply: credential.userReply });
+    promptEventId = prompt.eventId;
+    promptText = prompt.text;
+  }
+  const matchedId = credential.source === "elicitation"
+    ? credential.action
+    : matchDecisionReply(decision, promptText ?? credential.userReply).option.id;
+  const next = await mutate(root, featureId, expectedRevision, "task-switch-answered", (draft) => {
+    resolveResponseForAnswer(draft, interaction, {
+      source: credential.source,
+      action: credential.source === "elicitation" ? credential.action : undefined,
+      comment: credential.source === "elicitation" ? credential.comment : undefined,
+      userReply: credential.source === "text" ? credential.userReply : undefined,
+      promptText,
+      promptEventId,
+      host,
+    });
+    if (matchedId === "pause-old") {
       draft.lifecycle = "paused";
       draft.resumeSummary = "旧任务已暂停；恢复时会自动对账工作区。";
     }
-  }, () => ({ targetFeatureId: interaction.target.slice("task-switch:".length), action: match.option.id, promptEventId: prompt.eventId }));
-  return { state, action: match.option.id };
+    draft.lastUpdatedBy = { host, pluginVersion: __DEV_FLOW_VERSION__ };
+  }, () => ({ targetFeatureId: interaction.target.slice("task-switch:".length), action: matchedId, promptEventId }));
+  return { state: next, action: matchedId };
 }
 
 export async function reconcileWorkspace(
@@ -246,19 +280,18 @@ export function markAffectedEvidenceStale(
     delete draft.steps.code_review;
     delete draft.steps.verification;
     delete draft.steps.finalize;
-    draft.currentStage = "implementation";
   } else if (draft.steps.verification?.status === "satisfied" || draft.steps.finalize?.status === "satisfied") {
     delete draft.steps.verification;
     delete draft.steps.finalize;
-    draft.currentStage = "verification";
   }
   draft.logicComplete = false;
   if (reopenedLifecycle) {
     draft.lifecycle = reopenedLifecycle;
     delete draft.deliverySnapshot;
+    const openStep = currentOpenStep(draft) ?? "当前阶段";
     draft.resumeSummary = reopenedLifecycle === "active"
-      ? `已撤销过期的完成声明，从“${draft.currentStage ?? "当前阶段"}”继续。`
-      : `完成后检测到真实内容漂移；另一个 feature 正在进行，本任务已恢复为暂停状态并回退到“${draft.currentStage ?? "当前阶段"}”。`;
+      ? `已撤销过期的完成声明，从“${openStep}”继续。`
+      : `完成后检测到真实内容漂移；另一个 feature 正在进行，本任务已恢复为暂停状态并回退到“${openStep}”。`;
   }
   draft.obligations = reopenObligations(draft.obligations, [
     ...(checkpointAffected ? ["checkpoint" as const] : []),

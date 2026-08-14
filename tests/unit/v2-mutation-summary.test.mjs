@@ -12,7 +12,6 @@ test("mutation summary derives stage from steps and keeps obligation counts sepa
     revision: 7,
     lifecycle: "active",
     route: "m",
-    currentStage: "finalize",
     classification: { level: "M", topology: "local", riskLabels: [], orderedRoute: ["requirements_alignment", "planning", "implementation", "code_review", "verification", "finalize"], acceptanceAssistSuggested: false },
     obligations: [
       { id: "a", kind: "approval", source: "route", basisHash: "a".repeat(64), status: "pending", reason: "a" },

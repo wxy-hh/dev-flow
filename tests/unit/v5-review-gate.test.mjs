@@ -16,6 +16,7 @@ const units = await loadSource("plugins/dev-flow/src/core/implementation-units.t
 const quality = await loadSource("plugins/dev-flow/src/core/quality-exceptions.ts");
 const inspection = await loadSource("plugins/dev-flow/src/core/inspection.ts");
 const fingerprintSource = await loadSource("plugins/dev-flow/src/core/fingerprint.ts");
+const stepOrder = await loadSource("plugins/dev-flow/src/core/step-order.ts");
 
 const codeReviewConfig = {
   schemaVersion: 2,
@@ -83,7 +84,7 @@ async function setupCodeReviewRoute(prefix, options = {}) {
   if (recordImplementation) {
     // M local 无 unit-chain checkpoint：直接登记 implementation，进入 code_review 步骤。
     state = await steps.recordStep(root, "gate", state.revision, "implementation", { files: [] });
-    assert.equal(state.currentStage, "code_review");
+    assert.equal(stepOrder.currentOpenStep(state), "code_review");
   }
   return { root, state };
 }
@@ -94,7 +95,7 @@ test("no review obligation returns ready without reading the ledger", async () =
     // M local：当前 open step 是 implementation（非 code_review），默认相位为 plan，
     // 无计划审查义务 → 直接 ready 且不读账本。但 code 相位有独立审查义务。
     // 删掉 review 快照文件：若 gate 在本应跳过时读账本，会因读取失败而抛错。
-    assert.notEqual(state.currentStage, "code_review");
+    assert.notEqual(stepOrder.currentOpenStep(state), "code_review");
     const relative = state.review.path;
     const snapshot = path.join(root, ".dev-flow", "features", state.featureId, relative);
     await rm(snapshot, { force: true });
@@ -273,7 +274,10 @@ test("a review quality exception clears blocking and isolation to ready", async 
       riskSummary: "接受阻断发现风险继续",
     });
     await store.recordHostEvent(root, { eventId: "accept-review-risk", type: "user-prompt", host: "codex", text: "接受风险" });
-    state = await quality.resolveQualityExceptionElicitation(root, id, presented.state.revision, presented.interactionId, "accept", "接受", "codex");
+    state = (await store.answer({
+      root, featureId: id, expectedRevision: presented.state.revision, host: "codex",
+      credential: { source: "elicitation", action: "accept", comment: "接受" },
+    })).state;
     const gate = await jobs.reviewGate(root, state);
     assert.equal(gate.status, "ready");
     assert.equal(gate.stamp.batchId, created.batch.batchId);
@@ -297,7 +301,10 @@ test("an accepted quality exception also clears the code isolation gate", async 
       riskSummary: "宿主无法提供隔离上下文，接受独立性风险继续",
     });
     await store.recordHostEvent(root, { eventId: "accept-iso-risk", type: "user-prompt", host: "codex", text: "接受风险" });
-    current = await quality.resolveQualityExceptionElicitation(root, id, presented.state.revision, presented.interactionId, "accept", "接受", "codex");
+    current = (await store.answer({
+      root, featureId: id, expectedRevision: presented.state.revision, host: "codex",
+      credential: { source: "elicitation", action: "accept", comment: "接受" },
+    })).state;
     const gate = await jobs.reviewGate(root, current, { phase: "code" });
     assert.equal(gate.status, "ready");
     const passed = await steps.recordStep(root, id, current.revision, "code_review", {});

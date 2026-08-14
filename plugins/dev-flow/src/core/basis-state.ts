@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import type { GovernanceRecordBase, RecordBasis, RecordBasisKind, RecordCurrency } from "../policy/types.js";
+import type { GovernanceRecordBase, RecordBasis, RecordBasisKind, RecordCurrency } from "../policy/governance-records.js";
 
 /**
  * 依据状态深模块（spec：内部"依据状态"）。

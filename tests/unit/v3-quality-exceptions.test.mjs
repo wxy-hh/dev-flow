@@ -19,9 +19,12 @@ test("quality exception requires one later host answer and records accepted risk
       riskSummary: "验证证据需要用户明确接受。",
     });
     await store.recordHostEvent(fixture.root, { eventId: "quality-answer", type: "user-prompt", host: "codex", text: "接受风险：我已了解验证风险", at: new Date(Date.now() + 1000).toISOString() });
-    const accepted = await quality.resolveQualityExceptionAnswer(fixture.root, "quality", presented.state.revision, presented.interactionId, "接受风险：我已了解验证风险", "codex");
-    assert.equal(accepted.governance.authorizations.length, 1);
-    assert.equal(accepted.governance.authorizations[0].authorizationType, "risk-acceptance");
+    const accepted = await store.answer({
+      root: fixture.root, featureId: "quality", expectedRevision: presented.state.revision, host: "codex",
+      credential: { source: "text", userReply: "接受风险：我已了解验证风险" },
+    });
+    assert.equal(accepted.state.governance.authorizations.length, 1);
+    assert.equal(accepted.state.governance.authorizations[0].authorizationType, "risk-acceptance");
   } finally {
     await fixture.dispose();
   }
@@ -38,11 +41,14 @@ test("elicitation accept records the risk with the form comment and resolves the
       fingerprint: "b".repeat(64),
       riskSummary: "验证证据需要用户明确接受。",
     });
-    const accepted = await quality.resolveQualityExceptionElicitation(fixture.root, "quality", presented.state.revision, presented.interactionId, "accept", "已了解验证风险", "codex");
-    assert.equal(accepted.governance.authorizations.length, 1);
-    assert.equal(accepted.governance.authorizations[0].target, "verification");
-    assert.equal(accepted.governance.credentials[0].rawText, "已了解验证风险");
-    assert.equal(Object.values(accepted.interactions)[0].status, "resolved");
+    const accepted = await store.answer({
+      root: fixture.root, featureId: "quality", expectedRevision: presented.state.revision, host: "codex",
+      credential: { source: "elicitation", action: "accept", comment: "已了解验证风险" },
+    });
+    assert.equal(accepted.state.governance.authorizations.length, 1);
+    assert.equal(accepted.state.governance.authorizations[0].target, "verification");
+    assert.equal(accepted.state.governance.credentials[0].rawText, "已了解验证风险");
+    assert.equal(Object.values(accepted.state.interactions)[0].status, "resolved");
   } finally {
     await fixture.dispose();
   }
@@ -60,10 +66,14 @@ test("elicitation accept without the required comment is rejected and stays pend
       riskSummary: "验证证据需要用户明确接受。",
     });
     await assert.rejects(
-      () => quality.resolveQualityExceptionElicitation(fixture.root, "quality", presented.state.revision, presented.interactionId, "accept", undefined, "codex"),
+      () => store.answer({
+        root: fixture.root, featureId: "quality", expectedRevision: presented.state.revision, host: "codex",
+        credential: { source: "elicitation", action: "accept" },
+      }),
       (error) => error.code === "INTERACTION_COMMENT_REQUIRED",
     );
     const state = await store.readState(fixture.root, "quality");
+    assert.equal(state.revision, presented.state.revision, "失败不得推进 revision");
     assert.equal(Object.values(state.interactions)[0].kind, "quality-exception");
     assert.equal(Object.values(state.interactions)[0].status, "pending");
   } finally {
@@ -82,10 +92,13 @@ test("elicitation decline resolves the interaction without recording acceptance"
       fingerprint: "b".repeat(64),
       riskSummary: "验证证据需要用户明确接受。",
     });
-    const declined = await quality.resolveQualityExceptionElicitation(fixture.root, "quality", presented.state.revision, presented.interactionId, "decline", undefined, "codex");
-    assert.equal(declined.governance.authorizations.length, 0);
-    assert.equal(Object.values(declined.interactions)[0].status, "resolved");
-    assert.equal(Object.values(declined.interactions)[0].response.action, "decline");
+    const declined = await store.answer({
+      root: fixture.root, featureId: "quality", expectedRevision: presented.state.revision, host: "codex",
+      credential: { source: "elicitation", action: "decline" },
+    });
+    assert.equal(declined.state.governance.authorizations.length, 0);
+    assert.equal(Object.values(declined.state.interactions)[0].status, "resolved");
+    assert.equal(Object.values(declined.state.interactions)[0].response.action, "decline");
   } finally {
     await fixture.dispose();
   }
@@ -103,7 +116,10 @@ test("elicitation with an unknown option id is rejected", async () => {
       riskSummary: "验证证据需要用户明确接受。",
     });
     await assert.rejects(
-      () => quality.resolveQualityExceptionElicitation(fixture.root, "quality", presented.state.revision, presented.interactionId, "maybe", undefined, "codex"),
+      () => store.answer({
+        root: fixture.root, featureId: "quality", expectedRevision: presented.state.revision, host: "codex",
+        credential: { source: "elicitation", action: "maybe" },
+      }),
       (error) => error.code === "INTERACTION_ACTION_INVALID",
     );
   } finally {

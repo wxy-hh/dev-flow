@@ -7,6 +7,7 @@ import { loadSource } from "../helpers/load-source.mjs";
 import { claimCapability, prepareReviewReadyFeature, readCurrentReview } from "../helpers/route-flow.mjs";
 
 const jobs = await loadSource("plugins/dev-flow/src/core/review-jobs.ts");
+const store = await loadSource("plugins/dev-flow/src/core/state-store.ts");
 
 function riskInteractionId(state) {
   const id = Object.keys(state.interactions ?? {}).find((key) => state.interactions[key].kind === "risk-acceptance");
@@ -62,9 +63,12 @@ test("elicitation accept records dispositions with the form comment and resolves
     const { state, findingId } = await featureWithBlockingFinding(root, "risk");
     const presented = await jobs.presentReviewRiskAcceptance(root, "risk", state.revision, [findingId]);
     const interactionId = riskInteractionId(presented.state);
-    const resolved = await jobs.resolveReviewRiskAcceptanceElicitation(root, "risk", presented.state.revision, interactionId, "accept", "已了解边界测试风险", "claude");
-    assert.deepEqual(resolved.acceptedFindingIds, [findingId]);
-    assert.equal(resolved.idempotent, false);
+    const resolved = await store.answer({
+      root, featureId: "risk", expectedRevision: presented.state.revision, host: "claude",
+      credential: { source: "elicitation", action: "accept", comment: "已了解边界测试风险" },
+    });
+    assert.equal(resolved.action, "accept");
+    assert.equal(resolved.comment, "已了解边界测试风险");
     assert.equal(resolved.state.interactions[interactionId].status, "resolved");
     assert.equal(resolved.state.interactions[interactionId].response.action, "accept");
     assert.equal(resolved.state.interactions[interactionId].response.comment, "已了解边界测试风险");
@@ -85,7 +89,10 @@ test("elicitation accept without the required comment is rejected and stays pend
     const presented = await jobs.presentReviewRiskAcceptance(root, "risk", state.revision, [findingId]);
     const interactionId = riskInteractionId(presented.state);
     await assert.rejects(
-      () => jobs.resolveReviewRiskAcceptanceElicitation(root, "risk", presented.state.revision, interactionId, "accept", undefined, "claude"),
+      () => store.answer({
+        root, featureId: "risk", expectedRevision: presented.state.revision, host: "claude",
+        credential: { source: "elicitation", action: "accept" },
+      }),
       (error) => error.code === "INTERACTION_COMMENT_REQUIRED",
     );
     const pending = await readCurrentReview(root, presented.state);
@@ -102,9 +109,11 @@ test("elicitation decline resolves without recording any acceptance", async () =
     const { state, findingId } = await featureWithBlockingFinding(root, "risk");
     const presented = await jobs.presentReviewRiskAcceptance(root, "risk", state.revision, [findingId]);
     const interactionId = riskInteractionId(presented.state);
-    const resolved = await jobs.resolveReviewRiskAcceptanceElicitation(root, "risk", presented.state.revision, interactionId, "decline", undefined, "claude");
-    assert.deepEqual(resolved.acceptedFindingIds, []);
-    assert.equal(resolved.idempotent, false);
+    const resolved = await store.answer({
+      root, featureId: "risk", expectedRevision: presented.state.revision, host: "claude",
+      credential: { source: "elicitation", action: "decline" },
+    });
+    assert.equal(resolved.action, "decline");
     assert.equal(resolved.state.interactions[interactionId].status, "resolved");
     assert.equal(resolved.state.interactions[interactionId].response.action, "decline");
     const { ledger } = await readCurrentReview(root, resolved.state);
@@ -115,16 +124,42 @@ test("elicitation decline resolves without recording any acceptance", async () =
   }
 });
 
-test("repeating the same elicitation accept is idempotent", async () => {
+test("repeating the same elicitation accept replays idempotently without advancing revision", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "dev-flow-risk-idempotent-"));
   try {
     const { state, findingId } = await featureWithBlockingFinding(root, "risk");
     const presented = await jobs.presentReviewRiskAcceptance(root, "risk", state.revision, [findingId]);
     const interactionId = riskInteractionId(presented.state);
-    const first = await jobs.resolveReviewRiskAcceptanceElicitation(root, "risk", presented.state.revision, interactionId, "accept", "已了解边界测试风险", "claude");
-    const again = await jobs.resolveReviewRiskAcceptanceElicitation(root, "risk", first.state.revision, interactionId, "accept", "已了解边界测试风险", "claude");
-    assert.deepEqual(again.acceptedFindingIds, [findingId]);
-    assert.equal(again.idempotent, true);
+    const first = await store.answer({
+      root, featureId: "risk", expectedRevision: presented.state.revision, host: "claude",
+      credential: { source: "elicitation", action: "accept", comment: "已了解边界测试风险" },
+    });
+    assert.equal(first.action, "accept");
+    // 模拟 5.0 早期残留：pendingDecision 已删除但宿主重放了同一回答，
+    // answer 经 pendingDecision 的 target fallback 定位到已 resolved 的交互。
+    const interaction = first.state.interactions[interactionId];
+    const restaged = await store.mutate(root, "risk", first.state.revision, "restage-pending-decision", (draft) => {
+      draft.pendingDecision = {
+        kind: "review-risk",
+        target: interaction.target,
+        question: interaction.question,
+        options: interaction.options.map((option) => ({ ...option })),
+        basisHash: interaction.basisHash,
+        presentedAt: interaction.presentedAt,
+        presentedRevision: interaction.presentedRevision,
+        source: "core",
+      };
+    });
+    const again = await store.answer({
+      root, featureId: "risk", expectedRevision: restaged.revision, host: "claude",
+      credential: { source: "elicitation", action: "accept", comment: "已了解边界测试风险" },
+    });
+    assert.equal(again.action, "accept");
+    assert.equal(again.state.revision, restaged.revision, "幂等重放不推进 revision");
+    assert.equal(again.state.interactions[interactionId].response.comment, "已了解边界测试风险");
+    const { ledger } = await readCurrentReview(root, again.state);
+    const current = ledger.batches.find((batch) => batch.validity === "current");
+    assert.equal(current.dispositions[findingId].kind, "risk-accepted");
   } finally {
     await rm(root, { recursive: true, force: true });
   }

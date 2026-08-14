@@ -62,7 +62,8 @@ test("starting another task never silently switches the active feature", async (
       () => store.startFeature(fixture.root, { featureId: "new", objective: "新任务", host: "codex" }),
       (error) => {
         assert.equal(error.code, "TASK_SWITCH_REQUIRED");
-        assert.match(error.recovery.instruction, /暂不支持通过统一回答入口处理/);
+        assert.match(error.recovery.instruction, /dev_flow_answer/);
+        assert.equal(error.details.kind, "task-switch");
         return true;
       },
     );

@@ -8,16 +8,16 @@ import { DevFlowError } from "./errors.js";
 import { approvalIds } from "./approval-basis.js";
 import { mutate, mutatePrepared, readState, type FeatureState, type PreparedMutationOptions } from "./state-store.js";
 import { currentOpenStep, routeDefinitionForState } from "./step-order.js";
-import { parseTraceSourceBlocks } from "./traceability-anchors.js";
-import { compilePlan, type PlanDiagnostic } from "./plan-compiler.js";
-import { readProjectConfigSnapshot, readTraceabilityForArtifactReplacement, type TraceStoreOptions, writeTraceSnapshot } from "./traceability-store.js";
+import { compileArtifactPlan } from "./plan-compile-context.js";
+import { type PlanDiagnostic } from "./plan-compiler.js";
+import { type TraceStoreOptions, writeTraceSnapshot } from "./traceability-store.js";
 import { clearInteractionsByKind, clearInteractionsForTarget } from "./user-interactions.js";
 import { prepareReviewInvalidation } from "./review-store.js";
 import { reopenObligations } from "../policy/obligations.js";
 import { normalizeUnicode } from "./path-normalization.js";
 import { detectRollbackSplitWarning } from "../policy/rollback-warnings.js";
 import { validatePlanTaskGraph } from "./plan-graph.js";
-import { verificationCommandHashes, verificationCommandHashesForRefs } from "./project-config.js";
+import { verificationCommandHashesForRefs } from "./project-config.js";
 
 const names: Record<string, string> = {
   requirements: "需求文档.md",
@@ -116,8 +116,6 @@ export function invalidateFromStep(state: FeatureState, kind: string): { plannin
     const sourceIndex = ordered.indexOf(rule.afterStep);
     for (const step of ordered.slice(sourceIndex + 1)) delete state.steps[step];
   }
-  const ordered = effectiveRoute(state).orderedSteps;
-  state.currentStage = ordered.find((step) => state.steps[step]?.status !== "satisfied") ?? ordered.at(-1);
   state.logicComplete = false;
   delete state.steps.finalize;
   return { planningReopened };
@@ -222,27 +220,13 @@ export async function recordArtifactWithTrace(
     }
     assertManualRegistrationAllowed(current, artifactKind, true);
     assertPlanRevisionQuiescent(current, artifactKind);
-    const artifact = current.artifacts[artifactKind];
-    if (!artifact) throw new DevFlowError("MISSING_REQUIRED_ARTIFACT", artifactKind);
-    const contents = await readFile(path.join(featureDirectory(root, id), normalizeUnicode(artifact.path)), "utf8");
-    const artifactSha256 = hash(contents);
-    const sourceBlocks = parseTraceSourceBlocks(contents);
-    const { config, sha256: projectConfigSha256 } = await readProjectConfigSnapshot(root);
-    const currentLedger = await readTraceabilityForArtifactReplacement(root, current, artifactKind);
-    // 预检与正式登记共用同一编译函数：相同输入必得相同诊断与规范化语义。
-    const compile = compilePlan({
-      route: current.route,
-      artifactKind,
-      artifactSha256,
-      sourceBlocks,
-      currentLedger,
-      traceDelta,
-      projectConfigSha256,
-      verificationCommandIds: config.verification.commands.map((command) => command.id),
-      verificationCommandHashes: verificationCommandHashes(config),
-      nextStateRevision,
-      riskLabels: current.classification.riskLabels,
-    });
+    // 预检、正式登记与修订经同一 compileArtifactPlan 装载编译：相同输入必得相同诊断。
+    const compilation = await compileArtifactPlan(root, id, current, { artifactKind, traceDelta, nextStateRevision });
+    const compile = compilation.result;
+    const artifact = compilation.artifact;
+    const artifactSha256 = compilation.input.artifactSha256;
+    const currentLedger = compilation.input.currentLedger;
+    const config = compilation.config;
     if (!compile.ok || !compile.ledger) {
       throw new DevFlowError("PLAN_INVALID", "实施计划编译未通过。", {
         diagnostics: compile.diagnostics,
@@ -349,24 +333,7 @@ export async function validatePlan(
       recoveryHint: "当前路线不强制 Trace；请改用 dev_flow_record_artifact 登记该文档",
     });
   }
-  const artifact = state.artifacts[artifactKind];
-  if (!artifact) throw new DevFlowError("MISSING_REQUIRED_ARTIFACT", artifactKind);
-  const contents = await readFile(path.join(featureDirectory(root, id), normalizeUnicode(artifact.path)), "utf8");
-  const { config, sha256: projectConfigSha256 } = await readProjectConfigSnapshot(root);
-  const currentLedger = await readTraceabilityForArtifactReplacement(root, state, artifactKind);
-  const result = compilePlan({
-    route: state.route,
-    artifactKind,
-    artifactSha256: hash(contents),
-    sourceBlocks: parseTraceSourceBlocks(contents),
-    currentLedger,
-    traceDelta,
-    projectConfigSha256,
-    verificationCommandIds: config.verification.commands.map((command) => command.id),
-    verificationCommandHashes: verificationCommandHashes(config),
-    nextStateRevision: state.revision + 1,
-    riskLabels: state.classification.riskLabels,
-  });
+  const { result } = await compileArtifactPlan(root, id, state, { artifactKind, traceDelta, nextStateRevision: state.revision + 1 });
   return {
     ok: result.ok,
     diagnostics: result.diagnostics,

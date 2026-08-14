@@ -63,7 +63,10 @@ test("v4 JSON schema closes runtime state and has no feature-check compatibility
   assert.equal("featureCheck" in schema.properties, false);
   assert.equal(schema.$defs.classificationBasis.properties.controlEnhancements.$ref, "#/$defs/controlEnhancements");
   const intakeRule = schema.allOf[0].then.not.anyOf.flatMap((entry) => entry.required);
-  assert.deepEqual(intakeRule, ["route", "classification", "classificationBasis", "obligations", "currentStage"]);
+  assert.deepEqual(intakeRule, ["route", "classification", "classificationBasis", "obligations"]);
+  assert.equal("currentStage" in schema.properties, false);
+  const routedRule = schema.allOf[1].then.required;
+  assert.deepEqual(routedRule, ["route", "classification", "classificationBasis", "obligations"]);
 });
 
 test("lock with contradictory classification args reports a readable contradiction", async () => {

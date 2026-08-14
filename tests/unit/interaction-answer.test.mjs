@@ -273,44 +273,46 @@ test("路线确认经 answer 一次锁定；追溯与审查 pointer 落在同一
   }
 });
 
-test("未接入 answer 的 kind 失败关闭（DECISION_KIND_UNSUPPORTED），不改任何状态", async () => {
-  // 用未注册 kind 的 pending 交互直接构造状态，验证 fail-closed。
+test("已接通的 kind 回答无法识别时失败关闭（DECISION_REPLY_NOT_RECOGNIZED），不改任何状态", async () => {
+  // task-switch 接通前，本用例断言 DECISION_KIND_UNSUPPORTED；13/13 全接通后
+  // 该分支无合法 kind 可达，失败关闭语义改由无法识别的回答继承。
   const { root, state } = await setup("dev-flow-answer-unsupported-");
   try {
     const staged = await store.mutate(root, "f", state.revision, "stage-unsupported", (draft) => {
       draft.interactions = {
         "legacy-pending": {
           id: "legacy-pending",
-          kind: "acceptance-confirmation",
-          target: "acceptance:legacy",
+          kind: "task-switch",
+          target: "task-switch:legacy",
           basisHash: "0".repeat(64),
-          options: [{ id: "confirm", label: "确认" }, { id: "reject", label: "拒绝" }],
+          options: [{ id: "finish-old", label: "先完成当前任务" }, { id: "pause-old", label: "暂停当前任务" }],
           presentedAt: new Date().toISOString(),
           status: "pending",
         },
       };
       draft.pendingDecision = {
-        kind: "acceptance-confirmation",
-        question: "确认当前验收结果？",
-        options: [{ id: "confirm", label: "确认" }, { id: "reject", label: "拒绝" }],
+        kind: "task-switch",
+        question: "当前已有一个进行中的任务。开始新任务前，你希望如何处理旧任务？",
+        options: [{ id: "finish-old", label: "先完成当前任务" }, { id: "pause-old", label: "暂停当前任务" }],
         basisHash: "0".repeat(64),
         presentedAt: new Date().toISOString(),
         presentedRevision: state.revision,
-        target: "acceptance:legacy",
+        target: "task-switch:legacy",
         source: "core",
       };
     });
     await store.recordHostEvent(root, { eventId: "unsupported-answer", type: "user-prompt", host: "codex", text: "确认" });
+    // 接通后的 task-switch 走正常匹配：无法识别的回答失败关闭，状态不变。
     await assert.rejects(
       () => store.answer({
         root, featureId: "f", expectedRevision: staged.revision, host: "codex",
         credential: { source: "text", userReply: "确认" },
       }),
-      (error) => error.code === "DECISION_KIND_UNSUPPORTED",
+      (error) => error.code === "DECISION_REPLY_NOT_RECOGNIZED",
     );
     const unchanged = await store.readState(root, "f");
     assert.equal(unchanged.revision, staged.revision);
-    assert.equal(decisions.pendingDecisionForState(unchanged).kind, "acceptance-confirmation");
+    assert.equal(decisions.pendingDecisionForState(unchanged).kind, "task-switch");
   } finally {
     await rm(root, { recursive: true, force: true });
   }

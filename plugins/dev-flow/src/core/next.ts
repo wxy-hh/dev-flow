@@ -1,8 +1,9 @@
 import { checkpointsEnforcementRequired, routeDefinition } from "../policy/contract.js";
 import { requiredEvidenceForStep, requiredEvidenceIsEmpty } from "../policy/evidence.js";
+import { firstOpenStep } from "../policy/stages.js";
 import type { DeriveState, NextAction, PendingDecision } from "../policy/types.js";
-import type { TraceNode } from "../policy/traceability.js";
 import { readState, type FeatureState } from "./state-store.js";
+import { nextReadyImplementationUnit } from "./implementation-units.js";
 import { inspectTraceGate } from "./traceability-gates.js";
 import { readTraceability } from "./traceability-store.js";
 import { verificationIsStale } from "./verification.js";
@@ -33,10 +34,6 @@ function toDerivedState(state: FeatureState, verificationStale: boolean) {
     steps,
     obligations: state.obligations,
     blockingFindings: state.blockingFindings,
-    verificationFresh: !verificationStale && Boolean(
-      state.verification.verifiedFingerprint
-      && state.verification.verifiedFingerprint === state.businessFingerprint,
-    ),
     logicComplete: state.logicComplete,
     repair: state.repair,
   } as const;
@@ -73,11 +70,11 @@ function deriveRouteAction(state: DeriveState): NextAction {
     return { kind: "present-human-gate", step: approval.id };
   }
 
-  for (const step of orderedSteps) {
-    const snapshot = state.steps[step];
-    if (snapshot?.status === "satisfied") continue;
-    if (snapshot && snapshot.artifactReady === false) return { kind: "scaffold-artifact", step };
-    return { kind: "run-step", step };
+  const openStep = firstOpenStep(orderedSteps, state.steps);
+  if (openStep) {
+    const snapshot = state.steps[openStep];
+    if (snapshot && snapshot.artifactReady === false) return { kind: "scaffold-artifact", step: openStep };
+    return { kind: "run-step", step: openStep };
   }
 
   if (!state.logicComplete) return { kind: "finalize" };
@@ -138,13 +135,7 @@ async function unitLifecycleAction(root: string, state: FeatureState): Promise<N
   const active = units.find((unit) => unit.status === "active");
   if (active) return { kind: "checkpoint-implementation-unit", unitId: active.unitId };
   const ledger = await readTraceability(root, state);
-  const nodes = Object.values(ledger.nodes)
-    .filter((node): node is Extract<TraceNode, { kind: "implementation-unit" }> => node.kind === "implementation-unit" && node.status === "current")
-    .sort((a, b) => a.id.localeCompare(b.id));
-  const statusByUnit = new Map(units.map((unit) => [unit.unitId, unit.status]));
-  const ready = nodes.find((node) =>
-    statusByUnit.get(node.id) !== "checkpointed"
-    && node.dependsOn.every((dependency) => statusByUnit.get(dependency) === "checkpointed"));
+  const ready = nextReadyImplementationUnit(state, ledger);
   return ready ? { kind: "begin-implementation-unit", unitId: ready.id } : undefined;
 }
 

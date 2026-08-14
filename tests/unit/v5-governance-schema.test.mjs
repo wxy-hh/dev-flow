@@ -203,6 +203,42 @@ test("governance ledger shape is validated on v5 states", () => {
   assert.throws(() => store.validateFeatureState(missingKind), (error) => error.code === "INVALID_STATE_SCHEMA");
 });
 
+function validInteractionRecord(overrides = {}) {
+  return {
+    id: "int-1",
+    kind: "approval",
+    target: "approval:requirements",
+    basisHash: "a".repeat(64),
+    options: [{ id: "confirm", label: "确认" }, { id: "request-changes", label: "修改" }],
+    status: "pending",
+    presentedAt: "2026-08-01T00:00:00.000Z",
+    ...overrides,
+  };
+}
+
+test("interaction records are shape-validated at the load boundary", () => {
+  // 形状完整的 pending 交互通过加载校验。
+  const valid = v4WithRecords({ interactions: { "int-1": validInteractionRecord() } });
+  assert.doesNotThrow(() => store.validateFeatureState(valid));
+
+  const missingKind = v4WithRecords({ interactions: { "int-1": validInteractionRecord({ kind: undefined }) } });
+  assert.throws(() => store.validateFeatureState(missingKind), (error) => error.code === "INVALID_STATE_SCHEMA");
+
+  const unknownKind = v4WithRecords({ interactions: { "int-1": validInteractionRecord({ kind: "unknown-kind" }) } });
+  assert.throws(() => store.validateFeatureState(unknownKind), (error) => error.code === "INVALID_STATE_SCHEMA");
+
+  const invalidStatus = v4WithRecords({ interactions: { "int-1": validInteractionRecord({ status: "answered" }) } });
+  assert.throws(() => store.validateFeatureState(invalidStatus), (error) => error.code === "INVALID_STATE_SCHEMA");
+});
+
+test("two pending interaction records are rejected at the load boundary", () => {
+  const state = v4WithRecords({ interactions: {
+    "int-1": validInteractionRecord(),
+    "int-2": validInteractionRecord({ id: "int-2", target: "approval:implementation" }),
+  } });
+  assert.throws(() => store.validateFeatureState(state), (error) => error.code === "MULTIPLE_PENDING_DECISIONS");
+});
+
 test("a fresh feature is written as schema v5 with an empty governance ledger", async () => {
   const fixture = await createTinyApp();
   try {

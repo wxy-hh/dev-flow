@@ -66,7 +66,6 @@
         "additionalProperties": false
       }
     },
-    "currentStage": { "type": "string" },
     "humanGates": { "type": "object" },
     "artifacts": {
       "type": "object",
@@ -119,13 +118,12 @@
             { "required": ["route"] },
             { "required": ["classification"] },
             { "required": ["classificationBasis"] },
-            { "required": ["obligations"] },
-            { "required": ["currentStage"] }
+            { "required": ["obligations"] }
           ]
         }
       }
     },
-    { "if": { "properties": { "mode": { "const": "routed" } } }, "then": { "required": ["route", "classification", "classificationBasis", "obligations", "currentStage"] } }
+    { "if": { "properties": { "mode": { "const": "routed" } } }, "then": { "required": ["route", "classification", "classificationBasis", "obligations"] } }
   ],
   "$defs": {
     "classification": {

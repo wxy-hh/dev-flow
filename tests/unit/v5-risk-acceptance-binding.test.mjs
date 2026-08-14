@@ -61,7 +61,10 @@ async function acceptVerificationRisk(root, state) {
     fingerprint: fp,
     riskSummary: "验证失败但风险可接受",
   });
-  return quality.resolveQualityExceptionElicitation(root, state.featureId, presented.state.revision, presented.interactionId, "accept", "接受验证风险", "codex");
+  return (await store.answer({
+    root, featureId: state.featureId, expectedRevision: presented.state.revision, host: "codex",
+    credential: { source: "elicitation", action: "accept", comment: "接受验证风险" },
+  })).state;
 }
 
 test("accepted risk lets finalize complete while the failed verification stays pending", async () => {

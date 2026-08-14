@@ -230,3 +230,24 @@ test("启动排除的预存脏文件 git 写为 audit（提示不拦）", { time
     await rm(root, { recursive: true, force: true });
   }
 });
+
+
+test("begin 前置失败时门禁返回带原因码的结构化诊断且状态不半推进", { timeout: 120_000 }, async () => {
+  const root = await startImplementation("begin-blocked");
+  try {
+    // 篡改已登记工件：begin 的 trace/工件时效前置必然失败；assess 应给出原始原因码。
+    const current = await state.readState(root, "begin-blocked");
+    const planPath = path.join(root, ".dev-flow", "features", "begin-blocked", current.artifacts["implementation-plan"].path);
+    await writeFile(planPath, "被篡改的计划内容\n");
+    const verdict = await gate.writeGate(root, { kind: "file", paths: ["src/main.js"] });
+    assert.equal(verdict.decision, "block");
+    if (verdict.decision !== "block") return;
+    assert.equal(verdict.block.code, "IMPLEMENTATION_UNIT_REQUIRED");
+    assert.match(verdict.block.detail?.beginFailed ?? "", /^[A-Z][A-Z0-9_]+: /, "beginFailed must keep the original error code");
+    const after = await state.readState(root, "begin-blocked");
+    assert.equal(after.revision, current.revision, "blocked begin must not advance the revision");
+    assert.equal(activeUnits(after).length, 0);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});

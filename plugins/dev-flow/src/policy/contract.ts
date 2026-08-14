@@ -48,42 +48,6 @@ function cloneRouteDefinition(definition: RouteDefinition): RouteDefinition {
   };
 }
 
-function ensureGeneratedArtifact(definition: RouteDefinition, artifact: string): void {
-  if (!definition.generatedArtifacts) definition.generatedArtifacts = [];
-  if (!definition.generatedArtifacts.includes(artifact)) definition.generatedArtifacts.push(artifact);
-}
-
-function moveArtifactSteps(
-  definition: RouteDefinition,
-  artifact: string,
-  steps?: string[],
-): void {
-  if (!definition.generatedArtifactSteps) definition.generatedArtifactSteps = {};
-  const sourceSteps = steps ?? Object.entries(definition.artifactSteps ?? {})
-    .filter(([, artifacts]) => artifacts.includes(artifact))
-    .map(([step]) => step);
-  for (const step of sourceSteps) {
-    const source = definition.artifactSteps?.[step] ?? [];
-    if (source.includes(artifact)) {
-      const remaining = source.filter((kind) => kind !== artifact);
-      if (remaining.length === 0) delete definition.artifactSteps?.[step];
-      else if (definition.artifactSteps) definition.artifactSteps[step] = remaining;
-    }
-    const generated = definition.generatedArtifactSteps[step] ?? [];
-    if (!generated.includes(artifact)) definition.generatedArtifactSteps[step] = [...generated, artifact];
-  }
-}
-
-function moveArtifactToGenerated(
-  definition: RouteDefinition,
-  artifact: string,
-  steps?: string[],
-): void {
-  definition.requiredArtifacts = definition.requiredArtifacts.filter((kind) => kind !== artifact);
-  ensureGeneratedArtifact(definition, artifact);
-  moveArtifactSteps(definition, artifact, steps);
-}
-
 function validateArtifactModes(definition: RouteDefinition): void {
   const generated = definition.generatedArtifacts ?? [];
   const overlap = definition.requiredArtifacts.find((artifact) => generated.includes(artifact));
@@ -105,11 +69,10 @@ export function normalizeWorkflowCapabilities(
 
 export function routeDefinitionForFeature(
   route: RouteId,
-  controlsOrCapabilities: GovernanceControls | WorkflowCapabilities | undefined,
+  controls: GovernanceControls | undefined,
 ): RouteDefinition {
   const definition = cloneRouteDefinition(routeDefinition(route));
-  if (controlsOrCapabilities && "plan" in controlsOrCapabilities) {
-    const controls = controlsOrCapabilities;
+  if (controls) {
     definition.orderedSteps = [];
     if (controls.requirements) definition.orderedSteps.push("requirements_alignment");
     definition.orderedSteps.push(controls.plan === "locate" ? "locate" : controls.plan === "brief" ? "boundary" : "planning");
@@ -133,60 +96,48 @@ export function routeDefinitionForFeature(
       definition.generatedArtifacts = ["plan-review"];
       definition.generatedArtifactSteps = { planning: ["plan-review"] };
     }
-  } else {
-    const normalized = normalizeWorkflowCapabilities(controlsOrCapabilities);
-    for (const transition of definition.artifactTransitions ?? []) {
-      if (normalized[transition.capability] === 1) moveArtifactToGenerated(definition, transition.artifact, transition.steps);
-    }
   }
 
   validateArtifactModes(definition);
   return definition;
 }
 
+/** route 参数保留在签名里：它是调用方语义的一部分，判决本身只认 controls。 */
 export function traceEnforcementRequired(
   route: RouteId,
-  controlsOrCapabilities: GovernanceControls | WorkflowCapabilities | undefined,
+  controls: GovernanceControls | undefined,
 ): boolean {
-  return controlsOrCapabilities && "plan" in controlsOrCapabilities
-    ? controlsOrCapabilities.trace
-    : normalizeWorkflowCapabilities(controlsOrCapabilities).trace === 1 && (route === "m" || route === "l");
+  return controls?.trace ?? false;
 }
 
 export function reviewEnforcementRequired(
   route: RouteId,
-  controlsOrCapabilities: GovernanceControls | WorkflowCapabilities | undefined,
+  controls: GovernanceControls | undefined,
 ): boolean {
-  return controlsOrCapabilities && "plan" in controlsOrCapabilities
-    ? controlsOrCapabilities.planReview
-    : normalizeWorkflowCapabilities(controlsOrCapabilities).review === 1 && (route === "m" || route === "l");
+  return controls?.planReview ?? false;
 }
 
 export function reviewLedgerRequired(
   route: RouteId,
-  controlsOrCapabilities: GovernanceControls | WorkflowCapabilities | undefined,
+  controls: GovernanceControls | undefined,
 ): boolean {
-  return controlsOrCapabilities && "plan" in controlsOrCapabilities
-    ? controlsOrCapabilities.planReview || controlsOrCapabilities.codeReview !== "none"
-    : reviewEnforcementRequired(route, controlsOrCapabilities);
+  return controls ? controls.planReview || controls.codeReview !== "none" : false;
 }
 
 export function checkpointsEnforcementRequired(
   route: RouteId,
-  controlsOrCapabilities: GovernanceControls | WorkflowCapabilities | undefined,
+  controls: GovernanceControls | undefined,
 ): boolean {
   // Unit checkpoints build on the Trace rollback graph, so enforcement also
   // requires the route's Trace control.
-  return controlsOrCapabilities && "plan" in controlsOrCapabilities
-    ? controlsOrCapabilities.checkpoints === "unit-chain" && controlsOrCapabilities.trace
-    : normalizeWorkflowCapabilities(controlsOrCapabilities).checkpoints === 1 && traceEnforcementRequired(route, controlsOrCapabilities);
+  return controls ? controls.checkpoints === "unit-chain" && controls.trace : false;
 }
 
 export function rollbackExecutionAllowed(
   route: RouteId,
-  controlsOrCapabilities: GovernanceControls | WorkflowCapabilities | undefined,
+  controls: GovernanceControls | undefined,
 ): boolean {
-  return controlsOrCapabilities && "plan" in controlsOrCapabilities
-    ? controlsOrCapabilities.recovery.includes("executable-rollback") && checkpointsEnforcementRequired(route, controlsOrCapabilities)
-    : normalizeWorkflowCapabilities(controlsOrCapabilities).rollbackExecution === 1 && checkpointsEnforcementRequired(route, controlsOrCapabilities);
+  return controls
+    ? controls.recovery.includes("executable-rollback") && checkpointsEnforcementRequired(route, controls)
+    : false;
 }

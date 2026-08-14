@@ -1,9 +1,9 @@
 import { createHash } from "node:crypto";
-import type { GovernanceRepositoryFact, RepositoryFactLocation, RepositoryObservation } from "../policy/types.js";
+import type { GovernanceRepositoryFact, RepositoryFactLocation, RepositoryObservation } from "../policy/governance-records.js";
 import { DevFlowError } from "./errors.js";
 import { isAbsoluteProjectPath, normalizeProjectPath, normalizeUnicode } from "./path-normalization.js";
 import { assertPositiveAnchor, computeLocationFingerprint, executeRepositoryObservation } from "./repository-fact-store.js";
-import { EMPTY_GOVERNANCE_LEDGER } from "../policy/types.js";
+import { EMPTY_GOVERNANCE_LEDGER } from "../policy/governance-records.js";
 import { readProjectConfig, mutate, readState, type FeatureState } from "./state-store.js";
 
 /**

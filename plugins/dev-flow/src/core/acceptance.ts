@@ -1,14 +1,15 @@
 import { createHash, randomUUID } from "node:crypto";
-import type { AcceptanceDispositionState, AcceptanceEvidenceKind, AcceptanceEvidenceRecord, GovernanceCredential, RepositoryObservation } from "../policy/types.js";
+import type { AcceptanceDispositionState, AcceptanceEvidenceKind, AcceptanceEvidenceRecord, GovernanceCredential, RepositoryObservation } from "../policy/governance-records.js";
 import { fingerprintFeatureOwned } from "./fingerprint.js";
-import { readProjectConfig, readFeatureEvents, mutate, readState, type FeatureState } from "./state-store.js";
+import { readProjectConfig, readFeatureEvents, mutate, mutatePrepared, readState, type FeatureState } from "./state-store.js";
 import { readTraceability } from "./traceability-store.js";
 import { executeRepositoryObservation } from "./repository-fact-store.js";
 import { storeScreenshotArtifact } from "./acceptance-store.js";
 import { DevFlowError } from "./errors.js";
-import { createInteraction, getInteraction, resolveNativeInteraction, resolveTextInteraction, toPublicInteraction, type InteractionResponse, type PublicInteraction, type UserInteraction } from "./user-interactions.js";
-import { pendingDecisionForState, matchDecisionReply } from "./decision-interactions.js";
+import { createInteraction, getInteraction, resolveResponseForAnswer, toPublicInteraction, type PresentedInteraction, type PublicInteraction } from "./user-interactions.js";
+import type { InteractionResponse, UserInteraction } from "../policy/interaction.js";
 import { resolveInteractionPromptEvent } from "./interaction-provenance.js";
+import type { AnswerResolveContext, AnswerResolveResult } from "./interaction-answer.js";
 
 const digest = (value: string | Buffer): string => createHash("sha256").update(value).digest("hex");
 
@@ -127,7 +128,7 @@ function dispositionHash(state: FeatureState, criterionIds: string[], fingerprin
   return digest(JSON.stringify({ criterionIds, fingerprint, entries }));
 }
 
-export async function presentAcceptanceConfirmation(root: string, id: string, expectedRevision: number, acceptanceCriterionIds: string[]): Promise<{ state: FeatureState; interaction: PublicInteraction; interactionId: string }> {
+export async function presentAcceptanceConfirmation(root: string, id: string, expectedRevision: number, acceptanceCriterionIds: string[]): Promise<PresentedInteraction> {
   const initial = await readState(root, id);
   const { fingerprint, trace } = await currentBasis(root, initial);
   const criteria = currentHumanCriteria(initial, trace);
@@ -152,57 +153,67 @@ export async function presentAcceptanceConfirmation(root: string, id: string, ex
   return { state, interaction: toPublicInteraction(created), interactionId: created.id };
 }
 
-async function resolveAcceptanceConfirmation(root: string, id: string, expectedRevision: number, interactionId: string, host: "claude" | "codex", input: { source: "text"; userReply: string } | { source: "elicitation"; action: string; comment?: string }): Promise<{ state: FeatureState; interaction: PublicInteraction; response: InteractionResponse }> {
-  const initial = await readState(root, id);
-  const interaction = getInteraction(initial, interactionId);
-  if (interaction.kind !== "acceptance-confirmation" || interaction.status !== "pending" || !interaction.acceptanceConfirmation) throw new DevFlowError("INTERACTION_NOT_PENDING", "当前没有待确认的验收问题。");
-  const { fingerprint } = await currentBasis(root, initial);
-  if (fingerprint !== interaction.acceptanceConfirmation.deliveryFingerprint || dispositionHash(initial, interaction.acceptanceConfirmation.acceptanceCriterionIds, fingerprint) !== interaction.acceptanceConfirmation.dispositionHash) throw new DevFlowError("ACCEPTANCE_CONFIRMATION_STALE", "交付内容已变化，旧验收确认不能继续使用。", { retryOriginal: true });
+/** 验收确认经统一回答入口落账（ADR-0019）：confirm 时写入治理凭证并满足各 AC 处置。 */
+export async function resolveAcceptanceConfirmationForAnswer(ctx: AnswerResolveContext): Promise<AnswerResolveResult> {
+  const { root, featureId, expectedRevision, host, credential, interaction, state } = ctx;
+  if (interaction.kind !== "acceptance-confirmation" || interaction.status !== "pending" || !interaction.acceptanceConfirmation) {
+    throw new DevFlowError("INTERACTION_NOT_PENDING", "当前没有待确认的验收问题。");
+  }
+  const { fingerprint } = await currentBasis(root, state);
+  if (fingerprint !== interaction.acceptanceConfirmation.deliveryFingerprint || dispositionHash(state, interaction.acceptanceConfirmation.acceptanceCriterionIds, fingerprint) !== interaction.acceptanceConfirmation.dispositionHash) {
+    throw new DevFlowError("ACCEPTANCE_CONFIRMATION_STALE", "交付内容已变化，旧验收确认不能继续使用。", { retryOriginal: true });
+  }
   let promptEventId: string | undefined;
   let promptText: string | undefined;
-  if (input.source === "text") {
-    const prompt = resolveInteractionPromptEvent(await readFeatureEvents(root, id), initial, interaction, { host, userReply: input.userReply });
+  if (credential.source === "text") {
+    const prompt = resolveInteractionPromptEvent(await readFeatureEvents(root, featureId), state, interaction, { host, userReply: credential.userReply });
     promptEventId = prompt.eventId;
     promptText = prompt.text;
   }
-  const reply = input.source === "elicitation" ? (input.action === "confirm" ? "确认验收" : "暂不确认") : (promptText ?? input.userReply);
-  const matched = matchDecisionReply(pendingDecisionForState(initial)!, reply);
   let response: InteractionResponse | undefined;
-  const state = await mutate(root, id, expectedRevision, matched.option.id === "confirm" ? "acceptance-confirmed" : "acceptance-confirmation-declined", (draft) => {
-    const live = getInteraction(draft, interactionId);
-    response = input.source === "elicitation" ? resolveNativeInteraction(draft, interactionId, input.action, input.comment, host) : resolveTextInteraction(draft, interactionId, promptText ?? input.userReply, host, { promptEventId });
-    if (matched.option.id !== "confirm") return;
-    const credentialId = `CRED-ACCEPTANCE-${randomUUID()}`;
-    const credentials = [...(draft.governance?.credentials ?? [])];
-    const credential: GovernanceCredential = {
-      recordId: credentialId,
-      kind: "credential",
-      source: input.source === "elicitation" ? "native-form" : "text",
-      host,
-      interactionId,
-      optionId: "confirm",
-      ...(promptEventId ? { basis: { kind: "event", eventId: promptEventId } } : live.presentationEventId ? { basis: { kind: "event", eventId: live.presentationEventId } } : {}),
-      recordedAt: new Date().toISOString(),
-    };
-    credentials.push(credential);
-    draft.governance = { ...(draft.governance ?? { decisions: [], claims: [], authorizations: [], credentials: [], repositoryFacts: [] }), credentials };
-    const confirmation = live.acceptanceConfirmation;
-    if (!confirmation) throw new DevFlowError("ACCEPTANCE_CONFIRMATION_STALE", "验收确认上下文缺失，请重新呈现。");
-    for (const criterionId of confirmation.acceptanceCriterionIds) {
-      const refs = draft.acceptance?.dispositions.find((item) => item.acceptanceCriterionId === criterionId)?.evidenceRefs ?? [];
-      upsertDisposition(draft, criterionId as `AC-${string}`, "satisfied", confirmation.deliveryFingerprint, [...refs, credentialId]);
+  const next = await mutatePrepared(root, featureId, expectedRevision, "acceptance-confirmation-resolved", async (current) => {
+    const live = getInteraction(current as FeatureState, interaction.id);
+    if (live.kind !== "acceptance-confirmation" || live.status !== "pending") {
+      throw new DevFlowError("INTERACTION_NOT_PENDING", "当前没有待确认的验收问题。");
     }
+    return {
+      mutate: (draft) => {
+        const draftLive = getInteraction(draft, interaction.id);
+        response = resolveResponseForAnswer(draft, interaction, {
+          source: credential.source,
+          action: credential.source === "elicitation" ? credential.action : undefined,
+          comment: credential.source === "elicitation" ? credential.comment : undefined,
+          userReply: credential.source === "text" ? credential.userReply : undefined,
+          promptText,
+          promptEventId,
+          host,
+        });
+        if (response.action !== "confirm") return;
+        const credentialId = `CRED-ACCEPTANCE-${randomUUID()}`;
+        const credentials = [...(draft.governance?.credentials ?? [])];
+        const record: GovernanceCredential = {
+          recordId: credentialId,
+          kind: "credential",
+          source: credential.source === "elicitation" ? "native-form" : "text",
+          host,
+          interactionId: interaction.id,
+          optionId: "confirm",
+          ...(promptEventId ? { basis: { kind: "event", eventId: promptEventId } } : draftLive.presentationEventId ? { basis: { kind: "event", eventId: draftLive.presentationEventId } } : {}),
+          recordedAt: new Date().toISOString(),
+        };
+        credentials.push(record);
+        draft.governance = { ...(draft.governance ?? { decisions: [], claims: [], authorizations: [], credentials: [], repositoryFacts: [] }), credentials };
+        const confirmation = draftLive.acceptanceConfirmation;
+        if (!confirmation) throw new DevFlowError("ACCEPTANCE_CONFIRMATION_STALE", "验收确认上下文缺失，请重新呈现。");
+        for (const criterionId of confirmation.acceptanceCriterionIds) {
+          const refs = draft.acceptance?.dispositions.find((item) => item.acceptanceCriterionId === criterionId)?.evidenceRefs ?? [];
+          upsertDisposition(draft, criterionId as `AC-${string}`, "satisfied", confirmation.deliveryFingerprint, [...refs, credentialId]);
+        }
+      },
+    };
   });
-  if (!response) throw new DevFlowError("INTERACTION_NOT_RESOLVED", interactionId);
-  return { state, interaction: toPublicInteraction(getInteraction(state, interactionId)), response };
-}
-
-export async function resolveAcceptanceConfirmationAnswer(root: string, id: string, expectedRevision: number, interactionId: string, userReply: string, host: "claude" | "codex") {
-  return resolveAcceptanceConfirmation(root, id, expectedRevision, interactionId, host, { source: "text", userReply });
-}
-
-export async function resolveAcceptanceConfirmationElicitation(root: string, id: string, expectedRevision: number, interactionId: string, action: string, comment: string | undefined, host: "claude" | "codex") {
-  return resolveAcceptanceConfirmation(root, id, expectedRevision, interactionId, host, { source: "elicitation", action, comment });
+  if (!response) throw new DevFlowError("INTERACTION_NOT_RESOLVED", interaction.id);
+  return { state: next, action: response.action, ...(response.comment ? { comment: response.comment } : {}) };
 }
 
 export function acceptanceDispositionHash(state: FeatureState, criterionIds: string[], fingerprint: string): string {

@@ -110,7 +110,10 @@ test("an accepted review quality exception lets the user proceed without isolati
       riskSummary: "宿主无法提供隔离上下文，接受独立性风险继续",
     });
     await store.recordHostEvent(root, { eventId: "accept-risk", type: "user-prompt", host: "codex", text: "接受风险" });
-    await quality.resolveQualityExceptionElicitation(root, "iso", presented.state.revision, presented.interactionId, "accept", "接受独立性风险，宿主暂无法提供隔离上下文", "codex");
+    await store.answer({
+      root, featureId: "iso", expectedRevision: presented.state.revision, host: "codex",
+      credential: { source: "elicitation", action: "accept", comment: "接受独立性风险，宿主暂无法提供隔离上下文" },
+    });
     // 风险接受后 code_review 门禁放行；失败检查本身保持未完成（不改写为通过）。
     const accepted = await store.readState(root, "iso");
     const passed = await steps.recordStep(root, "iso", accepted.revision, "code_review", {});
@@ -122,9 +125,9 @@ test("an accepted review quality exception lets the user proceed without isolati
 
 test("review-execution events are not exposed as an agent-callable MCP tool (no self-attestation)", async () => {
   // 隔离证明只能来自宿主捕获或受控采样；agent 不得通过公开工具自证隔离。
-  // 这是源码级防回归：公开工具列表与 dispatch 均不得包含该入口。
+  // 这是源码级防回归：公开工具列表与 dispatch 均不得包含该入口（工具面与 dispatch 的家是 dispatch.ts）。
   const { readFile } = await import("node:fs/promises");
-  const serverSource = await readFile(path.join(process.cwd(), "plugins/dev-flow/src/mcp/server.ts"), "utf8");
+  const serverSource = await readFile(path.join(process.cwd(), "plugins/dev-flow/src/mcp/dispatch.ts"), "utf8");
   const toolListLine = serverSource.split("\n").find((line) => line.includes('"dev_flow_release_review_job"'));
   assert.ok(toolListLine, "review tool list must exist");
   assert.doesNotMatch(toolListLine, /dev_flow_record_review_execution_event/,

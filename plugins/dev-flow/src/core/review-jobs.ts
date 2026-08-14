@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { toPublicReviewJob, type ReviewAgentAttestation, type ReviewBasis, type ReviewBatch, type ReviewFindingEvent, type ReviewJob, type ReviewLedger, type ReviewSamplingAttempt, type PublicReviewJob } from "../policy/review.js";
 import type { AcceptanceCriterionNode, TraceNode, TraceabilityLedger, VerificationDispositionKind } from "../policy/traceability.js";
-import type { ReviewAssurance, ReviewDepth, ReviewFinding, ReviewFindingInput, ReviewFindingResolutionInput, ReviewRole } from "../policy/types.js";
+import type { ReviewAssurance, ReviewDepth, ReviewFinding, ReviewFindingInput, ReviewFindingResolutionInput, ReviewRole } from "../policy/review.js";
 import { pathWithinFileScope } from "../policy/rollback.js";
 import {
   assuranceForReview2a,
@@ -33,14 +33,15 @@ import {
   createInteraction,
   findInteractionForTarget,
   getInteraction,
-  resolveNativeInteraction,
-  resolveTextInteraction,
+  resolveResponseForAnswer,
   textCompatible,
   toPublicInteraction,
+  type PresentedInteraction,
   type PublicInteraction,
-  type UserInteraction,
 } from "./user-interactions.js";
+import type { InteractionResponse, UserInteraction } from "../policy/interaction.js";
 import { resolveInteractionPromptEvent } from "./interaction-provenance.js";
+import type { AnswerResolveContext, AnswerResolveResult } from "./interaction-answer.js";
 import { carriedFindings } from "./review-findings.js";
 import { effectiveFindingState, unresolvedBlockingFindings } from "./review-findings.js";
 import { hasCurrentQualityException } from "./quality-exceptions.js";
@@ -141,15 +142,7 @@ export interface StartedReviewSampling {
 
 type SamplingFailureCode = "client-error" | "timeout" | "invalid-response" | "validation-failed";
 
-export interface ReviewRiskAcceptancePresentation {
-  state: FeatureState;
-  interaction: PublicInteraction;
-  idempotent: boolean;
-}
-
-export interface ResolvedReviewRiskAcceptance {
-  state: FeatureState;
-  acceptedFindingIds: string[];
+export interface ReviewRiskAcceptancePresentation extends PresentedInteraction {
   idempotent: boolean;
 }
 
@@ -1303,7 +1296,7 @@ export async function presentReviewRiskAcceptance(
     const target = `review-risk:${batch.batchId}:${setHash}`;
     const existing = findInteractionForTarget(current as FeatureState, target);
     if (existing) {
-      result = { interaction: toPublicInteraction(existing), idempotent: true };
+      result = { interaction: toPublicInteraction(existing), interactionId: existing.id, idempotent: true };
       return { mutate: () => undefined, unchanged: true, eventData: { batchId: batch.batchId, findingSetHash: setHash, idempotent: true } };
     }
     return {
@@ -1320,7 +1313,7 @@ export async function presentReviewRiskAcceptance(
           ],
         });
         presentationEventId = interaction.presentationEventId;
-        result = { interaction: toPublicInteraction(interaction), idempotent: false };
+        result = { interaction: toPublicInteraction(interaction), interactionId: interaction.id, idempotent: false };
       },
       eventData: () => ({ batchId: batch.batchId, findingIds: ids, findingSetHash: setHash, presentationEventId }),
     };
@@ -1390,115 +1383,85 @@ export function assertReviewRiskAcceptanceEvidence(
   }
 }
 
-/** Resolve one natural-language answer and atomically persist accepted dispositions. */
-export async function resolveReviewRiskAcceptanceAnswer(
-  root: string,
-  id: string,
-  expectedRevision: number,
-  interactionId: string,
-  userReply: string,
-  host: "claude" | "codex",
-): Promise<ResolvedReviewRiskAcceptance> {
-  const initial = await readState(root, id);
-  const interaction = getInteraction(initial, interactionId);
-  const events = await readFeatureEvents(root, id);
-  const resolvedPromptEventId = resolveInteractionPromptEvent(events, initial, interaction, {
-    host,
-    userReply,
-  }).eventId;
-  const hostEvent = events.find((event) => event.type === "host-event"
-    && (event.data as { eventId?: unknown }).eventId === resolvedPromptEventId);
-  assertReviewRiskAcceptanceEvidence(hostEvent, interaction, resolvedPromptEventId, userReply, host);
-  const promptText = (hostEvent?.data as { text?: unknown } | undefined)?.text;
-  return resolveReviewRiskAcceptanceResponse(root, id, expectedRevision, interactionId, host, {
-    source: "text",
-    userReply,
-    promptEventId: resolvedPromptEventId,
-    ...(typeof promptText === "string" ? { promptText } : {}),
-  });
-}
-
-/** 原生表单来源：用户点击即可信落账，不需要宿主 user-prompt 事件。 */
-export async function resolveReviewRiskAcceptanceElicitation(
-  root: string,
-  id: string,
-  expectedRevision: number,
-  interactionId: string,
-  action: string,
-  comment: string | undefined,
-  host: "claude" | "codex",
-): Promise<ResolvedReviewRiskAcceptance> {
-  return resolveReviewRiskAcceptanceResponse(root, id, expectedRevision, interactionId, host, {
-    source: "elicitation",
-    action,
-    comment,
-  });
-}
-
-type ReviewRiskAcceptanceInput =
-  | { source: "text"; userReply: string; promptEventId: string; promptText?: string }
-  | { source: "elicitation"; action: string; comment?: string };
-
-async function resolveReviewRiskAcceptanceResponse(
-  root: string,
-  id: string,
-  expectedRevision: number,
-  interactionId: string,
-  host: "claude" | "codex",
-  input: ReviewRiskAcceptanceInput,
-): Promise<ResolvedReviewRiskAcceptance> {
-  let result: Omit<ResolvedReviewRiskAcceptance, "state"> | undefined;
-  const state = await mutatePrepared(root, id, expectedRevision, "review-risk-acceptance-resolved", async (current, nextStateRevision) => {
-    const interaction = getInteraction(current as FeatureState, interactionId);
+/** 审查风险接受经统一回答入口落账（ADR-0019）：绑定当前批次与精确发现集合，原子持久化。 */
+export async function resolveReviewRiskAcceptanceForAnswer(ctx: AnswerResolveContext): Promise<AnswerResolveResult> {
+  const { root, featureId, expectedRevision, host, credential, interaction, state } = ctx;
+  if (interaction.kind !== "risk-acceptance" || (interaction.status !== "pending" && interaction.status !== "resolved")) {
+    throw new DevFlowError("INTERACTION_NOT_PENDING", "当前没有待处理的审查风险接受问题。", { interactionId: interaction.id });
+  }
+  let promptEventId: string | undefined;
+  let promptText: string | undefined;
+  if (credential.source === "text") {
+    const events = await readFeatureEvents(root, featureId);
+    const resolvedPromptEventId = resolveInteractionPromptEvent(events, state, interaction, {
+      host,
+      userReply: credential.userReply,
+    }).eventId;
+    const hostEvent = events.find((event) => event.type === "host-event"
+      && (event.data as { eventId?: unknown }).eventId === resolvedPromptEventId);
+    assertReviewRiskAcceptanceEvidence(hostEvent, interaction, resolvedPromptEventId, credential.userReply, host);
+    promptEventId = resolvedPromptEventId;
+    const capturedText = (hostEvent?.data as { text?: unknown } | undefined)?.text;
+    promptText = typeof capturedText === "string" ? capturedText : undefined;
+  }
+  let response: InteractionResponse | undefined;
+  let replayed = false;
+  const next = await mutatePrepared(root, featureId, expectedRevision, "review-risk-acceptance-resolved", async (current, nextStateRevision) => {
+    const live = getInteraction(current as FeatureState, interaction.id);
     const { ledger, batch } = await currentBatchWithBasis(root, current as FeatureState);
-    const binding = riskBinding(interaction);
-    if (interaction.status === "resolved") {
+    const binding = riskBinding(live);
+    if (live.status === "resolved") {
       // 幂等重放：accept 是原子写入，交互已解决即 disposition 与 finding 事件已落账；
       // 这里只做 binding 与批次匹配校验，不再要求 finding 保持未解决。
-      const findings = submittedFindings(ledger)
+      const resolvedFindings = submittedFindings(ledger)
         .filter(({ batch: source, finding }) => source.batchId === batch.batchId && binding.findingIds.includes(finding.findingId))
         .map(({ finding }) => finding);
-      assertResolvedAcceptance(current as FeatureState, interaction, batch, findings);
-      const accepted = input.source === "text"
-        ? interaction.response?.action === "accept"
-          && interaction.response.source === "text"
-          && interaction.response.userReply === input.userReply
-          && interaction.response.promptEventId === input.promptEventId
-          && interaction.response.host === host
-        : interaction.response?.action === "accept"
-          && interaction.response.source === "elicitation"
-          && interaction.response.host === host;
+      assertResolvedAcceptance(current as FeatureState, live, batch, resolvedFindings);
+      const accepted = credential.source === "text"
+        ? live.response?.action === "accept"
+          && live.response.source === "text"
+          && live.response.userReply === credential.userReply
+          && live.response.promptEventId === promptEventId
+          && live.response.host === host
+        : live.response?.action === "accept"
+          && live.response.source === "elicitation"
+          && live.response.host === host;
       const dispositions = batch.dispositions ?? {};
-      if (accepted && findings.every((finding) => {
+      if (accepted && resolvedFindings.every((finding) => {
         const disposition = dispositions[finding.findingId];
-        return disposition?.kind === "risk-accepted" && disposition.interactionId === interaction.id
+        return disposition?.kind === "risk-accepted" && disposition.interactionId === live.id
           && disposition.findingSetHash === binding.findingSetHash;
       })) {
-        result = { acceptedFindingIds: binding.findingIds, idempotent: true };
-        return { mutate: () => undefined, unchanged: true, eventData: { interactionId, idempotent: true } };
+        replayed = true;
+        return { mutate: () => undefined, unchanged: true, eventData: { interactionId: interaction.id, idempotent: true } };
       }
-      invalid("INTERACTION_ALREADY_RESOLVED", interactionId);
+      invalid("INTERACTION_ALREADY_RESOLVED", interaction.id);
     }
     const findings = acceptanceFindings(ledger, batch, binding.findingIds);
-    assertResolvedAcceptance(current as FeatureState, interaction, batch, findings);
+    assertResolvedAcceptance(current as FeatureState, live, batch, findings);
+    const resolveOn = (draft: FeatureState) => resolveResponseForAnswer(draft, interaction, {
+      source: credential.source,
+      action: credential.source === "elicitation" ? credential.action : undefined,
+      comment: credential.source === "elicitation" ? credential.comment : undefined,
+      userReply: credential.source === "text" ? credential.userReply : undefined,
+      promptText,
+      promptEventId,
+      host,
+    });
     const preview = structuredClone(current as FeatureState);
-    const resolveOn = (draft: FeatureState) => input.source === "text"
-      ? resolveTextInteraction(draft, interactionId, input.promptText ?? input.userReply, host, { promptEventId: input.promptEventId })
-      : resolveNativeInteraction(draft, interactionId, input.action, input.comment, host);
-    const response = resolveOn(preview);
-    if (response.action !== "accept") {
-      result = { acceptedFindingIds: [], idempotent: false };
+    const previewResponse = resolveOn(preview);
+    if (previewResponse.action !== "accept") {
       return {
-        mutate: (draft) => { resolveOn(draft); },
-        eventData: { interactionId, batchId: batch.batchId, action: response.action },
+        mutate: (draft) => { response = resolveOn(draft); },
+        eventData: { interactionId: interaction.id, batchId: batch.batchId, action: previewResponse.action },
       };
     }
     const dispositions = { ...batch.dispositions };
     for (const finding of findings) {
       dispositions[finding.findingId] = {
         kind: "risk-accepted",
-        interactionId,
-        acceptedAt: response.respondedAt,
+        interactionId: interaction.id,
+        acceptedAt: previewResponse.respondedAt,
         batchId: batch.batchId,
         basisHash: batch.basisHash,
         findingIds: binding.findingIds,
@@ -1512,11 +1475,11 @@ async function resolveReviewRiskAcceptanceResponse(
         type: "risk-accepted",
         findingId: finding.findingId,
         batchId: batch.batchId,
-        interactionId,
+        interactionId: interaction.id,
         basisHash: source?.job.roleBasisHash ?? batch.jobs.find((job) => job.role === finding.category)?.roleBasisHash ?? batch.basisHash,
         findingSetHash: binding.findingSetHash,
-        userEvidence: response.comment ?? (input.source === "text" ? input.userReply : input.action),
-        at: response.respondedAt,
+        userEvidence: previewResponse.comment ?? (credential.source === "text" ? credential.userReply : credential.action),
+        at: previewResponse.respondedAt,
       };
     });
     const pointer = await writeReviewSnapshot(root, cloneLedger(
@@ -1525,16 +1488,17 @@ async function resolveReviewRiskAcceptanceResponse(
       ledger.batches.map((candidate) => candidate.batchId === batch.batchId ? updatedBatch : candidate),
       findingEvents,
     ));
-    result = { acceptedFindingIds: binding.findingIds, idempotent: false };
     return {
       mutate: (draft) => {
-        resolveOn(draft);
+        response = resolveOn(draft);
         draft.review = pointer;
       },
-      eventData: { interactionId, batchId: batch.batchId, findingIds: binding.findingIds, findingSetHash: binding.findingSetHash },
+      eventData: { interactionId: interaction.id, batchId: batch.batchId, findingIds: binding.findingIds, findingSetHash: binding.findingSetHash },
     };
   });
-  return { ...result!, state };
+  if (response) return { state: next, action: response.action, ...(response.comment ? { comment: response.comment } : {}) };
+  if (replayed) return { state: next, action: "accept" };
+  throw new DevFlowError("INTERACTION_NOT_RESOLVED", interaction.id);
 }
 
 /**
@@ -1562,7 +1526,7 @@ export function currentUnresolvedBlocking(
       if (disposition.kind === "risk-accepted") {
         // A user decision is valid only for this exact current basis and frozen finding set.
         if (disposition.batchId !== batch.batchId || disposition.basisHash !== batch.basisHash) return true;
-        const interaction = state.interactions?.[disposition.interactionId] as UserInteraction | undefined;
+        const interaction = state.interactions?.[disposition.interactionId];
         if (!interaction || interaction.kind !== "risk-acceptance" || interaction.status !== "resolved"
           || interaction.response?.action !== "accept" || interaction.basisHash !== batch.basisHash) return true;
         let binding: { batchId: string; findingIds: string[]; findingSetHash: string };

@@ -15,12 +15,12 @@ import type {
   GovernanceControls,
   GovernanceControlEnhancements,
   Level,
-  ReviewRole,
   RiskLabel,
   RouteId,
   Topology,
   VerificationKind,
 } from "./types.js";
+import type { ReviewRole } from "./review.js";
 import { normalizeClassification, PolicyError } from "./validation.js";
 
 const levelRank: Record<Level, number> = { XS: 0, S: 1, M: 2, L: 3 };
@@ -310,16 +310,9 @@ function defaultBasis(input: ClassificationInput): ClassificationBasis {
   };
 }
 
-export function selectRoute(input: ClassificationInput): ReturnType<typeof selectBaseRoute> {
-  const basis = defaultBasis(input);
-  if (basis.signals) {
-    const preview = recommendClassification(basis);
-    if (!preview.readyToLock) throw new PolicyError(preview.issues[0]?.code ?? "CLASSIFICATION_INVALID", preview.issues[0]?.message ?? "classification invalid", { issues: preview.issues });
-    if (input.level && levelRank[input.level] < levelRank[preview.classification.level]) throw new PolicyError("CLASSIFICATION_BELOW_CORE_MINIMUM", "requested level is below Core minimum", { minimum: preview.classification.level });
-    return { classification: preview.classification, route: preview.route, classificationBasis: basis, obligations: preview.obligations, contradictions: [] };
-  }
-  if (!input.level || !input.topology) throw new PolicyError("CLASSIFICATION_FACTS_REQUIRED", "classificationBasis.signals is required");
-  const fallbackSignals: ClassificationSignals = {
+/** level/topology 直达（无 signals）时的等价信号表：select 两入口共用同一份映射。 */
+function fallbackClassificationSignals(input: { level: Level; topology: Topology; requirements?: ClassificationInput["requirements"] }): ClassificationSignals {
+  return {
     changeSurface: input.level === "XS" ? "single-site" : input.level === "S" ? "single-component" : input.level === "M" ? "multi-component" : "system-wide",
     behaviorChange: input.level === "XS" ? "mechanical" : input.level === "S" ? "bounded-rule" : input.level === "M" ? "new-capability" : "systemic-change",
     topology: input.topology,
@@ -327,8 +320,19 @@ export function selectRoute(input: ClassificationInput): ReturnType<typeof selec
     requirements: input.requirements ?? "missing-or-unclear",
     operationalRecovery: input.topology !== "local",
     executableRollback: input.topology === "coordinated-rollback",
-    upwardLevel: input.level,
   };
+}
+
+export function selectRoute(input: ClassificationInput): ReturnType<typeof selectBaseRoute> {
+  const basis = defaultBasis(input);
+  if (basis.signals) {
+    const preview = recommendClassification(basis);
+    if (!preview.readyToLock) throw new PolicyError(preview.issues[0]?.code ?? "CLASSIFICATION_INVALID", preview.issues[0]?.message ?? "classification invalid", { issues: preview.issues });
+    if (input.level && levelRank[input.level] < levelRank[preview.classification.level]) throw new PolicyError("CLASSIFICATION_BELOW_CORE_MINIMUM", "requested level is below Core minimum", { minimum: preview.classification.level });
+    return { classification: preview.classification, route: preview.route, classificationBasis: basis, obligations: preview.obligations };
+  }
+  if (!input.level || !input.topology) throw new PolicyError("CLASSIFICATION_FACTS_REQUIRED", "classificationBasis.signals is required");
+  const fallbackSignals: ClassificationSignals = { ...fallbackClassificationSignals({ level: input.level, topology: input.topology, requirements: input.requirements }), upwardLevel: input.level };
   return selectBaseRoute({ ...basis, signals: fallbackSignals, level: input.level, topology: input.topology, requirements: input.requirements, riskLabels: input.riskLabels });
 }
 
@@ -337,7 +341,6 @@ export function selectBaseRoute(input: ClassificationFacts): {
   route: RouteId;
   classificationBasis: ClassificationBasis;
   obligations: ReturnType<typeof deriveObligations>;
-  contradictions: string[];
 } {
   const normalized = normalizeClassification(input);
   const basis: ClassificationBasis = {
@@ -353,21 +356,13 @@ export function selectBaseRoute(input: ClassificationFacts): {
   const preview = basis.signals ? recommendClassification(basis) : undefined;
   if (preview && !preview.readyToLock) throw new PolicyError(preview.issues[0]?.code ?? "CLASSIFICATION_INVALID", preview.issues[0]?.message ?? "classification invalid", { issues: preview.issues });
   if (preview?.readyToLock && levelRank[input.level] < levelRank[preview.classification.level]) throw new PolicyError("CLASSIFICATION_BELOW_CORE_MINIMUM", "requested level is below Core minimum", { minimum: preview.classification.level });
-  if (preview?.readyToLock) return { classification: preview.classification, route: preview.route, classificationBasis: basis, obligations: preview.obligations, contradictions: [] };
+  if (preview?.readyToLock) return { classification: preview.classification, route: preview.route, classificationBasis: basis, obligations: preview.obligations };
   assertTopologyLevel(normalized);
-  const signals: ClassificationSignals = {
-    changeSurface: input.level === "XS" ? "single-site" : input.level === "S" ? "single-component" : input.level === "M" ? "multi-component" : "system-wide",
-    behaviorChange: input.level === "XS" ? "mechanical" : input.level === "S" ? "bounded-rule" : input.level === "M" ? "new-capability" : "systemic-change",
-    topology: input.topology,
-    unitCount: input.topology === "multi-chain" || input.topology === "coordinated-rollback" ? 2 : 1,
-    requirements: input.requirements ?? "missing-or-unclear",
-    operationalRecovery: input.topology !== "local",
-    executableRollback: input.topology === "coordinated-rollback",
-  };
+  const signals = fallbackClassificationSignals(input);
   const controls = applyControlEnhancements(deriveGovernanceControls(input.level, signals, normalized.riskLabels), basis.controlEnhancements, signals, normalized.riskLabels);
   const classification: Classification = { ...normalized, classificationBasis: basis, controls, orderedRoute: compileOrderedRoute(input.level, controls), routeConfirmationRequired: input.level === "M" || input.level === "L" || normalized.riskLabels.length > 0 };
   const route = levelRoute[input.level];
-  return { classification, route, classificationBasis: basis, obligations: deriveObligations(route, basis, controls), contradictions: [] };
+  return { classification, route, classificationBasis: basis, obligations: deriveObligations(route, basis, controls) };
 }
 
 export interface BoundaryResolutionIndex {

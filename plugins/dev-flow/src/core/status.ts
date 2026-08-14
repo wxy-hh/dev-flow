@@ -16,7 +16,7 @@ import { rollbackChainView, type RollbackChainView } from "./rollback.js";
 import { buildExecutionBrief, type ExecutionBrief } from "./execution-brief.js";
 import { analyzeDrift, type DriftReport } from "./drift-analysis.js";
 import { snapshotGovernedRoots } from "./fingerprint.js";
-import { deriveStageCapabilities } from "../policy/stages.js";
+import { deriveStageCapabilities, firstOpenStep } from "../policy/stages.js";
 
 export type ProgressWait =
   | { kind: "none" }
@@ -144,18 +144,14 @@ export async function buildProgress(
   }
   const ordered = routeDefinitionForState(state).orderedSteps;
   const stepTotal = ordered.length;
-  let currentStep: string | undefined;
-  let stepIndex = stepTotal;
-  for (let index = 0; index < ordered.length; index += 1) {
-    const step = ordered[index];
-    const staleVerification = step === "verification"
-      && action.kind === "run-step"
-      && action.step === "verification";
-    if (state.steps[step]?.status === "satisfied" && !staleVerification) continue;
-    currentStep = step;
-    stepIndex = index + 1;
-    break;
-  }
+  // stale verification 是账本之上的新鲜度事实，不进归约：调度器要重跑
+  // verification 时，进度投影先把它改写为未满足，再算当前步骤。
+  const progressSteps = action.kind === "run-step" && action.step === "verification"
+    ? { ...state.steps, verification: { status: "pending" as const } }
+    : state.steps;
+  const openStep = firstOpenStep(ordered, progressSteps);
+  let currentStep: string | undefined = openStep;
+  let stepIndex = openStep ? ordered.indexOf(openStep) + 1 : stepTotal;
   if (state.lifecycle === "finalized" || action.kind === "done") {
     currentStep = undefined;
     stepIndex = stepTotal;
@@ -182,8 +178,7 @@ export async function buildProgress(
     wait = await grillWait(root, state, action);
   }
 
-  const remainingSteps = ordered.filter((step) => state.steps[step]?.status !== "satisfied"
-    || (step === "verification" && action.kind === "run-step" && action.step === "verification"));
+  const remainingSteps = ordered.filter((step) => progressSteps[step]?.status !== "satisfied");
   const requiredEvidence = action.kind === "run-step"
     ? action.requiredEvidence
     : undefined;
@@ -260,6 +255,7 @@ export async function readStatusView(root: string, featureId: string): Promise<S
   const review = await reviewStatus(root, state);
   const drift = await driftStatus(root, state);
   const verificationFreshness = progress.verificationFreshness;
+  const executionBrief = buildExecutionBrief(state, review.projection, verificationFreshness.status);
   return {
     ...state,
     evidenceFreshness: { ...state.evidenceFreshness, verification: verificationFreshness.status === "fresh" ? "current" : verificationFreshness.status },
@@ -269,7 +265,7 @@ export async function readStatusView(root: string, featureId: string): Promise<S
     implementation: await implementationStatus(root, state, rollback),
     rollback,
     stageCapabilities: stageCapabilitiesForAction(state, action),
-    ...(buildExecutionBrief(state, review.projection, verificationFreshness.status) ? { executionBrief: buildExecutionBrief(state, review.projection, verificationFreshness.status) } : {}),
+    ...(executionBrief ? { executionBrief } : {}),
     ...(drift ? { drift } : {}),
   };
 }

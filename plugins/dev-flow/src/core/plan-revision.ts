@@ -4,23 +4,18 @@ import { routeDefinitionForFeature, traceEnforcementRequired } from "../policy/c
 import { reopenImplementationUnit } from "../policy/rollback.js";
 import { DevFlowError } from "./errors.js";
 import { readArtifactText } from "./artifacts.js";
-import { compilePlan } from "./plan-compiler.js";
-import { parseTraceSourceBlocks } from "./traceability-anchors.js";
-import { readProjectConfigSnapshot, readTraceabilityForArtifactReplacement } from "./traceability-store.js";
-import { verificationCommandHashes } from "./project-config.js";
+import { compileArtifactPlan } from "./plan-compile-context.js";
+import { readProjectConfigSnapshot } from "./traceability-store.js";
 import { currentOpenStep } from "./step-order.js";
-import { createInteraction, resolveResponseForAnswer, toPublicInteraction, type PublicInteraction, type UserInteraction } from "./user-interactions.js";
+import { createInteraction, resolveResponseForAnswer, toPublicInteraction, type PresentedInteraction, type PublicInteraction } from "./user-interactions.js";
+import type { InteractionResponse, UserInteraction } from "../policy/interaction.js";
 import { resolveInteractionPromptEvent } from "./interaction-provenance.js";
 import { matchDecisionReply, pendingDecisionForState } from "./decision-interactions.js";
 import { mutate, mutatePrepared, readFeatureEvents, readState, type FeatureState } from "./state-store.js";
 import { prepareReviewInvalidation } from "./review-store.js";
 import type { AnswerResolveContext, AnswerResolveResult } from "./interaction-answer.js";
 
-export interface PlanRevisionResult {
-  state: FeatureState;
-  interaction: PublicInteraction;
-  interactionId: string;
-}
+export type PlanRevisionResult = PresentedInteraction;
 
 /**
  * 实施中计划修订（ADR-0013 / issue 17）。
@@ -47,26 +42,13 @@ export async function revisePlanDuringImplementation(
   if (currentStep !== "implementation" && currentStep !== "planning") {
     throw new DevFlowError("STEP_OUT_OF_ORDER", "计划修订只适用于 planning/implementation 阶段", { currentStep });
   }
-  const artifact = initial.artifacts["implementation-plan"];
-  if (!artifact) throw new DevFlowError("MISSING_REQUIRED_ARTIFACT", "implementation-plan");
-  const contents = await readArtifactText(root, id, artifact.path);
-  const artifactSha256 = createHash("sha256").update(contents).digest("hex");
-  const { config, sha256: projectConfigSha256 } = await readProjectConfigSnapshot(root);
-  const currentLedger = await readTraceabilityForArtifactReplacement(root, initial, "implementation-plan");
   // 预检：新计划必须先通过编译；失败直接返回诊断，不创建交互。
-  const compile = compilePlan({
-    route: initial.route,
-    artifactKind: "implementation-plan",
-    artifactSha256,
-    sourceBlocks: parseTraceSourceBlocks(contents),
-    currentLedger,
-    traceDelta,
-    projectConfigSha256,
-    verificationCommandIds: config.verification.commands.map((command) => command.id),
-    verificationCommandHashes: verificationCommandHashes(config),
-    nextStateRevision: expectedRevision + 1,
-    riskLabels: initial.classification.riskLabels,
-  });
+  // 与 validatePlan/recordArtifactWithTrace 共用同一装载编译入口（compileArtifactPlan）。
+  const compilation = await compileArtifactPlan(root, id, initial, { artifactKind: "implementation-plan", traceDelta, nextStateRevision: expectedRevision + 1 });
+  const compile = compilation.result;
+  const currentLedger = compilation.input.currentLedger;
+  const artifactSha256 = compilation.input.artifactSha256;
+  const projectConfigSha256 = compilation.input.projectConfigSha256;
   if (!compile.ok) {
     throw new DevFlowError("PLAN_INVALID", "修订后的实施计划编译未通过。", {
       diagnostics: compile.diagnostics,
@@ -163,7 +145,6 @@ export function applyPlanRevision(draft: FeatureState, interaction: UserInteract
   delete draft.steps.planning;
   delete draft.steps.implementation;
   delete draft.steps.code_review;
-  draft.currentStage = "planning";
   draft.lastUpdatedBy = { host, pluginVersion: __DEV_FLOW_VERSION__ };
 }
 
@@ -198,10 +179,10 @@ export async function resolvePlanRevisionForAnswer(ctx: AnswerResolveContext): P
     : matchDecisionReply(pending!, promptText ?? credential.userReply).option.id;
   const confirms = matchedId === "confirm";
   let reviewInvalidation: ReturnType<typeof prepareReviewInvalidation> extends Promise<infer T> ? T : never;
-  let response: import("./user-interactions.js").InteractionResponse | undefined;
+  let response: import("../policy/interaction.js").InteractionResponse | undefined;
   const next = await mutatePrepared(root, featureId, expectedRevision, confirms ? "plan-revised" : "plan-revision-cancelled", async (current, nextStateRevision) => {
     if (confirms) {
-      const live = current.interactions?.[interaction.id] as UserInteraction | undefined;
+      const live = current.interactions?.[interaction.id];
       const basis = live?.planRevisionBasis;
       const artifact = current.artifacts["implementation-plan"];
       if (!basis || !artifact) throw new DevFlowError("PLAN_REVISION_STALE", "计划修订预览缺少当前依据，请重新生成。", { retryOriginal: true });
@@ -225,7 +206,7 @@ export async function resolvePlanRevisionForAnswer(ctx: AnswerResolveContext): P
       mutate: (draft) => {
         response = resolveResponseForAnswer(draft, interaction, { source: credential.source, action: credential.source === "elicitation" ? credential.action : undefined, comment: credential.source === "elicitation" ? credential.comment : undefined, userReply: credential.source === "text" ? credential.userReply : undefined, promptText, promptEventId, host });
         if (confirms) {
-          const live = draft.interactions![interaction.id] as UserInteraction;
+          const live = draft.interactions![interaction.id];
           applyPlanRevision(draft, live, host);
           if (reviewInvalidation) draft.review = reviewInvalidation;
           // spec §179：有外部副作用的已完成单元在计划修订后绝不自动重跑，
@@ -273,12 +254,12 @@ export async function resolveSideEffectRerunForAnswer(ctx: AnswerResolveContext)
     ? credential.action
     : matchDecisionReply(pending!, promptText ?? credential.userReply).option.id;
   const confirms = matchedId === "confirm";
-  let response: import("./user-interactions.js").InteractionResponse | undefined;
+  let response: import("../policy/interaction.js").InteractionResponse | undefined;
   const next = await mutatePrepared(root, featureId, expectedRevision, confirms ? "side-effect-rerun-confirmed" : "side-effect-rerun-kept", async () => ({
     mutate: (draft) => {
       response = resolveResponseForAnswer(draft, interaction, { source: credential.source, action: credential.source === "elicitation" ? credential.action : undefined, comment: credential.source === "elicitation" ? credential.comment : undefined, userReply: credential.source === "text" ? credential.userReply : undefined, promptText, promptEventId, host });
       if (confirms) {
-        const live = draft.interactions![interaction.id] as UserInteraction;
+        const live = draft.interactions![interaction.id];
         // 用户确认重跑：受影响副作用单元回 pending，重新 begin 时重做。
         const units = draft.implementationUnits ?? [];
         let reopened = false;
@@ -292,9 +273,6 @@ export async function resolveSideEffectRerunForAnswer(ctx: AnswerResolveContext)
           delete draft.steps.implementation;
           draft.logicComplete = false;
           delete draft.steps.finalize;
-          const definition = routeDefinitionForFeature(draft.route, draft.classification.controls);
-          draft.currentStage = definition.orderedSteps.find((step) => draft.steps[step]?.status !== "satisfied")
-            ?? definition.orderedSteps[0];
         }
       }
       draft.lastUpdatedBy = { host, pluginVersion: __DEV_FLOW_VERSION__ };

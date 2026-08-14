@@ -1,6 +1,6 @@
 import path from "node:path";
 import { approvalBasisArtifacts, confirmedApproval } from "./approval-basis.js";
-import { ensureActiveImplementationUnit, implementationUnitWriteBlock } from "./implementation-units.js";
+import { assessImplementationUnitBegin, beginImplementationUnit, implementationUnitWriteBlock } from "./implementation-units.js";
 import { readReviewLedger } from "./review-store.js";
 import type { FeatureState } from "./state-store.js";
 import {
@@ -278,27 +278,22 @@ async function evaluateFileWrite(root: string, workflow: ActiveWorkflow, paths: 
     }
   }
 
-  // 懒 begin：仅当写允许且缺活动单元时，门禁内 begin；成功后再 allow。
+  // 问 → 该 begin 则 begin：就绪判定与 begin 共享同一派生（锁内复查）；
+  // begin 成功后活动单元必在当前账本内，整体重载重判可证明冗余，直接 allow。
   if (unitNeededPath) {
-    try {
-      const prepared = await ensureActiveImplementationUnit(root, workflow.featureId, state);
-      if (prepared.revision !== state.revision) {
-        const refreshed = await loadActiveWorkflow(root);
-        if (refreshed.kind !== "ready") {
-          return block("IMPLEMENTATION_UNIT_REQUIRED", [unitNeededPath], "no active implementation unit", { beginFailed: "active workflow refresh after implementation-unit preparation did not produce a readable state" });
-        }
-        for (const relative of paths) {
-          if (!isGoverned(relative, refreshed.workflow.governedRoots)) continue;
-          const unitBlock = implementationUnitWriteBlock(refreshed.workflow.state!, refreshed.workflow.ledger, relative);
-          if (unitBlock?.code === "IMPLEMENTATION_UNIT_OUT_OF_SCOPE") {
-            return block("IMPLEMENTATION_UNIT_OUT_OF_SCOPE", [relative], "active implementation unit is not backed by the current trace");
-          }
-        }
-        return { decision: "allow" };
-      }
+    const assessment = await assessImplementationUnitBegin(root, workflow.featureId, state);
+    if (assessment.kind === "blocked") {
+      return block("IMPLEMENTATION_UNIT_REQUIRED", [unitNeededPath], "no active implementation unit", { beginFailed: `${assessment.code}: ${assessment.message}` });
+    }
+    if (assessment.kind === "none") {
       // 无 ready 节点可 begin：仍是 REQUIRED，不半允许。
       return block("IMPLEMENTATION_UNIT_REQUIRED", [unitNeededPath], "no active implementation unit");
+    }
+    try {
+      await beginImplementationUnit(root, workflow.featureId, state.revision, assessment.unitId);
+      return { decision: "allow" };
     } catch (error) {
+      // TOCTOU 兜底：预问到落账之间状态被推进时，锁内复查抛错。
       const diagnostic = error instanceof Error ? error.message : String(error);
       return block("IMPLEMENTATION_UNIT_REQUIRED", [unitNeededPath], "no active implementation unit", { beginFailed: diagnostic });
     }
