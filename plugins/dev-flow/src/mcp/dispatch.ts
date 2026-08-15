@@ -37,6 +37,7 @@ import {
   getReviewJob,
   presentReviewRiskAcceptance,
   releaseReviewJob,
+  startIsolatedReview,
   submitReviewJob,
 } from "../core/review-jobs.js";
 import { parseHostAttestation, parseReviewJobCompletion, toPublicReviewJob } from "../policy/review.js";
@@ -348,6 +349,10 @@ export const toolSchemas = {
   dev_flow_release_review_job: {
     description: "Release the current review job claim back to pending using the same capability; expired claims remain releasable by their holder.",
     inputSchema: featureMutation({ batchId: string, jobId: string, capability: string }, ["batchId", "jobId", "capability"]),
+  },
+  dev_flow_start_isolated_review: {
+    description: "Declare that a claimed code review job will be executed in an isolated subagent context. The host SubagentOutput hook completes the declaration; agents cannot self-attest isolation.",
+    inputSchema: featureMutation({ batchId: string, jobId: string, executionId: string, host: { enum: ["claude", "codex"] } }, ["batchId", "jobId", "executionId", "host"]),
   },
   dev_flow_submit_review_job: {
     description: "Submit one claimed job's structured completion. Host attestation is diagnostic unless a trusted verifier accepts it; Core still owns assurance. Isolation proof requires a real host-captured review-execution event or server sampling; agent-authored event claims never qualify.",
@@ -938,6 +943,13 @@ export async function dispatch(root: string, name: string, a: any, ports: Dispat
     case "dev_flow_release_review_job": {
       const input = reviewMutationInput(a);
       return releaseReviewJob(root, input.featureId, input.expectedRevision, input.batchId as string, input.jobId as string, input.capability as string);
+    }
+    case "dev_flow_start_isolated_review": {
+      const input = reviewMutationInput(a);
+      if (typeof input.executionId !== "string" || !input.executionId || (input.host !== "claude" && input.host !== "codex")) {
+        throw new DevFlowError("INVALID_TOOL_INPUT", "dev_flow_start_isolated_review input does not match its schema");
+      }
+      return startIsolatedReview(root, input.featureId, input.expectedRevision, input.batchId as string, input.jobId as string, input.executionId, input.host as "claude" | "codex");
     }
     case "dev_flow_submit_review_job": {
       const input = reviewSubmitInput(a);

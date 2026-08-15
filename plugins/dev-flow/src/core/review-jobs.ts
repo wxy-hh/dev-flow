@@ -14,8 +14,8 @@ import {
 } from "../policy/review.js";
 import { DevFlowError } from "./errors.js";
 import { isAbsoluteProjectPath, isCanonicalProjectPath, normalizeUnicode } from "./path-normalization.js";
-import { fingerprintGovernedRoots } from "./fingerprint.js";
-import { mutatePrepared, readFeatureEvents, readState, type FeatureState } from "./state-store.js";
+import { fingerprintFeatureOwned, fingerprintGovernedRoots } from "./fingerprint.js";
+import { appendFeatureEvent, mutatePrepared, readFeatureEvents, readState, type FeatureState } from "./state-store.js";
 import { assertArtifactCurrent } from "./artifacts.js";
 import {
   canonicalReviewValueJson,
@@ -226,6 +226,7 @@ async function deriveReviewInput(root: string, state: FeatureState): Promise<Der
   // pre-record planning gates must see live drift; post-record revalidation is
   // handled separately so implementation may mutate those same paths.
   const governedRootsFingerprint = await fingerprintGovernedRoots(root, config);
+  const featureOwnedFingerprint = await fingerprintFeatureOwned(root, config, state.workspace.ownership);
   const basis: ReviewBasis = {
     featureId: state.featureId,
     route: state.route,
@@ -242,6 +243,7 @@ async function deriveReviewInput(root: string, state: FeatureState): Promise<Der
     verificationCommandHashes: verificationCommandHashes(config),
     scopeManifestSha256: digest(canonicalReviewValueJson(scopeManifest)),
     governedRootsFingerprint,
+    featureOwnedFingerprint,
   };
   const roles = [...new Set<ReviewRole>([
     ...state.classification.controls.reviewRoles,
@@ -269,7 +271,7 @@ function basisHash(basis: ReviewBasis): string {
   return semanticReviewBasisHash(basis);
 }
 
-function roleBasisHash(
+export function roleBasisHash(
   basis: ReviewBasis,
   frozenArtifacts: FrozenReviewArtifact[],
   trace: TraceabilityLedger | undefined,
@@ -328,6 +330,11 @@ function roleBasisHash(
     level: basis.classification.level,
     artifacts,
     traceSlice,
+    // code review 必须绑定 feature-owned 内容：源码/测试变化后不得复用旧审查
+    // （audit-log 遗留偏差 1 的 role-basis 根因）。
+    ...(role === "code-quality" || role === "requirement-fidelity"
+      ? { featureOwnedFingerprint: basis.featureOwnedFingerprint ?? "" }
+      : {}),
     // requirements-coverage 显式绑定非行为处置豁免清单：豁免变化必须使该角色
     // basis 失效（traceSlice 已覆盖，这里把语义绑定写明，防止切片收窄后脱钩）。
     ...(role === "requirements-coverage" ? { nonBehaviorDispositions: nonBehaviorDispositions(trace) } : {}),
@@ -499,6 +506,71 @@ function dedupeFindings(findings: ReviewFindingInput[]): ReviewFindingInput[] {
   return [...byIdentity.values()];
 }
 
+export function codeReviewIsolationRequired(state: FeatureState): boolean {
+  return state.classification.controls.codeReview === "independent"
+    || state.classification.controls.codeReview === "full";
+}
+
+function submittedSourceForJob(ledger: ReviewLedger, job: ReviewJob, visited = new Set<string>()): ReviewJob | undefined {
+  if (job.status === "submitted") return job;
+  if (job.status !== "reused" || !job.reusedFrom) return undefined;
+  const key = `${job.reusedFrom.batchId}:${job.reusedFrom.jobId}`;
+  if (visited.has(key)) return undefined;
+  visited.add(key);
+  const sourceBatch = ledger.batches.find((candidate) => candidate.batchId === job.reusedFrom!.batchId);
+  const sourceJob = sourceBatch?.jobs.find((candidate) => candidate.jobId === job.reusedFrom!.jobId);
+  return sourceJob ? submittedSourceForJob(ledger, sourceJob, visited) : undefined;
+}
+
+/** A reused job satisfies isolation only when its original submission carried proof. */
+export function jobHasEffectiveIsolationProof(ledger: ReviewLedger, job: ReviewJob): boolean {
+  const source = submittedSourceForJob(ledger, job);
+  return Boolean(source?.submission?.isolationProof);
+}
+
+export interface StartIsolatedReviewResult {
+  declarationId: string;
+  batchId: string;
+  jobId: string;
+  executionId: string;
+}
+
+/** Parent agent declares a claimed code job for isolated subagent execution. */
+export async function startIsolatedReview(
+  root: string,
+  id: string,
+  expectedRevision: number,
+  batchId: string,
+  jobId: string,
+  executionId: string,
+  host: "claude" | "codex",
+): Promise<StartIsolatedReviewResult> {
+  const state = await readState(root, id);
+  if (state.revision !== expectedRevision) throw new DevFlowError("STATE_REVISION_CONFLICT", "state revision changed", { currentRevision: state.revision });
+  if (state.lifecycle !== "active") invalid("INVALID_LIFECYCLE", "only active features can declare isolated reviews");
+  if (!codeReviewIsolationRequired(state) || hasCurrentQualityException(state, "review")) {
+    invalid("ISOLATION_NOT_REQUIRED", "current route does not require isolated review or an accepted review quality exception is active");
+  }
+  const ledger = await readReviewLedger(root, state);
+  const batch = ledger.batches.find((candidate) => candidate.validity === "current" && candidate.batchId === batchId);
+  if (!batch || (batch.phase ?? "plan") !== "code") invalid("ISOLATION_DECLARATION_BATCH_INVALID", "isolated review must target a current code review batch", { batchId });
+  const job = findJob(batch, jobId);
+  if (job.status === "submitted" || job.status === "reused") invalid("REVIEW_JOB_ALREADY_SUBMITTED", "review job is already satisfied", { jobId });
+  if (!job.claim) invalid("REVIEW_JOB_NOT_CLAIMED", "isolated review must start from a claimed code review job", { jobId });
+  const declarationId = randomUUID();
+  await appendFeatureEvent(root, id, state.revision, "review-execution-declared", {
+    type: "review-execution-declared",
+    declarationId,
+    batchId,
+    jobId,
+    executionId,
+    host,
+    claimRequestSha256: job.claim.requestSha256,
+    declaredAt: new Date().toISOString(),
+  });
+  return { declarationId, batchId, jobId, executionId };
+}
+
 /** Create is idempotent for an unchanged Core-computed basis. */
 export async function createReviewBatch(
   root: string,
@@ -514,12 +586,19 @@ export async function createReviewBatch(
     const currentBasisHash = basisHash(basis);
     const phase = currentOpenStep(current) === "code_review" ? "code" : "plan";
     const requirements = deriveReviewJobRequirements(current.route, current.classification.riskLabels, current.classification.controls.reviewRoles, phase);
+    const isolationRequired = phase === "code"
+      && codeReviewIsolationRequired(current)
+      && !hasCurrentQualityException(current, "review");
     const existing = ledger.batches.find((batch) => batch.validity === "current" && (batch.phase ?? "plan") === phase && batch.basisHash === currentBasisHash);
     const existingRolesCurrent = existing && requirements.every((requirement) => {
       const job = existing.jobs.find((candidate) => candidate.role === requirement.role);
       return job?.roleBasisHash === reviewInput.roleBasisHashes[requirement.role];
     });
-    if (existing && existingRolesCurrent) {
+    const existingIsolationSatisfied = existing && (!isolationRequired || requirements.every((requirement) => {
+      const job = existing.jobs.find((candidate) => candidate.role === requirement.role);
+      return job !== undefined && jobHasEffectiveIsolationProof(ledger, job);
+    }));
+    if (existing && existingRolesCurrent && existingIsolationSatisfied) {
       result = { state: undefined as unknown as FeatureState, batch: existing, created: false };
       return { mutate: () => undefined, unchanged: true, eventData: { batchId: existing.batchId, basisHash: currentBasisHash, idempotent: true } };
     }
@@ -531,7 +610,11 @@ export async function createReviewBatch(
     for (const requirement of requirements) {
       const currentRoleBasisHash = reviewInput.roleBasisHashes[requirement.role];
       const reusable = [...ledger.batches].reverse().flatMap((candidate) => candidate.jobs.map((job) => ({ batch: candidate, job })))
-        .find(({ job }) => job.role === requirement.role && job.roleBasisHash === currentRoleBasisHash && job.status === "submitted" && job.submission);
+        .find(({ job }) => job.role === requirement.role
+          && job.roleBasisHash === currentRoleBasisHash
+          && job.status === "submitted"
+          && job.submission
+          && (!isolationRequired || jobHasEffectiveIsolationProof(ledger, job)));
       if (reusable?.job.submission) reusableByRole.set(requirement.role, reusable);
     }
     const unknownDiff = prevCurrent !== undefined
@@ -1620,10 +1703,12 @@ export async function reviewGate(
   // 与实现隔离的新上下文中完成。只有绑定专用 review-execution 事件的 subagent
   // 证明或受控 server sampling 能形成隔离证明；缺失时审查保持未完成并阻塞。
   if (phase === "code") {
-    const requiresIsolation = state.classification.controls.codeReview === "independent" || state.classification.controls.codeReview === "full";
+    const requiresIsolation = codeReviewIsolationRequired(state);
     if (requiresIsolation && !hasCurrentQualityException(state, "review")) {
-      const missingIsolation = batch.jobs
-        .filter((job) => job.status === "submitted" && !job.submission?.isolationProof)
+      const requirements = deriveReviewJobRequirements(state.route, state.classification.riskLabels, state.classification.controls.reviewRoles, phase);
+      const missingIsolation = requirements
+        .map((requirement) => batch.jobs.find((job) => job.role === requirement.role))
+        .filter((job): job is ReviewJob => job !== undefined && !jobHasEffectiveIsolationProof(ledger, job))
         .map((job) => job.jobId);
       if (missingIsolation.length) return { status: "isolation", batchId: batch.batchId, jobIds: missingIsolation };
     }
@@ -1657,7 +1742,7 @@ function reviewGateError(gate: Exclude<ReviewGateResult, { status: "ready" }>, p
       return new DevFlowError("REVIEW_ISOLATION_REQUIRED", "独立代码审查要求审查在与实现隔离的新上下文中完成，当前批次缺少隔离证明。", {
         jobIds: gate.jobIds,
         batchId: gate.batchId,
-        recoveryHint: "在与实现隔离的上下文中重新完成这些审查 job 并记录 review-execution 事件，或通过服务端采样完成 job；宿主无法提供隔离上下文时，可通过质量例外（presentQualityException kind=review）显式接受独立性风险后继续。",
+        recoveryHint: "在与实现隔离的上下文中重新完成这些审查 job 并记录 review-execution 事件，或通过服务端采样完成 job；复用批次同样需要隔离证明，可在隔离子代理中重做 job 或经质量例外接受风险。",
         retryOriginal: true,
       });
     case "blocking":

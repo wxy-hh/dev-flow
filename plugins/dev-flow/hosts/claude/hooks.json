@@ -5,6 +5,7 @@
     "PreToolUse": [{ "hooks": [{ "type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/dist/claude-hook.mjs\"" }] }],
     "PermissionRequest": [{ "hooks": [{ "type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/dist/claude-hook.mjs\"" }] }],
     "PostToolUse": [{ "hooks": [{ "type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/dist/claude-hook.mjs\"" }] }],
+    "SubagentOutput": [{ "hooks": [{ "type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/dist/claude-hook.mjs\"" }] }],
     "Stop": [{ "hooks": [{ "type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/dist/claude-hook.mjs\"" }] }]
   }
 }

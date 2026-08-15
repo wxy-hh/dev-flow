@@ -98,6 +98,8 @@ export interface ReviewBasis {
   verificationCommandHashes?: Record<string, string>;
   scopeManifestSha256: string;
   governedRootsFingerprint: string;
+  /** Feature-owned governed content; required for code review role basis freshness. */
+  featureOwnedFingerprint?: string;
 }
 
 export interface ReviewJob {

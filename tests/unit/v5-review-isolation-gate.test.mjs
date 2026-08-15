@@ -13,6 +13,8 @@ const store = await loadSource("plugins/dev-flow/src/core/state-store.ts");
 const steps = await loadSource("plugins/dev-flow/src/core/feature-check.ts");
 const quality = await loadSource("plugins/dev-flow/src/core/quality-exceptions.ts");
 const fingerprintSource = await loadSource("plugins/dev-flow/src/core/fingerprint.ts");
+const reviewJobs = await loadSource("plugins/dev-flow/src/core/review-jobs.ts");
+const reviewAdapter = await loadSource("plugins/dev-flow/src/hosts/review-execution-adapter.ts");
 
 /** M 路线（shared-contract + unitCount 2 → 独立代码审查）使用新分类合同。 */
 async function setup(prefix) {
@@ -79,6 +81,27 @@ test("code review without isolation proof stays blocked on independent-review ro
   }
 });
 
+test("a current code batch without isolation proof is not idempotently returned; a new pending batch can be created", async () => {
+  const { root, state } = await setup("dev-flow-iso-new-batch-");
+  try {
+    await assert.rejects(
+      () => driveUntil(root, "iso", state, driveOptions({ codeIsolation: false })),
+      (error) => error.code === "REVIEW_ISOLATION_REQUIRED",
+    );
+    const blocked = await store.readState(root, "iso");
+    const recreated = await reviewJobs.createReviewBatch(root, "iso", blocked.revision);
+    assert.equal(recreated.created, true, "missing-isolation current batch must not block a fresh pending batch");
+    assert.equal(recreated.batch.phase, "code");
+    assert.equal(recreated.batch.progress, "open");
+    for (const job of recreated.batch.jobs) {
+      assert.equal(job.status, "pending");
+      assert.equal(job.reusedFrom, undefined);
+    }
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("host review-execution events satisfy the isolation requirement and the route completes", async () => {
   const { root, state } = await setup("dev-flow-iso-pass-");
   try {
@@ -118,6 +141,102 @@ test("an accepted review quality exception lets the user proceed without isolati
     const accepted = await store.readState(root, "iso");
     const passed = await steps.recordStep(root, "iso", accepted.revision, "code_review", {});
     assert.equal(passed.steps.code_review.status, "satisfied");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("code review role basis changes with feature-owned content; plan roles do not", () => {
+  const baseBasis = {
+    featureId: "basis",
+    route: "m",
+    workflowCapabilities: { trace: 0, review: 1, checkpoints: 0, rollbackExecution: 0 },
+    classification: { level: "M", topology: "shared-contract", riskLabels: [] },
+    artifacts: [],
+    projectConfigSha256: "project",
+    scopeManifestSha256: "scope",
+    governedRootsFingerprint: "governed",
+    featureOwnedFingerprint: "owned-1",
+  };
+  const codeHash1 = reviewJobs.roleBasisHash(baseBasis, [], undefined, "code-quality");
+  const codeHash2 = reviewJobs.roleBasisHash(
+    { ...baseBasis, featureOwnedFingerprint: "owned-2" },
+    [],
+    undefined,
+    "code-quality",
+  );
+  assert.notEqual(codeHash1, codeHash2, "code review basis must bind feature-owned content");
+
+  const planHash1 = reviewJobs.roleBasisHash(baseBasis, [], undefined, "requirements-coverage");
+  const planHash2 = reviewJobs.roleBasisHash(
+    { ...baseBasis, featureOwnedFingerprint: "owned-2" },
+    [],
+    undefined,
+    "requirements-coverage",
+  );
+  assert.equal(planHash1, planHash2, "plan review basis must not depend on feature-owned content");
+});
+
+test("reused jobs require an isolation proof on their original submission", () => {
+  const submissionWithProof = { payloadSha256: "p", findings: [], isolationProof: { mode: "subagent" } };
+  const submissionWithoutProof = { payloadSha256: "p", findings: [] };
+  const submittedWithProof = { jobId: "with", status: "submitted", submission: submissionWithProof };
+  const submittedWithoutProof = { jobId: "without", status: "submitted", submission: submissionWithoutProof };
+  const reusedWithProof = { jobId: "reused-with", status: "reused", reusedFrom: { batchId: "b", jobId: "with" } };
+  const reusedWithoutProof = { jobId: "reused-without", status: "reused", reusedFrom: { batchId: "b", jobId: "without" } };
+  const ledger = {
+    batches: [
+      { batchId: "b", jobs: [submittedWithProof, submittedWithoutProof] },
+      { batchId: "c", jobs: [reusedWithProof, reusedWithoutProof] },
+    ],
+  };
+  assert.equal(reviewJobs.jobHasEffectiveIsolationProof(ledger, submittedWithProof), true);
+  assert.equal(reviewJobs.jobHasEffectiveIsolationProof(ledger, submittedWithoutProof), false);
+  assert.equal(reviewJobs.jobHasEffectiveIsolationProof(ledger, reusedWithProof), true);
+  assert.equal(reviewJobs.jobHasEffectiveIsolationProof(ledger, reusedWithoutProof), false);
+});
+
+
+
+test("SubagentOutput hook records review-execution only for a declared job with distinct context ids", async () => {
+  const { root, state } = await setup("dev-flow-subagent-proof-");
+  try {
+    const declarationId = "decl-1234567890";
+    await store.appendFeatureEvent(root, "iso", state.revision, "review-execution-declared", {
+      type: "review-execution-declared",
+      declarationId,
+      batchId: "batch-1",
+      jobId: "job-1",
+      executionId: "execution-1",
+      host: "claude",
+      declaredAt: new Date().toISOString(),
+    });
+
+    const missingIds = await reviewAdapter.recordSubagentReviewOutput(root, {
+      hook_event_name: "SubagentOutput",
+      prompt: `dev-flow:isolated-review:${declarationId}`,
+      tool_input: {},
+    }, "claude");
+    assert.equal(missingIds.recorded, false);
+    assert.equal(missingIds.reason, "missing-context-ids");
+
+    const recorded = await reviewAdapter.recordSubagentReviewOutput(root, {
+      hook_event_name: "SubagentOutput",
+      prompt: `dev-flow:isolated-review:${declarationId}`,
+      tool_input: {
+        subagent_session_id: "subagent-session",
+        parent_session_id: "parent-session",
+      },
+    }, "claude");
+    assert.equal(recorded.recorded, true);
+    assert.equal(recorded.eventId, `${declarationId}:complete`);
+
+    const events = await store.readFeatureEvents(root, "iso");
+    const proof = events.find((item) => item.type === "review-execution"
+      && (item.data || {}).eventId === `${declarationId}:complete`);
+    assert.ok(proof, "host proof event must be persisted");
+    assert.equal(proof.data.contextId, "subagent-session");
+    assert.equal(proof.data.implementationContextId, "parent-session");
   } finally {
     await rm(root, { recursive: true, force: true });
   }

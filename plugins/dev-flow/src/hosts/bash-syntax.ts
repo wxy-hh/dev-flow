@@ -15,6 +15,7 @@ export interface HookEvent {
   error?: unknown;
   tool_response?: unknown;
   tool_result?: unknown;
+  prompt?: unknown;
 }
 
 const directWriteTools = new Set(["write", "edit", "multiedit", "applypatch", "apply_patch", "patch"]);

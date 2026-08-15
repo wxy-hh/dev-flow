@@ -6,6 +6,7 @@ import { evaluatePermissionRequest, postToolSucceeded, recordPermissionPostToolU
 import { recordAdapterHealth, recordNativePromptHealth } from "./host-health-adapter.js";
 import { claudeNativeQuestionAnswers } from "./claude-native-question.js";
 import { resolveDevFlowRoot } from "./project-root.js";
+import { recordSubagentReviewOutput } from "./review-execution-adapter.js";
 
 type HookHost = "claude" | "codex";
 
@@ -99,6 +100,15 @@ export async function runHookAdapter(host: HookHost): Promise<void> {
     } catch (error) {
       // An unexpected adapter failure is diagnostic only; host permissions remain authoritative.
       process.stderr.write(`Dev Flow ${preset.label} hook evaluation failed: ${String(error)}\n`);
+    }
+  }
+
+  if (event.hook_event_name === "SubagentOutput") {
+    try {
+      await recordSubagentReviewOutput(root, event, host);
+    } catch (error) {
+      // fail-closed：无法完成宿主证明时宁可没有隔离证明，也不能伪造。
+      process.stderr.write(`Dev Flow ${preset.label} subagent review proof failed: ${String(error)}\n`);
     }
   }
 

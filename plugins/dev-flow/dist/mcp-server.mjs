@@ -639,14 +639,18 @@ function recommendClassification(basis) {
   const route = levelRoute[level];
   return { readyToLock: true, classification: classification2, route, obligations: deriveObligations(route, basis, controls), reasons, issues: [] };
 }
+function nonEmptyControlEnhancements(value) {
+  return value && typeof value === "object" && !Array.isArray(value) && Object.keys(value).length > 0 ? value : void 0;
+}
 function defaultBasis(input) {
+  const controlEnhancements = nonEmptyControlEnhancements(input.controlEnhancements);
   return input.classificationBasis ?? {
     scopeFactRefs: [],
     topologyFactRefs: [],
     uncertaintyFactRefs: [],
     riskFactRefs: {},
     decisionRefs: [],
-    ...input.controlEnhancements ? { controlEnhancements: input.controlEnhancements } : {}
+    ...controlEnhancements ? { controlEnhancements } : {}
   };
 }
 function fallbackClassificationSignals(input) {
@@ -674,6 +678,7 @@ function selectRoute(input) {
 }
 function selectBaseRoute(input) {
   const normalized = normalizeClassification(input);
+  const controlEnhancements = nonEmptyControlEnhancements(input.controlEnhancements);
   const basis = {
     scopeFactRefs: input.scopeFactRefs,
     topologyFactRefs: input.topologyFactRefs,
@@ -681,7 +686,7 @@ function selectBaseRoute(input) {
     riskFactRefs: input.riskFactRefs,
     decisionRefs: input.decisionRefs,
     ...input.signals ? { signals: input.signals } : {},
-    ...input.controlEnhancements ? { controlEnhancements: input.controlEnhancements } : {}
+    ...controlEnhancements ? { controlEnhancements } : {}
   };
   validateBasis(basis, normalized.riskLabels);
   const preview = basis.signals ? recommendClassification(basis) : void 0;
@@ -698,8 +703,19 @@ function selectBaseRoute(input) {
 function assertBoundaryAuditComplete(audit, decisionRefsOrIndex, repositoryFacts = []) {
   const index = Array.isArray(decisionRefsOrIndex) ? { decisionRefs: decisionRefsOrIndex, decisions: decisionRefsOrIndex.map((recordId) => ({ recordId, currency: "current" })), repositoryFacts: repositoryFacts.map((record) => ({ recordId: record.recordId, currency: "current" })) } : decisionRefsOrIndex;
   const value = audit;
-  if (!value || !Array.isArray(value.scanned) || requiredBoundaryKinds.some((kind) => !value.scanned.includes(kind)) || !Array.isArray(value.items)) {
-    throw new PolicyError("BOUNDARY_AUDIT_INCOMPLETE", "boundaryAudit must explicitly scan every boundary category", { required: requiredBoundaryKinds });
+  const scanned = Array.isArray(value?.scanned) ? value.scanned : [];
+  const missingKinds = requiredBoundaryKinds.filter((kind) => !scanned.includes(kind));
+  if (!value || !Array.isArray(value.scanned) || missingKinds.length > 0 || !Array.isArray(value.items)) {
+    throw new PolicyError("BOUNDARY_AUDIT_INCOMPLETE", "boundaryAudit must explicitly scan every boundary category", {
+      required: requiredBoundaryKinds,
+      missingKinds,
+      missingFields: [
+        ...!value ? ["boundaryAudit"] : [],
+        ...!Array.isArray(value.scanned) ? ["boundaryAudit.scanned"] : [],
+        ...!Array.isArray(value.items) ? ["boundaryAudit.items"] : []
+      ],
+      recoveryHint: "\u8865\u9F50 scanned \u4E2D\u7F3A\u5931\u7684\u8FB9\u754C\u7C7B\u522B\uFF0C\u5E76\u786E\u4FDD items \u4E3A\u6570\u7EC4\u3002"
+    });
   }
   for (const item of value.items) {
     const factRecord = typeof item.factRef === "string" ? index.repositoryFacts.find((record) => record.recordId === item.factRef) : void 0;
@@ -1499,7 +1515,14 @@ async function executeRepositoryObservation(root2, observation) {
     if (!needle.trim()) invalid(`${observation.kind} observation requires a non-empty anchor`);
     const count = file.contents.split(needle).length - 1;
     const required = observation.kind === "text-present" ? observation.occurrence ?? 1 : 1;
-    return { confirmed: count >= required, observedFingerprint: file.sha256, summary: `${file.path} contains ${observation.kind === "text-present" ? "the requested text" : "the requested symbol"}` };
+    const confirmed = observation.kind === "text-present" ? count === required : count >= required;
+    return {
+      confirmed,
+      observedFingerprint: file.sha256,
+      summary: `${file.path} contains ${observation.kind === "text-present" ? "the requested text" : "the requested symbol"}`,
+      actualOccurrence: count,
+      requiredOccurrence: required
+    };
   }
   if (observation.kind === "json-value") {
     const file = await readRegularFile(root2, observation.path);
@@ -1614,7 +1637,17 @@ async function computeFactFingerprint(root2, fact) {
 async function assertRepositoryFactCurrent(root2, fact) {
   if (fact.observation) {
     const observation = await executeRepositoryObservation(root2, fact.observation);
-    if (!observation.confirmed) throw new DevFlowError("BOUNDARY_FACT_UNCONFIRMED", `repository fact ${fact.recordId} no longer satisfies its observation`, { recordId: fact.recordId, recoveryHint: "\u91CD\u65B0\u767B\u8BB0\u5F53\u524D\u89C2\u5BDF\u6216\u4FEE\u6B63\u5206\u7C7B\u4F9D\u636E\u3002" });
+    if (!observation.confirmed) {
+      throw new DevFlowError("BOUNDARY_FACT_UNCONFIRMED", `repository fact ${fact.recordId} no longer satisfies its observation`, {
+        recordId: fact.recordId,
+        ...fact.observation?.kind === "text-present" ? {
+          path: fact.observation.path,
+          expectedOccurrence: fact.observation.occurrence ?? 1,
+          actualOccurrence: observation.actualOccurrence
+        } : {},
+        recoveryHint: "\u91CD\u65B0\u767B\u8BB0\u5F53\u524D\u89C2\u5BDF\u6216\u4FEE\u6B63\u5206\u7C7B\u4F9D\u636E\u3002"
+      });
+    }
     if (observation.observedFingerprint !== fact.observedFingerprint) throw new DevFlowError("BOUNDARY_FACT_STALE", `repository fact ${fact.recordId} refers to changed content`, { recordId: fact.recordId, recoveryHint: "\u91CD\u65B0\u767B\u8BB0\u8BE5\u4ED3\u5E93\u4E8B\u5B9E\u4EE5\u53CD\u6620\u5F53\u524D\u5185\u5BB9\u3002" });
     return;
   }
@@ -1650,7 +1683,18 @@ async function normalizeRepositoryFact(root2, input, config) {
   if (!normalized.assertion) throw new DevFlowError("INVALID_REPOSITORY_FACT", "repository fact assertion must not be empty");
   const observationResult = observation ? await executeRepositoryObservation(root2, observation) : void 0;
   const observedFingerprint = observationResult ? observationResult.observedFingerprint : await computeFactFingerprint(root2, { ...normalized, location });
-  if (observationResult && !observationResult.confirmed) throw new DevFlowError("BOUNDARY_FACT_UNCONFIRMED", "repository observation is not satisfied", { summary: observationResult.summary, recoveryHint: "\u4FEE\u6B63\u89C2\u5BDF\u5B9A\u4E49\u6216\u5148\u4FEE\u6B63\u4ED3\u5E93\u540E\u91CD\u8BD5\u3002" });
+  if (observationResult && !observationResult.confirmed) {
+    if (observation?.kind === "text-present") {
+      throw new DevFlowError("INVALID_REPOSITORY_FACT", "text-present occurrence does not match the file contents", {
+        path: observation.path,
+        text: observation.text,
+        expectedOccurrence: observation.occurrence ?? 1,
+        actualOccurrence: observationResult.actualOccurrence,
+        recoveryHint: "occurrence \u8BA1\u6587\u4EF6\u5185\u5168\u90E8\u5339\u914D\uFF08\u542B import \u4E0E\u4F7F\u7528\u5904\uFF09\uFF1B\u8BF7\u6539\u4E3A\u5B9E\u9645\u5339\u914D\u6B21\u6570\u6216\u4FEE\u6B63\u6587\u672C\u3002"
+      });
+    }
+    throw new DevFlowError("BOUNDARY_FACT_UNCONFIRMED", "repository observation is not satisfied", { summary: observationResult.summary, recoveryHint: "\u4FEE\u6B63\u89C2\u5BDF\u5B9A\u4E49\u6216\u5148\u4FEE\u6B63\u4ED3\u5E93\u540E\u91CD\u8BD5\u3002" });
+  }
   return repositoryFactRecord(normalized, observedFingerprint, (/* @__PURE__ */ new Date()).toISOString());
 }
 function applyRepositoryFacts(draft, records, host) {
@@ -3632,12 +3676,26 @@ function unresolvedBlockingFindingIds(ledger) {
   const dispositions = Object.fromEntries(ledger.batches.flatMap((batch) => Object.entries(batch.dispositions ?? {})));
   return ledger.batches.flatMap((batch) => batch.jobs.flatMap((job) => job.submission?.findings ?? [])).filter((finding) => finding.severity === "blocking" && !dispositions[finding.findingId]).map((finding) => finding.findingId).sort();
 }
+function supersededReusedFindingIds(ledger, batch) {
+  if (!batch) return [];
+  const ids = /* @__PURE__ */ new Set();
+  for (const job of batch.jobs) {
+    if (job.status !== "reused" || !job.reusedFrom) continue;
+    const sourceBatch = ledger.batches.find((candidate) => candidate.batchId === job.reusedFrom.batchId);
+    const sourceJob = sourceBatch?.jobs.find((candidate) => candidate.jobId === job.reusedFrom.jobId);
+    for (const finding of sourceJob?.submission?.findings ?? []) {
+      if (finding.severity !== "blocking") ids.add(finding.findingId);
+    }
+  }
+  return [...ids].sort();
+}
 function reviewProjectionModel(state, ledger) {
   const batch = currentBatch(ledger);
   const staleBatches = ledger.batches.filter((candidate) => candidate.validity === "stale").map((candidate) => ({ batchId: candidate.batchId, basisHash: candidate.basisHash, progress: candidate.progress }));
   const requiredRoles = batch ? batch.jobs.map((job) => ({ role: job.role, reviewDepth: job.reviewDepth })) : deriveReviewJobRequirements(state.route, state.classification.riskLabels).map((requirement) => ({ role: requirement.role, reviewDepth: requirement.reviewDepth }));
   const complete = batch?.progress === "complete";
   const findings = complete ? batch.jobs.flatMap((job) => job.submission?.findings ?? []).map(publicFinding) : void 0;
+  const supersededFindingIds = complete ? supersededReusedFindingIds(ledger, batch) : void 0;
   return {
     schemaVersion: 1,
     featureId: state.featureId,
@@ -3665,6 +3723,7 @@ function reviewProjectionModel(state, ledger) {
       visibility: complete ? "complete" : "coarse",
       ...complete ? {
         findings,
+        supersededFindingIds,
         dispositions: { ...batch.dispositions },
         unresolvedBlockingFindingIds: unresolvedBlockingFindingIds(ledger)
       } : {}
@@ -3719,6 +3778,10 @@ function renderReviewProjection(model) {
         lines.push(`- ${finding.findingId} [${finding.severity}] ${finding.category}: ${finding.claim}`);
       }
     } else lines.push("- No findings submitted.");
+    lines.push("", "## Superseded Reused Findings", "");
+    if (batch.supersededFindingIds?.length) {
+      for (const findingId of batch.supersededFindingIds) lines.push(`- ${findingId}: superseded by content change`);
+    } else lines.push("- None.");
     lines.push("", "## Dispositions", "");
     const dispositions = Object.entries(batch.dispositions ?? {});
     if (dispositions.length) {
@@ -4246,9 +4309,17 @@ function validateOptions(options) {
     throw new DevFlowError("INTERACTION_OPTIONS_INVALID", "\u6BCF\u4E2A\u7528\u6237\u95EE\u9898\u5FC5\u987B\u53EA\u6709 2-3 \u4E2A\u9009\u9879\u3002", { userMessage: "\u5F53\u524D\u95EE\u9898\u7684\u9009\u9879\u6570\u91CF\u4E0D\u7B26\u5408\u4EA4\u4E92\u5408\u540C\u3002", recoveryKind: "repair", recoveryInstruction: "\u5C06\u9009\u9879\u6536\u655B\u4E3A 2-3 \u4E2A\u7B80\u660E\u9009\u62E9\uFF0C\u5E76\u4FDD\u7559\u4E00\u4E2A\u63A8\u8350\u7B54\u6848\u3002", retryOriginal: false });
   }
   const seen = /* @__PURE__ */ new Set();
+  const invalidIds = [];
   for (const option of options) {
-    if (!option || !/^[a-z][a-z0-9-]{0,63}$/.test(option.id) || !option.label.trim() || seen.has(option.id)) {
-      throw new DevFlowError("INTERACTION_OPTIONS_INVALID", "option ids must be unique lowercase action ids with labels");
+    if (!option || !/^[a-z][a-z0-9-]{0,63}$/.test(option.id)) invalidIds.push(option?.id ?? "<missing>");
+    if (!option || !option.label.trim() || seen.has(option.id)) {
+      throw new DevFlowError("INTERACTION_OPTIONS_INVALID", "option ids must be unique lowercase action ids with labels", {
+        pattern: "^[a-z][a-z0-9-]{0,63}$",
+        examples: ["document-only", "inject-signal"],
+        invalidIds,
+        guidance: "A/B \u662F Core \u5206\u914D\u7684 answerCode\uFF0C\u4E0D\u662F\u8F93\u5165 option id\u3002",
+        recoveryHint: "\u4E3A\u6BCF\u4E2A\u9009\u9879\u63D0\u4F9B\u552F\u4E00\u7684\u3001\u5339\u914D\u4E0A\u8FF0\u6B63\u5219\u7684 action id \u4E0E\u975E\u7A7A label\u3002"
+      });
     }
     seen.add(option.id);
   }
@@ -5344,10 +5415,17 @@ async function lockClassification(root2, id, expectedRevision, facts, boundaryAu
   const factRecords = repositoryFacts.map((fact) => ({ recordId: fact.recordId, currency: factRefs.includes(fact.recordId) ? "current" : "unconfirmed" }));
   const auditMissingFromBasis = auditFactRefs.filter((auditRef) => !basisFactRefs.includes(auditRef));
   if (auditMissingFromBasis.length) {
+    const basisFields = auditMissingFromBasis.map((factRef) => {
+      const riskEntry = Object.entries(facts.riskFactRefs).find(([, refs]) => (refs ?? []).includes(factRef));
+      const field = facts.scopeFactRefs.includes(factRef) ? "scopeFactRefs" : facts.topologyFactRefs.includes(factRef) ? "topologyFactRefs" : facts.uncertaintyFactRefs.includes(factRef) ? "uncertaintyFactRefs" : riskEntry ? `riskFactRefs.${riskEntry[0]}` : "classificationBasis \u4E2D\u7684\u4EFB\u4E00\u4E8B\u5B9E\u5F15\u7528\u5B57\u6BB5";
+      return { factRef, field };
+    });
     throw new DevFlowError("BOUNDARY_AUDIT_UNRESOLVED", "boundary audit fact must be included in classification basis", {
       factRef: auditMissingFromBasis[0],
       unresolvedRefs: auditMissingFromBasis,
-      registeredIds
+      registeredIds,
+      basisFields,
+      recoveryHint: "\u628A\u4E0A\u8FF0 factRef \u52A0\u5165 classificationBasis \u5BF9\u5E94\u5B57\u6BB5\u540E\u91CD\u65B0 classify\uFF08\u7EA7\u522B\u4E0D\u53D8\uFF09\uFF0C\u518D\u9501\u5B9A\u5206\u7C7B\u3002"
     });
   }
   const boundaryIndex = { decisionRefs: [...facts.decisionRefs], decisions: decisionRecords, repositoryFacts: factRecords };
@@ -6296,9 +6374,16 @@ ${impactLines.join("\n")}
   if (!interaction) throw new DevFlowError("INTERACTION_NOT_CREATED", target);
   return { state, interaction: toPublicInteraction(interaction), interactionId: interaction.id };
 }
-function applyPlanRevision(draft, interaction, host) {
+function applyPlanRevision(draft, interaction, host, artifactSha256) {
   const revision = interaction.planRevision;
   if (!revision) throw new DevFlowError("INTERACTION_INVALID", "plan-revision interaction is missing its revision content", { interactionId: interaction.id });
+  const planArtifact = draft.artifacts["implementation-plan"];
+  if (planArtifact) {
+    draft.artifacts = {
+      ...draft.artifacts,
+      "implementation-plan": { ...planArtifact, sha256: artifactSha256 }
+    };
+  }
   const units = draft.implementationUnits ?? [];
   const affected = new Set(revision.affectedUnits);
   const sideEffects = new Set(revision.sideEffectUnits);
@@ -6332,6 +6417,7 @@ async function resolvePlanRevisionForAnswer(ctx) {
   const confirms = matchedId === "confirm";
   let reviewInvalidation;
   let response;
+  let currentArtifactSha256;
   const next = await mutatePrepared(root2, featureId, expectedRevision, confirms ? "plan-revised" : "plan-revision-cancelled", async (current, nextStateRevision) => {
     if (confirms) {
       const live = current.interactions?.[interaction.id];
@@ -6339,7 +6425,7 @@ async function resolvePlanRevisionForAnswer(ctx) {
       const artifact = current.artifacts["implementation-plan"];
       if (!basis || !artifact) throw new DevFlowError("PLAN_REVISION_STALE", "\u8BA1\u5212\u4FEE\u8BA2\u9884\u89C8\u7F3A\u5C11\u5F53\u524D\u4F9D\u636E\uFF0C\u8BF7\u91CD\u65B0\u751F\u6210\u3002", { retryOriginal: true });
       const contents = await readArtifactText(root2, featureId, artifact.path);
-      const currentArtifactSha256 = createHash18("sha256").update(contents).digest("hex");
+      currentArtifactSha256 = createHash18("sha256").update(contents).digest("hex");
       const currentConfigSha256 = (await readProjectConfigSnapshot(root2)).sha256;
       const currentTraceabilitySha256 = current.traceability?.sha256 ?? "none";
       if (currentArtifactSha256 !== basis.artifactSha256 || currentConfigSha256 !== basis.projectConfigSha256 || currentTraceabilitySha256 !== basis.traceabilitySha256) {
@@ -6359,7 +6445,7 @@ async function resolvePlanRevisionForAnswer(ctx) {
         response = resolveResponseForAnswer(draft, interaction, { source: credential.source, action: credential.source === "elicitation" ? credential.action : void 0, comment: credential.source === "elicitation" ? credential.comment : void 0, userReply: credential.source === "text" ? credential.userReply : void 0, promptText, promptEventId, host });
         if (confirms) {
           const live = draft.interactions[interaction.id];
-          applyPlanRevision(draft, live, host);
+          applyPlanRevision(draft, live, host, currentArtifactSha256);
           if (reviewInvalidation) draft.review = reviewInvalidation;
           const sideEffects = live.planRevision?.sideEffectUnits ?? [];
           if (sideEffects.length) {
@@ -7379,8 +7465,24 @@ function verificationCommandSliceStale(state, config) {
   const current = verificationCommandHashesForRefs(config, refs);
   return Object.entries(attempt.verificationCommandHashes).some(([id, hash2]) => current[id] !== hash2);
 }
-function minimalGuaranteeCommands(state, config) {
+function behaviorAcceptanceCriterionIds(trace2) {
+  if (!trace2) return [];
+  return Object.values(trace2.nodes).filter((node) => node.status === "current" && node.kind === "acceptance-criterion").filter((node) => dispositionKindForCriterion(trace2, node.id) === "behavior-test").map((node) => node.id).sort();
+}
+function assertBehaviorGuaranteeCovered(config, selected, commandIds, trace2) {
+  const behaviorCriteria = behaviorAcceptanceCriterionIds(trace2);
+  const provided = new Set(selected.flatMap((command2) => command2.provides));
+  if (commandIds?.length && behaviorCriteria.length && !provided.has("behavior")) {
+    throw new DevFlowError("VERIFICATION_BEHAVIOR_UNCOVERED", "\u663E\u5F0F\u9009\u62E9\u7684\u547D\u4EE4\u7F3A\u5C11\u884C\u4E3A\u9A8C\u6536\u8BC1\u636E\uFF0C\u884C\u4E3A\u6D4B\u8BD5 AC \u5C06\u65E0\u6CD5\u6EE1\u8DB3\u3002", {
+      acceptanceCriterionIds: behaviorCriteria,
+      behaviorCommands: config.verification.commands.filter((command2) => command2.provides.includes("behavior")).map((command2) => ({ id: command2.id, provides: command2.provides })),
+      recoveryHint: "\u8FFD\u52A0\u63D0\u4F9B behavior \u7684\u9A8C\u8BC1\u547D\u4EE4\uFF08\u4F8B\u5982 unit-tests\uFF09\uFF0C\u6216\u6539\u4E3A\u4E0D\u4F20 commandIds \u8BA9 Core \u9009\u62E9\u6700\u5C0F\u8986\u76D6\u96C6\u3002"
+    });
+  }
+}
+function minimalGuaranteeCommands(state, config, trace2) {
   const needed = new Set(state.classification.controls.verification);
+  if (behaviorAcceptanceCriterionIds(trace2).length) needed.add("behavior");
   const preflight = new Set(config.verification.preflightCommands ?? []);
   const candidates = [...config.verification.commands].filter((command2) => !preflight.has(command2.id)).sort((left, right) => left.id.localeCompare(right.id));
   const coversAll = (commands) => {
@@ -7404,7 +7506,8 @@ function minimalGuaranteeCommands(state, config) {
   const configured = new Set(candidates.flatMap((command2) => command2.provides));
   throw new DevFlowError("VERIFICATION_GUARANTEE_UNCONFIGURED", "\u9879\u76EE\u6CA1\u6709\u914D\u7F6E\u6EE1\u8DB3\u5F53\u524D\u4FDD\u8BC1\u96C6\u7684\u9A8C\u8BC1\u547D\u4EE4\u3002", {
     missingGuarantees: [...needed].filter((kind) => !configured.has(kind)),
-    recoveryHint: "\u5728 project schema v2 \u4E2D\u4E3A\u9A8C\u8BC1\u547D\u4EE4\u58F0\u660E provides\uFF0C\u7136\u540E\u91CD\u8BD5"
+    availableCommands: candidates.map((command2) => ({ id: command2.id, provides: command2.provides })),
+    recoveryHint: "\u5728 project schema v2 \u4E2D\u4E3A\u9A8C\u8BC1\u547D\u4EE4\u58F0\u660E provides\uFF1B\u82E5\u5B58\u5728\u884C\u4E3A\u9A8C\u6536\u6761\u4EF6\uFF0C\u8FD8\u9700\u7EC4\u5408\u63D0\u4F9B behavior \u7684\u547D\u4EE4\uFF08\u4F8B\u5982 unit-tests + full-ci\uFF09\u3002"
   });
 }
 function dispositionKindForCriterion(ledger, criterionId) {
@@ -7459,15 +7562,23 @@ async function runVerification(root2, id, expectedRevision, host, commandIds) {
       recoveryHint: "\u4ECE commandIds \u4E2D\u79FB\u9664 preflight \u547D\u4EE4\uFF1B\u73AF\u5883\u51C6\u5907\u4F1A\u5728\u6BCF\u6B21\u9A8C\u8BC1\u65F6\u81EA\u52A8\u6267\u884C\uFF0C\u53EA\u6709\u666E\u901A\u9A8C\u8BC1\u547D\u4EE4\u80FD\u63D0\u4F9B\u4FDD\u8BC1\u8BC1\u636E\u3002"
     });
   }
-  const selected = commandIds?.length ? config.verification.commands.filter((command2) => commandIds.includes(command2.id)) : minimalGuaranteeCommands(initial, config);
+  const trace2 = initial.traceability ? await readTraceability(root2, initial) : void 0;
+  const selected = commandIds?.length ? config.verification.commands.filter((command2) => commandIds.includes(command2.id)) : minimalGuaranteeCommands(initial, config, trace2);
   if (!selected.length || commandIds?.some((command2) => !selected.some((item) => item.id === command2))) {
     throw new DevFlowError("UNKNOWN_VERIFICATION_COMMAND", "verification command is not configured");
   }
   const provided = new Set(selected.flatMap((command2) => command2.provides));
   const missingGuarantees = initial.classification.controls.verification.filter((kind) => !provided.has(kind));
-  if (missingGuarantees.length) throw new DevFlowError("VERIFICATION_GUARANTEE_UNCOVERED", "\u9009\u62E9\u7684\u547D\u4EE4\u4E0D\u80FD\u8986\u76D6\u5F53\u524D\u6700\u7EC8\u4FDD\u8BC1\u96C6\u3002", { missingGuarantees });
+  if (missingGuarantees.length) {
+    throw new DevFlowError("VERIFICATION_GUARANTEE_UNCOVERED", "\u9009\u62E9\u7684\u547D\u4EE4\u4E0D\u80FD\u8986\u76D6\u5F53\u524D\u6700\u7EC8\u4FDD\u8BC1\u96C6\u3002", {
+      missingGuarantees,
+      availableCommands: config.verification.commands.map((command2) => ({ id: command2.id, provides: command2.provides })),
+      recoveryHint: "\u7EC4\u5408\u53EF\u7528\u7684\u9A8C\u8BC1\u547D\u4EE4\u4EE5\u8986\u76D6\u7F3A\u5931\u4FDD\u8BC1\u96C6\uFF1B\u4F8B\u5982\u884C\u4E3A\u9A8C\u6536\u9700\u8981 unit-tests\uFF0C\u96C6\u6210/\u5168\u91CF\u4FDD\u8BC1\u9700\u8981 full-ci\u3002"
+    });
+  }
+  const behaviorCriteria = behaviorAcceptanceCriterionIds(trace2);
+  assertBehaviorGuaranteeCovered(config, selected, commandIds, trace2);
   const fingerprint2 = await fingerprintFeatureOwned(root2, config, initial.workspace.ownership);
-  const trace2 = initial.traceability ? await readTraceability(root2, initial) : void 0;
   const replacingStaleVerification = Boolean(
     initial.verification.verifiedFingerprint && initial.verification.verifiedFingerprint !== fingerprint2
   ) || verificationCommandSliceStale(initial, config);
@@ -8187,6 +8298,7 @@ async function deriveReviewInput(root2, state) {
     }, []).sort((left, right) => left.id.localeCompare(right.id))
   };
   const governedRootsFingerprint = await fingerprintGovernedRoots(root2, config);
+  const featureOwnedFingerprint = await fingerprintFeatureOwned(root2, config, state.workspace.ownership);
   const basis = {
     featureId: state.featureId,
     route: state.route,
@@ -8202,7 +8314,8 @@ async function deriveReviewInput(root2, state) {
     projectConfigSha256,
     verificationCommandHashes: verificationCommandHashes(config),
     scopeManifestSha256: digest9(canonicalReviewValueJson(scopeManifest)),
-    governedRootsFingerprint
+    governedRootsFingerprint,
+    featureOwnedFingerprint
   };
   const roles = [.../* @__PURE__ */ new Set([
     ...state.classification.controls.reviewRoles,
@@ -8269,6 +8382,9 @@ function roleBasisHash(basis, frozenArtifacts, trace2, role) {
     level: basis.classification.level,
     artifacts: artifacts2,
     traceSlice,
+    // code review 必须绑定 feature-owned 内容：源码/测试变化后不得复用旧审查
+    // （audit-log 遗留偏差 1 的 role-basis 根因）。
+    ...role === "code-quality" || role === "requirement-fidelity" ? { featureOwnedFingerprint: basis.featureOwnedFingerprint ?? "" } : {},
     // requirements-coverage 显式绑定非行为处置豁免清单：豁免变化必须使该角色
     // basis 失效（traceSlice 已覆盖，这里把语义绑定写明，防止切片收窄后脱钩）。
     ...role === "requirements-coverage" ? { nonBehaviorDispositions: nonBehaviorDispositions(trace2) } : {},
@@ -8397,6 +8513,49 @@ function dedupeFindings(findings) {
   }
   return [...byIdentity.values()];
 }
+function codeReviewIsolationRequired(state) {
+  return state.classification.controls.codeReview === "independent" || state.classification.controls.codeReview === "full";
+}
+function submittedSourceForJob(ledger, job, visited = /* @__PURE__ */ new Set()) {
+  if (job.status === "submitted") return job;
+  if (job.status !== "reused" || !job.reusedFrom) return void 0;
+  const key = `${job.reusedFrom.batchId}:${job.reusedFrom.jobId}`;
+  if (visited.has(key)) return void 0;
+  visited.add(key);
+  const sourceBatch = ledger.batches.find((candidate) => candidate.batchId === job.reusedFrom.batchId);
+  const sourceJob = sourceBatch?.jobs.find((candidate) => candidate.jobId === job.reusedFrom.jobId);
+  return sourceJob ? submittedSourceForJob(ledger, sourceJob, visited) : void 0;
+}
+function jobHasEffectiveIsolationProof(ledger, job) {
+  const source = submittedSourceForJob(ledger, job);
+  return Boolean(source?.submission?.isolationProof);
+}
+async function startIsolatedReview(root2, id, expectedRevision, batchId, jobId, executionId, host) {
+  const state = await readState(root2, id);
+  if (state.revision !== expectedRevision) throw new DevFlowError("STATE_REVISION_CONFLICT", "state revision changed", { currentRevision: state.revision });
+  if (state.lifecycle !== "active") invalid5("INVALID_LIFECYCLE", "only active features can declare isolated reviews");
+  if (!codeReviewIsolationRequired(state) || hasCurrentQualityException(state, "review")) {
+    invalid5("ISOLATION_NOT_REQUIRED", "current route does not require isolated review or an accepted review quality exception is active");
+  }
+  const ledger = await readReviewLedger(root2, state);
+  const batch = ledger.batches.find((candidate) => candidate.validity === "current" && candidate.batchId === batchId);
+  if (!batch || (batch.phase ?? "plan") !== "code") invalid5("ISOLATION_DECLARATION_BATCH_INVALID", "isolated review must target a current code review batch", { batchId });
+  const job = findJob(batch, jobId);
+  if (job.status === "submitted" || job.status === "reused") invalid5("REVIEW_JOB_ALREADY_SUBMITTED", "review job is already satisfied", { jobId });
+  if (!job.claim) invalid5("REVIEW_JOB_NOT_CLAIMED", "isolated review must start from a claimed code review job", { jobId });
+  const declarationId = randomUUID9();
+  await appendFeatureEvent(root2, id, state.revision, "review-execution-declared", {
+    type: "review-execution-declared",
+    declarationId,
+    batchId,
+    jobId,
+    executionId,
+    host,
+    claimRequestSha256: job.claim.requestSha256,
+    declaredAt: (/* @__PURE__ */ new Date()).toISOString()
+  });
+  return { declarationId, batchId, jobId, executionId };
+}
 async function createReviewBatch(root2, id, expectedRevision) {
   let result;
   const state = await mutatePrepared(root2, id, expectedRevision, "review-batch-created", async (current, nextStateRevision) => {
@@ -8407,12 +8566,17 @@ async function createReviewBatch(root2, id, expectedRevision) {
     const currentBasisHash = basisHash(basis);
     const phase = currentOpenStep(current) === "code_review" ? "code" : "plan";
     const requirements = deriveReviewJobRequirements(current.route, current.classification.riskLabels, current.classification.controls.reviewRoles, phase);
+    const isolationRequired = phase === "code" && codeReviewIsolationRequired(current) && !hasCurrentQualityException(current, "review");
     const existing = ledger.batches.find((batch2) => batch2.validity === "current" && (batch2.phase ?? "plan") === phase && batch2.basisHash === currentBasisHash);
     const existingRolesCurrent = existing && requirements.every((requirement) => {
       const job = existing.jobs.find((candidate) => candidate.role === requirement.role);
       return job?.roleBasisHash === reviewInput.roleBasisHashes[requirement.role];
     });
-    if (existing && existingRolesCurrent) {
+    const existingIsolationSatisfied = existing && (!isolationRequired || requirements.every((requirement) => {
+      const job = existing.jobs.find((candidate) => candidate.role === requirement.role);
+      return job !== void 0 && jobHasEffectiveIsolationProof(ledger, job);
+    }));
+    if (existing && existingRolesCurrent && existingIsolationSatisfied) {
       result = { state: void 0, batch: existing, created: false };
       return { mutate: () => void 0, unchanged: true, eventData: { batchId: existing.batchId, basisHash: currentBasisHash, idempotent: true } };
     }
@@ -8421,7 +8585,7 @@ async function createReviewBatch(root2, id, expectedRevision) {
     const reusableByRole = /* @__PURE__ */ new Map();
     for (const requirement of requirements) {
       const currentRoleBasisHash = reviewInput.roleBasisHashes[requirement.role];
-      const reusable = [...ledger.batches].reverse().flatMap((candidate) => candidate.jobs.map((job) => ({ batch: candidate, job }))).find(({ job }) => job.role === requirement.role && job.roleBasisHash === currentRoleBasisHash && job.status === "submitted" && job.submission);
+      const reusable = [...ledger.batches].reverse().flatMap((candidate) => candidate.jobs.map((job) => ({ batch: candidate, job }))).find(({ job }) => job.role === requirement.role && job.roleBasisHash === currentRoleBasisHash && job.status === "submitted" && job.submission && (!isolationRequired || jobHasEffectiveIsolationProof(ledger, job)));
       if (reusable?.job.submission) reusableByRole.set(requirement.role, reusable);
     }
     const unknownDiff = prevCurrent !== void 0 && reusableByRole.size === requirements.length && prevCurrent.basisHash !== currentBasisHash;
@@ -9247,9 +9411,10 @@ async function reviewGate(root2, state, query) {
   if (await reviewBasisStale(root2, state, batch, phase)) return { status: "need-batch", cause: "stale", batchId: batch.batchId };
   if (batch.progress !== "complete") return { status: "jobs-open", batchId: batch.batchId, jobs: reviewJobsSummary(batch) };
   if (phase === "code") {
-    const requiresIsolation = state.classification.controls.codeReview === "independent" || state.classification.controls.codeReview === "full";
+    const requiresIsolation = codeReviewIsolationRequired(state);
     if (requiresIsolation && !hasCurrentQualityException(state, "review")) {
-      const missingIsolation = batch.jobs.filter((job) => job.status === "submitted" && !job.submission?.isolationProof).map((job) => job.jobId);
+      const requirements = deriveReviewJobRequirements(state.route, state.classification.riskLabels, state.classification.controls.reviewRoles, phase);
+      const missingIsolation = requirements.map((requirement) => batch.jobs.find((job) => job.role === requirement.role)).filter((job) => job !== void 0 && !jobHasEffectiveIsolationProof(ledger, job)).map((job) => job.jobId);
       if (missingIsolation.length) return { status: "isolation", batchId: batch.batchId, jobIds: missingIsolation };
     }
   }
@@ -9279,7 +9444,7 @@ function reviewGateError(gate, phase) {
       return new DevFlowError("REVIEW_ISOLATION_REQUIRED", "\u72EC\u7ACB\u4EE3\u7801\u5BA1\u67E5\u8981\u6C42\u5BA1\u67E5\u5728\u4E0E\u5B9E\u73B0\u9694\u79BB\u7684\u65B0\u4E0A\u4E0B\u6587\u4E2D\u5B8C\u6210\uFF0C\u5F53\u524D\u6279\u6B21\u7F3A\u5C11\u9694\u79BB\u8BC1\u660E\u3002", {
         jobIds: gate.jobIds,
         batchId: gate.batchId,
-        recoveryHint: "\u5728\u4E0E\u5B9E\u73B0\u9694\u79BB\u7684\u4E0A\u4E0B\u6587\u4E2D\u91CD\u65B0\u5B8C\u6210\u8FD9\u4E9B\u5BA1\u67E5 job \u5E76\u8BB0\u5F55 review-execution \u4E8B\u4EF6\uFF0C\u6216\u901A\u8FC7\u670D\u52A1\u7AEF\u91C7\u6837\u5B8C\u6210 job\uFF1B\u5BBF\u4E3B\u65E0\u6CD5\u63D0\u4F9B\u9694\u79BB\u4E0A\u4E0B\u6587\u65F6\uFF0C\u53EF\u901A\u8FC7\u8D28\u91CF\u4F8B\u5916\uFF08presentQualityException kind=review\uFF09\u663E\u5F0F\u63A5\u53D7\u72EC\u7ACB\u6027\u98CE\u9669\u540E\u7EE7\u7EED\u3002",
+        recoveryHint: "\u5728\u4E0E\u5B9E\u73B0\u9694\u79BB\u7684\u4E0A\u4E0B\u6587\u4E2D\u91CD\u65B0\u5B8C\u6210\u8FD9\u4E9B\u5BA1\u67E5 job \u5E76\u8BB0\u5F55 review-execution \u4E8B\u4EF6\uFF0C\u6216\u901A\u8FC7\u670D\u52A1\u7AEF\u91C7\u6837\u5B8C\u6210 job\uFF1B\u590D\u7528\u6279\u6B21\u540C\u6837\u9700\u8981\u9694\u79BB\u8BC1\u660E\uFF0C\u53EF\u5728\u9694\u79BB\u5B50\u4EE3\u7406\u4E2D\u91CD\u505A job \u6216\u7ECF\u8D28\u91CF\u4F8B\u5916\u63A5\u53D7\u98CE\u9669\u3002",
         retryOriginal: true
       });
     case "blocking":
@@ -14319,6 +14484,10 @@ var toolSchemas = {
     description: "Release the current review job claim back to pending using the same capability; expired claims remain releasable by their holder.",
     inputSchema: featureMutation({ batchId: string, jobId: string, capability: string }, ["batchId", "jobId", "capability"])
   },
+  dev_flow_start_isolated_review: {
+    description: "Declare that a claimed code review job will be executed in an isolated subagent context. The host SubagentOutput hook completes the declaration; agents cannot self-attest isolation.",
+    inputSchema: featureMutation({ batchId: string, jobId: string, executionId: string, host: { enum: ["claude", "codex"] } }, ["batchId", "jobId", "executionId", "host"])
+  },
   dev_flow_submit_review_job: {
     description: "Submit one claimed job's structured completion. Host attestation is diagnostic unless a trusted verifier accepts it; Core still owns assurance. Isolation proof requires a real host-captured review-execution event or server sampling; agent-authored event claims never qualify.",
     inputSchema: featureMutation({
@@ -14838,6 +15007,13 @@ async function dispatch(root2, name, a, ports2) {
     case "dev_flow_release_review_job": {
       const input = reviewMutationInput(a);
       return releaseReviewJob(root2, input.featureId, input.expectedRevision, input.batchId, input.jobId, input.capability);
+    }
+    case "dev_flow_start_isolated_review": {
+      const input = reviewMutationInput(a);
+      if (typeof input.executionId !== "string" || !input.executionId || input.host !== "claude" && input.host !== "codex") {
+        throw new DevFlowError("INVALID_TOOL_INPUT", "dev_flow_start_isolated_review input does not match its schema");
+      }
+      return startIsolatedReview(root2, input.featureId, input.expectedRevision, input.batchId, input.jobId, input.executionId, input.host);
     }
     case "dev_flow_submit_review_job": {
       const input = reviewSubmitInput(a);

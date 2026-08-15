@@ -542,6 +542,25 @@ async function fingerprintGovernedRoots(root, input) {
   }
   return digest7.digest("hex");
 }
+async function fingerprintFeatureOwned(root, input, ownership) {
+  const files = (await enumerateProtectedFiles(root, input)).filter((file) => ownership[file] === "feature");
+  const digest7 = createHash2("sha256");
+  for (const relative of files) {
+    const absolute = path2.join(root, relative);
+    const metadata = await lstat(absolute);
+    digest7.update(relative);
+    digest7.update("\0");
+    if (metadata.isSymbolicLink()) {
+      digest7.update("symlink\0");
+      digest7.update(await readlink(absolute));
+    } else {
+      digest7.update("file\0");
+      digest7.update(await readFile(absolute));
+    }
+    digest7.update("\0");
+  }
+  return digest7.digest("hex");
+}
 async function snapshotGovernedRoots(root, input) {
   const files = await enumerateProtectedFiles(root, input);
   const snapshots = [];
@@ -1478,12 +1497,26 @@ function unresolvedBlockingFindingIds(ledger) {
   const dispositions = Object.fromEntries(ledger.batches.flatMap((batch) => Object.entries(batch.dispositions ?? {})));
   return ledger.batches.flatMap((batch) => batch.jobs.flatMap((job) => job.submission?.findings ?? [])).filter((finding) => finding.severity === "blocking" && !dispositions[finding.findingId]).map((finding) => finding.findingId).sort();
 }
+function supersededReusedFindingIds(ledger, batch) {
+  if (!batch) return [];
+  const ids = /* @__PURE__ */ new Set();
+  for (const job of batch.jobs) {
+    if (job.status !== "reused" || !job.reusedFrom) continue;
+    const sourceBatch = ledger.batches.find((candidate) => candidate.batchId === job.reusedFrom.batchId);
+    const sourceJob = sourceBatch?.jobs.find((candidate) => candidate.jobId === job.reusedFrom.jobId);
+    for (const finding of sourceJob?.submission?.findings ?? []) {
+      if (finding.severity !== "blocking") ids.add(finding.findingId);
+    }
+  }
+  return [...ids].sort();
+}
 function reviewProjectionModel(state, ledger) {
   const batch = currentBatch(ledger);
   const staleBatches = ledger.batches.filter((candidate) => candidate.validity === "stale").map((candidate) => ({ batchId: candidate.batchId, basisHash: candidate.basisHash, progress: candidate.progress }));
   const requiredRoles = batch ? batch.jobs.map((job) => ({ role: job.role, reviewDepth: job.reviewDepth })) : deriveReviewJobRequirements(state.route, state.classification.riskLabels).map((requirement) => ({ role: requirement.role, reviewDepth: requirement.reviewDepth }));
   const complete = batch?.progress === "complete";
   const findings = complete ? batch.jobs.flatMap((job) => job.submission?.findings ?? []).map(publicFinding) : void 0;
+  const supersededFindingIds = complete ? supersededReusedFindingIds(ledger, batch) : void 0;
   return {
     schemaVersion: 1,
     featureId: state.featureId,
@@ -1511,6 +1544,7 @@ function reviewProjectionModel(state, ledger) {
       visibility: complete ? "complete" : "coarse",
       ...complete ? {
         findings,
+        supersededFindingIds,
         dispositions: { ...batch.dispositions },
         unresolvedBlockingFindingIds: unresolvedBlockingFindingIds(ledger)
       } : {}
@@ -1565,6 +1599,10 @@ function renderReviewProjection(model) {
         lines.push(`- ${finding.findingId} [${finding.severity}] ${finding.category}: ${finding.claim}`);
       }
     } else lines.push("- No findings submitted.");
+    lines.push("", "## Superseded Reused Findings", "");
+    if (batch.supersededFindingIds?.length) {
+      for (const findingId of batch.supersededFindingIds) lines.push(`- ${findingId}: superseded by content change`);
+    } else lines.push("- None.");
     lines.push("", "## Dispositions", "");
     const dispositions = Object.entries(batch.dispositions ?? {});
     if (dispositions.length) {
@@ -1931,9 +1969,17 @@ function validateOptions(options) {
     throw new DevFlowError("INTERACTION_OPTIONS_INVALID", "\u6BCF\u4E2A\u7528\u6237\u95EE\u9898\u5FC5\u987B\u53EA\u6709 2-3 \u4E2A\u9009\u9879\u3002", { userMessage: "\u5F53\u524D\u95EE\u9898\u7684\u9009\u9879\u6570\u91CF\u4E0D\u7B26\u5408\u4EA4\u4E92\u5408\u540C\u3002", recoveryKind: "repair", recoveryInstruction: "\u5C06\u9009\u9879\u6536\u655B\u4E3A 2-3 \u4E2A\u7B80\u660E\u9009\u62E9\uFF0C\u5E76\u4FDD\u7559\u4E00\u4E2A\u63A8\u8350\u7B54\u6848\u3002", retryOriginal: false });
   }
   const seen = /* @__PURE__ */ new Set();
+  const invalidIds = [];
   for (const option of options) {
-    if (!option || !/^[a-z][a-z0-9-]{0,63}$/.test(option.id) || !option.label.trim() || seen.has(option.id)) {
-      throw new DevFlowError("INTERACTION_OPTIONS_INVALID", "option ids must be unique lowercase action ids with labels");
+    if (!option || !/^[a-z][a-z0-9-]{0,63}$/.test(option.id)) invalidIds.push(option?.id ?? "<missing>");
+    if (!option || !option.label.trim() || seen.has(option.id)) {
+      throw new DevFlowError("INTERACTION_OPTIONS_INVALID", "option ids must be unique lowercase action ids with labels", {
+        pattern: "^[a-z][a-z0-9-]{0,63}$",
+        examples: ["document-only", "inject-signal"],
+        invalidIds,
+        guidance: "A/B \u662F Core \u5206\u914D\u7684 answerCode\uFF0C\u4E0D\u662F\u8F93\u5165 option id\u3002",
+        recoveryHint: "\u4E3A\u6BCF\u4E2A\u9009\u9879\u63D0\u4F9B\u552F\u4E00\u7684\u3001\u5339\u914D\u4E0A\u8FF0\u6B63\u5219\u7684 action id \u4E0E\u975E\u7A7A label\u3002"
+      });
     }
     seen.add(option.id);
   }
@@ -2516,6 +2562,7 @@ async function deriveReviewInput(root, state) {
     }, []).sort((left, right) => left.id.localeCompare(right.id))
   };
   const governedRootsFingerprint = await fingerprintGovernedRoots(root, config);
+  const featureOwnedFingerprint = await fingerprintFeatureOwned(root, config, state.workspace.ownership);
   const basis = {
     featureId: state.featureId,
     route: state.route,
@@ -2531,7 +2578,8 @@ async function deriveReviewInput(root, state) {
     projectConfigSha256,
     verificationCommandHashes: verificationCommandHashes(config),
     scopeManifestSha256: digest5(canonicalReviewValueJson(scopeManifest)),
-    governedRootsFingerprint
+    governedRootsFingerprint,
+    featureOwnedFingerprint
   };
   const roles = [.../* @__PURE__ */ new Set([
     ...state.classification.controls.reviewRoles,
@@ -2598,11 +2646,31 @@ function roleBasisHash(basis, frozenArtifacts, trace, role) {
     level: basis.classification.level,
     artifacts,
     traceSlice,
+    // code review 必须绑定 feature-owned 内容：源码/测试变化后不得复用旧审查
+    // （audit-log 遗留偏差 1 的 role-basis 根因）。
+    ...role === "code-quality" || role === "requirement-fidelity" ? { featureOwnedFingerprint: basis.featureOwnedFingerprint ?? "" } : {},
     // requirements-coverage 显式绑定非行为处置豁免清单：豁免变化必须使该角色
     // basis 失效（traceSlice 已覆盖，这里把语义绑定写明，防止切片收窄后脱钩）。
     ...role === "requirements-coverage" ? { nonBehaviorDispositions: nonBehaviorDispositions(trace) } : {},
     ...role === "architecture-testability" || role === "rollback-operability" ? { verificationCommandHashes: referencedCommandHashes } : {}
   }));
+}
+function codeReviewIsolationRequired(state) {
+  return state.classification.controls.codeReview === "independent" || state.classification.controls.codeReview === "full";
+}
+function submittedSourceForJob(ledger, job, visited = /* @__PURE__ */ new Set()) {
+  if (job.status === "submitted") return job;
+  if (job.status !== "reused" || !job.reusedFrom) return void 0;
+  const key = `${job.reusedFrom.batchId}:${job.reusedFrom.jobId}`;
+  if (visited.has(key)) return void 0;
+  visited.add(key);
+  const sourceBatch = ledger.batches.find((candidate) => candidate.batchId === job.reusedFrom.batchId);
+  const sourceJob = sourceBatch?.jobs.find((candidate) => candidate.jobId === job.reusedFrom.jobId);
+  return sourceJob ? submittedSourceForJob(ledger, sourceJob, visited) : void 0;
+}
+function jobHasEffectiveIsolationProof(ledger, job) {
+  const source = submittedSourceForJob(ledger, job);
+  return Boolean(source?.submission?.isolationProof);
 }
 function submittedFindings(ledger) {
   return ledger.batches.flatMap((batch) => batch.jobs.flatMap((job) => (job.submission?.findings ?? []).map((finding) => ({ batch, job, finding }))));
@@ -2693,9 +2761,10 @@ async function reviewGate(root, state, query) {
   if (await reviewBasisStale(root, state, batch, phase)) return { status: "need-batch", cause: "stale", batchId: batch.batchId };
   if (batch.progress !== "complete") return { status: "jobs-open", batchId: batch.batchId, jobs: reviewJobsSummary(batch) };
   if (phase === "code") {
-    const requiresIsolation = state.classification.controls.codeReview === "independent" || state.classification.controls.codeReview === "full";
+    const requiresIsolation = codeReviewIsolationRequired(state);
     if (requiresIsolation && !hasCurrentQualityException(state, "review")) {
-      const missingIsolation = batch.jobs.filter((job) => job.status === "submitted" && !job.submission?.isolationProof).map((job) => job.jobId);
+      const requirements = deriveReviewJobRequirements(state.route, state.classification.riskLabels, state.classification.controls.reviewRoles, phase);
+      const missingIsolation = requirements.map((requirement) => batch.jobs.find((job) => job.role === requirement.role)).filter((job) => job !== void 0 && !jobHasEffectiveIsolationProof(ledger, job)).map((job) => job.jobId);
       if (missingIsolation.length) return { status: "isolation", batchId: batch.batchId, jobIds: missingIsolation };
     }
   }
@@ -2725,7 +2794,7 @@ function reviewGateError(gate, phase) {
       return new DevFlowError("REVIEW_ISOLATION_REQUIRED", "\u72EC\u7ACB\u4EE3\u7801\u5BA1\u67E5\u8981\u6C42\u5BA1\u67E5\u5728\u4E0E\u5B9E\u73B0\u9694\u79BB\u7684\u65B0\u4E0A\u4E0B\u6587\u4E2D\u5B8C\u6210\uFF0C\u5F53\u524D\u6279\u6B21\u7F3A\u5C11\u9694\u79BB\u8BC1\u660E\u3002", {
         jobIds: gate.jobIds,
         batchId: gate.batchId,
-        recoveryHint: "\u5728\u4E0E\u5B9E\u73B0\u9694\u79BB\u7684\u4E0A\u4E0B\u6587\u4E2D\u91CD\u65B0\u5B8C\u6210\u8FD9\u4E9B\u5BA1\u67E5 job \u5E76\u8BB0\u5F55 review-execution \u4E8B\u4EF6\uFF0C\u6216\u901A\u8FC7\u670D\u52A1\u7AEF\u91C7\u6837\u5B8C\u6210 job\uFF1B\u5BBF\u4E3B\u65E0\u6CD5\u63D0\u4F9B\u9694\u79BB\u4E0A\u4E0B\u6587\u65F6\uFF0C\u53EF\u901A\u8FC7\u8D28\u91CF\u4F8B\u5916\uFF08presentQualityException kind=review\uFF09\u663E\u5F0F\u63A5\u53D7\u72EC\u7ACB\u6027\u98CE\u9669\u540E\u7EE7\u7EED\u3002",
+        recoveryHint: "\u5728\u4E0E\u5B9E\u73B0\u9694\u79BB\u7684\u4E0A\u4E0B\u6587\u4E2D\u91CD\u65B0\u5B8C\u6210\u8FD9\u4E9B\u5BA1\u67E5 job \u5E76\u8BB0\u5F55 review-execution \u4E8B\u4EF6\uFF0C\u6216\u901A\u8FC7\u670D\u52A1\u7AEF\u91C7\u6837\u5B8C\u6210 job\uFF1B\u590D\u7528\u6279\u6B21\u540C\u6837\u9700\u8981\u9694\u79BB\u8BC1\u660E\uFF0C\u53EF\u5728\u9694\u79BB\u5B50\u4EE3\u7406\u4E2D\u91CD\u505A job \u6216\u7ECF\u8D28\u91CF\u4F8B\u5916\u63A5\u53D7\u98CE\u9669\u3002",
         retryOriginal: true
       });
     case "blocking":
@@ -3422,11 +3491,28 @@ async function recordHostEvent(root, hostEvent) {
     await release();
   }
 }
+async function recordReviewExecutionEvent(root, hostEvent) {
+  for (const [key, value] of Object.entries(hostEvent)) {
+    if (["at", "parentContextId"].includes(key)) continue;
+    if (typeof value !== "string" || !value.trim()) throw new DevFlowError("REVIEW_EXECUTION_EVENT_INVALID", `${key} must be non-empty`);
+  }
+  const active = await readActive(root);
+  if (!active) return;
+  const release = await lock(root, active.featureId, "review-execution-event");
+  try {
+    const state = await readState(root, active.featureId);
+    const events = await readFeatureEvents(root, active.featureId);
+    if (events.some((item) => item.type === "review-execution" && item.data.eventId === hostEvent.eventId)) return;
+    await appendEvent(root, active.featureId, state.revision, "review-execution", { ...hostEvent, at: hostEvent.at ?? (/* @__PURE__ */ new Date()).toISOString() });
+  } finally {
+    await release();
+  }
+}
 async function recordTrustedWriteIntent(root, paths, host, eventId2) {
   const active = await readActive(root);
   if (!active || paths.length === 0) return;
   const state = await readState(root, active.featureId);
-  if (state.mode !== "routed" || state.lifecycle !== "active" || currentOpenStep(state) !== "implementation") return;
+  if (state.mode !== "routed" || state.lifecycle !== "active") return;
   const config = await readProjectConfig(root);
   const governed = paths.filter((file) => config.governedRoots.some((entry) => entry === "." || file === entry || file.startsWith(`${entry}/`)));
   if (!governed.length) return;
@@ -3437,7 +3523,7 @@ async function recordTrustedWriteOwnership(root, paths, host, eventId2) {
   const active = await readActive(root);
   if (!active || paths.length === 0) return;
   const state = await readState(root, active.featureId);
-  if (state.mode !== "routed" || state.lifecycle !== "active" || currentOpenStep(state) !== "implementation") return;
+  if (state.mode !== "routed" || state.lifecycle !== "active") return;
   const config = await readProjectConfig(root);
   const governed = paths.filter((file) => config.governedRoots.some((entry) => entry === "." || file === entry || file.startsWith(`${entry}/`)));
   if (!governed.length) return;
@@ -3845,6 +3931,7 @@ async function evaluateFileWrite(root, workflow, paths) {
   const state = workflow.state;
   if (!state) return { decision: "allow" };
   let unitNeededPath;
+  let governedWriteObserved = false;
   for (const relative of paths) {
     if (isControlPath(relative)) return block("CONTROL_MUTATION_FORBIDDEN", [relative], "workflow control files are Core-owned", { variant: "control-file" });
     if (isDevFlowPath(relative)) {
@@ -3870,6 +3957,10 @@ async function evaluateFileWrite(root, workflow, paths) {
       if (unitBlock?.code === "IMPLEMENTATION_UNIT_REQUIRED") unitNeededPath ??= relative;
       continue;
     }
+    if (state.mode === "routed" && currentOpenStep(state) !== "implementation" && governed) {
+      governedWriteObserved = true;
+      continue;
+    }
   }
   if (unitNeededPath) {
     const assessment = await assessImplementationUnitBegin(root, workflow.featureId, state);
@@ -3887,6 +3978,7 @@ async function evaluateFileWrite(root, workflow, paths) {
       return block("IMPLEMENTATION_UNIT_REQUIRED", [unitNeededPath], "no active implementation unit", { beginFailed: diagnostic });
     }
   }
+  if (governedWriteObserved) return { decision: "allow", advisory: "governed-write-observed" };
   return { decision: "allow" };
 }
 async function approvalBlock(root, workflow, relative, variant) {
@@ -4467,12 +4559,24 @@ async function evaluatePreToolUseInternal(root, event, advisoryOut = {}) {
     }
     const verdict2 = await writeGate(root, { kind: "file", paths: projectRelativePaths(root, analysis.targets) });
     if (verdict2.decision === "block") return formatWriteGateBlock(verdict2.block);
+    if (verdict2.decision === "allow" && verdict2.advisory === "governed-write-observed") {
+      advisoryOut.advisory = {
+        code: "DEV_FLOW_GOVERNED_WRITE_OBSERVED",
+        message: "DEV_FLOW_GOVERNED_WRITE_OBSERVED: \u5F53\u524D\u9636\u6BB5\u5199\u5165 governed \u6587\u4EF6\u4F1A\u88AB\u8BB0\u5F55\u5E76\u53EF\u80FD\u4F7F\u65E2\u6709\u5BA1\u67E5/\u9A8C\u8BC1\u5931\u6548\uFF1B\u5199\u5165\u540E\u8BF7\u6309 status \u63D0\u793A\u91CD\u65B0 reconcile\u3001review \u6216 verify\u3002"
+      };
+    }
     return void 0;
   }
   const targets = directTargets(event);
   if (!targets.length) return void 0;
   const verdict = await writeGate(root, { kind: "file", paths: projectRelativePaths(root, targets) });
   if (verdict.decision === "block") return formatWriteGateBlock(verdict.block);
+  if (verdict.decision === "allow" && verdict.advisory === "governed-write-observed") {
+    advisoryOut.advisory = {
+      code: "DEV_FLOW_GOVERNED_WRITE_OBSERVED",
+      message: "DEV_FLOW_GOVERNED_WRITE_OBSERVED: \u5F53\u524D\u9636\u6BB5\u5199\u5165 governed \u6587\u4EF6\u4F1A\u88AB\u8BB0\u5F55\u5E76\u53EF\u80FD\u4F7F\u65E2\u6709\u5BA1\u67E5/\u9A8C\u8BC1\u5931\u6548\uFF1B\u5199\u5165\u540E\u8BF7\u6309 status \u63D0\u793A\u91CD\u65B0 reconcile\u3001review \u6216 verify\u3002"
+    };
+  }
   return void 0;
 }
 
@@ -4755,6 +4859,71 @@ async function resolveDevFlowRoot(cwd) {
   }
 }
 
+// plugins/dev-flow/src/hosts/review-execution-adapter.ts
+var DECLARATION_MARKER = /dev-flow:isolated-review:([A-Za-z0-9-]+)/u;
+function firstText(value) {
+  if (typeof value === "string") return value;
+  if (value && typeof value === "object") {
+    const record = value;
+    for (const key of ["prompt", "description", "text"]) {
+      const candidate = record[key];
+      if (typeof candidate === "string" && candidate.trim()) return candidate;
+    }
+  }
+  return "";
+}
+async function recordSubagentReviewOutput(root, event, host) {
+  const active = await readActive(root);
+  if (!active) return { recorded: false, reason: "no-active-feature" };
+  const promptText = firstText(event.prompt) || firstText(event.tool_input) || firstText(event.tool_response) || firstText(event.tool_result);
+  const marker = promptText.match(DECLARATION_MARKER);
+  if (!marker) return { recorded: false, reason: "missing-marker" };
+  const declarationId = marker[1];
+  const events = await readFeatureEvents(root, active.featureId);
+  const declaration = [...events].reverse().find((item) => {
+    const data2 = item.data;
+    return item.type === "review-execution-declared" && data2?.type === "review-execution-declared" && data2.declarationId === declarationId;
+  });
+  if (!declaration) return { recorded: false, reason: "unknown-declaration", declarationId };
+  const data = declaration.data;
+  if (typeof data.batchId !== "string" || typeof data.jobId !== "string" || typeof data.executionId !== "string") {
+    return { recorded: false, reason: "unknown-declaration", declarationId };
+  }
+  const input = event.tool_input ?? {};
+  const response = event.tool_response && typeof event.tool_response === "object" ? event.tool_response : {};
+  const contextId = [
+    input.subagent_session_id,
+    input.subagent_context_id,
+    response.subagent_session_id,
+    response.session_id
+  ].find((value) => typeof value === "string" && value.trim().length > 0);
+  const implementationContextId = [
+    input.parent_session_id,
+    input.parent_context_id,
+    response.parent_session_id
+  ].find((value) => typeof value === "string" && value.trim().length > 0);
+  if (!contextId || !implementationContextId) {
+    return { recorded: false, reason: "missing-context-ids", declarationId };
+  }
+  if (contextId === implementationContextId) {
+    return { recorded: false, reason: "same-context", declarationId };
+  }
+  const eventId2 = `${declarationId}:complete`;
+  await recordReviewExecutionEvent(root, {
+    eventId: eventId2,
+    type: "review-execution",
+    host: typeof data.host === "string" && (data.host === "claude" || data.host === "codex") ? data.host : host,
+    batchId: data.batchId,
+    jobId: data.jobId,
+    executionId: data.executionId,
+    sourceId: `subagent:${contextId}`,
+    contextId,
+    implementationContextId,
+    parentContextId: implementationContextId
+  });
+  return { recorded: true, declarationId, eventId: eventId2 };
+}
+
 // plugins/dev-flow/src/hosts/hook-adapter.ts
 var presets = {
   claude: {
@@ -4833,6 +5002,14 @@ async function runHookAdapter(host) {
       }
     } catch (error) {
       process.stderr.write(`Dev Flow ${preset.label} hook evaluation failed: ${String(error)}
+`);
+    }
+  }
+  if (event.hook_event_name === "SubagentOutput") {
+    try {
+      await recordSubagentReviewOutput(root, event, host);
+    } catch (error) {
+      process.stderr.write(`Dev Flow ${preset.label} subagent review proof failed: ${String(error)}
 `);
     }
   }
