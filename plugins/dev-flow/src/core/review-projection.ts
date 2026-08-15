@@ -52,6 +52,8 @@ export interface ReviewProjection {
     visibility: "coarse" | "complete";
     /** Present only after every isolated job has submitted. */
     findings?: ReviewProjectionFinding[];
+    /** Non-blocking findings from reused source submissions, marked superseded. */
+    supersededFindingIds?: string[];
     dispositions?: Record<string, ReviewFindingDisposition>;
     unresolvedBlockingFindingIds?: string[];
   };
@@ -104,6 +106,20 @@ function unresolvedBlockingFindingIds(ledger: ReviewLedger): string[] {
     .sort();
 }
 
+function supersededReusedFindingIds(ledger: ReviewLedger, batch: ReviewBatch | undefined): string[] {
+  if (!batch) return [];
+  const ids = new Set<string>();
+  for (const job of batch.jobs) {
+    if (job.status !== "reused" || !job.reusedFrom) continue;
+    const sourceBatch = ledger.batches.find((candidate) => candidate.batchId === job.reusedFrom!.batchId);
+    const sourceJob = sourceBatch?.jobs.find((candidate) => candidate.jobId === job.reusedFrom!.jobId);
+    for (const finding of sourceJob?.submission?.findings ?? []) {
+      if (finding.severity !== "blocking") ids.add(finding.findingId);
+    }
+  }
+  return [...ids].sort();
+}
+
 /**
  * This is the single visibility calculation for status JSON and the generated
  * Markdown. An incomplete batch exposes only its scheduling metadata so one
@@ -121,6 +137,7 @@ export function reviewProjectionModel(state: FeatureState, ledger: ReviewLedger)
   const findings = complete
     ? batch!.jobs.flatMap((job) => job.submission?.findings ?? []).map(publicFinding)
     : undefined;
+  const supersededFindingIds = complete ? supersededReusedFindingIds(ledger, batch) : undefined;
   return {
     schemaVersion: 1,
     featureId: state.featureId,
@@ -148,6 +165,7 @@ export function reviewProjectionModel(state: FeatureState, ledger: ReviewLedger)
       visibility: complete ? "complete" : "coarse",
       ...(complete ? {
         findings,
+        supersededFindingIds,
         dispositions: { ...batch!.dispositions },
         unresolvedBlockingFindingIds: unresolvedBlockingFindingIds(ledger),
       } : {}),
@@ -209,6 +227,10 @@ export function renderReviewProjection(model: ReviewProjection): string {
         lines.push(`- ${finding.findingId} [${finding.severity}] ${finding.category}: ${finding.claim}`);
       }
     } else lines.push("- No findings submitted.");
+    lines.push("", "## Superseded Reused Findings", "");
+    if (batch.supersededFindingIds?.length) {
+      for (const findingId of batch.supersededFindingIds) lines.push(`- ${findingId}: superseded by content change`);
+    } else lines.push("- None.");
     lines.push("", "## Dispositions", "");
     const dispositions = Object.entries(batch.dispositions ?? {});
     if (dispositions.length) {
