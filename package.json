@@ -1,6 +1,6 @@
 {
   "name": "dev-flow",
-  "version": "5.1.1",
+  "version": "5.1.2",
   "private": true,
   "description": "Dynamic governance workflow plugin for Claude Code and Codex CLI.",
   "type": "module",
