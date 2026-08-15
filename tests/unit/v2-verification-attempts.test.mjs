@@ -23,6 +23,43 @@ test("final verification selects an exact minimum command cover", () => {
   assert.deepEqual(verification.minimalGuaranteeCommands(state, config).map((item) => item.id), ["a", "d"]);
 });
 
+test("default verification command selection adds a behavior command when behavior ACs exist", () => {
+  const state = { classification: { controls: { verification: ["targeted", "integration", "full"] } } };
+  const trace = {
+    nodes: {
+      "AC-001": { id: "AC-001", kind: "acceptance-criterion", status: "current", verificationDisposition: { kind: "behavior-test" } },
+    },
+  };
+  const command = (id, provides) => ({ id, command: "node", args: [], cwd: ".", provides });
+  const config = { verification: { commands: [
+    command("full-ci", ["integration", "full"]),
+    command("unit-tests", ["targeted", "behavior"]),
+  ] } };
+  assert.deepEqual(verification.minimalGuaranteeCommands(state, config, trace).map((item) => item.id), ["full-ci", "unit-tests"]);
+});
+
+test("explicit command selection rejects behavior ACs without a behavior command", () => {
+  const trace = {
+    nodes: {
+      "AC-001": { id: "AC-001", kind: "acceptance-criterion", status: "current", verificationDisposition: { kind: "behavior-test" } },
+    },
+  };
+  const command = (id, provides) => ({ id, command: "node", args: [], cwd: ".", provides });
+  const config = { verification: { commands: [
+    command("full-ci", ["integration", "full"]),
+    command("unit-tests", ["targeted", "behavior"]),
+  ] } };
+  assert.throws(
+    () => verification.assertBehaviorGuaranteeCovered(config, [config.verification.commands[0]], ["full-ci"], trace),
+    (error) => {
+      assert.equal(error.code, "VERIFICATION_BEHAVIOR_UNCOVERED");
+      assert.deepEqual(error.details.acceptanceCriterionIds, ["AC-001"]);
+      assert.equal(error.details.behaviorCommands.length, 1);
+      return true;
+    },
+  );
+});
+
 test("RU forward verification rejects commands that do not provide targeted", () => {
   const config = { verification: { commands: [{ id: "integration", command: "node", args: [], cwd: ".", provides: ["integration"] }] } };
   assert.throws(() => checkpoints.resolveVerificationCommands(config, { id: "RU-001", forwardVerification: ["integration"] }), (error) => error.code === "TRACE_VERIFICATION_COMMAND_NOT_TARGETED");

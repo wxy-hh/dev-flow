@@ -115,8 +115,35 @@ function verificationCommandSliceStale(
   return Object.entries(attempt.verificationCommandHashes).some(([id, hash]) => current[id] !== hash);
 }
 
-export function minimalGuaranteeCommands(state: FeatureState, config: ProjectConfig): ProjectConfig["verification"]["commands"] {
+export function behaviorAcceptanceCriterionIds(trace: TraceabilityLedger | undefined): string[] {
+  if (!trace) return [];
+  return Object.values(trace.nodes)
+    .filter((node) => node.status === "current" && node.kind === "acceptance-criterion")
+    .filter((node) => dispositionKindForCriterion(trace, node.id) === "behavior-test")
+    .map((node) => node.id)
+    .sort();
+}
+
+export function assertBehaviorGuaranteeCovered(
+  config: ProjectConfig,
+  selected: ProjectConfig["verification"]["commands"],
+  commandIds: string[] | undefined,
+  trace: TraceabilityLedger | undefined,
+): void {
+  const behaviorCriteria = behaviorAcceptanceCriterionIds(trace);
+  const provided = new Set(selected.flatMap((command) => command.provides));
+  if (commandIds?.length && behaviorCriteria.length && !provided.has("behavior")) {
+    throw new DevFlowError("VERIFICATION_BEHAVIOR_UNCOVERED", "显式选择的命令缺少行为验收证据，行为测试 AC 将无法满足。", {
+      acceptanceCriterionIds: behaviorCriteria,
+      behaviorCommands: config.verification.commands.filter((command) => command.provides.includes("behavior")).map((command) => ({ id: command.id, provides: command.provides })),
+      recoveryHint: "追加提供 behavior 的验证命令（例如 unit-tests），或改为不传 commandIds 让 Core 选择最小覆盖集。",
+    });
+  }
+}
+
+export function minimalGuaranteeCommands(state: FeatureState, config: ProjectConfig, trace?: TraceabilityLedger): ProjectConfig["verification"]["commands"] {
   const needed = new Set(state.classification.controls.verification);
+  if (behaviorAcceptanceCriterionIds(trace).length) needed.add("behavior");
   const preflight = new Set(config.verification.preflightCommands ?? []);
   const candidates = [...config.verification.commands].filter((command) => !preflight.has(command.id)).sort((left, right) => left.id.localeCompare(right.id));
   const coversAll = (commands: ProjectConfig["verification"]["commands"]): boolean => {
@@ -144,7 +171,8 @@ export function minimalGuaranteeCommands(state: FeatureState, config: ProjectCon
   const configured = new Set(candidates.flatMap((command) => command.provides));
   throw new DevFlowError("VERIFICATION_GUARANTEE_UNCONFIGURED", "项目没有配置满足当前保证集的验证命令。", {
     missingGuarantees: [...needed].filter((kind) => !configured.has(kind)),
-    recoveryHint: "在 project schema v2 中为验证命令声明 provides，然后重试",
+    availableCommands: candidates.map((command) => ({ id: command.id, provides: command.provides })),
+    recoveryHint: "在 project schema v2 中为验证命令声明 provides；若存在行为验收条件，还需组合提供 behavior 的命令（例如 unit-tests + full-ci）。",
   });
 }
 
@@ -216,18 +244,26 @@ export async function runVerification(
       recoveryHint: "从 commandIds 中移除 preflight 命令；环境准备会在每次验证时自动执行，只有普通验证命令能提供保证证据。",
     });
   }
+  const trace = initial.traceability ? await readTraceability(root, initial) : undefined;
   const selected = commandIds?.length
     ? config.verification.commands.filter((command) => commandIds.includes(command.id))
-    : minimalGuaranteeCommands(initial, config);
+    : minimalGuaranteeCommands(initial, config, trace);
   if (!selected.length || commandIds?.some((command) => !selected.some((item) => item.id === command))) {
     throw new DevFlowError("UNKNOWN_VERIFICATION_COMMAND", "verification command is not configured");
   }
   const provided = new Set(selected.flatMap((command) => command.provides));
   const missingGuarantees = initial.classification.controls.verification.filter((kind) => !provided.has(kind));
-  if (missingGuarantees.length) throw new DevFlowError("VERIFICATION_GUARANTEE_UNCOVERED", "选择的命令不能覆盖当前最终保证集。", { missingGuarantees });
+  if (missingGuarantees.length) {
+    throw new DevFlowError("VERIFICATION_GUARANTEE_UNCOVERED", "选择的命令不能覆盖当前最终保证集。", {
+      missingGuarantees,
+      availableCommands: config.verification.commands.map((command) => ({ id: command.id, provides: command.provides })),
+      recoveryHint: "组合可用的验证命令以覆盖缺失保证集；例如行为验收需要 unit-tests，集成/全量保证需要 full-ci。",
+    });
+  }
+  const behaviorCriteria = behaviorAcceptanceCriterionIds(trace);
+  assertBehaviorGuaranteeCovered(config, selected, commandIds, trace);
 
   const fingerprint = await fingerprintFeatureOwned(root, config, initial.workspace.ownership);
-  const trace = initial.traceability ? await readTraceability(root, initial) : undefined;
   const replacingStaleVerification = Boolean(
     initial.verification.verifiedFingerprint
     && initial.verification.verifiedFingerprint !== fingerprint,
