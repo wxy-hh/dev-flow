@@ -423,7 +423,7 @@ function validScopeManifest(value: unknown): value is { governedRoots: string[];
   return Array.isArray(manifest.governedRoots) && Array.isArray(manifest.rollbackFileScopes)
     && manifest.governedRoots.every((entry) => typeof entry === "string" && safePackagePath(entry))
     && manifest.rollbackFileScopes.every((entry) => typeof entry === "string" && safePackagePath(entry))
-    && Array.isArray(manifest.traceIds) && manifest.traceIds.every((entry) => typeof entry === "string" && /^(?:REQ|AC|TASK|TEST|UNIT|RU)-[0-9]{3,}$/.test(entry))
+    && Array.isArray(manifest.traceIds) && manifest.traceIds.every((entry) => typeof entry === "string" && /^(?:REQ|AC|TASK|TEST|UNIT|RU|REC)-[0-9]{3,}$/.test(entry))
     && Array.isArray(manifest.frozenArtifactPaths) && manifest.frozenArtifactPaths.every((entry) => typeof entry === "string" && safePackagePath(entry));
 }
 

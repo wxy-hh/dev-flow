@@ -400,5 +400,5 @@ export type NextAction =
   /** Phase-3 unit lifecycle: the next implementation unit to begin or checkpoint. */
   | { kind: "begin-implementation-unit"; unitId: string }
   | { kind: "checkpoint-implementation-unit"; unitId: string }
-  | { kind: "run-step"; step: string; requiredEvidence?: RequiredEvidence }
+  | { kind: "run-step"; step: string; requiredEvidence?: RequiredEvidence; advisory?: { code: "OPEN_QUESTIONS_UNCONVERGED"; items: string[] } }
   | { kind: "finalize" };

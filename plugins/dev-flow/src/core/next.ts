@@ -1,7 +1,7 @@
 import { checkpointsEnforcementRequired, routeDefinition } from "../policy/contract.js";
 import { requiredEvidenceForStep, requiredEvidenceIsEmpty } from "../policy/evidence.js";
 import { firstOpenStep } from "../policy/stages.js";
-import type { DeriveState, NextAction, PendingDecision } from "../policy/types.js";
+import type { DeriveState, NextAction, PendingDecision, RequiredEvidence } from "../policy/types.js";
 import { readState, type FeatureState } from "./state-store.js";
 import { nextReadyImplementationUnit } from "./implementation-units.js";
 import { inspectTraceGate } from "./traceability-gates.js";
@@ -12,6 +12,7 @@ import { assertCurrentReviewProjection } from "./review-projection.js";
 import { routeDefinitionForState } from "./step-order.js";
 import { hasCurrentQualityException } from "./quality-exceptions.js";
 import { pendingDecisionForState } from "./decision-interactions.js";
+import { openQuestionsAdvisory } from "./requirements-grill.js";
 
 function toDerivedState(state: FeatureState, verificationStale: boolean) {
   const definition = routeDefinitionForState(state);
@@ -81,7 +82,7 @@ function deriveRouteAction(state: DeriveState): NextAction {
   return { kind: "done" };
 }
 
-function enrichRunStep(state: FeatureState, step: string): NextAction {
+function enrichRunStep(state: FeatureState, step: string): { kind: "run-step"; step: string; requiredEvidence?: RequiredEvidence } {
   const requiredEvidence = requiredEvidenceForStep(
     state.route,
     state.classification.riskLabels,
@@ -203,6 +204,22 @@ export async function nextAction(root: string, id: string): Promise<NextAction> 
   }
 
   if (action.kind === "run-step" && action.step === "finalize") return { kind: "finalize" };
-  if (action.kind === "run-step") return enrichRunStep(state, action.step);
+  if (action.kind === "run-step") {
+    const enriched = enrichRunStep(state, action.step);
+    // 非阻塞提示（grill 仍是主动工具调用，Core 不自动创建交互）：需求文档
+    // 「开放问题」还有未收敛条目且无待答 grill 时，建议先收敛再进入 planning。
+    if (action.step === "requirements_alignment") {
+      const advisory = await openQuestionsAdvisory(root, state);
+      if (advisory) {
+        return {
+          kind: "run-step",
+          step: enriched.step,
+          ...(enriched.requiredEvidence !== undefined ? { requiredEvidence: enriched.requiredEvidence } : {}),
+          advisory,
+        };
+      }
+    }
+    return enriched;
+  }
   return action;
 }

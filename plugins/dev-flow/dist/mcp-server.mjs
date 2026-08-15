@@ -1,4 +1,4 @@
-/* dev-flow 5.1.0; built from source, deterministic build */
+/* dev-flow 5.1.1; built from source, deterministic build */
 
 // plugins/dev-flow/src/mcp/server.ts
 import readline from "node:readline";
@@ -588,8 +588,8 @@ function validateBasis(basis, riskLabels) {
     }
   }
 }
-function issue(code, path25, message, recoveryHint) {
-  return { code, path: path25, message, recoveryHint };
+function issue(code, path26, message, recoveryHint) {
+  return { code, path: path26, message, recoveryHint };
 }
 function validateSignals(signals) {
   if (!signals || typeof signals !== "object" || Array.isArray(signals)) return [issue("CLASSIFICATION_SIGNALS_REQUIRED", "$.classificationBasis.signals", "signals is required", "\u8C03\u67E5\u4ED3\u5E93\u540E\u63D0\u4F9B\u5B8C\u6574\u7ED3\u6784\u5316\u4FE1\u53F7")];
@@ -1143,13 +1143,13 @@ async function emitAttention(event, options = {}) {
 }
 
 // plugins/dev-flow/src/mcp/dispatch.ts
-import path24 from "node:path";
+import path25 from "node:path";
 import { fileURLToPath } from "node:url";
 
 // plugins/dev-flow/src/core/artifacts.ts
 import { createHash as createHash29 } from "node:crypto";
-import { readFile as readFile17, writeFile as writeFile4 } from "node:fs/promises";
-import path21 from "node:path";
+import { readFile as readFile18, writeFile as writeFile4 } from "node:fs/promises";
+import path22 from "node:path";
 
 // plugins/dev-flow/src/core/artifact-templates.ts
 function frontMatter(context, kind) {
@@ -1282,9 +1282,9 @@ function confirmedApproval(state) {
 
 // plugins/dev-flow/src/core/state-store.ts
 import { randomUUID as randomUUID13, createHash as createHash28 } from "node:crypto";
-import { access as access4, mkdir as mkdir11, open as open7, readdir as readdir6, readFile as readFile16, rename as rename6, rm as rm3, writeFile as writeFile3 } from "node:fs/promises";
+import { access as access4, mkdir as mkdir11, open as open7, readdir as readdir6, readFile as readFile17, rename as rename6, rm as rm3, writeFile as writeFile3 } from "node:fs/promises";
 import { hostname as hostname2 } from "node:os";
-import path20 from "node:path";
+import path21 from "node:path";
 
 // plugins/dev-flow/src/core/schema-migration.ts
 import { createHash as createHash2 } from "node:crypto";
@@ -1666,7 +1666,7 @@ function applyRepositoryFacts(draft, records, host) {
     }
   }
   draft.governance = { ...ledger, repositoryFacts: facts };
-  draft.lastUpdatedBy = { host, pluginVersion: "5.1.0" };
+  draft.lastUpdatedBy = { host, pluginVersion: "5.1.1" };
   return { created, existing };
 }
 async function registerRepositoryFact(root2, id, expectedRevision, input, host) {
@@ -1724,8 +1724,8 @@ var fileChanges = ["added", "modified", "deleted", "renamed", "mode-changed"];
 var IMPLEMENTATION_UNIT_ID = /^UNIT-[0-9]{3,}$/;
 var SHA256 = /^[0-9a-f]{64}$/;
 var FILE_MODE = /^[0-7]{3,4}$/;
-function pathWithinFileScope(path25, fileScope) {
-  return fileScope.some((pattern) => scopePatternMatches(pattern.normalize("NFC"), path25.normalize("NFC")));
+function pathWithinFileScope(path26, fileScope) {
+  return fileScope.some((pattern) => scopePatternMatches(pattern.normalize("NFC"), path26.normalize("NFC")));
 }
 function isSafeFileScopePattern(value) {
   if (typeof value !== "string" || !value || value.trim() !== value) return false;
@@ -4733,9 +4733,6 @@ async function collectProjectConfigAffectedEvidence(root2, state, impact) {
   };
 }
 
-// plugins/dev-flow/src/core/ownership-workflow.ts
-import { createHash as createHash12, randomUUID as randomUUID5 } from "node:crypto";
-
 // plugins/dev-flow/src/core/interaction-provenance.ts
 function presentationEventIndex(events, input) {
   const index = events.findIndex((record) => {
@@ -4839,7 +4836,158 @@ function consumedPromptEventIds(events) {
   return ids;
 }
 
+// plugins/dev-flow/src/core/requirements-grill.ts
+import { readFile as readFile10 } from "node:fs/promises";
+import path13 from "node:path";
+var EMPTY_OPEN_QUESTION_MARKERS = /* @__PURE__ */ new Set(["\u65E0", "\u65E0\u3002", "\u6682\u65E0", "\u6682\u65E0\u3002", "\u6CA1\u6709", "\u6CA1\u6709\u3002", "n/a", "N/A", "na", "-", "\u2014"]);
+var OPEN_QUESTION_HEADING = /^##\s*开放问题\s*$/;
+function openQuestionItems(markdown) {
+  const lines = markdown.split("\n");
+  const start = lines.findIndex((line) => OPEN_QUESTION_HEADING.test(line.trim()));
+  if (start < 0) return [];
+  const items = [];
+  for (let index = start + 1; index < lines.length; index += 1) {
+    const line = lines[index];
+    if (/^##\s/.test(line) || /^<!-- dev-flow:/.test(line)) break;
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    const match = trimmed.match(/^(?:[-*]\s+|(?:\d+[.)]\s+))(.*)$/);
+    if (!match) continue;
+    const item = match[1].trim();
+    if (!item || EMPTY_OPEN_QUESTION_MARKERS.has(item)) continue;
+    items.push(item);
+  }
+  return items;
+}
+async function openQuestionsAdvisory(root2, state) {
+  if (state.mode !== "routed" || state.route !== "m" && state.route !== "l") return void 0;
+  const artifact = state.artifacts.requirements;
+  if (!artifact) return void 0;
+  try {
+    const pendingGrill = Object.values(state.interactions ?? {}).some((value) => {
+      const interaction = value;
+      return interaction.kind === "grill" && interaction.status === "pending";
+    });
+    if (!pendingGrill) {
+      const decision = pendingDecisionForState(state);
+      if (decision?.kind === "grill") return void 0;
+    }
+    const contents = await readFile10(
+      path13.join(root2, ".dev-flow", "features", state.featureId, normalizeUnicode(artifact.path)),
+      "utf8"
+    );
+    const items = openQuestionItems(contents);
+    return items.length ? { code: "OPEN_QUESTIONS_UNCONVERGED", items } : void 0;
+  } catch {
+    return void 0;
+  }
+}
+async function currentRequirements(root2, id, state) {
+  if (!state.artifacts.requirements) throw new DevFlowError("MISSING_REQUIRED_ARTIFACT", "requirements");
+  await assertArtifactCurrent(root2, id, state, "requirements");
+}
+async function requestGrillDecision(root2, id, expectedRevision, input) {
+  if (!input.question.trim()) throw new DevFlowError("GRILL_QUESTION_REQUIRED", "\u95EE\u9898\u4E0D\u80FD\u4E3A\u7A7A\u3002", { userMessage: "\u5F53\u524D\u95EE\u9898\u6CA1\u6709\u5185\u5BB9\u3002", recoveryKind: "retry", recoveryInstruction: "\u8865\u5145\u4E00\u4E2A\u9700\u8981\u7528\u6237\u51B3\u5B9A\u7684\u95EE\u9898\u540E\u91CD\u8BD5\u3002", retryOriginal: true });
+  if (!input.recommendation.drawback?.trim() || !input.recommendation.alternative?.condition.trim()) {
+    throw new DevFlowError("GRILL_HIGH_IMPACT_REMINDER_REQUIRED", "\u9700\u6C42\u51B3\u7B56\u5C5E\u4E8E\u9AD8\u5F71\u54CD\u4EA4\u4E92\uFF0C\u5FC5\u987B\u8BF4\u660E\u63A8\u8350\u65B9\u6848\u7684\u4E3B\u8981\u7F3A\u70B9\u548C\u66FF\u4EE3\u6761\u4EF6\u3002", {
+      recoveryHint: "\u8865\u5145 drawback \u4E0E alternative.condition\uFF0C\u5E76\u8BA9 alternative.optionId \u6307\u5411\u975E\u63A8\u8350\u9009\u9879\u540E\u91CD\u8BD5\u3002",
+      retryOriginal: true
+    });
+  }
+  const initial = await readState(root2, id);
+  if (initial.revision !== expectedRevision) throw new DevFlowError("STATE_REVISION_CONFLICT", "state revision changed", { currentRevision: initial.revision });
+  if (initial.mode !== "intake") await currentRequirements(root2, id, initial);
+  const target = `grill:${input.questionId}`;
+  const existing = findInteractionForTarget(initial, target);
+  if (existing) return { state: initial, interaction: toPublicInteraction(existing), interactionId: existing.id };
+  let interaction;
+  const state = await mutate(root2, id, expectedRevision, "decision-presented", (draft) => {
+    interaction = createInteraction(draft, {
+      kind: "grill",
+      target,
+      basisHash: decisionBasisHash({ objective: draft.objective, questionId: input.questionId, requirements: draft.artifacts.requirements?.sha256 }),
+      question: input.question,
+      options: input.options,
+      recommendation: input.recommendation
+    });
+    draft.lastUpdatedBy = { host: input.host, pluginVersion: "5.1.1" };
+  }, () => ({ questionId: input.questionId, mode: "decision", presentationEventId: interaction?.presentationEventId }));
+  if (!interaction) throw new DevFlowError("INTERACTION_NOT_CREATED", target);
+  return { state, interaction: toPublicInteraction(interaction), interactionId: interaction.id };
+}
+async function resolveGrillForAnswer(ctx) {
+  const { root: root2, featureId, expectedRevision, host, credential, interaction, state } = ctx;
+  if (interaction.kind !== "grill" || interaction.status !== "pending") {
+    throw new DevFlowError("INTERACTION_NOT_PENDING", "\u5F53\u524D\u6CA1\u6709\u5F85\u56DE\u7B54\u7684\u9700\u6C42\u95EE\u9898\u3002", { interactionId: interaction.id });
+  }
+  let promptEventId;
+  let promptText;
+  if (credential.source === "text") {
+    const events = await readFeatureEvents(root2, featureId);
+    const match = resolveInteractionPromptEvent(events, state, interaction, { host, userReply: credential.userReply });
+    promptEventId = match.eventId;
+    promptText = match.text;
+  }
+  let response;
+  const next = await mutatePrepared(root2, featureId, expectedRevision, "decision-answered", async () => ({
+    mutate: (draft) => {
+      response = resolveResponseForAnswer(draft, interaction, { source: credential.source, action: credential.source === "elicitation" ? credential.action : void 0, comment: credential.source === "elicitation" ? credential.comment : void 0, userReply: credential.source === "text" ? credential.userReply : void 0, promptText, promptEventId, host });
+      if (!response) throw new DevFlowError("INTERACTION_NOT_RESOLVED", interaction.id);
+      const decisionId = interaction.target.slice("grill:".length);
+      const existingGovernance = draft.governance ?? EMPTY_GOVERNANCE_LEDGER;
+      const previous = existingGovernance.decisions.find((candidate) => candidate.recordId === decisionId && !candidate.supersededBy);
+      const recordId = previous ? `${decisionId}-${interaction.id}` : decisionId;
+      const decisions = [...existingGovernance.decisions];
+      if (previous) {
+        const previousIndex = decisions.findIndex((candidate) => candidate.recordId === previous.recordId);
+        if (previousIndex >= 0) decisions[previousIndex] = { ...previous, supersededBy: recordId };
+      }
+      const credentials = [...existingGovernance.credentials];
+      const credentialId = `CRED-grill-${interaction.id}`;
+      if (!credentials.some((record) => record.recordId === credentialId)) {
+        credentials.push({
+          recordId: credentialId,
+          kind: "credential",
+          source: credential.source === "elicitation" ? "native-form" : "text",
+          host,
+          interactionId: interaction.id,
+          ...response.selectedOptionId ? { optionId: response.selectedOptionId } : {},
+          ...response.rawReply ? { rawText: response.rawReply } : {},
+          ...credential.source === "text" && promptEventId ? { basis: { kind: "event", eventId: promptEventId } } : {},
+          recordedAt: response.respondedAt
+        });
+      }
+      if (!decisions.some((candidate) => candidate.recordId === recordId)) {
+        decisions.push({
+          recordId,
+          kind: "decision",
+          question: interaction.question ?? decisionId,
+          conclusion: response.action,
+          credentialId,
+          ...credential.source === "text" && promptEventId ? { basis: { kind: "event", eventId: promptEventId } } : {},
+          recordedAt: response.respondedAt
+        });
+      }
+      draft.governance = { ...existingGovernance, decisions, credentials };
+      draft.lastUpdatedBy = { host, pluginVersion: "5.1.1" };
+    },
+    eventData: () => ({ interactionId: interaction.id, mode: "decision" })
+  }));
+  if (!response) throw new DevFlowError("INTERACTION_NOT_RESOLVED", interaction.id);
+  return { state: next, action: response.action, ...response.comment ? { comment: response.comment } : {} };
+}
+async function assertRequirementsGrillSatisfied(root2, id, state) {
+  if (state.route !== "m" && state.route !== "l") return;
+  await currentRequirements(root2, id, state);
+  const pending = Object.values(state.interactions ?? {}).some((value) => {
+    const interaction = value;
+    return interaction.kind === "grill" && interaction.status === "pending";
+  }) || pendingDecisionForState(state)?.kind === "grill";
+  if (pending) throw new DevFlowError("GRILL_INCOMPLETE", "\u8FD8\u6709\u4E00\u4E2A\u9700\u6C42\u95EE\u9898\u7B49\u5F85\u56DE\u7B54\u3002", { userMessage: "\u9700\u6C42\u6F84\u6E05\u8FD8\u6CA1\u6709\u5B8C\u6210\u3002", cause: "\u51B3\u7B56\u8D26\u672C\u4ECD\u6709\u5F85\u56DE\u7B54\u7684 grill \u95EE\u9898\u3002", impact: "\u5F53\u524D\u8DEF\u7EBF\u4E0D\u80FD\u8FDB\u5165\u4E0B\u4E00\u6B65\u3002", recoveryKind: "retry", recoveryInstruction: "\u5148\u56DE\u7B54\u5F53\u524D\u552F\u4E00\u95EE\u9898\uFF0C\u518D\u7EE7\u7EED\u5F53\u524D\u6B65\u9AA4\u3002", retryOriginal: true });
+}
+
 // plugins/dev-flow/src/core/ownership-workflow.ts
+import { createHash as createHash12, randomUUID as randomUUID5 } from "node:crypto";
 function objectiveForSwitch(input) {
   return typeof input.objective === "string" ? input.objective.trim() : "\u672A\u547D\u540D\u9700\u6C42";
 }
@@ -4965,7 +5113,7 @@ async function resolveOwnershipForAnswer(ctx) {
           const nextInteraction = presentWorkspaceOwnership(draft, [remaining[0]], { batchPaths: remaining, remainingPaths: remaining.slice(1), single: true });
           nextPresentationEventId = nextInteraction.presentationEventId;
         }
-        draft.lastUpdatedBy = { host, pluginVersion: "5.1.0" };
+        draft.lastUpdatedBy = { host, pluginVersion: "5.1.1" };
       },
       eventData: () => ({
         promptEventId,
@@ -5023,7 +5171,7 @@ async function resolveTaskSwitchForAnswer(ctx) {
       draft.lifecycle = "paused";
       draft.resumeSummary = "\u65E7\u4EFB\u52A1\u5DF2\u6682\u505C\uFF1B\u6062\u590D\u65F6\u4F1A\u81EA\u52A8\u5BF9\u8D26\u5DE5\u4F5C\u533A\u3002";
     }
-    draft.lastUpdatedBy = { host, pluginVersion: "5.1.0" };
+    draft.lastUpdatedBy = { host, pluginVersion: "5.1.1" };
   }, () => ({ targetFeatureId: interaction.target.slice("task-switch:".length), action: matchedId, promptEventId }));
   return { state: next, action: matchedId };
 }
@@ -5040,7 +5188,7 @@ async function reconcileWorkspace(root2, id, expectedRevision, host) {
     draft.workspace = workspace;
     if (contentChanged) markAffectedEvidenceStale(draft, changedPaths2, reopenedLifecycle, legalCheckpointPaths);
     presentationEventId = queueNextOwnershipDecision(draft);
-    draft.lastUpdatedBy = { host, pluginVersion: "5.1.0" };
+    draft.lastUpdatedBy = { host, pluginVersion: "5.1.1" };
   }, () => ({
     observedHead: workspace.observedHead,
     commitCount: workspace.observedCommits.length,
@@ -5397,7 +5545,7 @@ async function resolveRouteConfirmationForAnswer(ctx) {
             host
           });
           delete draft.pendingDecision;
-          draft.lastUpdatedBy = { host, pluginVersion: "5.1.0" };
+          draft.lastUpdatedBy = { host, pluginVersion: "5.1.1" };
         },
         eventData: () => ({
           promptEventId,
@@ -5442,7 +5590,7 @@ async function resolveRouteConfirmationForAnswer(ctx) {
         transitionData = { previousRoute: transition.previousRoute, invalidatedSteps: transition.invalidatedSteps, invalidatedArtifacts: transition.invalidatedArtifacts };
         delete draft.pendingDecision;
         delete draft.routeConfirmation;
-        draft.lastUpdatedBy = { host, pluginVersion: "5.1.0" };
+        draft.lastUpdatedBy = { host, pluginVersion: "5.1.1" };
       },
       eventData: () => ({
         promptEventId,
@@ -5648,7 +5796,7 @@ async function recordDecision(root2, id, expectedRevision, question, evidence, c
         promptEventId: latest.eventId,
         rawText: evidence.trim()
       });
-      draft.lastUpdatedBy = { host, pluginVersion: "5.1.0" };
+      draft.lastUpdatedBy = { host, pluginVersion: "5.1.1" };
     }, { decisionId: decision.id, promptEventId: latest.eventId });
     return {
       state: state2,
@@ -5674,7 +5822,7 @@ ${conclusion.trim()}`).digest("hex"),
       ],
       ratification: { question: question.trim(), evidence: evidence.trim(), conclusion: conclusion.trim(), factRefs: [...factRefs] }
     });
-    draft.lastUpdatedBy = { host, pluginVersion: "5.1.0" };
+    draft.lastUpdatedBy = { host, pluginVersion: "5.1.1" };
   }, () => ({ decisionId: decision.id, presentationEventId: interaction?.presentationEventId }));
   if (!interaction) throw new DevFlowError("INTERACTION_NOT_CREATED", target);
   return { state, interaction: toPublicInteraction(interaction), decisionId: decision.id, interactionId: interaction.id };
@@ -5742,7 +5890,7 @@ ${reason.trim()}`).digest("hex"),
       ],
       revision: { decisionId, oldConclusion: old.conclusion ?? old.question, newConclusion: newConclusion.trim(), reason: reason.trim(), affected }
     });
-    draft.lastUpdatedBy = { host, pluginVersion: "5.1.0" };
+    draft.lastUpdatedBy = { host, pluginVersion: "5.1.1" };
   }, () => ({ decisionId, successorId, presentationEventId: interaction?.presentationEventId }));
   if (!interaction) throw new DevFlowError("INTERACTION_NOT_CREATED", target);
   return { state, interaction: toPublicInteraction(interaction), decisionId: successorId, interactionId: interaction.id };
@@ -5827,7 +5975,7 @@ async function resolveRatificationForAnswer(ctx) {
     mutate: (draft) => {
       response = resolveResponseForAnswer(draft, interaction, { source: credential.source, action: credential.source === "elicitation" ? credential.action : void 0, comment: credential.source === "elicitation" ? credential.comment : void 0, userReply: credential.source === "text" ? credential.userReply : void 0, promptText, promptEventId, host });
       if (confirms) ratifyDecision(draft, draft.interactions[interaction.id], response, promptEventId, host);
-      draft.lastUpdatedBy = { host, pluginVersion: "5.1.0" };
+      draft.lastUpdatedBy = { host, pluginVersion: "5.1.1" };
     },
     eventData: () => ({ interactionId: interaction.id, action: matchedId })
   }));
@@ -5855,7 +6003,7 @@ async function resolveRevisionForAnswer(ctx) {
     mutate: (draft) => {
       response = resolveResponseForAnswer(draft, interaction, { source: credential.source, action: credential.source === "elicitation" ? credential.action : void 0, comment: credential.source === "elicitation" ? credential.comment : void 0, userReply: credential.source === "text" ? credential.userReply : void 0, promptText, promptEventId, host });
       if (confirms) applyDecisionRevision(draft, draft.interactions[interaction.id], response, promptEventId, host);
-      draft.lastUpdatedBy = { host, pluginVersion: "5.1.0" };
+      draft.lastUpdatedBy = { host, pluginVersion: "5.1.1" };
     },
     eventData: () => ({ interactionId: interaction.id, action: matchedId })
   }));
@@ -5868,8 +6016,8 @@ import { createHash as createHash18 } from "node:crypto";
 
 // plugins/dev-flow/src/core/plan-compile-context.ts
 import { createHash as createHash17 } from "node:crypto";
-import { readFile as readFile10 } from "node:fs/promises";
-import path13 from "node:path";
+import { readFile as readFile11 } from "node:fs/promises";
+import path14 from "node:path";
 
 // plugins/dev-flow/src/core/plan-compiler.ts
 function diagnosticFrom(error, position, fallbackCode) {
@@ -6043,11 +6191,11 @@ function parseTraceSourceBlocks(markdown) {
 }
 
 // plugins/dev-flow/src/core/plan-compile-context.ts
-var featureDirectory = (root2, id) => path13.join(root2, ".dev-flow", "features", id);
+var featureDirectory = (root2, id) => path14.join(root2, ".dev-flow", "features", id);
 async function compileArtifactPlan(root2, id, state, options) {
   const artifact = state.artifacts[options.artifactKind];
   if (!artifact) throw new DevFlowError("MISSING_REQUIRED_ARTIFACT", options.artifactKind);
-  const contents = await readFile10(path13.join(featureDirectory(root2, id), normalizeUnicode(artifact.path)), "utf8");
+  const contents = await readFile11(path14.join(featureDirectory(root2, id), normalizeUnicode(artifact.path)), "utf8");
   const { config, sha256: projectConfigSha256 } = await readProjectConfigSnapshot(root2);
   const currentLedger = await readTraceabilityForArtifactReplacement(root2, state, options.artifactKind);
   const input = {
@@ -6143,7 +6291,7 @@ ${impactLines.join("\n")}
         traceabilitySha256: initial.traceability?.sha256 ?? "none"
       }
     });
-    draft.lastUpdatedBy = { host, pluginVersion: "5.1.0" };
+    draft.lastUpdatedBy = { host, pluginVersion: "5.1.1" };
   }, () => ({ presentationEventId: interaction?.presentationEventId }));
   if (!interaction) throw new DevFlowError("INTERACTION_NOT_CREATED", target);
   return { state, interaction: toPublicInteraction(interaction), interactionId: interaction.id };
@@ -6164,7 +6312,7 @@ function applyPlanRevision(draft, interaction, host) {
   delete draft.steps.planning;
   delete draft.steps.implementation;
   delete draft.steps.code_review;
-  draft.lastUpdatedBy = { host, pluginVersion: "5.1.0" };
+  draft.lastUpdatedBy = { host, pluginVersion: "5.1.1" };
 }
 async function resolvePlanRevisionForAnswer(ctx) {
   const { root: root2, featureId, expectedRevision, host, credential, interaction, state } = ctx;
@@ -6229,7 +6377,7 @@ ${[...sideEffects].sort().join("\n")}`).digest("hex"),
             });
           }
         }
-        draft.lastUpdatedBy = { host, pluginVersion: "5.1.0" };
+        draft.lastUpdatedBy = { host, pluginVersion: "5.1.1" };
       },
       eventData: () => ({ interactionId: interaction.id, action: matchedId })
     };
@@ -6273,7 +6421,7 @@ async function resolveSideEffectRerunForAnswer(ctx) {
           delete draft.steps.finalize;
         }
       }
-      draft.lastUpdatedBy = { host, pluginVersion: "5.1.0" };
+      draft.lastUpdatedBy = { host, pluginVersion: "5.1.1" };
     },
     eventData: () => ({ interactionId: interaction.id, action: matchedId })
   }));
@@ -6344,111 +6492,6 @@ function computePlanRevisionImpact(currentLedger, newLedger) {
     for (const unit of newUnits) affectedIds.add(unit.id);
   }
   return { affectedIds: [...affectedIds].sort(), fallbackReason };
-}
-
-// plugins/dev-flow/src/core/requirements-grill.ts
-async function currentRequirements(root2, id, state) {
-  if (!state.artifacts.requirements) throw new DevFlowError("MISSING_REQUIRED_ARTIFACT", "requirements");
-  await assertArtifactCurrent(root2, id, state, "requirements");
-}
-async function requestGrillDecision(root2, id, expectedRevision, input) {
-  if (!input.question.trim()) throw new DevFlowError("GRILL_QUESTION_REQUIRED", "\u95EE\u9898\u4E0D\u80FD\u4E3A\u7A7A\u3002", { userMessage: "\u5F53\u524D\u95EE\u9898\u6CA1\u6709\u5185\u5BB9\u3002", recoveryKind: "retry", recoveryInstruction: "\u8865\u5145\u4E00\u4E2A\u9700\u8981\u7528\u6237\u51B3\u5B9A\u7684\u95EE\u9898\u540E\u91CD\u8BD5\u3002", retryOriginal: true });
-  if (!input.recommendation.drawback?.trim() || !input.recommendation.alternative?.condition.trim()) {
-    throw new DevFlowError("GRILL_HIGH_IMPACT_REMINDER_REQUIRED", "\u9700\u6C42\u51B3\u7B56\u5C5E\u4E8E\u9AD8\u5F71\u54CD\u4EA4\u4E92\uFF0C\u5FC5\u987B\u8BF4\u660E\u63A8\u8350\u65B9\u6848\u7684\u4E3B\u8981\u7F3A\u70B9\u548C\u66FF\u4EE3\u6761\u4EF6\u3002", {
-      recoveryHint: "\u8865\u5145 drawback \u4E0E alternative.condition\uFF0C\u5E76\u8BA9 alternative.optionId \u6307\u5411\u975E\u63A8\u8350\u9009\u9879\u540E\u91CD\u8BD5\u3002",
-      retryOriginal: true
-    });
-  }
-  const initial = await readState(root2, id);
-  if (initial.revision !== expectedRevision) throw new DevFlowError("STATE_REVISION_CONFLICT", "state revision changed", { currentRevision: initial.revision });
-  if (initial.mode !== "intake") await currentRequirements(root2, id, initial);
-  const target = `grill:${input.questionId}`;
-  const existing = findInteractionForTarget(initial, target);
-  if (existing) return { state: initial, interaction: toPublicInteraction(existing), interactionId: existing.id };
-  let interaction;
-  const state = await mutate(root2, id, expectedRevision, "decision-presented", (draft) => {
-    interaction = createInteraction(draft, {
-      kind: "grill",
-      target,
-      basisHash: decisionBasisHash({ objective: draft.objective, questionId: input.questionId, requirements: draft.artifacts.requirements?.sha256 }),
-      question: input.question,
-      options: input.options,
-      recommendation: input.recommendation
-    });
-    draft.lastUpdatedBy = { host: input.host, pluginVersion: "5.1.0" };
-  }, () => ({ questionId: input.questionId, mode: "decision", presentationEventId: interaction?.presentationEventId }));
-  if (!interaction) throw new DevFlowError("INTERACTION_NOT_CREATED", target);
-  return { state, interaction: toPublicInteraction(interaction), interactionId: interaction.id };
-}
-async function resolveGrillForAnswer(ctx) {
-  const { root: root2, featureId, expectedRevision, host, credential, interaction, state } = ctx;
-  if (interaction.kind !== "grill" || interaction.status !== "pending") {
-    throw new DevFlowError("INTERACTION_NOT_PENDING", "\u5F53\u524D\u6CA1\u6709\u5F85\u56DE\u7B54\u7684\u9700\u6C42\u95EE\u9898\u3002", { interactionId: interaction.id });
-  }
-  let promptEventId;
-  let promptText;
-  if (credential.source === "text") {
-    const events = await readFeatureEvents(root2, featureId);
-    const match = resolveInteractionPromptEvent(events, state, interaction, { host, userReply: credential.userReply });
-    promptEventId = match.eventId;
-    promptText = match.text;
-  }
-  let response;
-  const next = await mutatePrepared(root2, featureId, expectedRevision, "decision-answered", async () => ({
-    mutate: (draft) => {
-      response = resolveResponseForAnswer(draft, interaction, { source: credential.source, action: credential.source === "elicitation" ? credential.action : void 0, comment: credential.source === "elicitation" ? credential.comment : void 0, userReply: credential.source === "text" ? credential.userReply : void 0, promptText, promptEventId, host });
-      if (!response) throw new DevFlowError("INTERACTION_NOT_RESOLVED", interaction.id);
-      const decisionId = interaction.target.slice("grill:".length);
-      const existingGovernance = draft.governance ?? EMPTY_GOVERNANCE_LEDGER;
-      const previous = existingGovernance.decisions.find((candidate) => candidate.recordId === decisionId && !candidate.supersededBy);
-      const recordId = previous ? `${decisionId}-${interaction.id}` : decisionId;
-      const decisions = [...existingGovernance.decisions];
-      if (previous) {
-        const previousIndex = decisions.findIndex((candidate) => candidate.recordId === previous.recordId);
-        if (previousIndex >= 0) decisions[previousIndex] = { ...previous, supersededBy: recordId };
-      }
-      const credentials = [...existingGovernance.credentials];
-      const credentialId = `CRED-grill-${interaction.id}`;
-      if (!credentials.some((record) => record.recordId === credentialId)) {
-        credentials.push({
-          recordId: credentialId,
-          kind: "credential",
-          source: credential.source === "elicitation" ? "native-form" : "text",
-          host,
-          interactionId: interaction.id,
-          ...response.selectedOptionId ? { optionId: response.selectedOptionId } : {},
-          ...response.rawReply ? { rawText: response.rawReply } : {},
-          ...credential.source === "text" && promptEventId ? { basis: { kind: "event", eventId: promptEventId } } : {},
-          recordedAt: response.respondedAt
-        });
-      }
-      if (!decisions.some((candidate) => candidate.recordId === recordId)) {
-        decisions.push({
-          recordId,
-          kind: "decision",
-          question: interaction.question ?? decisionId,
-          conclusion: response.action,
-          credentialId,
-          ...credential.source === "text" && promptEventId ? { basis: { kind: "event", eventId: promptEventId } } : {},
-          recordedAt: response.respondedAt
-        });
-      }
-      draft.governance = { ...existingGovernance, decisions, credentials };
-      draft.lastUpdatedBy = { host, pluginVersion: "5.1.0" };
-    },
-    eventData: () => ({ interactionId: interaction.id, mode: "decision" })
-  }));
-  if (!response) throw new DevFlowError("INTERACTION_NOT_RESOLVED", interaction.id);
-  return { state: next, action: response.action, ...response.comment ? { comment: response.comment } : {} };
-}
-async function assertRequirementsGrillSatisfied(root2, id, state) {
-  if (state.route !== "m" && state.route !== "l") return;
-  await currentRequirements(root2, id, state);
-  const pending = Object.values(state.interactions ?? {}).some((value) => {
-    const interaction = value;
-    return interaction.kind === "grill" && interaction.status === "pending";
-  }) || pendingDecisionForState(state)?.kind === "grill";
-  if (pending) throw new DevFlowError("GRILL_INCOMPLETE", "\u8FD8\u6709\u4E00\u4E2A\u9700\u6C42\u95EE\u9898\u7B49\u5F85\u56DE\u7B54\u3002", { userMessage: "\u9700\u6C42\u6F84\u6E05\u8FD8\u6CA1\u6709\u5B8C\u6210\u3002", cause: "\u51B3\u7B56\u8D26\u672C\u4ECD\u6709\u5F85\u56DE\u7B54\u7684 grill \u95EE\u9898\u3002", impact: "\u5F53\u524D\u8DEF\u7EBF\u4E0D\u80FD\u8FDB\u5165\u4E0B\u4E00\u6B65\u3002", recoveryKind: "retry", recoveryInstruction: "\u5148\u56DE\u7B54\u5F53\u524D\u552F\u4E00\u95EE\u9898\uFF0C\u518D\u7EE7\u7EED\u5F53\u524D\u6B65\u9AA4\u3002", retryOriginal: true });
 }
 
 // plugins/dev-flow/src/core/approval-interactions.ts
@@ -6668,7 +6711,7 @@ async function resolveApprovalForAnswer(ctx) {
         } else {
           throw new DevFlowError("INTERACTION_ACTION_INVALID", response.action);
         }
-        draft.lastUpdatedBy = { host, pluginVersion: "5.1.0" };
+        draft.lastUpdatedBy = { host, pluginVersion: "5.1.1" };
       },
       eventData: () => ({ approval, interactionId: interaction.id, response })
     };
@@ -6823,7 +6866,7 @@ async function resolveQualityExceptionForAnswer(ctx) {
             draft.obligations = satisfyObligations(draft.obligations, [kind]);
           }
         }
-        draft.lastUpdatedBy = { host, pluginVersion: "5.1.0" };
+        draft.lastUpdatedBy = { host, pluginVersion: "5.1.1" };
       },
       eventData: { interactionId: interaction.id }
     };
@@ -6837,8 +6880,8 @@ import { createHash as createHash22, randomUUID as randomUUID7 } from "node:cryp
 
 // plugins/dev-flow/src/core/acceptance-store.ts
 import { createHash as createHash21 } from "node:crypto";
-import { copyFile, lstat as lstat5, mkdir as mkdir5, readFile as readFile11 } from "node:fs/promises";
-import path14 from "node:path";
+import { copyFile, lstat as lstat5, mkdir as mkdir5, readFile as readFile12 } from "node:fs/promises";
+import path15 from "node:path";
 var digest6 = (value) => createHash21("sha256").update(value).digest("hex");
 function safePath(value) {
   const normalized = value.replaceAll("\\", "/");
@@ -6855,7 +6898,7 @@ function imageValid(bytes) {
 }
 async function storeScreenshotArtifact(root2, featureId, sourcePath) {
   const source = safePath(sourcePath);
-  const sourceAbsolute = path14.join(root2, source);
+  const sourceAbsolute = path15.join(root2, source);
   let metadata;
   try {
     metadata = await lstat5(sourceAbsolute);
@@ -6867,7 +6910,7 @@ async function storeScreenshotArtifact(root2, featureId, sourcePath) {
   }
   let bytes;
   try {
-    bytes = await readFile11(sourceAbsolute);
+    bytes = await readFile12(sourceAbsolute);
   } catch {
     throw new DevFlowError("INVALID_ACCEPTANCE_EVIDENCE", "\u622A\u56FE\u6587\u4EF6\u4E0D\u5B58\u5728\u6216\u4E0D\u53EF\u8BFB\u53D6\u3002", { path: source });
   }
@@ -6875,11 +6918,11 @@ async function storeScreenshotArtifact(root2, featureId, sourcePath) {
     throw new DevFlowError("INVALID_ACCEPTANCE_EVIDENCE", "\u622A\u56FE\u6587\u4EF6\u4E0D\u662F\u53EF\u89E3\u6790\u7684 PNG\u3001JPEG \u6216 WebP\u3002", { path: source });
   }
   const artifactSha256 = digest6(bytes);
-  const ext = path14.extname(source).toLowerCase() || ".bin";
+  const ext = path15.extname(source).toLowerCase() || ".bin";
   const artifactPath = `acceptance/${artifactSha256}${ext}`;
-  const featureRoot = path14.join(root2, ".dev-flow", "features", featureId);
-  await mkdir5(path14.join(featureRoot, "acceptance"), { recursive: true });
-  await copyFile(sourceAbsolute, path14.join(featureRoot, artifactPath));
+  const featureRoot = path15.join(root2, ".dev-flow", "features", featureId);
+  await mkdir5(path15.join(featureRoot, "acceptance"), { recursive: true });
+  await copyFile(sourceAbsolute, path15.join(featureRoot, artifactPath));
   return { artifactPath, artifactSha256 };
 }
 
@@ -6969,7 +7012,7 @@ async function recordAcceptanceEvidence(root2, id, expectedRevision, input) {
     };
     acceptance.evidence.push(record);
     upsertDisposition(state, record.acceptanceCriterionId, input.evidence.kind === "agent-self-check" ? "pending" : "satisfied", fingerprint2, [...acceptance.dispositions.find((item) => item.acceptanceCriterionId === record.acceptanceCriterionId)?.evidenceRefs ?? [], evidenceId]);
-    state.lastUpdatedBy = { host: input.host, pluginVersion: "5.1.0" };
+    state.lastUpdatedBy = { host: input.host, pluginVersion: "5.1.1" };
   });
 }
 function dispositionHash(state, criterionIds, fingerprint2) {
@@ -7064,13 +7107,13 @@ async function resolveAcceptanceConfirmationForAnswer(ctx) {
 
 // plugins/dev-flow/src/core/rollback.ts
 import { createHash as createHash27, randomUUID as randomUUID12 } from "node:crypto";
-import { access as access3, chmod, lstat as lstat6, mkdir as mkdir10, open as open6, readFile as readFile15, readlink as readlink4, rename as rename5, rm as rm2, symlink } from "node:fs/promises";
-import path19 from "node:path";
+import { access as access3, chmod, lstat as lstat6, mkdir as mkdir10, open as open6, readFile as readFile16, readlink as readlink4, rename as rename5, rm as rm2, symlink } from "node:fs/promises";
+import path20 from "node:path";
 
 // plugins/dev-flow/src/core/checkpoints.ts
 import { randomUUID as randomUUID8, createHash as createHash24 } from "node:crypto";
-import { access as access2, mkdir as mkdir8, open as open5, readFile as readFile13, readlink as readlink3, readdir as readdir5, rename as rename4 } from "node:fs/promises";
-import path17 from "node:path";
+import { access as access2, mkdir as mkdir8, open as open5, readFile as readFile14, readlink as readlink3, readdir as readdir5, rename as rename4 } from "node:fs/promises";
+import path18 from "node:path";
 
 // plugins/dev-flow/src/core/verification.ts
 import { createHash as createHash23 } from "node:crypto";
@@ -7092,13 +7135,13 @@ function markRepairCompleted(state) {
 }
 
 // plugins/dev-flow/src/core/evidence-snapshot-store.ts
-import { mkdir as mkdir6, readFile as readFile12, writeFile } from "node:fs/promises";
-import path15 from "node:path";
+import { mkdir as mkdir6, readFile as readFile13, writeFile } from "node:fs/promises";
+import path16 from "node:path";
 function featureDirectory2(root2, id) {
-  return path15.join(root2, ".dev-flow", "features", id);
+  return path16.join(root2, ".dev-flow", "features", id);
 }
 async function readEvidenceSnapshot(root2, id, snapshotPath) {
-  const raw = await readFile12(path15.join(featureDirectory2(root2, id), snapshotPath), "utf8");
+  const raw = await readFile13(path16.join(featureDirectory2(root2, id), snapshotPath), "utf8");
   const parsed = JSON.parse(raw);
   if (!Array.isArray(parsed)) throw new TypeError("evidence snapshot must be an array");
   return parsed;
@@ -7106,8 +7149,8 @@ async function readEvidenceSnapshot(root2, id, snapshotPath) {
 async function writeEvidenceSnapshot(root2, id, snapshot, fingerprint2, directory) {
   const snapshotPath = `${directory}/snapshot-${fingerprint2}.json`;
   const featureRoot = featureDirectory2(root2, id);
-  const file = path15.join(featureRoot, snapshotPath);
-  await mkdir6(path15.dirname(file), { recursive: true });
+  const file = path16.join(featureRoot, snapshotPath);
+  await mkdir6(path16.dirname(file), { recursive: true });
   await writeFile(file, JSON.stringify(snapshot));
   return snapshotPath;
 }
@@ -7245,7 +7288,7 @@ async function invalidateAffectedClaims(root2, id, expectedRevision) {
       fallback,
       reason
     };
-    draft.lastUpdatedBy = { host: state.lastUpdatedBy.host, pluginVersion: "5.1.0" };
+    draft.lastUpdatedBy = { host: state.lastUpdatedBy.host, pluginVersion: "5.1.1" };
   }, { changedFiles, reopenedUnits, reviewReopened, verificationReopened, fallback, reason });
   return invalidated;
 }
@@ -7262,13 +7305,13 @@ function workspaceChangedError(invalidated) {
 // plugins/dev-flow/src/core/verification-store.ts
 import { execFile as execFile5 } from "node:child_process";
 import { mkdir as mkdir7, writeFile as writeFile2 } from "node:fs/promises";
-import path16 from "node:path";
+import path17 from "node:path";
 import { promisify as promisify5 } from "node:util";
 var run4 = promisify5(execFile5);
 async function runVerificationProcess(root2, input) {
   try {
     const result = await run4(input.executable, input.args, {
-      cwd: path16.resolve(root2, input.cwd ?? "."),
+      cwd: path17.resolve(root2, input.cwd ?? "."),
       timeout: input.timeoutMs,
       maxBuffer: input.maxOutputBytes
     });
@@ -7291,8 +7334,8 @@ async function runVerificationProcess(root2, input) {
   }
 }
 async function writeVerificationOutput(root2, featureId, outputPath, output) {
-  const file = path16.join(root2, ".dev-flow", "features", featureId, outputPath);
-  await mkdir7(path16.dirname(file), { recursive: true });
+  const file = path17.join(root2, ".dev-flow", "features", featureId, outputPath);
+  await mkdir7(path17.dirname(file), { recursive: true });
   await writeFile2(file, output);
 }
 
@@ -7546,7 +7589,7 @@ async function runVerification(root2, id, expectedRevision, host, commandIds) {
       const signature = `${exitReason}:${createHash23("sha256").update(fullOutput).digest("hex").slice(0, 16)}`;
       state.repair = recordRepairAttempt(state.repair ?? startRepairLoop(), signature, output.slice(-3));
     }
-    state.lastUpdatedBy = { host, pluginVersion: "5.1.0" };
+    state.lastUpdatedBy = { host, pluginVersion: "5.1.1" };
   });
 }
 async function readVerificationFreshness(root2, state) {
@@ -7566,7 +7609,7 @@ async function verificationIsStale(root2, state) {
 
 // plugins/dev-flow/src/core/checkpoints.ts
 var digest8 = (value) => createHash24("sha256").update(value).digest("hex");
-var featureDirectory3 = (root2, featureId) => path17.join(root2, ".dev-flow", "features", featureId);
+var featureDirectory3 = (root2, featureId) => path18.join(root2, ".dev-flow", "features", featureId);
 function blobPath(sha256) {
   return `checkpoints/blobs/${sha256}`;
 }
@@ -7586,7 +7629,7 @@ async function writeAtomic(file, contents) {
     await handle.close();
   }
   await rename4(temp, file);
-  const directory = await open5(path17.dirname(file), "r");
+  const directory = await open5(path18.dirname(file), "r");
   try {
     await directory.sync();
   } finally {
@@ -7603,9 +7646,9 @@ async function pathExists2(file) {
 }
 async function writeBlobIfAbsent(root2, featureId, bytes) {
   const sha256 = digest8(bytes);
-  const file = path17.join(featureDirectory3(root2, featureId), blobPath(sha256));
+  const file = path18.join(featureDirectory3(root2, featureId), blobPath(sha256));
   if (await pathExists2(file)) return sha256;
-  await mkdir8(path17.dirname(file), { recursive: true });
+  await mkdir8(path18.dirname(file), { recursive: true });
   await writeAtomic(file, bytes);
   return sha256;
 }
@@ -7619,7 +7662,7 @@ function validateBaseline(value, unitId) {
 }
 async function captureUnitBaseline(root2, featureId, unitId, snapshot) {
   for (const file2 of snapshot) {
-    const bytes = file2.kind === "symlink" ? Buffer.from(await readlink3(path17.join(root2, file2.path))) : await readFile13(path17.join(root2, file2.path));
+    const bytes = file2.kind === "symlink" ? Buffer.from(await readlink3(path18.join(root2, file2.path))) : await readFile14(path18.join(root2, file2.path));
     if (digest8(bytes) !== file2.sha256) {
       throw new DevFlowError("CHECKPOINT_HASH_MISMATCH", "\u6355\u83B7\u5355\u5143\u57FA\u7EBF\u65F6 governed \u6587\u4EF6\u53D1\u751F\u53D8\u5316\u3002", { path: file2.path });
     }
@@ -7632,16 +7675,16 @@ async function captureUnitBaseline(root2, featureId, unitId, snapshot) {
     capturedAt: (/* @__PURE__ */ new Date()).toISOString(),
     files: snapshot
   };
-  const file = path17.join(featureDirectory3(root2, featureId), baselinePath(unitId));
-  await mkdir8(path17.dirname(file), { recursive: true });
+  const file = path18.join(featureDirectory3(root2, featureId), baselinePath(unitId));
+  await mkdir8(path18.dirname(file), { recursive: true });
   await writeAtomic(file, `${JSON.stringify(baseline, null, 2)}
 `);
 }
 async function readCheckpointBaseline(root2, featureId, unitId) {
-  const file = path17.join(featureDirectory3(root2, featureId), baselinePath(unitId));
+  const file = path18.join(featureDirectory3(root2, featureId), baselinePath(unitId));
   let raw;
   try {
-    raw = await readFile13(file, "utf8");
+    raw = await readFile14(file, "utf8");
   } catch {
     throw new DevFlowError("CHECKPOINT_BASELINE_INVALID", "implementation unit baseline is missing", { unitId });
   }
@@ -7824,7 +7867,7 @@ function resolvePreflightCommands(config) {
   });
 }
 async function nextCheckpointSequence(root2, featureId) {
-  const directory = path17.join(featureDirectory3(root2, featureId), "checkpoints", "manifests");
+  const directory = path18.join(featureDirectory3(root2, featureId), "checkpoints", "manifests");
   let entries;
   try {
     entries = await readdir5(directory);
@@ -7892,7 +7935,7 @@ async function checkpointImplementationUnit(root2, id, expectedRevision, unitId,
   const checkpointId = `CP-${String(sequence).padStart(3, "0")}`;
   const implementationUnitId = unit.unitId;
   const featureDir = featureDirectory3(root2, id);
-  const manifestsDir = path17.join(featureDir, "checkpoints", "manifests");
+  const manifestsDir = path18.join(featureDir, "checkpoints", "manifests");
   let orphan;
   let entries;
   try {
@@ -7905,7 +7948,7 @@ async function checkpointImplementationUnit(root2, id, expectedRevision, unitId,
     if (!/^CP-\d+\.json$/.test(entry)) continue;
     let candidate;
     try {
-      candidate = parseCheckpointManifest(JSON.parse(await readFile13(path17.join(manifestsDir, entry), "utf8")));
+      candidate = parseCheckpointManifest(JSON.parse(await readFile14(path18.join(manifestsDir, entry), "utf8")));
     } catch (error) {
       throw new DevFlowError("ROLLBACK_CHECKPOINT_CORRUPT", "checkpoint manifest is unreadable or invalid", {
         checkpointFile: entry,
@@ -7937,7 +7980,7 @@ async function checkpointImplementationUnit(root2, id, expectedRevision, unitId,
     }, { unitId, checkpointId: orphan.checkpointId, sequence: orphan.sequence });
     return { state: reused, manifest: orphan };
   }
-  const manifestFile = path17.join(featureDir, manifestPath(checkpointId));
+  const manifestFile = path18.join(featureDir, manifestPath(checkpointId));
   const attempts = [];
   for (const { command: command2, phase } of [
     ...preflightCommands.map((command3) => ({ command: command3, phase: "preflight" })),
@@ -7978,7 +8021,7 @@ async function checkpointImplementationUnit(root2, id, expectedRevision, unitId,
   const completedFingerprint = await fingerprintGovernedRoots(root2, config);
   for (const record of records) {
     if (record.change === "deleted" || record.change === "renamed") continue;
-    const bytes = record.afterKind === "symlink" ? Buffer.from(await readlink3(path17.join(root2, record.path))) : await readFile13(path17.join(root2, record.path));
+    const bytes = record.afterKind === "symlink" ? Buffer.from(await readlink3(path18.join(root2, record.path))) : await readFile14(path18.join(root2, record.path));
     if (digest8(bytes) !== record.afterSha256) {
       throw new DevFlowError("CHECKPOINT_HASH_MISMATCH", "\u6355\u83B7 checkpoint blob \u65F6 governed \u6587\u4EF6\u53D1\u751F\u53D8\u5316\u3002", { path: record.path });
     }
@@ -8010,10 +8053,10 @@ async function checkpointImplementationUnit(root2, id, expectedRevision, unitId,
     verificationCommandHashes: Object.fromEntries([...preflightCommands, ...commands].map((command2) => [command2.id, currentCommandHashes[command2.id] ?? digest8(JSON.stringify(command2))]))
   };
   const validated = parseCheckpointManifest(JSON.parse(JSON.stringify(manifest)));
-  await mkdir8(path17.join(featureDir, "checkpoints", "patches"), { recursive: true });
-  await mkdir8(path17.dirname(manifestFile), { recursive: true });
-  await writeAtomic(path17.join(featureDir, "checkpoints", "patches", `${manifest.forwardPatchSha256}.json`), forwardPatch);
-  await writeAtomic(path17.join(featureDir, "checkpoints", "patches", `${manifest.reversePatchSha256}.json`), reversePatch);
+  await mkdir8(path18.join(featureDir, "checkpoints", "patches"), { recursive: true });
+  await mkdir8(path18.dirname(manifestFile), { recursive: true });
+  await writeAtomic(path18.join(featureDir, "checkpoints", "patches", `${manifest.forwardPatchSha256}.json`), forwardPatch);
+  await writeAtomic(path18.join(featureDir, "checkpoints", "patches", `${manifest.reversePatchSha256}.json`), reversePatch);
   const manifestContents = `${JSON.stringify(validated, null, 2)}
 `;
   const temp = `${manifestFile}.${randomUUID8()}.tmp`;
@@ -8026,7 +8069,7 @@ async function checkpointImplementationUnit(root2, id, expectedRevision, unitId,
   }
   await options.fault?.("before-manifest-rename");
   await rename4(temp, manifestFile);
-  const manifestDir = await open5(path17.dirname(manifestFile), "r");
+  const manifestDir = await open5(path18.dirname(manifestFile), "r");
   try {
     await manifestDir.sync();
   } finally {
@@ -8301,7 +8344,7 @@ function safePackagePath(value) {
 function validScopeManifest(value) {
   if (!value || typeof value !== "object" || Array.isArray(value)) return false;
   const manifest = value;
-  return Array.isArray(manifest.governedRoots) && Array.isArray(manifest.rollbackFileScopes) && manifest.governedRoots.every((entry) => typeof entry === "string" && safePackagePath(entry)) && manifest.rollbackFileScopes.every((entry) => typeof entry === "string" && safePackagePath(entry)) && Array.isArray(manifest.traceIds) && manifest.traceIds.every((entry) => typeof entry === "string" && /^(?:REQ|AC|TASK|TEST|UNIT|RU)-[0-9]{3,}$/.test(entry)) && Array.isArray(manifest.frozenArtifactPaths) && manifest.frozenArtifactPaths.every((entry) => typeof entry === "string" && safePackagePath(entry));
+  return Array.isArray(manifest.governedRoots) && Array.isArray(manifest.rollbackFileScopes) && manifest.governedRoots.every((entry) => typeof entry === "string" && safePackagePath(entry)) && manifest.rollbackFileScopes.every((entry) => typeof entry === "string" && safePackagePath(entry)) && Array.isArray(manifest.traceIds) && manifest.traceIds.every((entry) => typeof entry === "string" && /^(?:REQ|AC|TASK|TEST|UNIT|RU|REC)-[0-9]{3,}$/.test(entry)) && Array.isArray(manifest.frozenArtifactPaths) && manifest.frozenArtifactPaths.every((entry) => typeof entry === "string" && safePackagePath(entry));
 }
 async function readBoundReviewPackage(root2, featureId, batch, job) {
   const reviewPackage = await readReviewPackage(root2, featureId, job.packageSha256);
@@ -8326,9 +8369,9 @@ function assertFindingScope(manifest, findings, resolutions) {
   for (const finding of findings) {
     if (finding.severity === "blocking" && !finding.evidence.length) invalid5("REVIEW_FINDING_EVIDENCE_REQUIRED", "blocking finding requires evidence");
     invalidPaths.push(...finding.targets.filter((target) => !validTarget(target)));
-    invalidPaths.push(...finding.evidence.map((evidence) => evidence.path).filter((path25) => !validEvidence(path25)));
+    invalidPaths.push(...finding.evidence.map((evidence) => evidence.path).filter((path26) => !validEvidence(path26)));
   }
-  invalidPaths.push(...resolutions.flatMap((resolution) => resolution.evidence.map((evidence) => evidence.path).filter((path25) => !validEvidence(path25))));
+  invalidPaths.push(...resolutions.flatMap((resolution) => resolution.evidence.map((evidence) => evidence.path).filter((path26) => !validEvidence(path26))));
   if (invalidPaths.length) {
     invalid5("REVIEW_FINDING_SCOPE_INVALID", "finding targets and evidence must be package-relative paths inside the scope manifest", {
       invalidPaths: [...new Set(invalidPaths)].sort(),
@@ -9542,11 +9585,11 @@ async function beginImplementationUnit(root2, id, expectedRevision, unitId) {
 
 // plugins/dev-flow/src/core/rollback-journal.ts
 import { randomUUID as randomUUID11 } from "node:crypto";
-import { mkdir as mkdir9, readFile as readFile14, rm, rmdir } from "node:fs/promises";
+import { mkdir as mkdir9, readFile as readFile15, rm, rmdir } from "node:fs/promises";
 import { hostname } from "node:os";
-import path18 from "node:path";
-var features = (root2) => path18.join(root2, ".dev-flow", "features");
-var rollbackTxnPath = (root2, featureId) => path18.join(features(root2), featureId, "rollback-transaction.json");
+import path19 from "node:path";
+var features = (root2) => path19.join(root2, ".dev-flow", "features");
+var rollbackTxnPath = (root2, featureId) => path19.join(features(root2), featureId, "rollback-transaction.json");
 var rollbackTransactionPhases = /* @__PURE__ */ new Set(["prepared", "backing-up", "rolling-back", "verifying", "committed", "compensating", "compensated"]);
 function isSha2562(value) {
   return typeof value === "string" && /^[a-f0-9]{64}$/.test(value);
@@ -9574,7 +9617,7 @@ function rollbackTransactionFinished(transaction) {
 async function readRollbackTransaction(root2, featureId) {
   let raw;
   try {
-    raw = await readFile14(rollbackTxnPath(root2, featureId), "utf8");
+    raw = await readFile15(rollbackTxnPath(root2, featureId), "utf8");
   } catch (error) {
     if (error.code === "ENOENT") return void 0;
     throw new DevFlowError("ROLLBACK_TRANSACTION_UNREADABLE", "rollback transaction journal cannot be read", {
@@ -9630,14 +9673,14 @@ async function prepareRollbackTransaction(root2, featureId, expectedRevision, tr
 var ROLLBACK_DRIVE_LEASE_STALE_MS = 3e4;
 var ROLLBACK_DRIVE_LEASE_HEARTBEAT_MS = 1e4;
 function driveLeasePath(root2, featureId, transactionId) {
-  return path18.join(features(root2), featureId, "checkpoints", "recovery", `${transactionId}-drive-lease.json`);
+  return path19.join(features(root2), featureId, "checkpoints", "recovery", `${transactionId}-drive-lease.json`);
 }
 function legacyDriveLeasePath(root2, featureId, transactionId) {
-  return path18.join(features(root2), featureId, "checkpoints", "recovery", transactionId, "drive-lease.json");
+  return path19.join(features(root2), featureId, "checkpoints", "recovery", transactionId, "drive-lease.json");
 }
 async function readLeaseAt(leaseFile, transactionId) {
   try {
-    const raw = await readFile14(leaseFile, "utf8");
+    const raw = await readFile15(leaseFile, "utf8");
     return JSON.parse(raw);
   } catch (error) {
     if (error.code === "ENOENT") return void 0;
@@ -9657,8 +9700,8 @@ async function readDriveLeases(root2, featureId, transactionId) {
 async function writeDriveLeasePair(root2, featureId, transactionId, lease) {
   const legacyFile = legacyDriveLeasePath(root2, featureId, transactionId);
   const sidecarFile = driveLeasePath(root2, featureId, transactionId);
-  await mkdir9(path18.dirname(legacyFile), { recursive: true });
-  await mkdir9(path18.dirname(sidecarFile), { recursive: true });
+  await mkdir9(path19.dirname(legacyFile), { recursive: true });
+  await mkdir9(path19.dirname(sidecarFile), { recursive: true });
   await writeAtomic2(legacyFile, lease);
   await writeAtomic2(sidecarFile, lease);
 }
@@ -9793,21 +9836,21 @@ async function releaseRollbackDriveLease(root2, featureId, lease) {
     const legacyFile = legacyDriveLeasePath(root2, featureId, lease.transactionId);
     let sidecar;
     try {
-      sidecar = JSON.parse(await readFile14(sidecarFile, "utf8"));
+      sidecar = JSON.parse(await readFile15(sidecarFile, "utf8"));
     } catch {
     }
     if (sidecar?.ownerId === lease.ownerId) {
       await rm(sidecarFile, { force: true });
     }
     try {
-      const legacyExisting = JSON.parse(await readFile14(legacyFile, "utf8"));
+      const legacyExisting = JSON.parse(await readFile15(legacyFile, "utf8"));
       if (legacyExisting?.ownerId === lease.ownerId) {
         await rm(legacyFile, { force: true });
       }
     } catch {
     }
     try {
-      await rmdir(path18.dirname(legacyFile));
+      await rmdir(path19.dirname(legacyFile));
     } catch {
     }
   } finally {
@@ -9980,8 +10023,8 @@ async function previewRollback(root2, featureId, targetCheckpointId) {
     }
   }
   const filePlan = /* @__PURE__ */ new Map();
-  const planAction = (path25, action) => {
-    filePlan.set(path25, action);
+  const planAction = (path26, action) => {
+    filePlan.set(path26, action);
   };
   for (const manifest of undoManifests) {
     for (const record of manifest.files) {
@@ -10204,7 +10247,7 @@ async function resolveRollbackGateForAnswer(ctx) {
         } else {
           throw new DevFlowError("INTERACTION_ACTION_INVALID", response.action);
         }
-        draft.lastUpdatedBy = { host, pluginVersion: "5.1.0" };
+        draft.lastUpdatedBy = { host, pluginVersion: "5.1.1" };
       },
       eventData: () => ({ gate: "rollback-confirmation", interactionId: interaction.id, response })
     };
@@ -10212,7 +10255,7 @@ async function resolveRollbackGateForAnswer(ctx) {
   if (!response) throw new DevFlowError("INTERACTION_NOT_RESOLVED", interaction.id);
   return { state: next, action: response.action, ...response.comment ? { comment: response.comment } : {} };
 }
-var featureDirectory4 = (root2, featureId) => path19.join(root2, ".dev-flow", "features", featureId);
+var featureDirectory4 = (root2, featureId) => path20.join(root2, ".dev-flow", "features", featureId);
 async function pathExists3(file) {
   try {
     await access3(file);
@@ -10230,7 +10273,7 @@ async function fsyncDirectory4(directory) {
   }
 }
 async function writeFileAtomicMode(file, bytes, mode) {
-  await mkdir10(path19.dirname(file), { recursive: true });
+  await mkdir10(path20.dirname(file), { recursive: true });
   const temp = `${file}.${randomUUID12()}.tmp`;
   const handle = await open6(temp, "w");
   try {
@@ -10241,17 +10284,17 @@ async function writeFileAtomicMode(file, bytes, mode) {
   }
   await chmod(temp, Number.parseInt(mode, 8));
   await rename5(temp, file);
-  await fsyncDirectory4(path19.dirname(file));
+  await fsyncDirectory4(path20.dirname(file));
 }
 async function writeSymlinkAtomic(file, target) {
-  await mkdir10(path19.dirname(file), { recursive: true });
+  await mkdir10(path20.dirname(file), { recursive: true });
   const temp = `${file}.${randomUUID12()}.tmp`;
   await symlink(target, temp);
   await rename5(temp, file);
-  await fsyncDirectory4(path19.dirname(file));
+  await fsyncDirectory4(path20.dirname(file));
 }
 async function writeAtomicBuffer(file, contents) {
-  await mkdir10(path19.dirname(file), { recursive: true });
+  await mkdir10(path20.dirname(file), { recursive: true });
   const temp = `${file}.${randomUUID12()}.tmp`;
   const handle = await open6(temp, "w");
   try {
@@ -10261,7 +10304,7 @@ async function writeAtomicBuffer(file, contents) {
     await handle.close();
   }
   await rename5(temp, file);
-  await fsyncDirectory4(path19.dirname(file));
+  await fsyncDirectory4(path20.dirname(file));
 }
 function validateBackupManifest(value, transactionId) {
   const manifest = value;
@@ -10273,7 +10316,7 @@ function validateBackupManifest(value, transactionId) {
 async function readBackupManifest(manifestFile, transactionId) {
   let raw;
   try {
-    raw = await readFile15(manifestFile, "utf8");
+    raw = await readFile16(manifestFile, "utf8");
   } catch {
     throw new DevFlowError("ROLLBACK_BACKUP_CORRUPT", "rollback backup manifest is missing", { transactionId });
   }
@@ -10321,8 +10364,8 @@ async function assertWorkspaceMatchesChainTip(root2, featureId, config) {
   }
 }
 async function captureBackup(root2, featureId, journal, config, options) {
-  const dir = path19.join(featureDirectory4(root2, featureId), journal.backupDirectory);
-  const manifestFile = path19.join(dir, "backup-manifest.json");
+  const dir = path20.join(featureDirectory4(root2, featureId), journal.backupDirectory);
+  const manifestFile = path20.join(dir, "backup-manifest.json");
   if (await pathExists3(manifestFile)) {
     const manifest2 = await readBackupManifest(manifestFile, journal.transactionId);
     const current = await snapshotGovernedRoots(root2, config);
@@ -10333,16 +10376,16 @@ async function captureBackup(root2, featureId, journal, config, options) {
     return;
   }
   await assertWorkspaceMatchesChainTip(root2, featureId, config);
-  await mkdir10(path19.join(dir, "files"), { recursive: true });
-  await mkdir10(path19.join(dir, "trash"), { recursive: true });
+  await mkdir10(path20.join(dir, "files"), { recursive: true });
+  await mkdir10(path20.join(dir, "trash"), { recursive: true });
   const snapshot = await snapshotGovernedRoots(root2, config);
   let first = true;
   for (const file of snapshot) {
-    const bytes = file.kind === "symlink" ? Buffer.from(await readlink4(path19.join(root2, file.path))) : await readFile15(path19.join(root2, file.path));
+    const bytes = file.kind === "symlink" ? Buffer.from(await readlink4(path20.join(root2, file.path))) : await readFile16(path20.join(root2, file.path));
     if (digest11(bytes) !== file.sha256) {
       throw new DevFlowError("ROLLBACK_HASH_MISMATCH", "protected files changed while capturing the rollback backup", { path: file.path });
     }
-    const blobFile = path19.join(dir, "files", file.sha256);
+    const blobFile = path20.join(dir, "files", file.sha256);
     if (!await pathExists3(blobFile)) await writeAtomicBuffer(blobFile, bytes);
     if (first) {
       first = false;
@@ -10364,13 +10407,13 @@ async function captureBackup(root2, featureId, journal, config, options) {
   }
 }
 async function assertPathMatchesBackupExpectation(root2, filePath, expected) {
-  const absolute = path19.join(root2, filePath);
+  const absolute = path20.join(root2, filePath);
   if (expected) {
     let metadata;
     let bytes;
     try {
       metadata = await lstat6(absolute);
-      bytes = expected.kind === "symlink" ? Buffer.from(await readlink4(absolute)) : await readFile15(absolute);
+      bytes = expected.kind === "symlink" ? Buffer.from(await readlink4(absolute)) : await readFile16(absolute);
     } catch {
       throw new DevFlowError("ROLLBACK_HASH_MISMATCH", "workspace drifted from the pre-rollback backup before a file action", {
         path: filePath,
@@ -10401,20 +10444,20 @@ async function assertPathMatchesBackupExpectation(root2, filePath, expected) {
   }
 }
 async function applyFilePlan(root2, featureId, journal, options) {
-  const dir = path19.join(featureDirectory4(root2, featureId), journal.backupDirectory);
-  const trash = path19.join(dir, "trash");
-  const backup = await readBackupManifest(path19.join(dir, "backup-manifest.json"), journal.transactionId);
+  const dir = path20.join(featureDirectory4(root2, featureId), journal.backupDirectory);
+  const trash = path20.join(dir, "trash");
+  const backup = await readBackupManifest(path20.join(dir, "backup-manifest.json"), journal.transactionId);
   const expectedByPath = new Map(backup.files.map((file) => [file.path, file]));
   for (let index = journal.nextFileIndex; index < journal.filePlan.length; index += 1) {
     const action = journal.filePlan[index];
     if (index === 0) await options.fault?.("before-first-rename");
     await assertPathMatchesBackupExpectation(root2, action.path, expectedByPath.get(action.path));
-    const target = path19.join(root2, action.path);
+    const target = path20.join(root2, action.path);
     if (action.action === "restore") {
-      const blobFile = path19.join(featureDirectory4(root2, featureId), blobPath(action.blobSha256));
+      const blobFile = path20.join(featureDirectory4(root2, featureId), blobPath(action.blobSha256));
       let bytes;
       try {
-        bytes = await readFile15(blobFile);
+        bytes = await readFile16(blobFile);
       } catch {
         throw new DevFlowError("ROLLBACK_CHECKPOINT_CORRUPT", "checkpoint blob is missing", {
           blobSha256: action.blobSha256,
@@ -10430,11 +10473,11 @@ async function applyFilePlan(root2, featureId, journal, options) {
       if (action.kind === "symlink") await writeSymlinkAtomic(target, bytes.toString("utf8"));
       else await writeFileAtomicMode(target, bytes, action.mode);
     } else {
-      const trashFile = path19.join(trash, `${String(index).padStart(4, "0")}-${path19.basename(action.path)}`);
+      const trashFile = path20.join(trash, `${String(index).padStart(4, "0")}-${path20.basename(action.path)}`);
       if (await pathExists3(target)) {
         await mkdir10(trash, { recursive: true });
         await rename5(target, trashFile);
-        await fsyncDirectory4(path19.dirname(target));
+        await fsyncDirectory4(path20.dirname(target));
         await fsyncDirectory4(trash);
       } else if (!await pathExists3(trashFile)) {
         throw new DevFlowError("ROLLBACK_HASH_MISMATCH", "file planned for deletion vanished outside the transaction", { path: action.path });
@@ -10446,7 +10489,7 @@ async function applyFilePlan(root2, featureId, journal, options) {
     for (const action2 of journal.filePlan.slice(0, journal.nextFileIndex)) {
       const expected = progressive.find((file) => file.path === action2.path);
       if (action2.action === "delete") {
-        if (await pathExists3(path19.join(root2, action2.path))) {
+        if (await pathExists3(path20.join(root2, action2.path))) {
           throw new DevFlowError("ROLLBACK_HASH_MISMATCH", "workspace drifted after a rollback file action", {
             path: action2.path,
             source: "post-plan",
@@ -10459,8 +10502,8 @@ async function applyFilePlan(root2, featureId, journal, options) {
         let metadata;
         let bytes;
         try {
-          metadata = await lstat6(path19.join(root2, action2.path));
-          bytes = expected.kind === "symlink" ? Buffer.from(await readlink4(path19.join(root2, action2.path))) : await readFile15(path19.join(root2, action2.path));
+          metadata = await lstat6(path20.join(root2, action2.path));
+          bytes = expected.kind === "symlink" ? Buffer.from(await readlink4(path20.join(root2, action2.path))) : await readFile16(path20.join(root2, action2.path));
         } catch {
           throw new DevFlowError("ROLLBACK_HASH_MISMATCH", "workspace drifted after a rollback file action", {
             path: action2.path,
@@ -10517,7 +10560,7 @@ async function transactionVerificationCommands(root2, featureId, journal, config
 }
 async function expectedPlanStateAfter(root2, featureId, journal, appliedCount) {
   const manifest = await readBackupManifest(
-    path19.join(featureDirectory4(root2, featureId), journal.backupDirectory, "backup-manifest.json"),
+    path20.join(featureDirectory4(root2, featureId), journal.backupDirectory, "backup-manifest.json"),
     journal.transactionId
   );
   const expected = new Map(manifest.files.map((file) => [file.path, { ...file }]));
@@ -10647,36 +10690,36 @@ async function compensateRollback(root2, featureId, journal, config, options) {
     journal.phase = "compensating";
     await writeRollbackTransaction(root2, featureId, journal);
   }
-  const dir = path19.join(featureDirectory4(root2, featureId), journal.backupDirectory);
+  const dir = path20.join(featureDirectory4(root2, featureId), journal.backupDirectory);
   const startedAt = (/* @__PURE__ */ new Date()).toISOString();
   try {
-    const manifest = await readBackupManifest(path19.join(dir, "backup-manifest.json"), journal.transactionId);
+    const manifest = await readBackupManifest(path20.join(dir, "backup-manifest.json"), journal.transactionId);
     let restored = 0;
     for (const file of manifest.files) {
-      const blobFile = path19.join(dir, "files", file.sha256);
+      const blobFile = path20.join(dir, "files", file.sha256);
       let bytes;
       try {
-        bytes = await readFile15(blobFile);
+        bytes = await readFile16(blobFile);
       } catch {
         throw new DevFlowError("ROLLBACK_BACKUP_CORRUPT", "rollback backup bytes are missing", { path: file.path, sha256: file.sha256 });
       }
       if (digest11(bytes) !== file.sha256) {
         throw new DevFlowError("ROLLBACK_BACKUP_CORRUPT", "rollback backup bytes failed their digest check", { path: file.path, sha256: file.sha256 });
       }
-      if (file.kind === "symlink") await writeSymlinkAtomic(path19.join(root2, file.path), bytes.toString("utf8"));
-      else await writeFileAtomicMode(path19.join(root2, file.path), bytes, file.mode);
+      if (file.kind === "symlink") await writeSymlinkAtomic(path20.join(root2, file.path), bytes.toString("utf8"));
+      else await writeFileAtomicMode(path20.join(root2, file.path), bytes, file.mode);
       restored += 1;
       if (restored === 1) await options.fault?.("during-compensation");
     }
     const current = await snapshotGovernedRoots(root2, config);
     const expectedPaths = new Set(manifest.files.map((file) => file.path));
-    const trash = path19.join(dir, "trash");
+    const trash = path20.join(dir, "trash");
     for (const file of current) {
       if (expectedPaths.has(file.path)) continue;
-      const trashFile = path19.join(trash, `extra-${digest11(file.path).slice(0, 16)}-${path19.basename(file.path)}`);
+      const trashFile = path20.join(trash, `extra-${digest11(file.path).slice(0, 16)}-${path20.basename(file.path)}`);
       await mkdir10(trash, { recursive: true });
-      await rename5(path19.join(root2, file.path), trashFile);
-      await fsyncDirectory4(path19.dirname(path19.join(root2, file.path)));
+      await rename5(path20.join(root2, file.path), trashFile);
+      await fsyncDirectory4(path20.dirname(path20.join(root2, file.path)));
     }
     const after = await snapshotGovernedRoots(root2, config);
     const mismatches = snapshotMismatches(manifest.files, after);
@@ -10753,10 +10796,10 @@ async function commitRollbackState(root2, featureId, journal) {
   }, { allowRollbackTransaction: journal.transactionId });
 }
 async function cleanupRollbackBackup(root2, featureId, journal) {
-  const directory = path19.join(featureDirectory4(root2, featureId), journal.backupDirectory);
-  await rm2(path19.join(directory, "files"), { recursive: true, force: true });
-  await rm2(path19.join(directory, "trash"), { recursive: true, force: true });
-  await rm2(path19.join(directory, "backup-manifest.json"), { force: true });
+  const directory = path20.join(featureDirectory4(root2, featureId), journal.backupDirectory);
+  await rm2(path20.join(directory, "files"), { recursive: true, force: true });
+  await rm2(path20.join(directory, "trash"), { recursive: true, force: true });
+  await rm2(path20.join(directory, "backup-manifest.json"), { force: true });
 }
 async function finishCommitted(root2, featureId, journal, options) {
   await options.fault?.("before-state-cas");
@@ -11294,17 +11337,17 @@ function validateScopeInput(scope) {
   };
 }
 var delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-var devFlow = (root2) => path20.join(root2, ".dev-flow");
-var features2 = (root2) => path20.join(devFlow(root2), "features");
-var statePath = (root2, id) => path20.join(features2(root2), id, "state.json");
-var eventPath = (root2, id) => path20.join(features2(root2), id, "events.jsonl");
-var activePath = (root2) => path20.join(devFlow(root2), "active.json");
-var recoveryTxnPath = (root2) => path20.join(devFlow(root2), "recovery-transaction.json");
-var recoveryEventsPath = (root2) => path20.join(devFlow(root2), "recovery-events.jsonl");
-var rollbackTxnPath2 = (root2, featureId) => path20.join(features2(root2), featureId, "rollback-transaction.json");
+var devFlow = (root2) => path21.join(root2, ".dev-flow");
+var features2 = (root2) => path21.join(devFlow(root2), "features");
+var statePath = (root2, id) => path21.join(features2(root2), id, "state.json");
+var eventPath = (root2, id) => path21.join(features2(root2), id, "events.jsonl");
+var activePath = (root2) => path21.join(devFlow(root2), "active.json");
+var recoveryTxnPath = (root2) => path21.join(devFlow(root2), "recovery-transaction.json");
+var recoveryEventsPath = (root2) => path21.join(devFlow(root2), "recovery-events.jsonl");
+var rollbackTxnPath2 = (root2, featureId) => path21.join(features2(root2), featureId, "rollback-transaction.json");
 async function readProjectConfig(root2) {
   try {
-    const raw = await readFile16(path20.join(devFlow(root2), "project.json"), "utf8");
+    const raw = await readFile17(path21.join(devFlow(root2), "project.json"), "utf8");
     const value = JSON.parse(raw);
     validateProjectConfig(value);
     return value;
@@ -11336,7 +11379,7 @@ async function initProject(root2, config) {
   validateProjectConfig(config);
   await mkdir11(devFlow(root2), { recursive: true });
   try {
-    const existing = JSON.parse(await readFile16(path20.join(devFlow(root2), "project.json"), "utf8"));
+    const existing = JSON.parse(await readFile17(path21.join(devFlow(root2), "project.json"), "utf8"));
     validateProjectConfig(existing);
     if (JSON.stringify(existing) === JSON.stringify(config)) return;
     throw new DevFlowError("PROJECT_CONFIG_UPDATE_REQUIRED", "project.json \u5DF2\u5B58\u5728\u4E14\u5185\u5BB9\u4E0D\u540C\u3002", {
@@ -11351,16 +11394,16 @@ async function initProject(root2, config) {
     if (error instanceof DevFlowError) throw error;
     if (error.code !== "ENOENT") throw error;
   }
-  await writeAtomic2(path20.join(devFlow(root2), "project.json"), config);
+  await writeAtomic2(path21.join(devFlow(root2), "project.json"), config);
 }
 async function updateProjectConfig(root2, config, expectedSha256) {
   validateProjectConfig(config);
   const release = await lock(root2, "project-config", "update-project");
   try {
-    const file = path20.join(devFlow(root2), "project.json");
+    const file = path21.join(devFlow(root2), "project.json");
     let raw;
     try {
-      raw = await readFile16(file, "utf8");
+      raw = await readFile17(file, "utf8");
     } catch {
       throw new DevFlowError("PROJECT_NOT_INITIALIZED", "run dev_flow_init_project first");
     }
@@ -11379,24 +11422,25 @@ async function updateProjectConfig(root2, config, expectedSha256) {
     const previousConfig = JSON.parse(raw);
     validateProjectConfig(previousConfig);
     const impact = projectConfigImpact(previousConfig, config);
-    if (impact.governanceChanged || impact.preflightChanged) {
+    const active = await readActive(root2);
+    if ((impact.governanceChanged || impact.preflightChanged) && active) {
       throw new DevFlowError("PROJECT_CONFIG_HIGH_IMPACT", "governance roots, enforcement or preflight policy changed\u3002", {
         userMessage: "\u8FD9\u662F\u9AD8\u5F71\u54CD\u9879\u76EE\u7B56\u7565\u53D8\u66F4\uFF0C\u4E0D\u80FD\u4F5C\u4E3A\u666E\u901A\u589E\u91CF\u914D\u7F6E\u66F4\u65B0\u3002",
-        cause: "\u6CBB\u7406\u8303\u56F4\u6216\u6267\u884C\u524D\u7F6E\u7B56\u7565\u4F1A\u6539\u53D8\u73B0\u6709 feature \u7684\u8DEF\u7EBF\u4E0E\u8BC1\u636E\u542B\u4E49\u3002",
-        impact: "\u6CA1\u6709\u5199\u5165\u65B0\u914D\u7F6E\uFF1B\u73B0\u6709 feature \u4FDD\u6301\u539F\u72B6\u6001\u3002",
-        recoveryKind: "repair",
-        recoveryInstruction: "\u5148\u6682\u505C\u76F8\u5173 feature\uFF0C\u5B8C\u6210\u663E\u5F0F\u91CD\u5206\u7C7B\u6216\u6062\u590D\u8BC4\u4F30\u540E\u518D\u66F4\u65B0\u9879\u76EE\u914D\u7F6E\u3002",
-        retryOriginal: false
+        cause: "\u6CBB\u7406\u8303\u56F4\u6216\u6267\u884C\u524D\u7F6E\u7B56\u7565\u4F1A\u6539\u53D8\u8FD0\u884C\u4E2D feature \u7684\u8DEF\u7EBF\u4E0E\u8BC1\u636E\u542B\u4E49\u3002",
+        impact: "\u6CA1\u6709\u5199\u5165\u65B0\u914D\u7F6E\uFF1B\u8FD0\u884C\u4E2D\u7684 feature \u4FDD\u6301\u539F\u72B6\u6001\u3002",
+        recoveryKind: "retry",
+        recoveryInstruction: "\u5148\u6682\u505C\uFF08\u6216\u5B8C\u6210\u3001\u653E\u5F03\uFF09\u8BE5 active feature\uFF0C\u518D\u91CD\u8BD5\u672C\u6B21\u66F4\u65B0\uFF1B\u6682\u505C\u540E\u91CD\u8BD5\u5373\u53EF\u6210\u529F\uFF0C\u6062\u590D\u65F6\u7CFB\u7EDF\u4F1A\u91CD\u65B0\u5BF9\u8D26\u5E76\u8BC4\u4F30\u8DEF\u7EBF\u4E0E\u8BC1\u636E\u3002",
+        retryOriginal: true,
+        activeFeatureId: active.featureId
       });
     }
-    const active = await readActive(root2);
     const affectedEvidence = await collectProjectConfigAffectedEvidence(
       root2,
       active ? await readState(root2, active.featureId) : void 0,
       impact
     );
     await writeAtomic2(file, config);
-    const nextRaw = await readFile16(file, "utf8");
+    const nextRaw = await readFile17(file, "utf8");
     return { config, previousSha256, sha256: createHash28("sha256").update(nextRaw).digest("hex"), impact, affectedEvidence };
   } finally {
     await release();
@@ -11405,7 +11449,7 @@ async function updateProjectConfig(root2, config, expectedSha256) {
 async function writeAtomic2(file, value) {
   const temp = `${file}.${randomUUID13()}.tmp`;
   const handle = await open7(temp, "w");
-  const payload = file.endsWith(`${path20.sep}state.json`) && value && typeof value === "object" && value.schemaVersion === 5 ? (() => {
+  const payload = file.endsWith(`${path21.sep}state.json`) && value && typeof value === "object" && value.schemaVersion === 5 ? (() => {
     const copy = { ...value };
     delete copy.decisionLedger;
     delete copy.qualityExceptions;
@@ -11419,7 +11463,7 @@ async function writeAtomic2(file, value) {
     await handle.close();
   }
   await rename6(temp, file);
-  const directory = await open7(path20.dirname(file), "r");
+  const directory = await open7(path21.dirname(file), "r");
   try {
     await directory.sync();
   } finally {
@@ -11448,7 +11492,7 @@ async function prepareStatusProjection(root2, state, revision) {
       "",
       ...pending?.kind === "route-confirmation" ? ["## Pending", "", `- ${pending.question}`, ""] : []
     ].join("\n");
-    const file2 = path20.join(features2(root2), state.featureId, status.path);
+    const file2 = path21.join(features2(root2), state.featureId, status.path);
     state.artifacts.status = { ...status, sha256: createHash28("sha256").update(contents2).digest("hex") };
     return async () => {
       await writeFile3(file2, contents2);
@@ -11465,6 +11509,7 @@ async function prepareStatusProjection(root2, state, revision) {
     ...trace2.blocker ? [`- Blocker: ${trace2.blocker.code} (${trace2.blocker.step})`] : [],
     ""
   ];
+  const grillAdvisory = state.steps.requirements_alignment?.status !== "satisfied" ? await openQuestionsAdvisory(root2, state) : void 0;
   const projection = [
     "---",
     "dev_flow:",
@@ -11486,31 +11531,32 @@ async function prepareStatusProjection(root2, state, revision) {
     "",
     ...routeDefinitionForFeature(state.route, state.classification.controls).orderedSteps.map((step) => `- ${step}: ${state.steps[step]?.status ?? "pending"}`),
     "",
-    ...traceLines
+    ...traceLines,
+    ...grillAdvisory ? [`- \u63D0\u793A: \u9700\u6C42\u6587\u6863\u300C\u5F00\u653E\u95EE\u9898\u300D\u8FD8\u6709 ${grillAdvisory.items.length} \u9879\u672A\u6536\u655B\uFF08${grillAdvisory.items.join("\uFF1B")}\uFF09\uFF0C\u5EFA\u8BAE\u5148\u8C03\u7528 dev_flow_request_grill_decision \u6536\u655B\u540E\u518D\u8FDB\u5165 planning\u3002`, ""] : []
   ].join("\n");
   const contents = `${projection}
 `;
-  const file = path20.join(features2(root2), state.featureId, status.path);
+  const file = path21.join(features2(root2), state.featureId, status.path);
   state.artifacts.status = { ...status, sha256: createHash28("sha256").update(contents).digest("hex") };
   return async () => {
     await writeFile3(file, contents);
   };
 }
 async function lock(root2, featureId, operation) {
-  const directory = path20.join(devFlow(root2), ".lock");
+  const directory = path21.join(devFlow(root2), ".lock");
   const started = Date.now();
   await mkdir11(devFlow(root2), { recursive: true });
   while (true) {
     try {
       await mkdir11(directory);
-      await writeFile3(path20.join(directory, "owner.json"), JSON.stringify({ pid: process.pid, hostname: hostname2(), acquiredAt: (/* @__PURE__ */ new Date()).toISOString(), featureId, operation }));
+      await writeFile3(path21.join(directory, "owner.json"), JSON.stringify({ pid: process.pid, hostname: hostname2(), acquiredAt: (/* @__PURE__ */ new Date()).toISOString(), featureId, operation }));
       return async () => {
         await rm3(directory, { recursive: true, force: true });
       };
     } catch (error) {
       if (error.code !== "EEXIST") throw error;
       try {
-        const owner = JSON.parse(await readFile16(path20.join(directory, "owner.json"), "utf8"));
+        const owner = JSON.parse(await readFile17(path21.join(directory, "owner.json"), "utf8"));
         const age = Date.now() - Date.parse(owner.acquiredAt);
         let live = owner.hostname === hostname2();
         if (live) {
@@ -11533,7 +11579,7 @@ async function lock(root2, featureId, operation) {
 }
 async function readState(root2, featureId) {
   try {
-    const raw = JSON.parse(await readFile16(statePath(root2, featureId), "utf8"));
+    const raw = JSON.parse(await readFile17(statePath(root2, featureId), "utf8"));
     validateFeatureState(raw);
     const state = migrateFeatureState(raw);
     if (state.featureId !== featureId) throw new DevFlowError("INVALID_STATE_SCHEMA", "state feature id does not match its path");
@@ -11557,7 +11603,7 @@ async function readState(root2, featureId) {
 async function readActive(root2) {
   let raw;
   try {
-    raw = await readFile16(activePath(root2), "utf8");
+    raw = await readFile17(activePath(root2), "utf8");
   } catch (error) {
     if (error.code === "ENOENT") return void 0;
     throw new DevFlowError("ACTIVE_POINTER_UNREADABLE", "active.json cannot be read", { recoveryHint: "Run dev_flow_doctor and use recovery; do not start a new feature" });
@@ -11612,7 +11658,7 @@ async function appendEvent(root2, id, revision, type, data) {
   }
 }
 async function stateFileSha256(root2, featureId) {
-  const contents = await readFile16(statePath(root2, featureId));
+  const contents = await readFile17(statePath(root2, featureId));
   return createHash28("sha256").update(contents).digest("hex");
 }
 async function assertWorkspaceOwnershipComplete(root2, state, config, operation) {
@@ -11634,7 +11680,7 @@ async function assertWorkspaceOwnershipComplete(root2, state, config, operation)
 }
 async function readFeatureEvents(root2, id) {
   try {
-    return (await readFile16(eventPath(root2, id), "utf8")).split("\n").filter(Boolean).map((line) => JSON.parse(line));
+    return (await readFile17(eventPath(root2, id), "utf8")).split("\n").filter(Boolean).map((line) => JSON.parse(line));
   } catch (error) {
     if (error.code === "ENOENT") return [];
     throw error;
@@ -11689,7 +11735,7 @@ async function startFeature(root2, input, options = {}) {
     const objective = typeof input.objective === "string" && input.objective.trim().length > 0 ? input.objective.trim() : "\u672A\u547D\u540D\u9700\u6C42";
     const project = await readProjectConfig(root2);
     const startBusinessFingerprint = await fingerprintGovernedRoots(root2, project);
-    const directory = path20.join(features2(root2), id);
+    const directory = path21.join(features2(root2), id);
     const existedBefore = await pathExists4(directory);
     let stateCommitted = false;
     try {
@@ -11725,7 +11771,7 @@ async function startFeature(root2, input, options = {}) {
         blockingFindings: [],
         logicComplete: false,
         governance: { decisions: [], claims: [], authorizations: [], credentials: [], repositoryFacts: [] },
-        lastUpdatedBy: { host: input.host, pluginVersion: "5.1.0" }
+        lastUpdatedBy: { host: input.host, pluginVersion: "5.1.1" }
       };
       const ownershipPaths = unknownOwnershipPaths(state);
       state.workspace.unownedPaths = ownershipPaths;
@@ -11837,7 +11883,7 @@ async function pauseFeature(root2, id, expectedRevision, reason, host) {
     state.lifecycle = "paused";
     const openStep = currentOpenStep(state);
     state.resumeSummary = `\u6682\u505C\u539F\u56E0\uFF1A${reason.trim()}\u3002\u6062\u590D\u540E\u5148\u5BF9\u8D26\u5DE5\u4F5C\u533A\uFF0C\u518D\u4ECE${openStep ? `\u201C${openStep}\u201D` : "\u5F53\u524D\u9636\u6BB5"}\u7EE7\u7EED\u3002`;
-    state.lastUpdatedBy = { host, pluginVersion: "5.1.0" };
+    state.lastUpdatedBy = { host, pluginVersion: "5.1.1" };
   }, { reason: reason.trim() });
 }
 async function resumeFeature(root2, id, host) {
@@ -11870,7 +11916,7 @@ async function resumeFeature(root2, id, host) {
     presentationEventId = queueNextOwnershipDecision(state);
     const openStep = currentOpenStep(state);
     state.resumeSummary = `\u5DF2\u6062\u590D${openStep ? `\uFF0C\u4ECE\u201C${openStep}\u201D\u7EE7\u7EED` : "\u5F53\u524D\u4EFB\u52A1"}\u3002${contentChanged ? "\u5DE5\u4F5C\u533A\u5185\u5BB9\u6709\u53D8\u5316\uFF0C\u76F8\u5173\u8BC1\u636E\u5DF2\u6807\u8BB0\u4E3A\u5F85\u66F4\u65B0\u3002" : ""}`;
-    state.lastUpdatedBy = { host, pluginVersion: "5.1.0" };
+    state.lastUpdatedBy = { host, pluginVersion: "5.1.1" };
   }, () => ({ observedHead: workspace.observedHead, contentChanged, checkpointAffected, ...presentationEventId ? { presentationEventId } : {} }));
 }
 async function abandonFeature(root2, id, expectedRevision, reason, userEvidence) {
@@ -11924,7 +11970,7 @@ async function repairFeature(root2, id, expectedRevision, host) {
       }
       state.logicComplete = state.lifecycle === "finalized" && finalEvidenceCurrent;
     }
-    state.lastUpdatedBy = { host, pluginVersion: "5.1.0" };
+    state.lastUpdatedBy = { host, pluginVersion: "5.1.1" };
   }, { repaired: ["active-pointer", "freshness", "review/status-projection"] });
 }
 function isRecoveryPhase(value) {
@@ -11932,19 +11978,19 @@ function isRecoveryPhase(value) {
 }
 function validateRecoveryTransaction(value) {
   const transaction = value;
-  if (transaction?.schemaVersion !== 1 || typeof transaction.transactionId !== "string" || !transaction.transactionId || !isRecoveryPhase(transaction.phase) || typeof transaction.featureId !== "string" || !transaction.featureId || typeof transaction.stateSha256 !== "string" || !transaction.stateSha256 || typeof transaction.recoveredTo !== "string" || !path20.isAbsolute(transaction.recoveredTo) || typeof transaction.reason !== "string" || typeof transaction.userEvidence !== "string" || transaction.host !== "claude" && transaction.host !== "codex" || typeof transaction.at !== "string" || transaction.activeSha256 !== void 0 && typeof transaction.activeSha256 !== "string") {
+  if (transaction?.schemaVersion !== 1 || typeof transaction.transactionId !== "string" || !transaction.transactionId || !isRecoveryPhase(transaction.phase) || typeof transaction.featureId !== "string" || !transaction.featureId || typeof transaction.stateSha256 !== "string" || !transaction.stateSha256 || typeof transaction.recoveredTo !== "string" || !path21.isAbsolute(transaction.recoveredTo) || typeof transaction.reason !== "string" || typeof transaction.userEvidence !== "string" || transaction.host !== "claude" && transaction.host !== "codex" || typeof transaction.at !== "string" || transaction.activeSha256 !== void 0 && typeof transaction.activeSha256 !== "string") {
     throw new DevFlowError("RECOVERY_TRANSACTION_UNREADABLE", "recovery journal is invalid", {
       recoveryHint: "Run dev_flow_doctor; do not start a new feature or hand-edit .dev-flow"
     });
   }
-  if (path20.basename(transaction.featureId) !== transaction.featureId || transaction.featureId === "." || transaction.featureId === "..") {
+  if (path21.basename(transaction.featureId) !== transaction.featureId || transaction.featureId === "." || transaction.featureId === "..") {
     throw new DevFlowError("RECOVERY_TRANSACTION_UNREADABLE", "recovery journal has an unsafe feature id", { recoveryHint: "Run dev_flow_doctor; recovery remains fail-closed" });
   }
 }
 function validateRecoveryLocation(root2, transaction) {
-  const recoveredRoot = path20.join(devFlow(root2), "recovered");
-  const relative = path20.relative(recoveredRoot, transaction.recoveredTo);
-  if (!relative || relative.startsWith("..") || path20.isAbsolute(relative) || path20.basename(relative) !== relative) {
+  const recoveredRoot = path21.join(devFlow(root2), "recovered");
+  const relative = path21.relative(recoveredRoot, transaction.recoveredTo);
+  if (!relative || relative.startsWith("..") || path21.isAbsolute(relative) || path21.basename(relative) !== relative) {
     throw new DevFlowError("RECOVERY_TRANSACTION_UNREADABLE", "recovery journal points outside the recovered directory", {
       recoveryHint: "Run dev_flow_doctor; do not start a new feature or hand-edit .dev-flow"
     });
@@ -11953,7 +11999,7 @@ function validateRecoveryLocation(root2, transaction) {
 async function readRecoveryTransaction(root2) {
   let raw;
   try {
-    raw = await readFile16(recoveryTxnPath(root2), "utf8");
+    raw = await readFile17(recoveryTxnPath(root2), "utf8");
   } catch (error) {
     if (error.code === "ENOENT") return void 0;
     throw new DevFlowError("RECOVERY_TRANSACTION_UNREADABLE", "recovery journal cannot be read", { recoveryHint: "Run dev_flow_doctor; do not start a new feature" });
@@ -11985,7 +12031,7 @@ async function pathExists4(file) {
   }
 }
 async function fileSha256(file) {
-  return createHash28("sha256").update(await readFile16(file)).digest("hex");
+  return createHash28("sha256").update(await readFile17(file)).digest("hex");
 }
 async function updateRecoveryTransaction(root2, transaction, phase) {
   const next = { ...transaction, phase, ...phase === "completed" ? { completedAt: (/* @__PURE__ */ new Date()).toISOString() } : {} };
@@ -11994,7 +12040,7 @@ async function updateRecoveryTransaction(root2, transaction, phase) {
 }
 async function recoveryEventExists(root2, transactionId) {
   try {
-    return (await readFile16(recoveryEventsPath(root2), "utf8")).split("\n").filter(Boolean).some((line) => {
+    return (await readFile17(recoveryEventsPath(root2), "utf8")).split("\n").filter(Boolean).some((line) => {
       try {
         return JSON.parse(line).transactionId === transactionId;
       } catch {
@@ -12018,7 +12064,7 @@ async function appendRecoveryEvent(root2, transaction) {
   }
 }
 async function resumeRecovery(root2, transaction) {
-  const sourceDir = path20.join(features2(root2), transaction.featureId);
+  const sourceDir = path21.join(features2(root2), transaction.featureId);
   if (transaction.phase === "prepared") {
     const [sourceExists, recoveredExists] = await Promise.all([pathExists4(sourceDir), pathExists4(transaction.recoveredTo)]);
     if (sourceExists === recoveredExists) throw new DevFlowError("RECOVERY_TRANSACTION_INCONSISTENT", "cannot safely determine feature-directory recovery stage", { recoveryHint: "Run dev_flow_doctor; do not start a new feature" });
@@ -12031,7 +12077,7 @@ async function resumeRecovery(root2, transaction) {
         if (await fileSha256(activePath(root2)) !== transaction.activeSha256) {
           throw new DevFlowError("RECOVERY_POINTER_DIGEST_MISMATCH", "active pointer changed during recovery", { recoveryHint: "Run dev_flow_doctor; recovery remains fail-closed" });
         }
-        await rename6(activePath(root2), path20.join(transaction.recoveredTo, "active.json"));
+        await rename6(activePath(root2), path21.join(transaction.recoveredTo, "active.json"));
       }
     } else {
       const active = await readActive(root2);
@@ -12052,7 +12098,7 @@ async function resumeRecovery(root2, transaction) {
 async function readRollbackJournalPresence(root2, featureId) {
   let raw;
   try {
-    raw = await readFile16(rollbackTxnPath2(root2, featureId), "utf8");
+    raw = await readFile17(rollbackTxnPath2(root2, featureId), "utf8");
   } catch (error) {
     if (error.code === "ENOENT") return void 0;
     throw new DevFlowError("ROLLBACK_TRANSACTION_UNREADABLE", "rollback transaction journal cannot be read", {
@@ -12108,7 +12154,7 @@ async function appendFeatureEvent(root2, id, revision, type, data) {
 async function recoverCorruptFeature(root2, input) {
   if (input.action !== "abandon") throw new DevFlowError("INVALID_RECOVERY_ACTION", "only abandon is supported in 1.3");
   if (!input.reason || !input.userEvidence) throw new DevFlowError("RECOVERY_EVIDENCE_REQUIRED", "reason and userEvidence are required");
-  if (path20.basename(input.featureId) !== input.featureId || input.featureId === "." || input.featureId === "..") throw new DevFlowError("INVALID_FEATURE_ID", "recovery featureId must name one feature directory");
+  if (path21.basename(input.featureId) !== input.featureId || input.featureId === "." || input.featureId === "..") throw new DevFlowError("INVALID_FEATURE_ID", "recovery featureId must name one feature directory");
   const release = await lock(root2, input.featureId, "recover-corrupt");
   try {
     await assertNoOpenRollbackTransaction(root2);
@@ -12144,8 +12190,8 @@ async function recoverCorruptFeature(root2, input) {
       if (error instanceof DevFlowError && error.code === "RECOVERY_STATE_VALID") throw error;
     }
     const timestamp = (/* @__PURE__ */ new Date()).toISOString().replace(/[:.]/g, "-");
-    const recoveredDir = path20.join(devFlow(root2), "recovered", `${input.featureId}-${timestamp}`);
-    await mkdir11(path20.join(devFlow(root2), "recovered"), { recursive: true });
+    const recoveredDir = path21.join(devFlow(root2), "recovered", `${input.featureId}-${timestamp}`);
+    await mkdir11(path21.join(devFlow(root2), "recovered"), { recursive: true });
     const prepared = {
       schemaVersion: 1,
       transactionId: randomUUID13(),
@@ -12193,7 +12239,7 @@ var names = {
   "implementation-plan": "\u5B9E\u65BD\u8BA1\u5212.md"
 };
 var hash = (value) => createHash29("sha256").update(value).digest("hex");
-var featureDirectory5 = (root2, id) => path21.join(root2, ".dev-flow", "features", id);
+var featureDirectory5 = (root2, id) => path22.join(root2, ".dev-flow", "features", id);
 var traceArtifactKinds = /* @__PURE__ */ new Set(["requirements", "implementation-plan"]);
 var traceArtifactKindList = /* @__PURE__ */ new Set(["requirements", "implementation-plan"]);
 var artifactInvalidations = {
@@ -12287,12 +12333,12 @@ function invalidateArtifactDependents(state, kind, reason, executionBasisChanged
 async function assertArtifactCurrent(root2, id, state, kind) {
   const artifact = state.artifacts[kind];
   if (!artifact) throw new DevFlowError("MISSING_REQUIRED_ARTIFACT", kind);
-  const contents = await readFile17(path21.join(featureDirectory5(root2, id), normalizeUnicode(artifact.path)), "utf8");
+  const contents = await readFile18(path22.join(featureDirectory5(root2, id), normalizeUnicode(artifact.path)), "utf8");
   if (hash(contents) !== artifact.sha256) throw new DevFlowError("ARTIFACT_INTEGRITY_FAILED", kind);
   return contents;
 }
 async function readArtifactText(root2, id, artifactPath) {
-  return readFile17(path21.join(featureDirectory5(root2, id), normalizeUnicode(artifactPath)), "utf8");
+  return readFile18(path22.join(featureDirectory5(root2, id), normalizeUnicode(artifactPath)), "utf8");
 }
 async function scaffoldArtifact(root2, id, expectedRevision, kind) {
   const state = await readState(root2, id);
@@ -12307,12 +12353,12 @@ async function scaffoldArtifact(root2, id, expectedRevision, kind) {
   if (!requiredNow.includes(kind)) throw new DevFlowError("ARTIFACT_OUT_OF_ORDER", `${kind} is not required by ${currentStep ?? "a pending step"}`, { expectedStep: currentStep });
   const filename = names[kind] ? normalizeUnicode(names[kind]) : void 0;
   if (!filename) throw new DevFlowError("INVALID_ARTIFACT", "unknown artifact kind");
-  const target = path21.join(featureDirectory5(root2, id), filename);
+  const target = path22.join(featureDirectory5(root2, id), filename);
   const content = template(state, id, kind);
   await writeFile4(target, content, { flag: "wx" }).catch(async (error) => {
     if (error.code !== "EEXIST") throw error;
   });
-  const contents = await readFile17(target, "utf8");
+  const contents = await readFile18(target, "utf8");
   return mutate(root2, id, expectedRevision, "artifact-scaffolded", (current) => {
     current.artifacts[kind] = { path: filename, sha256: hash(contents) };
   });
@@ -12323,7 +12369,7 @@ async function recordArtifact(root2, id, expectedRevision, kind) {
   assertPlanRevisionQuiescent(state, kind);
   const artifact = state.artifacts[kind];
   if (!artifact) throw new DevFlowError("MISSING_REQUIRED_ARTIFACT", kind);
-  const contents = await readFile17(path21.join(featureDirectory5(root2, id), normalizeUnicode(artifact.path)), "utf8");
+  const contents = await readFile18(path22.join(featureDirectory5(root2, id), normalizeUnicode(artifact.path)), "utf8");
   const checksum = hash(contents);
   if (kind === "implementation-plan" && state.classification.controls.plan === "formal") {
     const errors = validatePlanTaskGraph(contents);
@@ -12469,8 +12515,8 @@ import { createHash as createHash31 } from "node:crypto";
 // plugins/dev-flow/src/core/delivery-snapshot.ts
 import { createHash as createHash30 } from "node:crypto";
 import { execFile as execFile6 } from "node:child_process";
-import { lstat as lstat7, readFile as readFile18, writeFile as writeFile5 } from "node:fs/promises";
-import path22 from "node:path";
+import { lstat as lstat7, readFile as readFile19, writeFile as writeFile5 } from "node:fs/promises";
+import path23 from "node:path";
 import { promisify as promisify6 } from "node:util";
 var run5 = promisify6(execFile6);
 var digest12 = (value) => createHash30("sha256").update(value).digest("hex");
@@ -12494,7 +12540,7 @@ function nulItems(value) {
 function normalizePath2(value) {
   const slashPath = normalizeUnicode(value).replaceAll("\\", "/");
   const normalized = normalizeProjectPath(slashPath);
-  if (!normalized || path22.posix.isAbsolute(normalized) || normalized.startsWith("../") || normalized === ".." || normalized.startsWith(".dev-flow/") || normalized !== slashPath) {
+  if (!normalized || path23.posix.isAbsolute(normalized) || normalized.startsWith("../") || normalized === ".." || normalized.startsWith(".dev-flow/") || normalized !== slashPath) {
     throw new DevFlowError("INVALID_IMPLEMENTATION_FILE", "\u5B9E\u73B0\u6587\u4EF6\u5FC5\u987B\u662F\u89C4\u8303\u5316\u7684\u9879\u76EE\u76F8\u5BF9 governed \u8DEF\u5F84\u3002", {
       path: value
     });
@@ -12543,7 +12589,7 @@ async function assertImplementationFilesExist(root2, files) {
   const missing = [];
   for (const file of files) {
     try {
-      await lstat7(path22.join(root2, file));
+      await lstat7(path23.join(root2, file));
     } catch (error) {
       if (error.code !== "ENOENT") throw error;
       missing.push(file);
@@ -12609,14 +12655,14 @@ async function dirtyPaths2(root2, config) {
 }
 async function fileHash(root2, file) {
   try {
-    return digest12(await readFile18(path22.join(root2, file)));
+    return digest12(await readFile19(path23.join(root2, file)));
   } catch (error) {
     if (error.code === "ENOENT") return "deleted";
     throw error;
   }
 }
 async function assertPlainFile(root2, file) {
-  const metadata = await lstat7(path22.join(root2, file));
+  const metadata = await lstat7(path23.join(root2, file));
   if (!metadata.isFile()) throw new DevFlowError("INVALID_IMPLEMENTATION_FILE", "untracked implementation files must be regular files", { path: file });
 }
 async function untrackedFiles(root2, files) {
@@ -12690,14 +12736,14 @@ async function createDeliverySnapshot(root2, featureId, state, config) {
     await assertPlainFile(root2, file);
     patches.push(await git2(root2, ["diff", "--binary", "--no-index", "--", "/dev/null", file], true));
   }
-  const relativeDirectory2 = path22.posix.join(".dev-flow", "features", featureId);
+  const relativeDirectory2 = path23.posix.join(".dev-flow", "features", featureId);
   const patchFilename = "\u4EA4\u4ED8\u5FEB\u7167.patch";
   const manifestFilename = "\u4EA4\u4ED8\u5FEB\u7167\u6587\u6863.md";
-  const patchPath = path22.posix.join(relativeDirectory2, patchFilename);
-  const manifestPath2 = path22.posix.join(relativeDirectory2, manifestFilename);
+  const patchPath = path23.posix.join(relativeDirectory2, patchFilename);
+  const manifestPath2 = path23.posix.join(relativeDirectory2, manifestFilename);
   const patch = patches.filter(Boolean).join("\n");
   const patchHash = digest12(patch);
-  await writeFile5(path22.join(root2, patchPath), patch, "utf8");
+  await writeFile5(path23.join(root2, patchPath), patch, "utf8");
   const rows = await Promise.all(files.map(async (file) => `| ${file} | ${currentDirty.includes(file) ? "changed" : "unchanged"} | ${await fileHash(root2, file)} |`));
   const manifest = [
     "# \u4EA4\u4ED8\u5FEB\u7167",
@@ -12740,7 +12786,7 @@ async function createDeliverySnapshot(root2, featureId, state, config) {
     ""
   ].join("\n");
   const manifestHash = digest12(manifest);
-  await writeFile5(path22.join(root2, manifestPath2), manifest, "utf8");
+  await writeFile5(path23.join(root2, manifestPath2), manifest, "utf8");
   return {
     manifestPath: manifestPath2,
     manifestSha256: manifestHash,
@@ -13089,7 +13135,21 @@ async function nextAction(root2, id) {
     if (unitAction) return unitAction;
   }
   if (action.kind === "run-step" && action.step === "finalize") return { kind: "finalize" };
-  if (action.kind === "run-step") return enrichRunStep(state, action.step);
+  if (action.kind === "run-step") {
+    const enriched = enrichRunStep(state, action.step);
+    if (action.step === "requirements_alignment") {
+      const advisory = await openQuestionsAdvisory(root2, state);
+      if (advisory) {
+        return {
+          kind: "run-step",
+          step: enriched.step,
+          ...enriched.requiredEvidence !== void 0 ? { requiredEvidence: enriched.requiredEvidence } : {},
+          advisory
+        };
+      }
+    }
+    return enriched;
+  }
   return action;
 }
 
@@ -13377,8 +13437,8 @@ async function rebuildReviewProjection(root2, featureId, expectedRevision) {
 }
 
 // plugins/dev-flow/src/mcp/doctor.ts
-import { lstat as lstat8, readdir as readdir7, readFile as readFile19 } from "node:fs/promises";
-import path23 from "node:path";
+import { lstat as lstat8, readdir as readdir7, readFile as readFile20 } from "node:fs/promises";
+import path24 from "node:path";
 import { createHash as createHash32 } from "node:crypto";
 function projectActiveWorkflow(state) {
   let pending;
@@ -13407,7 +13467,7 @@ async function readable(file) {
 }
 async function validJson(file) {
   try {
-    JSON.parse(await readFile19(file, "utf8"));
+    JSON.parse(await readFile20(file, "utf8"));
     return true;
   } catch {
     return false;
@@ -13415,7 +13475,7 @@ async function validJson(file) {
 }
 async function pointerRecoveryCandidates(root2) {
   try {
-    const directory = path23.join(root2, ".dev-flow", "features");
+    const directory = path24.join(root2, ".dev-flow", "features");
     const entries = await readdir7(directory, { withFileTypes: true });
     return await Promise.all(entries.filter((entry) => entry.isDirectory()).map(async (entry) => {
       let stateSha256;
@@ -13458,7 +13518,7 @@ async function collectDoctorReport(root2, pluginRoot, version, tools) {
     else if (capabilities.prompt.status === "stale") add2("HOOK_PROMPT_HEALTH_STALE", "warning", `${host} UserPromptSubmit \u901A\u9053\u6700\u8FD1\u4FE1\u53F7\u5DF2\u8FC7\u671F`, "\u6062\u590D UserPromptSubmit hook\uFF0C\u53D1\u9001\u4E00\u6761\u7528\u6237\u6D88\u606F\u540E\u91CD\u8BD5\u6587\u672C\u56DE\u7B54");
     return { host, status, capabilities, ...latest ? { latest } : {}, ...ageMs !== void 0 ? { ageMs } : {} };
   });
-  const projectFile = path23.join(root2, ".dev-flow", "project.json");
+  const projectFile = path24.join(root2, ".dev-flow", "project.json");
   let project = { initialized: await readable(projectFile), valid: false };
   if (!project.initialized) add2("PROJECT_NOT_INITIALIZED", "warning", "run dev_flow_init_project before starting a feature");
   else {
@@ -13470,7 +13530,7 @@ async function collectDoctorReport(root2, pluginRoot, version, tools) {
       add2("PROJECT_CONFIG_INVALID", "error", error instanceof Error ? error.message : String(error));
     }
   }
-  const activeFile = path23.join(root2, ".dev-flow", "active.json");
+  const activeFile = path24.join(root2, ".dev-flow", "active.json");
   let activeFeature = { present: await readable(activeFile), valid: false };
   let corruptFeature;
   let corruptActivePointer;
@@ -13508,7 +13568,7 @@ async function collectDoctorReport(root2, pluginRoot, version, tools) {
         }
         if (!digest13) {
           try {
-            const raw = await readFile19(path23.join(root2, ".dev-flow", "features", active.featureId, "state.json"));
+            const raw = await readFile20(path24.join(root2, ".dev-flow", "features", active.featureId, "state.json"));
             digest13 = createHash32("sha256").update(raw).digest("hex");
           } catch {
             digest13 = void 0;
@@ -13538,7 +13598,7 @@ async function collectDoctorReport(root2, pluginRoot, version, tools) {
       if (error.code === "ACTIVE_POINTER_UNREADABLE") {
         let activeSha256;
         try {
-          activeSha256 = createHash32("sha256").update(await readFile19(activeFile)).digest("hex");
+          activeSha256 = createHash32("sha256").update(await readFile20(activeFile)).digest("hex");
         } catch {
         }
         activeFeature = { present: true, valid: false, corrupt: true, recoveryAction: "abandon" };
@@ -13567,7 +13627,7 @@ async function collectDoctorReport(root2, pluginRoot, version, tools) {
   );
   const rollbackTransactions = [];
   try {
-    const featuresDirectory = path23.join(root2, ".dev-flow", "features");
+    const featuresDirectory = path24.join(root2, ".dev-flow", "features");
     const entries = await readdir7(featuresDirectory, { withFileTypes: true });
     for (const entry of entries.filter((candidate) => candidate.isDirectory())) {
       let journal;
@@ -13710,14 +13770,14 @@ async function collectDoctorReport(root2, pluginRoot, version, tools) {
     }
   }
   const paths = {
-    claudeManifest: path23.join(pluginRoot, ".claude-plugin", "plugin.json"),
-    codexManifest: path23.join(pluginRoot, ".codex-plugin", "plugin.json"),
-    mcp: path23.join(pluginRoot, ".mcp.json"),
-    claudeHooks: path23.join(pluginRoot, "hosts", "claude", "hooks.json"),
-    codexHooks: path23.join(pluginRoot, "hosts", "codex", "hooks.json"),
-    mcpBundle: path23.join(pluginRoot, "dist", "mcp-server.mjs"),
-    claudeBundle: path23.join(pluginRoot, "dist", "claude-hook.mjs"),
-    codexBundle: path23.join(pluginRoot, "dist", "codex-hook.mjs")
+    claudeManifest: path24.join(pluginRoot, ".claude-plugin", "plugin.json"),
+    codexManifest: path24.join(pluginRoot, ".codex-plugin", "plugin.json"),
+    mcp: path24.join(pluginRoot, ".mcp.json"),
+    claudeHooks: path24.join(pluginRoot, "hosts", "claude", "hooks.json"),
+    codexHooks: path24.join(pluginRoot, "hosts", "codex", "hooks.json"),
+    mcpBundle: path24.join(pluginRoot, "dist", "mcp-server.mjs"),
+    claudeBundle: path24.join(pluginRoot, "dist", "claude-hook.mjs"),
+    codexBundle: path24.join(pluginRoot, "dist", "codex-hook.mjs")
   };
   const files = await Promise.all(Object.entries(paths).map(async ([name, file]) => [name, await readable(file)]));
   const missing = files.filter(([, exists]) => !exists).map(([name]) => name);
@@ -13727,11 +13787,11 @@ async function collectDoctorReport(root2, pluginRoot, version, tools) {
   add2(invalidJson ? "PLUGIN_WIRING_INVALID" : "PLUGIN_WIRING_VALID", invalidJson ? "error" : "ok", invalidJson ? "a manifest, MCP file, or hook file is not valid JSON" : "plugin manifest, MCP and hook wiring parse successfully");
   const legacyFeatures = [];
   try {
-    const directory = path23.join(root2, ".dev-flow", "features");
+    const directory = path24.join(root2, ".dev-flow", "features");
     const entries = await readdir7(directory, { withFileTypes: true });
     for (const entry of entries.filter((candidate) => candidate.isDirectory())) {
       try {
-        const raw = JSON.parse(await readFile19(path23.join(directory, entry.name, "state.json"), "utf8"));
+        const raw = JSON.parse(await readFile20(path24.join(directory, entry.name, "state.json"), "utf8"));
         if ([1, 2, 3].includes(Number(raw.schemaVersion)) && raw.lifecycle !== "finalized" && raw.lifecycle !== "abandoned") legacyFeatures.push(entry.name);
       } catch {
       }
@@ -13814,11 +13874,11 @@ function typeOf(value) {
   if (Array.isArray(value)) return "array";
   return typeof value;
 }
-function childPath(path25, key) {
-  return typeof key === "number" ? `${path25}[${key}]` : `${path25}.${key}`;
+function childPath(path26, key) {
+  return typeof key === "number" ? `${path26}[${key}]` : `${path26}.${key}`;
 }
-function issue2(path25, keyword, message, extra = {}) {
-  return { path: path25, keyword, message, ...extra };
+function issue2(path26, keyword, message, extra = {}) {
+  return { path: path26, keyword, message, ...extra };
 }
 function matchesType(value, expected) {
   if (expected === "integer") return typeof value === "number" && Number.isInteger(value);
@@ -13842,24 +13902,24 @@ function discriminatorMatches(value, schema) {
   }
   return constrained;
 }
-function validate(value, schema, path25) {
+function validate(value, schema, path26) {
   if (Object.keys(schema).length === 0) return [];
   const issues = [];
   const expectedType = schema.type;
   if (typeof expectedType === "string" && !matchesType(value, expectedType)) {
-    return [issue2(path25, "type", `expected ${expectedType}, got ${typeOf(value)}`)];
+    return [issue2(path26, "type", `expected ${expectedType}, got ${typeOf(value)}`)];
   }
   if (Array.isArray(expectedType) && !expectedType.some((candidate) => typeof candidate === "string" && matchesType(value, candidate))) {
-    return [issue2(path25, "type", `expected one of ${expectedType.join(", ")}, got ${typeOf(value)}`)];
+    return [issue2(path26, "type", `expected one of ${expectedType.join(", ")}, got ${typeOf(value)}`)];
   }
   if (schema.const !== void 0 && stableJson(value) !== stableJson(schema.const)) {
-    issues.push(issue2(path25, "const", `must equal ${stableJson(schema.const)}`));
+    issues.push(issue2(path26, "const", `must equal ${stableJson(schema.const)}`));
   }
   if (Array.isArray(schema.enum) && !schema.enum.some((candidate) => stableJson(value) === stableJson(candidate))) {
-    issues.push(issue2(path25, "enum", "must be one of the allowed values"));
+    issues.push(issue2(path26, "enum", "must be one of the allowed values"));
   }
   if (typeof value === "string") {
-    if (typeof schema.minLength === "number" && value.length < schema.minLength) issues.push(issue2(path25, "minLength", `must have length >= ${schema.minLength}`));
+    if (typeof schema.minLength === "number" && value.length < schema.minLength) issues.push(issue2(path26, "minLength", `must have length >= ${schema.minLength}`));
     if (typeof schema.pattern === "string") {
       let matches = false;
       try {
@@ -13867,21 +13927,21 @@ function validate(value, schema, path25) {
       } catch {
         matches = false;
       }
-      if (!matches) issues.push(issue2(path25, "pattern", "does not match the required pattern"));
+      if (!matches) issues.push(issue2(path26, "pattern", "does not match the required pattern"));
     }
   }
   if (typeof value === "number" && typeof schema.minimum === "number" && value < schema.minimum) {
-    issues.push(issue2(path25, "minimum", `must be >= ${schema.minimum}`));
+    issues.push(issue2(path26, "minimum", `must be >= ${schema.minimum}`));
   }
   if (Array.isArray(value)) {
-    if (typeof schema.minItems === "number" && value.length < schema.minItems) issues.push(issue2(path25, "minItems", `must contain at least ${schema.minItems} items`));
-    if (typeof schema.maxItems === "number" && value.length > schema.maxItems) issues.push(issue2(path25, "maxItems", `must contain at most ${schema.maxItems} items`));
+    if (typeof schema.minItems === "number" && value.length < schema.minItems) issues.push(issue2(path26, "minItems", `must contain at least ${schema.minItems} items`));
+    if (typeof schema.maxItems === "number" && value.length > schema.maxItems) issues.push(issue2(path26, "maxItems", `must contain at most ${schema.maxItems} items`));
     if (schema.uniqueItems === true) {
       const seen = new Set(value.map(stableJson));
-      if (seen.size !== value.length) issues.push(issue2(path25, "uniqueItems", "items must be unique"));
+      if (seen.size !== value.length) issues.push(issue2(path26, "uniqueItems", "items must be unique"));
     }
     if (schema.items && typeof schema.items === "object" && !Array.isArray(schema.items)) {
-      value.forEach((item, index) => issues.push(...validate(item, schema.items, childPath(path25, index))));
+      value.forEach((item, index) => issues.push(...validate(item, schema.items, childPath(path26, index))));
     }
   }
   if (typeof value === "object" && value !== null && !Array.isArray(value)) {
@@ -13889,36 +13949,36 @@ function validate(value, schema, path25) {
     const properties = schema.properties && typeof schema.properties === "object" && !Array.isArray(schema.properties) ? schema.properties : {};
     const required = Array.isArray(schema.required) ? schema.required.filter((key) => typeof key === "string") : [];
     for (const key of required) {
-      if (!(key in record)) issues.push(issue2(childPath(path25, key), "required", "is required"));
+      if (!(key in record)) issues.push(issue2(childPath(path26, key), "required", "is required"));
     }
     const additional = schema.additionalProperties;
     for (const [key, item] of Object.entries(record)) {
       if (properties[key]) {
-        issues.push(...validate(item, properties[key], childPath(path25, key)));
+        issues.push(...validate(item, properties[key], childPath(path26, key)));
       } else if (additional === false) {
-        issues.push(issue2(childPath(path25, key), "additionalProperties", "unknown field", {
+        issues.push(issue2(childPath(path26, key), "additionalProperties", "unknown field", {
           unknownField: key,
           allowedFields: Object.keys(properties).sort()
         }));
       } else if (additional && typeof additional === "object" && !Array.isArray(additional)) {
-        issues.push(...validate(item, additional, childPath(path25, key)));
+        issues.push(...validate(item, additional, childPath(path26, key)));
       }
     }
     const propertyNames = schema.propertyNames && typeof schema.propertyNames === "object" && !Array.isArray(schema.propertyNames) ? schema.propertyNames : void 0;
     if (propertyNames) {
-      for (const key of Object.keys(record)) issues.push(...validate(key, propertyNames, childPath(path25, key)));
+      for (const key of Object.keys(record)) issues.push(...validate(key, propertyNames, childPath(path26, key)));
     }
   }
   if (Array.isArray(schema.oneOf)) {
     const candidates = schema.oneOf.filter((candidate) => typeof candidate === "object" && candidate !== null && !Array.isArray(candidate));
-    const results = candidates.map((candidate) => validate(value, candidate, path25));
+    const results = candidates.map((candidate) => validate(value, candidate, path26));
     const valid = results.filter((result) => result.length === 0);
     if (valid.length !== 1) {
       const discriminatorResults = results.filter((_, index) => discriminatorMatches(value, candidates[index]));
       const bestPool = discriminatorResults.length ? discriminatorResults : results;
       const best = bestPool.sort((left, right) => left.length - right.length)[0] ?? [];
       issues.push(...best);
-      issues.push(issue2(path25, "oneOf", "must match exactly one schema"));
+      issues.push(issue2(path26, "oneOf", "must match exactly one schema"));
     }
   }
   return issues;
@@ -13943,8 +14003,8 @@ function validateToolInput(toolName, args, schemas) {
 // plugins/dev-flow/src/mcp/dispatch.ts
 function pluginRootForDoctor(fallbackRoot) {
   try {
-    const moduleDirectory = path24.dirname(fileURLToPath(import.meta.url));
-    return path24.basename(moduleDirectory) === "dist" ? path24.resolve(moduleDirectory, "..") : path24.resolve(moduleDirectory, "../..");
+    const moduleDirectory = path25.dirname(fileURLToPath(import.meta.url));
+    return path25.basename(moduleDirectory) === "dist" ? path25.resolve(moduleDirectory, "..") : path25.resolve(moduleDirectory, "../..");
   } catch {
     return fallbackRoot;
   }
@@ -14646,11 +14706,11 @@ async function dispatch(root2, name, a, ports2) {
   switch (tool) {
     case "dev_flow_init_project": {
       await initProject(root2, a.config);
-      return { \u72B6\u6001: "\u5DF2\u521D\u59CB\u5316", \u914D\u7F6E\u8DEF\u5F84: path24.join(root2, ".dev-flow", "project.json"), \u4E0B\u4E00\u6B65: "\u8C03\u7528 dev_flow_start \u5F00\u59CB\u4E00\u4E2A\u9700\u6C42\u3002" };
+      return { \u72B6\u6001: "\u5DF2\u521D\u59CB\u5316", \u914D\u7F6E\u8DEF\u5F84: path25.join(root2, ".dev-flow", "project.json"), \u4E0B\u4E00\u6B65: "\u8C03\u7528 dev_flow_start \u5F00\u59CB\u4E00\u4E2A\u9700\u6C42\u3002" };
     }
     case "dev_flow_update_project": {
       const result = await updateProjectConfig(root2, a.config, a.expectedSha256);
-      return { \u72B6\u6001: "\u5DF2\u66F4\u65B0", \u914D\u7F6E\u8DEF\u5F84: path24.join(root2, ".dev-flow", "project.json"), previousSha256: result.previousSha256, sha256: result.sha256, \u53D8\u5316: result.impact, \u53D7\u5F71\u54CD\u8BC1\u636E: result.affectedEvidence, \u4E0B\u4E00\u6B65: "\u65B0\u589E\u6216\u6269\u5145\u9A8C\u8BC1\u80FD\u529B\u53EF\u7EE7\u7EED\u5F53\u524D\u4EFB\u52A1\uFF1B\u88AB\u5F15\u7528\u547D\u4EE4\u53D8\u5316\u7684 Trace/RU \u9700\u8981\u6309\u9519\u8BEF\u63D0\u793A\u91CD\u65B0\u767B\u8BB0\u3002" };
+      return { \u72B6\u6001: "\u5DF2\u66F4\u65B0", \u914D\u7F6E\u8DEF\u5F84: path25.join(root2, ".dev-flow", "project.json"), previousSha256: result.previousSha256, sha256: result.sha256, \u53D8\u5316: result.impact, \u53D7\u5F71\u54CD\u8BC1\u636E: result.affectedEvidence, \u4E0B\u4E00\u6B65: "\u65B0\u589E\u6216\u6269\u5145\u9A8C\u8BC1\u80FD\u529B\u53EF\u7EE7\u7EED\u5F53\u524D\u4EFB\u52A1\uFF1B\u88AB\u5F15\u7528\u547D\u4EE4\u53D8\u5316\u7684 Trace/RU \u9700\u8981\u6309\u9519\u8BEF\u63D0\u793A\u91CD\u65B0\u767B\u8BB0\u3002" };
     }
     case "dev_flow_classify": {
       if (!a.classificationBasis && (a.level === void 0 || a.topology === void 0)) {
@@ -15045,7 +15105,7 @@ async function dispatch(root2, name, a, ports2) {
     case "dev_flow_enable_windows_notifications":
       return enableWindowsNotifications({ nodeExecutable: process.execPath });
     case "dev_flow_doctor":
-      return collectDoctorReport(root2, pluginRootForDoctor(root2), "5.1.0", publicTools);
+      return collectDoctorReport(root2, pluginRootForDoctor(root2), "5.1.1", publicTools);
     case "dev_flow_recover_corrupt_feature":
       return recoverCorruptFeature(root2, {
         featureId: a.featureId,
@@ -15173,7 +15233,7 @@ async function dispatchRequest(message) {
       connection.configure(message.params?.capabilities, message.params?.clientInfo);
       protocolResult(message.id, {
         protocolVersion: message.params?.protocolVersion || "2024-11-05",
-        serverInfo: { name: "dev-flow", version: "5.1.0" },
+        serverInfo: { name: "dev-flow", version: "5.1.1" },
         capabilities: { tools: {} },
         instructions: "\u5148\u5B8C\u6210\u4E8B\u5B9E\u8C03\u67E5\u548C\u8DEF\u7EBF\u5206\u7C7B\u3002\u65E5\u5E38\u8BFB\u53D6 dev_flow_status\uFF1B\u5B83\u4F1A\u663E\u793A\u4E2D\u6587\u9636\u6BB5\u3001\u5F53\u524D\u4E0B\u4E00\u6B65\u548C\u552F\u4E00\u5F85\u51B3\u95EE\u9898\u3002\u6240\u6709\u7528\u6237\u51B3\u5B9A\u7EDF\u4E00\u4F7F\u7528 dev_flow_answer\uFF0C\u7CFB\u7EDF\u4F1A\u81EA\u52A8\u6309\u95EE\u9898\u7C7B\u578B\u5904\u7406\u3002\u6CA1\u6709\u771F\u5B9E\u51B3\u7B56\u7F3A\u53E3\u65F6\u6D41\u7A0B\u4F1A\u81EA\u52A8\u63A8\u8FDB\u3002\u5148\u8C03\u7528 dev_flow_init_project\uFF0C\u518D\u5F00\u59CB feature\u3002"
       });

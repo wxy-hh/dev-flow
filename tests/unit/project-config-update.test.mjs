@@ -128,3 +128,84 @@ test("configuration update fails closed when referenced checkpoint evidence is c
     assert.equal(await readFile(file, "utf8"), before);
   } finally { await fixture.dispose(); }
 });
+
+test("high-impact governance changes are scoped to an active feature and unblocked by pausing", async () => {
+  const fixture = await createTinyApp();
+  try {
+    await store.initProject(fixture.root, strictProjectConfig);
+    const raw = await readFile(`${fixture.root}/.dev-flow/project.json`);
+    const expectedSha256 = createHash("sha256").update(raw).digest("hex");
+
+    // 没有任何 feature 时治理变更允许：否则初始化后 governedRoots/preflight
+    // 永远无法调整，形成「policy 死宽度」。
+    const governance = structuredClone(strictProjectConfig);
+    governance.governedRoots = ["src"];
+    const allowed = await store.updateProjectConfig(fixture.root, governance, expectedSha256);
+    assert.equal(allowed.impact.governanceChanged, true);
+
+    // 有 active feature 时治理变更为高影响：拒绝且同一调用可在暂停后重试。
+    const started = await store.startFeature(fixture.root, { featureId: "high-impact", host: "codex", level: "XS", topology: "local" });
+    const rawBeforeBlock = await readFile(`${fixture.root}/.dev-flow/project.json`);
+    const blockedSha256 = createHash("sha256").update(rawBeforeBlock).digest("hex");
+    const governance2 = structuredClone(governance);
+    governance2.governedRoots = ["src", "test"];
+    await assert.rejects(
+      () => store.updateProjectConfig(fixture.root, governance2, blockedSha256),
+      (error) => error.code === "PROJECT_CONFIG_HIGH_IMPACT"
+        && error.details.retryOriginal === true
+        && error.details.activeFeatureId === "high-impact",
+    );
+
+    // 暂停后重试同一调用成功；配置被写入且证据保持原样。
+    const paused = await store.pauseFeature(fixture.root, "high-impact", started.revision, "更新治理配置前暂停", "codex");
+    assert.equal(paused.lifecycle, "paused");
+    const updated = await store.updateProjectConfig(fixture.root, governance2, blockedSha256);
+    assert.equal(updated.previousSha256, blockedSha256);
+    assert.equal(updated.impact.governanceChanged, true);
+    assert.equal(updated.affectedEvidence.commandIds.length, 0);
+
+    // preflight 变更走同一门禁：active 时拒绝，暂停后允许。
+    // （保留一个非 preflight 命令提供 targeted，避免先被保证集校验拦截。）
+    const rawBeforePreflight = await readFile(`${fixture.root}/.dev-flow/project.json`);
+    const preflightSha256 = createHash("sha256").update(rawBeforePreflight).digest("hex");
+    const withPreflight = structuredClone(governance2);
+    withPreflight.verification.commands.push({
+      id: "build", command: process.execPath, args: ["-e", "process.exit(0)"], cwd: ".", provides: ["targeted"],
+    });
+    withPreflight.verification.preflightCommands = ["unit"];
+    const preflightStarted = await store.startFeature(fixture.root, { featureId: "preflight-gate", host: "codex", level: "XS", topology: "local" });
+    await assert.rejects(
+      () => store.updateProjectConfig(fixture.root, withPreflight, preflightSha256),
+      (error) => error.code === "PROJECT_CONFIG_HIGH_IMPACT",
+    );
+    await store.pauseFeature(fixture.root, "preflight-gate", preflightStarted.revision, "更新 preflight 前暂停", "codex");
+    const preflightUpdated = await store.updateProjectConfig(fixture.root, withPreflight, preflightSha256);
+    assert.equal(preflightUpdated.impact.preflightChanged, true);
+  } finally { await fixture.dispose(); }
+});
+
+test("adding a full-guarantee command while a paused feature exists is a scoped command update", async () => {
+  const fixture = await createTinyApp();
+  try {
+    await store.initProject(fixture.root, strictProjectConfig);
+    const started = await store.startFeature(fixture.root, { featureId: "paused-full-gap", host: "codex", level: "XS", topology: "local" });
+    await store.pauseFeature(fixture.root, "paused-full-gap", started.revision, "等待补齐 full 保证", "codex");
+    const raw = await readFile(`${fixture.root}/.dev-flow/project.json`);
+    const next = structuredClone(strictProjectConfig);
+    next.verification.commands.push({
+      id: "test-full", command: process.execPath, args: ["--test", "--full"], cwd: ".", provides: ["full"],
+    });
+    const updated = await store.updateProjectConfig(fixture.root, next, createHash("sha256").update(raw).digest("hex"));
+    assert.deepEqual(updated.impact.addedCommandIds, ["test-full"]);
+    assert.equal(updated.impact.governanceChanged, false);
+    assert.equal(updated.impact.preflightChanged, false);
+    // 新命令未被任何证据引用：受影响证据为空，不整包失效。
+    assert.deepEqual(updated.affectedEvidence, {
+      commandIds: [],
+      traceNodeIds: [],
+      checkpointIds: [],
+      verificationAttemptIds: [],
+      reviewRoles: [],
+    });
+  } finally { await fixture.dispose(); }
+});

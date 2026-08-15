@@ -43,6 +43,7 @@ import { captureWorkspaceLineage, ownershipForScope, reconcileWorkspaceForFeatur
 import { pendingDecisionForState } from "./decision-interactions.js";
 import { assertHostHealth } from "./host-health.js";
 import { collectProjectConfigAffectedEvidence, type ProjectConfigAffectedEvidence } from "./project-config-impact.js";
+import { openQuestionsAdvisory } from "./requirements-grill.js";
 import { executeRepositoryObservation } from "./repository-fact-store.js";
 import { checkpointAffectedByPaths, legalActiveUnitChanges, markAffectedEvidenceStale, objectiveForSwitch, presentTaskSwitch, queueNextOwnershipDecision, TASK_SWITCH_QUESTION, unknownOwnershipPaths } from "./ownership-workflow.js";
 
@@ -542,17 +543,22 @@ export async function updateProjectConfig(
     const previousConfig = JSON.parse(raw) as ProjectConfig;
     validateProjectConfig(previousConfig);
     const impact = projectConfigImpact(previousConfig, config);
-    if (impact.governanceChanged || impact.preflightChanged) {
+    const active = await readActive(root);
+    // 治理范围或执行前置策略变更只会在有运行中 feature 时改变其路线与证据
+    // 含义；没有 active feature（空项目或仅 paused/终态 feature）时允许增量
+    // 更新，避免「初始化后永远无法调整 governedRoots/preflight」的死宽度。
+    // 暂停后重试同一调用即可成功，恢复时系统会重新对账并评估路线与证据。
+    if ((impact.governanceChanged || impact.preflightChanged) && active) {
       throw new DevFlowError("PROJECT_CONFIG_HIGH_IMPACT", "governance roots, enforcement or preflight policy changed。", {
         userMessage: "这是高影响项目策略变更，不能作为普通增量配置更新。",
-        cause: "治理范围或执行前置策略会改变现有 feature 的路线与证据含义。",
-        impact: "没有写入新配置；现有 feature 保持原状态。",
-        recoveryKind: "repair",
-        recoveryInstruction: "先暂停相关 feature，完成显式重分类或恢复评估后再更新项目配置。",
-        retryOriginal: false,
+        cause: "治理范围或执行前置策略会改变运行中 feature 的路线与证据含义。",
+        impact: "没有写入新配置；运行中的 feature 保持原状态。",
+        recoveryKind: "retry",
+        recoveryInstruction: "先暂停（或完成、放弃）该 active feature，再重试本次更新；暂停后重试即可成功，恢复时系统会重新对账并评估路线与证据。",
+        retryOriginal: true,
+        activeFeatureId: active.featureId,
       });
     }
-    const active = await readActive(root);
     const affectedEvidence = await collectProjectConfigAffectedEvidence(
       root,
       active ? await readState(root, active.featureId) : undefined,
@@ -608,11 +614,17 @@ async function prepareStatusProjection(root: string, state: FeatureState, revisi
     ...(trace.blocker ? [`- Blocker: ${trace.blocker.code} (${trace.blocker.step})`] : []),
     "",
   ];
+  // 非阻塞提示（与 nextAction 的 advisory 同源）：需求阶段「开放问题」未收敛
+  // 时建议先 grill；提示读取失败静默，绝不影响状态投影生成。
+  const grillAdvisory = state.steps.requirements_alignment?.status !== "satisfied"
+    ? await openQuestionsAdvisory(root, state)
+    : undefined;
   const projection = [
     "---", "dev_flow:", "  schema_version: 1", `  feature_id: ${state.featureId}`, `  route: ${state.route}`, "  kind: status", "  generated: true", "---", "",
     "# Dev Flow Status", "", `- Revision: ${revision}`, `- Lifecycle: ${state.lifecycle}`, `- Route: ${state.route}`, `- Logic complete: ${state.logicComplete}`, "", "## Steps", "",
     ...routeDefinitionForFeature(state.route, state.classification.controls).orderedSteps.map((step) => `- ${step}: ${state.steps[step]?.status ?? "pending"}`), "",
     ...traceLines,
+    ...(grillAdvisory ? [`- 提示: 需求文档「开放问题」还有 ${grillAdvisory.items.length} 项未收敛（${grillAdvisory.items.join("；")}），建议先调用 dev_flow_request_grill_decision 收敛后再进入 planning。`, ""] : []),
   ].join("\n");
   const contents = `${projection}\n`;
   const file = path.join(features(root), state.featureId, status.path);

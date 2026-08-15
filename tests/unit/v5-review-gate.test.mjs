@@ -6,11 +6,13 @@ import path from "node:path";
 import test from "node:test";
 import { loadSource } from "../helpers/load-source.mjs";
 import { driveUntil, completeReviewJobs, prepareReviewReadyFeature, routeFlowConfig } from "../helpers/route-flow.mjs";
+import { registerTraceFixture, traceDeltaFor } from "../helpers/trace-fixtures.mjs";
 
 const store = await loadSource("plugins/dev-flow/src/core/state-store.ts");
 const artifacts = await loadSource("plugins/dev-flow/src/core/artifacts.ts");
 const steps = await loadSource("plugins/dev-flow/src/core/feature-check.ts");
 const jobs = await loadSource("plugins/dev-flow/src/core/review-jobs.ts");
+const reviewStore = await loadSource("plugins/dev-flow/src/core/review-store.ts");
 const next = await loadSource("plugins/dev-flow/src/core/next.ts");
 const units = await loadSource("plugins/dev-flow/src/core/implementation-units.ts");
 const quality = await loadSource("plugins/dev-flow/src/core/quality-exceptions.ts");
@@ -426,6 +428,69 @@ test("begin's plan gate agrees with next and the gate at the implementation boun
       () => units.beginImplementationUnit(root, "begin", state.revision, driven.action.unitId),
       (error) => error.code === "TRACE_SLICE_STALE" || error.code === "REVIEW_BASIS_STALE",
     );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("plan review accepts recovery nodes in the scope manifest", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "dev-flow-gate-recovery-"));
+  try {
+    await mkdir(path.join(root, "src"));
+    await writeFile(path.join(root, "src", "main.js"), "export {}\n");
+    await store.initProject(root, routeFlowConfig);
+    let state = await store.startFeature(root, {
+      featureId: "recovery-plan",
+      host: "claude",
+      level: "M",
+      topology: "shared-contract",
+      requirements: "provided-confirmed",
+      scopeFacts: ["共享契约需求"],
+      topologyFacts: ["共享契约"],
+      uncertaintyFacts: [],
+      riskFacts: {},
+      decisionRefs: [],
+    });
+    assert.equal(state.classification.controls.planReview, true);
+    state = await registerTraceFixture({
+      root, featureId: state.featureId, state, kind: "requirements",
+      delta: traceDeltaFor("requirements", "m"),
+    });
+    state = await steps.recordStep(root, state.featureId, state.revision, "requirements_alignment", {});
+    state = await artifacts.scaffoldArtifact(root, state.featureId, state.revision, "implementation-plan");
+    const planMarkdown = [
+      "<!-- dev-flow:id=TASK-001 kind=task -->\n### TASK-001\n\n- covers: REQ-001, AC-001\n- implementation_unit: UNIT-001\n",
+      "<!-- dev-flow:id=TEST-001 kind=test -->\n### TEST-001\n\n- 验证方法：\n",
+      "<!-- dev-flow:id=UNIT-001 kind=implementation-unit -->\n### UNIT-001\n\n- tasks: [TASK-001]\n- depends_on: []\n- file_scope: src\n- covers: REQ-001, AC-001\n- forward_verification: unit\n",
+      "<!-- dev-flow:id=REC-001 kind=recovery -->\n### REC-001\n\n- step_ref: UNIT-001\n- recovery_kind: compensation\n- method: 从备份恢复迁移前快照\n- risk_ref: data\n",
+    ].join("\n");
+    const planDelta = {
+      nodes: [
+        { kind: "task", id: "TASK-001", covers: ["REQ-001", "AC-001"], implementationUnit: "UNIT-001" },
+        { kind: "test", id: "TEST-001", verifies: ["AC-001"] },
+        { kind: "implementation-unit", id: "UNIT-001", tasks: ["TASK-001"], dependsOn: [], fileScope: ["src"], covers: ["REQ-001", "AC-001"], forwardVerification: ["unit"] },
+        { kind: "recovery", id: "REC-001", stepRef: "UNIT-001", recoveryKind: "compensation", method: "从备份恢复迁移前快照", riskRef: "data" },
+      ],
+    };
+    state = await registerTraceFixture({
+      root, featureId: state.featureId, state, kind: "implementation-plan",
+      delta: planDelta, edit: () => planMarkdown,
+    });
+    // 恢复节点是 current trace 节点，必须进入审查 scope manifest 的 traceIds，
+    // 且提交审查时不得被 REVIEW_INTEGRITY_FAILED 拒绝（修复前死锁）。
+    const created = await jobs.createReviewBatch(root, state.featureId, state.revision);
+    assert.equal(created.batch.phase, "plan");
+    const job = created.batch.jobs[0];
+    const reviewPackage = await reviewStore.readReviewPackage(root, state.featureId, job.packageSha256);
+    assert.ok(
+      Array.isArray(reviewPackage.scopeManifest.traceIds)
+        && reviewPackage.scopeManifest.traceIds.includes("REC-001"),
+      JSON.stringify(reviewPackage.scopeManifest),
+    );
+    const completed = await completeReviewJobs(root, state.featureId, created.state, created.batch);
+    const ledger = await reviewStore.readReviewLedger(root, completed.state);
+    const currentBatch = ledger.batches.find((batch) => batch.batchId === created.batch.batchId);
+    assert.equal(currentBatch.progress, "complete");
   } finally {
     await rm(root, { recursive: true, force: true });
   }
