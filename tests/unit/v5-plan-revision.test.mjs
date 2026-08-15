@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -104,6 +105,12 @@ test("revising the plan during implementation pauses the step, shows the impact,
     const preview2 = await store.revisePlanDuringImplementation(root, id, cancelled.state.revision, revisedDelta, "codex");
     await store.recordHostEvent(root, { eventId: "confirm", type: "user-prompt", host: "codex", text: "确认修订" });
     const revised = await store.answer({ root, featureId: id, expectedRevision: preview2.state.revision, host: "codex", credential: { source: "text", userReply: "确认修订" } });
+    const planContents = await readFile(planPath);
+    assert.equal(
+      revised.state.artifacts["implementation-plan"].sha256,
+      createHash("sha256").update(planContents).digest("hex"),
+      "plan revision confirmation must register the edited artifact sha",
+    );
     assert.equal(revised.state.implementationUnits.find((u) => u.unitId === "UNIT-001").status, "pending");
     assert.equal(revised.state.implementationUnits.find((u) => u.unitId === "UNIT-002").status, "pending");
     assert.equal(stepOrder.currentOpenStep(revised.state), "planning");

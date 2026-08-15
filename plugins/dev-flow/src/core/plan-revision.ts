@@ -122,10 +122,17 @@ export async function revisePlanDuringImplementation(
   return { state, interaction: toPublicInteraction(interaction), interactionId: interaction.id };
 }
 
-/** 修订落账：重登记计划并传播失效；未受影响且依据仍当前的单元与 checkpoint 保留。 */
-export function applyPlanRevision(draft: FeatureState, interaction: UserInteraction, host: "claude" | "codex"): void {
+/** 修订落账：重登记计划并传播失效；未受影响且依据仍当前的单元与 checkpoint 保留。确认修订即登记动作，必须同步当前 artifact sha。 */
+export function applyPlanRevision(draft: FeatureState, interaction: UserInteraction, host: "claude" | "codex", artifactSha256: string): void {
   const revision = interaction.planRevision;
   if (!revision) throw new DevFlowError("INTERACTION_INVALID", "plan-revision interaction is missing its revision content", { interactionId: interaction.id });
+  const planArtifact = draft.artifacts["implementation-plan"];
+  if (planArtifact) {
+    draft.artifacts = {
+      ...draft.artifacts,
+      "implementation-plan": { ...planArtifact, sha256: artifactSha256 },
+    };
+  }
   const units = draft.implementationUnits ?? [];
   const affected = new Set(revision.affectedUnits);
   const sideEffects = new Set(revision.sideEffectUnits);
@@ -180,6 +187,7 @@ export async function resolvePlanRevisionForAnswer(ctx: AnswerResolveContext): P
   const confirms = matchedId === "confirm";
   let reviewInvalidation: ReturnType<typeof prepareReviewInvalidation> extends Promise<infer T> ? T : never;
   let response: import("../policy/interaction.js").InteractionResponse | undefined;
+  let currentArtifactSha256: string | undefined;
   const next = await mutatePrepared(root, featureId, expectedRevision, confirms ? "plan-revised" : "plan-revision-cancelled", async (current, nextStateRevision) => {
     if (confirms) {
       const live = current.interactions?.[interaction.id];
@@ -187,7 +195,7 @@ export async function resolvePlanRevisionForAnswer(ctx: AnswerResolveContext): P
       const artifact = current.artifacts["implementation-plan"];
       if (!basis || !artifact) throw new DevFlowError("PLAN_REVISION_STALE", "计划修订预览缺少当前依据，请重新生成。", { retryOriginal: true });
       const contents = await readArtifactText(root, featureId, artifact.path);
-      const currentArtifactSha256 = createHash("sha256").update(contents).digest("hex");
+      currentArtifactSha256 = createHash("sha256").update(contents).digest("hex");
       const currentConfigSha256 = (await readProjectConfigSnapshot(root)).sha256;
       const currentTraceabilitySha256 = current.traceability?.sha256 ?? "none";
       if (currentArtifactSha256 !== basis.artifactSha256 || currentConfigSha256 !== basis.projectConfigSha256 || currentTraceabilitySha256 !== basis.traceabilitySha256) {
@@ -207,7 +215,7 @@ export async function resolvePlanRevisionForAnswer(ctx: AnswerResolveContext): P
         response = resolveResponseForAnswer(draft, interaction, { source: credential.source, action: credential.source === "elicitation" ? credential.action : undefined, comment: credential.source === "elicitation" ? credential.comment : undefined, userReply: credential.source === "text" ? credential.userReply : undefined, promptText, promptEventId, host });
         if (confirms) {
           const live = draft.interactions![interaction.id];
-          applyPlanRevision(draft, live, host);
+          applyPlanRevision(draft, live, host, currentArtifactSha256!);
           if (reviewInvalidation) draft.review = reviewInvalidation;
           // spec §179：有外部副作用的已完成单元在计划修订后绝不自动重跑，
           // 保持 checkpointed 并标为需要人工决定的恢复项，由新交互展示具体风险。
