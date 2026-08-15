@@ -138,6 +138,8 @@ test("changes after code review reopen the affected unit, review, and step chain
     assert.equal(reviewed.steps.code_review.status, "satisfied");
     // 审查后修改 UNIT-001 写入的交付文件
     const written = await trustedWrite(root, id, "src/a.js", "export const a = 2;\n");
+    assert.ok(written.revision > reviewed.revision, "trusted write after code review must be recorded in state");
+    assert.equal(written.workspace.ownership["src/a.js"], "feature");
     await assert.rejects(
       () => verification.runVerification(root, id, written.revision, "codex", ["unit-ok"]),
       (error) => error.code === "WORKSPACE_CHANGED",

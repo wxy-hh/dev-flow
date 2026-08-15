@@ -53,7 +53,7 @@ export interface WriteGateBlock {
 }
 
 export type WriteGateResult =
-  | { decision: "allow"; advisory?: "unresolved-write" }
+  | { decision: "allow"; advisory?: "unresolved-write" | "governed-write-observed" }
   | { decision: "audit"; block: WriteGateBlock }
   | { decision: "block"; block: WriteGateBlock };
 
@@ -251,6 +251,7 @@ async function evaluateFileWrite(root: string, workflow: ActiveWorkflow, paths: 
 
   // 先拦先胜：非单元类拦截先于懒 begin，避免为注定被拦的写入推进工作流。
   let unitNeededPath: string | undefined;
+  let governedWriteObserved = false;
   for (const relative of paths) {
     if (isControlPath(relative)) return block("CONTROL_MUTATION_FORBIDDEN", [relative], "workflow control files are Core-owned", { variant: "control-file" });
     if (isDevFlowPath(relative)) {
@@ -276,6 +277,10 @@ async function evaluateFileWrite(root: string, workflow: ActiveWorkflow, paths: 
       if (unitBlock?.code === "IMPLEMENTATION_UNIT_REQUIRED") unitNeededPath ??= relative;
       continue;
     }
+    if (state.mode === "routed" && currentOpenStep(state) !== "implementation" && governed) {
+      governedWriteObserved = true;
+      continue;
+    }
   }
 
   // 问 → 该 begin 则 begin：就绪判定与 begin 共享同一派生（锁内复查）；
@@ -298,6 +303,7 @@ async function evaluateFileWrite(root: string, workflow: ActiveWorkflow, paths: 
       return block("IMPLEMENTATION_UNIT_REQUIRED", [unitNeededPath], "no active implementation unit", { beginFailed: diagnostic });
     }
   }
+  if (governedWriteObserved) return { decision: "allow", advisory: "governed-write-observed" };
   return { decision: "allow" };
 }
 

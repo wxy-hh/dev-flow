@@ -134,6 +134,12 @@ async function evaluatePreToolUseInternal(
     }
     const verdict = await writeGate(root, { kind: "file", paths: projectRelativePaths(root, analysis.targets) });
     if (verdict.decision === "block") return formatWriteGateBlock(verdict.block);
+    if (verdict.decision === "allow" && verdict.advisory === "governed-write-observed") {
+      advisoryOut.advisory = {
+        code: "DEV_FLOW_GOVERNED_WRITE_OBSERVED",
+        message: "DEV_FLOW_GOVERNED_WRITE_OBSERVED: 当前阶段写入 governed 文件会被记录并可能使既有审查/验证失效；写入后请按 status 提示重新 reconcile、review 或 verify。",
+      };
+    }
     return undefined;
   }
 
@@ -141,5 +147,11 @@ async function evaluatePreToolUseInternal(
   if (!targets.length) return undefined;
   const verdict = await writeGate(root, { kind: "file", paths: projectRelativePaths(root, targets) });
   if (verdict.decision === "block") return formatWriteGateBlock(verdict.block);
+  if (verdict.decision === "allow" && verdict.advisory === "governed-write-observed") {
+    advisoryOut.advisory = {
+      code: "DEV_FLOW_GOVERNED_WRITE_OBSERVED",
+      message: "DEV_FLOW_GOVERNED_WRITE_OBSERVED: 当前阶段写入 governed 文件会被记录并可能使既有审查/验证失效；写入后请按 status 提示重新 reconcile、review 或 verify。",
+    };
+  }
   return undefined;
 }

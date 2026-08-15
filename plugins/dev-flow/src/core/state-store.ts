@@ -816,7 +816,7 @@ export async function recordTrustedWriteIntent(root: string, paths: string[], ho
   const active = await readActive(root);
   if (!active || paths.length === 0) return;
   const state = await readState(root, active.featureId);
-  if (state.mode !== "routed" || state.lifecycle !== "active" || currentOpenStep(state) !== "implementation") return;
+  if (state.mode !== "routed" || state.lifecycle !== "active") return;
   const config = await readProjectConfig(root);
   const governed = paths.filter((file) => config.governedRoots.some((entry) => entry === "." || file === entry || file.startsWith(`${entry}/`)));
   if (!governed.length) return;
@@ -828,7 +828,7 @@ export async function recordTrustedWriteOwnership(root: string, paths: string[],
   const active = await readActive(root);
   if (!active || paths.length === 0) return;
   const state = await readState(root, active.featureId);
-  if (state.mode !== "routed" || state.lifecycle !== "active" || currentOpenStep(state) !== "implementation") return;
+  if (state.mode !== "routed" || state.lifecycle !== "active") return;
   const config = await readProjectConfig(root);
   const governed = paths.filter((file) => config.governedRoots.some((entry) => entry === "." || file === entry || file.startsWith(`${entry}/`)));
   if (!governed.length) return;
