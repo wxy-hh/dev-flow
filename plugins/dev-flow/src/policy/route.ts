@@ -299,14 +299,19 @@ export function recommendClassification(basis: ClassificationBasis): Classificat
   return { readyToLock: true, classification, route, obligations: deriveObligations(route, basis, controls), reasons, issues: [] };
 }
 
+function nonEmptyControlEnhancements(value: ClassificationInput["controlEnhancements"]): ClassificationInput["controlEnhancements"] {
+  return value && typeof value === "object" && !Array.isArray(value) && Object.keys(value).length > 0 ? value : undefined;
+}
+
 function defaultBasis(input: ClassificationInput): ClassificationBasis {
+  const controlEnhancements = nonEmptyControlEnhancements(input.controlEnhancements);
   return input.classificationBasis ?? {
     scopeFactRefs: [],
     topologyFactRefs: [],
     uncertaintyFactRefs: [],
     riskFactRefs: {},
     decisionRefs: [],
-    ...(input.controlEnhancements ? { controlEnhancements: input.controlEnhancements } : {}),
+    ...(controlEnhancements ? { controlEnhancements } : {}),
   };
 }
 
@@ -343,6 +348,7 @@ export function selectBaseRoute(input: ClassificationFacts): {
   obligations: ReturnType<typeof deriveObligations>;
 } {
   const normalized = normalizeClassification(input);
+  const controlEnhancements = nonEmptyControlEnhancements(input.controlEnhancements);
   const basis: ClassificationBasis = {
     scopeFactRefs: input.scopeFactRefs,
     topologyFactRefs: input.topologyFactRefs,
@@ -350,7 +356,7 @@ export function selectBaseRoute(input: ClassificationFacts): {
     riskFactRefs: input.riskFactRefs,
     decisionRefs: input.decisionRefs,
     ...(input.signals ? { signals: input.signals } : {}),
-    ...(input.controlEnhancements ? { controlEnhancements: input.controlEnhancements } : {}),
+    ...(controlEnhancements ? { controlEnhancements } : {}),
   };
   validateBasis(basis, normalized.riskLabels);
   const preview = basis.signals ? recommendClassification(basis) : undefined;
@@ -380,8 +386,19 @@ export function assertBoundaryAuditComplete(
     ? { decisionRefs: decisionRefsOrIndex, decisions: decisionRefsOrIndex.map((recordId) => ({ recordId, currency: "current" })), repositoryFacts: repositoryFacts.map((record) => ({ recordId: record.recordId, currency: "current" })) }
     : decisionRefsOrIndex;
   const value = audit as { scanned?: unknown; items?: unknown };
-  if (!value || !Array.isArray(value.scanned) || requiredBoundaryKinds.some((kind) => !(value.scanned as unknown[]).includes(kind)) || !Array.isArray(value.items)) {
-    throw new PolicyError("BOUNDARY_AUDIT_INCOMPLETE", "boundaryAudit must explicitly scan every boundary category", { required: requiredBoundaryKinds });
+  const scanned = Array.isArray(value?.scanned) ? value.scanned as unknown[] : [];
+  const missingKinds = requiredBoundaryKinds.filter((kind) => !scanned.includes(kind));
+  if (!value || !Array.isArray(value.scanned) || missingKinds.length > 0 || !Array.isArray(value.items)) {
+    throw new PolicyError("BOUNDARY_AUDIT_INCOMPLETE", "boundaryAudit must explicitly scan every boundary category", {
+      required: requiredBoundaryKinds,
+      missingKinds,
+      missingFields: [
+        ...(!value ? ["boundaryAudit"] : []),
+        ...(!Array.isArray(value.scanned) ? ["boundaryAudit.scanned"] : []),
+        ...(!Array.isArray(value.items) ? ["boundaryAudit.items"] : []),
+      ],
+      recoveryHint: "补齐 scanned 中缺失的边界类别，并确保 items 为数组。",
+    });
   }
   for (const item of value.items as Array<Record<string, unknown>>) {
     // ADR-0018：repository-fact 必须引用已登记的结构化事实（factRef）；

@@ -108,7 +108,19 @@ export async function computeFactFingerprint(
 export async function assertRepositoryFactCurrent(root: string, fact: GovernanceRepositoryFact): Promise<void> {
   if (fact.observation) {
     const observation = await executeRepositoryObservation(root, fact.observation);
-    if (!observation.confirmed) throw new DevFlowError("BOUNDARY_FACT_UNCONFIRMED", `repository fact ${fact.recordId} no longer satisfies its observation`, { recordId: fact.recordId, recoveryHint: "重新登记当前观察或修正分类依据。" });
+    if (!observation.confirmed) {
+      throw new DevFlowError("BOUNDARY_FACT_UNCONFIRMED", `repository fact ${fact.recordId} no longer satisfies its observation`, {
+        recordId: fact.recordId,
+        ...(fact.observation?.kind === "text-present"
+          ? {
+              path: fact.observation.path,
+              expectedOccurrence: fact.observation.occurrence ?? 1,
+              actualOccurrence: observation.actualOccurrence,
+            }
+          : {}),
+        recoveryHint: "重新登记当前观察或修正分类依据。",
+      });
+    }
     if (observation.observedFingerprint !== fact.observedFingerprint) throw new DevFlowError("BOUNDARY_FACT_STALE", `repository fact ${fact.recordId} refers to changed content`, { recordId: fact.recordId, recoveryHint: "重新登记该仓库事实以反映当前内容。" });
     return;
   }
@@ -159,7 +171,18 @@ export async function normalizeRepositoryFact(
   if (!normalized.assertion) throw new DevFlowError("INVALID_REPOSITORY_FACT", "repository fact assertion must not be empty");
   const observationResult = observation ? await executeRepositoryObservation(root, observation) : undefined;
   const observedFingerprint = observationResult ? observationResult.observedFingerprint : await computeFactFingerprint(root, { ...normalized, location });
-  if (observationResult && !observationResult.confirmed) throw new DevFlowError("BOUNDARY_FACT_UNCONFIRMED", "repository observation is not satisfied", { summary: observationResult.summary, recoveryHint: "修正观察定义或先修正仓库后重试。" });
+  if (observationResult && !observationResult.confirmed) {
+    if (observation?.kind === "text-present") {
+      throw new DevFlowError("INVALID_REPOSITORY_FACT", "text-present occurrence does not match the file contents", {
+        path: observation.path,
+        text: observation.text,
+        expectedOccurrence: observation.occurrence ?? 1,
+        actualOccurrence: observationResult.actualOccurrence,
+        recoveryHint: "occurrence 计文件内全部匹配（含 import 与使用处）；请改为实际匹配次数或修正文本。",
+      });
+    }
+    throw new DevFlowError("BOUNDARY_FACT_UNCONFIRMED", "repository observation is not satisfied", { summary: observationResult.summary, recoveryHint: "修正观察定义或先修正仓库后重试。" });
+  }
   return repositoryFactRecord(normalized, observedFingerprint, new Date().toISOString());
 }
 

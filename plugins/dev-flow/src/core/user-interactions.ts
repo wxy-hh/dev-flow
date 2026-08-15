@@ -76,9 +76,17 @@ function validateOptions(options: InteractionOption[]): void {
     throw new DevFlowError("INTERACTION_OPTIONS_INVALID", "每个用户问题必须只有 2-3 个选项。", { userMessage: "当前问题的选项数量不符合交互合同。", recoveryKind: "repair", recoveryInstruction: "将选项收敛为 2-3 个简明选择，并保留一个推荐答案。", retryOriginal: false });
   }
   const seen = new Set<string>();
+  const invalidIds: string[] = [];
   for (const option of options) {
-    if (!option || !/^[a-z][a-z0-9-]{0,63}$/.test(option.id) || !option.label.trim() || seen.has(option.id)) {
-      throw new DevFlowError("INTERACTION_OPTIONS_INVALID", "option ids must be unique lowercase action ids with labels");
+    if (!option || !/^[a-z][a-z0-9-]{0,63}$/.test(option.id)) invalidIds.push(option?.id ?? "<missing>");
+    if (!option || !option.label.trim() || seen.has(option.id)) {
+      throw new DevFlowError("INTERACTION_OPTIONS_INVALID", "option ids must be unique lowercase action ids with labels", {
+        pattern: "^[a-z][a-z0-9-]{0,63}$",
+        examples: ["document-only", "inject-signal"],
+        invalidIds,
+        guidance: "A/B 是 Core 分配的 answerCode，不是输入 option id。",
+        recoveryHint: "为每个选项提供唯一的、匹配上述正则的 action id 与非空 label。",
+      });
     }
     seen.add(option.id);
   }

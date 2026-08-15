@@ -92,7 +92,7 @@ function safeRegex(pattern: string): RegExp {
   catch { throw invalid("search-absent regex is invalid"); }
 }
 
-export async function executeRepositoryObservation(root: string, observation: RepositoryObservation): Promise<{ confirmed: boolean; observedFingerprint: string; summary: string }> {
+export async function executeRepositoryObservation(root: string, observation: RepositoryObservation): Promise<{ confirmed: boolean; observedFingerprint: string; summary: string; actualOccurrence?: number; requiredOccurrence?: number }> {
   if (observation.kind === "file-exists") {
     const file = await readRegularFile(root, observation.path);
     return { confirmed: true, observedFingerprint: file.sha256, summary: `${file.path} is a readable file` };
@@ -103,7 +103,14 @@ export async function executeRepositoryObservation(root: string, observation: Re
     if (!needle.trim()) invalid(`${observation.kind} observation requires a non-empty anchor`);
     const count = file.contents.split(needle).length - 1;
     const required = observation.kind === "text-present" ? observation.occurrence ?? 1 : 1;
-    return { confirmed: count >= required, observedFingerprint: file.sha256, summary: `${file.path} contains ${observation.kind === "text-present" ? "the requested text" : "the requested symbol"}` };
+    const confirmed = observation.kind === "text-present" ? count === required : count >= required;
+    return {
+      confirmed,
+      observedFingerprint: file.sha256,
+      summary: `${file.path} contains ${observation.kind === "text-present" ? "the requested text" : "the requested symbol"}`,
+      actualOccurrence: count,
+      requiredOccurrence: required,
+    };
   }
   if (observation.kind === "json-value") {
     const file = await readRegularFile(root, observation.path);

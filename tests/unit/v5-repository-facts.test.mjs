@@ -258,3 +258,23 @@ test("text-present observation recordId matches the normalized stored fact", asy
     await rm(root, { recursive: true, force: true });
   }
 });
+
+test("text-present occurrence is exact and reports actual count on mismatch", async () => {
+  const { root, state } = await setup("dev-flow-fact-occurrence-");
+  try {
+    await writeFile(path.join(root, "src", "twice.js"), "export const x = 1;\nexport const x = 2;\n");
+    await assert.rejects(
+      () => store.registerRepositoryFact(root, "f", state.revision, {
+        observation: { kind: "text-present", path: "src/twice.js", text: "export const x", occurrence: 1 },
+      }, "codex"),
+      (error) => {
+        assert.equal(error.code, "INVALID_REPOSITORY_FACT");
+        assert.equal(error.details.expectedOccurrence, 1);
+        assert.equal(error.details.actualOccurrence, 2);
+        return true;
+      },
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});

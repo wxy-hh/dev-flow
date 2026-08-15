@@ -69,10 +69,21 @@ export async function lockClassification(
   const factRecords = repositoryFacts.map((fact) => ({ recordId: fact.recordId, currency: factRefs.includes(fact.recordId) ? "current" as const : "unconfirmed" as const }));
   const auditMissingFromBasis = auditFactRefs.filter((auditRef) => !basisFactRefs.includes(auditRef));
   if (auditMissingFromBasis.length) {
+    const basisFields = auditMissingFromBasis.map((factRef) => {
+      const riskEntry = Object.entries(facts.riskFactRefs).find(([, refs]) => (refs ?? []).includes(factRef));
+      const field = facts.scopeFactRefs.includes(factRef) ? "scopeFactRefs"
+        : facts.topologyFactRefs.includes(factRef) ? "topologyFactRefs"
+          : facts.uncertaintyFactRefs.includes(factRef) ? "uncertaintyFactRefs"
+            : riskEntry ? `riskFactRefs.${riskEntry[0]}`
+              : "classificationBasis 中的任一事实引用字段";
+      return { factRef, field };
+    });
     throw new DevFlowError("BOUNDARY_AUDIT_UNRESOLVED", "boundary audit fact must be included in classification basis", {
       factRef: auditMissingFromBasis[0],
       unresolvedRefs: auditMissingFromBasis,
       registeredIds,
+      basisFields,
+      recoveryHint: "把上述 factRef 加入 classificationBasis 对应字段后重新 classify（级别不变），再锁定分类。",
     });
   }
   const boundaryIndex: BoundaryResolutionIndex = { decisionRefs: [...facts.decisionRefs], decisions: decisionRecords, repositoryFacts: factRecords };
