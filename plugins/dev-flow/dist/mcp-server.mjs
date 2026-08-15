@@ -1,4 +1,4 @@
-/* dev-flow 5.1.2; built from source, deterministic build */
+/* dev-flow 5.1.3; built from source, deterministic build */
 
 // plugins/dev-flow/src/mcp/server.ts
 import readline from "node:readline";
@@ -1710,7 +1710,7 @@ function applyRepositoryFacts(draft, records, host) {
     }
   }
   draft.governance = { ...ledger, repositoryFacts: facts };
-  draft.lastUpdatedBy = { host, pluginVersion: "5.1.2" };
+  draft.lastUpdatedBy = { host, pluginVersion: "5.1.3" };
   return { created, existing };
 }
 async function registerRepositoryFact(root2, id, expectedRevision, input, host) {
@@ -4981,7 +4981,7 @@ async function requestGrillDecision(root2, id, expectedRevision, input) {
       options: input.options,
       recommendation: input.recommendation
     });
-    draft.lastUpdatedBy = { host: input.host, pluginVersion: "5.1.2" };
+    draft.lastUpdatedBy = { host: input.host, pluginVersion: "5.1.3" };
   }, () => ({ questionId: input.questionId, mode: "decision", presentationEventId: interaction?.presentationEventId }));
   if (!interaction) throw new DevFlowError("INTERACTION_NOT_CREATED", target);
   return { state, interaction: toPublicInteraction(interaction), interactionId: interaction.id };
@@ -5040,7 +5040,7 @@ async function resolveGrillForAnswer(ctx) {
         });
       }
       draft.governance = { ...existingGovernance, decisions, credentials };
-      draft.lastUpdatedBy = { host, pluginVersion: "5.1.2" };
+      draft.lastUpdatedBy = { host, pluginVersion: "5.1.3" };
     },
     eventData: () => ({ interactionId: interaction.id, mode: "decision" })
   }));
@@ -5184,7 +5184,7 @@ async function resolveOwnershipForAnswer(ctx) {
           const nextInteraction = presentWorkspaceOwnership(draft, [remaining[0]], { batchPaths: remaining, remainingPaths: remaining.slice(1), single: true });
           nextPresentationEventId = nextInteraction.presentationEventId;
         }
-        draft.lastUpdatedBy = { host, pluginVersion: "5.1.2" };
+        draft.lastUpdatedBy = { host, pluginVersion: "5.1.3" };
       },
       eventData: () => ({
         promptEventId,
@@ -5242,7 +5242,7 @@ async function resolveTaskSwitchForAnswer(ctx) {
       draft.lifecycle = "paused";
       draft.resumeSummary = "\u65E7\u4EFB\u52A1\u5DF2\u6682\u505C\uFF1B\u6062\u590D\u65F6\u4F1A\u81EA\u52A8\u5BF9\u8D26\u5DE5\u4F5C\u533A\u3002";
     }
-    draft.lastUpdatedBy = { host, pluginVersion: "5.1.2" };
+    draft.lastUpdatedBy = { host, pluginVersion: "5.1.3" };
   }, () => ({ targetFeatureId: interaction.target.slice("task-switch:".length), action: matchedId, promptEventId }));
   return { state: next, action: matchedId };
 }
@@ -5259,7 +5259,7 @@ async function reconcileWorkspace(root2, id, expectedRevision, host) {
     draft.workspace = workspace;
     if (contentChanged) markAffectedEvidenceStale(draft, changedPaths2, reopenedLifecycle, legalCheckpointPaths);
     presentationEventId = queueNextOwnershipDecision(draft);
-    draft.lastUpdatedBy = { host, pluginVersion: "5.1.2" };
+    draft.lastUpdatedBy = { host, pluginVersion: "5.1.3" };
   }, () => ({
     observedHead: workspace.observedHead,
     commitCount: workspace.observedCommits.length,
@@ -5623,7 +5623,7 @@ async function resolveRouteConfirmationForAnswer(ctx) {
             host
           });
           delete draft.pendingDecision;
-          draft.lastUpdatedBy = { host, pluginVersion: "5.1.2" };
+          draft.lastUpdatedBy = { host, pluginVersion: "5.1.3" };
         },
         eventData: () => ({
           promptEventId,
@@ -5668,7 +5668,7 @@ async function resolveRouteConfirmationForAnswer(ctx) {
         transitionData = { previousRoute: transition.previousRoute, invalidatedSteps: transition.invalidatedSteps, invalidatedArtifacts: transition.invalidatedArtifacts };
         delete draft.pendingDecision;
         delete draft.routeConfirmation;
-        draft.lastUpdatedBy = { host, pluginVersion: "5.1.2" };
+        draft.lastUpdatedBy = { host, pluginVersion: "5.1.3" };
       },
       eventData: () => ({
         promptEventId,
@@ -5874,7 +5874,7 @@ async function recordDecision(root2, id, expectedRevision, question, evidence, c
         promptEventId: latest.eventId,
         rawText: evidence.trim()
       });
-      draft.lastUpdatedBy = { host, pluginVersion: "5.1.2" };
+      draft.lastUpdatedBy = { host, pluginVersion: "5.1.3" };
     }, { decisionId: decision.id, promptEventId: latest.eventId });
     return {
       state: state2,
@@ -5900,7 +5900,7 @@ ${conclusion.trim()}`).digest("hex"),
       ],
       ratification: { question: question.trim(), evidence: evidence.trim(), conclusion: conclusion.trim(), factRefs: [...factRefs] }
     });
-    draft.lastUpdatedBy = { host, pluginVersion: "5.1.2" };
+    draft.lastUpdatedBy = { host, pluginVersion: "5.1.3" };
   }, () => ({ decisionId: decision.id, presentationEventId: interaction?.presentationEventId }));
   if (!interaction) throw new DevFlowError("INTERACTION_NOT_CREATED", target);
   return { state, interaction: toPublicInteraction(interaction), decisionId: decision.id, interactionId: interaction.id };
@@ -5968,7 +5968,7 @@ ${reason.trim()}`).digest("hex"),
       ],
       revision: { decisionId, oldConclusion: old.conclusion ?? old.question, newConclusion: newConclusion.trim(), reason: reason.trim(), affected }
     });
-    draft.lastUpdatedBy = { host, pluginVersion: "5.1.2" };
+    draft.lastUpdatedBy = { host, pluginVersion: "5.1.3" };
   }, () => ({ decisionId, successorId, presentationEventId: interaction?.presentationEventId }));
   if (!interaction) throw new DevFlowError("INTERACTION_NOT_CREATED", target);
   return { state, interaction: toPublicInteraction(interaction), decisionId: successorId, interactionId: interaction.id };
@@ -6053,7 +6053,7 @@ async function resolveRatificationForAnswer(ctx) {
     mutate: (draft) => {
       response = resolveResponseForAnswer(draft, interaction, { source: credential.source, action: credential.source === "elicitation" ? credential.action : void 0, comment: credential.source === "elicitation" ? credential.comment : void 0, userReply: credential.source === "text" ? credential.userReply : void 0, promptText, promptEventId, host });
       if (confirms) ratifyDecision(draft, draft.interactions[interaction.id], response, promptEventId, host);
-      draft.lastUpdatedBy = { host, pluginVersion: "5.1.2" };
+      draft.lastUpdatedBy = { host, pluginVersion: "5.1.3" };
     },
     eventData: () => ({ interactionId: interaction.id, action: matchedId })
   }));
@@ -6081,7 +6081,7 @@ async function resolveRevisionForAnswer(ctx) {
     mutate: (draft) => {
       response = resolveResponseForAnswer(draft, interaction, { source: credential.source, action: credential.source === "elicitation" ? credential.action : void 0, comment: credential.source === "elicitation" ? credential.comment : void 0, userReply: credential.source === "text" ? credential.userReply : void 0, promptText, promptEventId, host });
       if (confirms) applyDecisionRevision(draft, draft.interactions[interaction.id], response, promptEventId, host);
-      draft.lastUpdatedBy = { host, pluginVersion: "5.1.2" };
+      draft.lastUpdatedBy = { host, pluginVersion: "5.1.3" };
     },
     eventData: () => ({ interactionId: interaction.id, action: matchedId })
   }));
@@ -6369,7 +6369,7 @@ ${impactLines.join("\n")}
         traceabilitySha256: initial.traceability?.sha256 ?? "none"
       }
     });
-    draft.lastUpdatedBy = { host, pluginVersion: "5.1.2" };
+    draft.lastUpdatedBy = { host, pluginVersion: "5.1.3" };
   }, () => ({ presentationEventId: interaction?.presentationEventId }));
   if (!interaction) throw new DevFlowError("INTERACTION_NOT_CREATED", target);
   return { state, interaction: toPublicInteraction(interaction), interactionId: interaction.id };
@@ -6397,7 +6397,7 @@ function applyPlanRevision(draft, interaction, host, artifactSha256) {
   delete draft.steps.planning;
   delete draft.steps.implementation;
   delete draft.steps.code_review;
-  draft.lastUpdatedBy = { host, pluginVersion: "5.1.2" };
+  draft.lastUpdatedBy = { host, pluginVersion: "5.1.3" };
 }
 async function resolvePlanRevisionForAnswer(ctx) {
   const { root: root2, featureId, expectedRevision, host, credential, interaction, state } = ctx;
@@ -6463,7 +6463,7 @@ ${[...sideEffects].sort().join("\n")}`).digest("hex"),
             });
           }
         }
-        draft.lastUpdatedBy = { host, pluginVersion: "5.1.2" };
+        draft.lastUpdatedBy = { host, pluginVersion: "5.1.3" };
       },
       eventData: () => ({ interactionId: interaction.id, action: matchedId })
     };
@@ -6507,7 +6507,7 @@ async function resolveSideEffectRerunForAnswer(ctx) {
           delete draft.steps.finalize;
         }
       }
-      draft.lastUpdatedBy = { host, pluginVersion: "5.1.2" };
+      draft.lastUpdatedBy = { host, pluginVersion: "5.1.3" };
     },
     eventData: () => ({ interactionId: interaction.id, action: matchedId })
   }));
@@ -6797,7 +6797,7 @@ async function resolveApprovalForAnswer(ctx) {
         } else {
           throw new DevFlowError("INTERACTION_ACTION_INVALID", response.action);
         }
-        draft.lastUpdatedBy = { host, pluginVersion: "5.1.2" };
+        draft.lastUpdatedBy = { host, pluginVersion: "5.1.3" };
       },
       eventData: () => ({ approval, interactionId: interaction.id, response })
     };
@@ -6952,7 +6952,7 @@ async function resolveQualityExceptionForAnswer(ctx) {
             draft.obligations = satisfyObligations(draft.obligations, [kind]);
           }
         }
-        draft.lastUpdatedBy = { host, pluginVersion: "5.1.2" };
+        draft.lastUpdatedBy = { host, pluginVersion: "5.1.3" };
       },
       eventData: { interactionId: interaction.id }
     };
@@ -7098,7 +7098,7 @@ async function recordAcceptanceEvidence(root2, id, expectedRevision, input) {
     };
     acceptance.evidence.push(record);
     upsertDisposition(state, record.acceptanceCriterionId, input.evidence.kind === "agent-self-check" ? "pending" : "satisfied", fingerprint2, [...acceptance.dispositions.find((item) => item.acceptanceCriterionId === record.acceptanceCriterionId)?.evidenceRefs ?? [], evidenceId]);
-    state.lastUpdatedBy = { host: input.host, pluginVersion: "5.1.2" };
+    state.lastUpdatedBy = { host: input.host, pluginVersion: "5.1.3" };
   });
 }
 function dispositionHash(state, criterionIds, fingerprint2) {
@@ -7374,7 +7374,7 @@ async function invalidateAffectedClaims(root2, id, expectedRevision) {
       fallback,
       reason
     };
-    draft.lastUpdatedBy = { host: state.lastUpdatedBy.host, pluginVersion: "5.1.2" };
+    draft.lastUpdatedBy = { host: state.lastUpdatedBy.host, pluginVersion: "5.1.3" };
   }, { changedFiles, reopenedUnits, reviewReopened, verificationReopened, fallback, reason });
   return invalidated;
 }
@@ -7700,7 +7700,7 @@ async function runVerification(root2, id, expectedRevision, host, commandIds) {
       const signature = `${exitReason}:${createHash23("sha256").update(fullOutput).digest("hex").slice(0, 16)}`;
       state.repair = recordRepairAttempt(state.repair ?? startRepairLoop(), signature, output.slice(-3));
     }
-    state.lastUpdatedBy = { host, pluginVersion: "5.1.2" };
+    state.lastUpdatedBy = { host, pluginVersion: "5.1.3" };
   });
 }
 async function readVerificationFreshness(root2, state) {
@@ -10412,7 +10412,7 @@ async function resolveRollbackGateForAnswer(ctx) {
         } else {
           throw new DevFlowError("INTERACTION_ACTION_INVALID", response.action);
         }
-        draft.lastUpdatedBy = { host, pluginVersion: "5.1.2" };
+        draft.lastUpdatedBy = { host, pluginVersion: "5.1.3" };
       },
       eventData: () => ({ gate: "rollback-confirmation", interactionId: interaction.id, response })
     };
@@ -11936,7 +11936,7 @@ async function startFeature(root2, input, options = {}) {
         blockingFindings: [],
         logicComplete: false,
         governance: { decisions: [], claims: [], authorizations: [], credentials: [], repositoryFacts: [] },
-        lastUpdatedBy: { host: input.host, pluginVersion: "5.1.2" }
+        lastUpdatedBy: { host: input.host, pluginVersion: "5.1.3" }
       };
       const ownershipPaths = unknownOwnershipPaths(state);
       state.workspace.unownedPaths = ownershipPaths;
@@ -12048,7 +12048,7 @@ async function pauseFeature(root2, id, expectedRevision, reason, host) {
     state.lifecycle = "paused";
     const openStep = currentOpenStep(state);
     state.resumeSummary = `\u6682\u505C\u539F\u56E0\uFF1A${reason.trim()}\u3002\u6062\u590D\u540E\u5148\u5BF9\u8D26\u5DE5\u4F5C\u533A\uFF0C\u518D\u4ECE${openStep ? `\u201C${openStep}\u201D` : "\u5F53\u524D\u9636\u6BB5"}\u7EE7\u7EED\u3002`;
-    state.lastUpdatedBy = { host, pluginVersion: "5.1.2" };
+    state.lastUpdatedBy = { host, pluginVersion: "5.1.3" };
   }, { reason: reason.trim() });
 }
 async function resumeFeature(root2, id, host) {
@@ -12081,7 +12081,7 @@ async function resumeFeature(root2, id, host) {
     presentationEventId = queueNextOwnershipDecision(state);
     const openStep = currentOpenStep(state);
     state.resumeSummary = `\u5DF2\u6062\u590D${openStep ? `\uFF0C\u4ECE\u201C${openStep}\u201D\u7EE7\u7EED` : "\u5F53\u524D\u4EFB\u52A1"}\u3002${contentChanged ? "\u5DE5\u4F5C\u533A\u5185\u5BB9\u6709\u53D8\u5316\uFF0C\u76F8\u5173\u8BC1\u636E\u5DF2\u6807\u8BB0\u4E3A\u5F85\u66F4\u65B0\u3002" : ""}`;
-    state.lastUpdatedBy = { host, pluginVersion: "5.1.2" };
+    state.lastUpdatedBy = { host, pluginVersion: "5.1.3" };
   }, () => ({ observedHead: workspace.observedHead, contentChanged, checkpointAffected, ...presentationEventId ? { presentationEventId } : {} }));
 }
 async function abandonFeature(root2, id, expectedRevision, reason, userEvidence) {
@@ -12135,7 +12135,7 @@ async function repairFeature(root2, id, expectedRevision, host) {
       }
       state.logicComplete = state.lifecycle === "finalized" && finalEvidenceCurrent;
     }
-    state.lastUpdatedBy = { host, pluginVersion: "5.1.2" };
+    state.lastUpdatedBy = { host, pluginVersion: "5.1.3" };
   }, { repaired: ["active-pointer", "freshness", "review/status-projection"] });
 }
 function isRecoveryPhase(value) {
@@ -13486,11 +13486,15 @@ async function review(root2, state) {
   const ledger = await readReviewLedger(root2, state);
   const current = ledger.batches.find((batch) => batch.validity === "current");
   const unresolved = current ? currentUnresolvedBlocking(ledger, current, state) : [];
+  const nonBlocking = current ? current.jobs.flatMap((job) => job.submission?.findings ?? []).filter((finding) => finding.severity !== "blocking") : [];
   const isolation = current?.jobs.flatMap((job) => job.submission?.isolationProof ? [{ jobId: job.jobId, mode: job.submission.isolationProof.mode }] : []) ?? [];
   return {
     enforced: true,
     currentBatch: current ? { progress: current.progress, roles: current.jobs.map((job) => ({ role: job.role, status: job.status })) } : void 0,
     unresolvedBlockingCount: unresolved.length,
+    nonBlockingFindingCount: nonBlocking.length,
+    // 收敛判据的唯一事实源：只有 unresolvedBlockingCount 阻塞推进。
+    readyWhen: "unresolvedBlockingCount === 0\uFF08warning/note \u4E0D\u963B\u585E\uFF1B\u4E0D\u5F97\u4EC5\u4E3A\u6E05\u96F6 warning \u518D\u6B21\u4FEE\u8BA2\u8BA1\u5212\uFF09",
     ...current?.unknownDiffInfo ? { unknownDiff: current.unknownDiffInfo } : {},
     independence: {
       // 隔离上下文证明与多来源证明是两个正交维度。
@@ -14485,7 +14489,7 @@ var toolSchemas = {
     inputSchema: featureMutation({ batchId: string, jobId: string, capability: string }, ["batchId", "jobId", "capability"])
   },
   dev_flow_start_isolated_review: {
-    description: "Declare that a claimed code review job will be executed in an isolated subagent context. The host SubagentOutput hook completes the declaration; agents cannot self-attest isolation.",
+    description: "Declare that a claimed code review job will be executed in an isolated subagent context. The host SubagentStop hook completes the declaration; agents cannot self-attest isolation.",
     inputSchema: featureMutation({ batchId: string, jobId: string, executionId: string, host: { enum: ["claude", "codex"] } }, ["batchId", "jobId", "executionId", "host"])
   },
   dev_flow_submit_review_job: {
@@ -15281,7 +15285,7 @@ async function dispatch(root2, name, a, ports2) {
     case "dev_flow_enable_windows_notifications":
       return enableWindowsNotifications({ nodeExecutable: process.execPath });
     case "dev_flow_doctor":
-      return collectDoctorReport(root2, pluginRootForDoctor(root2), "5.1.2", publicTools);
+      return collectDoctorReport(root2, pluginRootForDoctor(root2), "5.1.3", publicTools);
     case "dev_flow_recover_corrupt_feature":
       return recoverCorruptFeature(root2, {
         featureId: a.featureId,
@@ -15409,7 +15413,7 @@ async function dispatchRequest(message) {
       connection.configure(message.params?.capabilities, message.params?.clientInfo);
       protocolResult(message.id, {
         protocolVersion: message.params?.protocolVersion || "2024-11-05",
-        serverInfo: { name: "dev-flow", version: "5.1.2" },
+        serverInfo: { name: "dev-flow", version: "5.1.3" },
         capabilities: { tools: {} },
         instructions: "\u5148\u5B8C\u6210\u4E8B\u5B9E\u8C03\u67E5\u548C\u8DEF\u7EBF\u5206\u7C7B\u3002\u65E5\u5E38\u8BFB\u53D6 dev_flow_status\uFF1B\u5B83\u4F1A\u663E\u793A\u4E2D\u6587\u9636\u6BB5\u3001\u5F53\u524D\u4E0B\u4E00\u6B65\u548C\u552F\u4E00\u5F85\u51B3\u95EE\u9898\u3002\u6240\u6709\u7528\u6237\u51B3\u5B9A\u7EDF\u4E00\u4F7F\u7528 dev_flow_answer\uFF0C\u7CFB\u7EDF\u4F1A\u81EA\u52A8\u6309\u95EE\u9898\u7C7B\u578B\u5904\u7406\u3002\u6CA1\u6709\u771F\u5B9E\u51B3\u7B56\u7F3A\u53E3\u65F6\u6D41\u7A0B\u4F1A\u81EA\u52A8\u63A8\u8FDB\u3002\u5148\u8C03\u7528 dev_flow_init_project\uFF0C\u518D\u5F00\u59CB feature\u3002"
       });

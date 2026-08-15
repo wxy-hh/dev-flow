@@ -198,7 +198,7 @@ test("reused jobs require an isolation proof on their original submission", () =
 
 
 
-test("SubagentOutput hook records review-execution only for a declared job with distinct context ids", async () => {
+test("SubagentStop hook records review-execution only for a declared job with distinct context ids", async () => {
   const { root, state } = await setup("dev-flow-subagent-proof-");
   try {
     const declarationId = "decl-1234567890";
@@ -213,7 +213,7 @@ test("SubagentOutput hook records review-execution only for a declared job with 
     });
 
     const missingIds = await reviewAdapter.recordSubagentReviewOutput(root, {
-      hook_event_name: "SubagentOutput",
+      hook_event_name: "SubagentStop",
       prompt: `dev-flow:isolated-review:${declarationId}`,
       tool_input: {},
     }, "claude");
@@ -221,7 +221,7 @@ test("SubagentOutput hook records review-execution only for a declared job with 
     assert.equal(missingIds.reason, "missing-context-ids");
 
     const recorded = await reviewAdapter.recordSubagentReviewOutput(root, {
-      hook_event_name: "SubagentOutput",
+      hook_event_name: "SubagentStop",
       prompt: `dev-flow:isolated-review:${declarationId}`,
       tool_input: {
         subagent_session_id: "subagent-session",

@@ -1,4 +1,4 @@
-/* dev-flow 5.1.2; built from source, deterministic build */
+/* dev-flow 5.1.3; built from source, deterministic build */
 
 // plugins/dev-flow/src/core/state-store.ts
 import { randomUUID as randomUUID9, createHash as createHash14 } from "node:crypto";
@@ -2287,7 +2287,7 @@ async function reconcileWorkspace(root, id, expectedRevision, host) {
     draft.workspace = workspace;
     if (contentChanged) markAffectedEvidenceStale(draft, changedPaths, reopenedLifecycle, legalCheckpointPaths);
     presentationEventId = queueNextOwnershipDecision(draft);
-    draft.lastUpdatedBy = { host, pluginVersion: "5.1.2" };
+    draft.lastUpdatedBy = { host, pluginVersion: "5.1.3" };
   }, () => ({
     observedHead: workspace.observedHead,
     commitCount: workspace.observedCommits.length,
@@ -3534,7 +3534,7 @@ async function recordTrustedWriteOwnership(root, paths, host, eventId2) {
       draft.workspace.ownershipSource[file] = "trusted-hook";
     }
     draft.workspace.unownedPaths = (draft.workspace.unownedPaths ?? []).filter((file) => !governed.includes(file));
-    draft.lastUpdatedBy = { host, pluginVersion: "5.1.2" };
+    draft.lastUpdatedBy = { host, pluginVersion: "5.1.3" };
   }, { eventId: eventId2, host, paths: governed, after });
 }
 async function recordHostAuthorizationEvent(root, type, record) {
@@ -4860,6 +4860,7 @@ async function resolveDevFlowRoot(cwd) {
 }
 
 // plugins/dev-flow/src/hosts/review-execution-adapter.ts
+import { readFile as readFile12 } from "node:fs/promises";
 var DECLARATION_MARKER = /dev-flow:isolated-review:([A-Za-z0-9-]+)/u;
 function firstText(value) {
   if (typeof value === "string") return value;
@@ -4872,10 +4873,23 @@ function firstText(value) {
   }
   return "";
 }
+async function transcriptText(event) {
+  const transcriptPath = event.agent_transcript_path;
+  if (typeof transcriptPath !== "string" || !transcriptPath.trim()) return "";
+  let contents;
+  try {
+    contents = await readFile12(transcriptPath, "utf8");
+  } catch {
+    return "";
+  }
+  const marker = contents.match(DECLARATION_MARKER);
+  if (!marker) return "";
+  return marker[0];
+}
 async function recordSubagentReviewOutput(root, event, host) {
   const active = await readActive(root);
   if (!active) return { recorded: false, reason: "no-active-feature" };
-  const promptText = firstText(event.prompt) || firstText(event.tool_input) || firstText(event.tool_response) || firstText(event.tool_result);
+  const promptText = firstText(event.prompt) || firstText(event.tool_input) || firstText(event.tool_response) || firstText(event.tool_result) || await transcriptText(event);
   const marker = promptText.match(DECLARATION_MARKER);
   if (!marker) return { recorded: false, reason: "missing-marker" };
   const declarationId = marker[1];
@@ -4892,12 +4906,19 @@ async function recordSubagentReviewOutput(root, event, host) {
   const input = event.tool_input ?? {};
   const response = event.tool_response && typeof event.tool_response === "object" ? event.tool_response : {};
   const contextId = [
+    input.agent_id,
+    input.subagent_agent_id,
+    event.agent_id,
+    response.agent_id,
     input.subagent_session_id,
     input.subagent_context_id,
     response.subagent_session_id,
     response.session_id
   ].find((value) => typeof value === "string" && value.trim().length > 0);
   const implementationContextId = [
+    input.parent_agent_id,
+    event.parent_agent_id,
+    response.parent_agent_id,
     input.parent_session_id,
     input.parent_context_id,
     response.parent_session_id
@@ -5005,7 +5026,7 @@ async function runHookAdapter(host) {
 `);
     }
   }
-  if (event.hook_event_name === "SubagentOutput") {
+  if (event.hook_event_name === "SubagentStop") {
     try {
       await recordSubagentReviewOutput(root, event, host);
     } catch (error) {

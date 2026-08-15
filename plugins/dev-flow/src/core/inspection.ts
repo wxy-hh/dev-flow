@@ -101,12 +101,18 @@ async function review(root: string, state: FeatureState) {
   const ledger = await readReviewLedger(root, state);
   const current = ledger.batches.find((batch) => batch.validity === "current");
   const unresolved = current ? currentUnresolvedBlocking(ledger, current, state) : [];
+  const nonBlocking = current
+    ? current.jobs.flatMap((job) => job.submission?.findings ?? []).filter((finding) => finding.severity !== "blocking")
+    : [];
   // issue 19：来源维度与隔离维度分开展示，互不替代。
   const isolation = current?.jobs.flatMap((job) => job.submission?.isolationProof ? [{ jobId: job.jobId, mode: job.submission.isolationProof.mode }] : []) ?? [];
   return {
     enforced: true,
     currentBatch: current ? { progress: current.progress, roles: current.jobs.map((job) => ({ role: job.role, status: job.status })) } : undefined,
     unresolvedBlockingCount: unresolved.length,
+    nonBlockingFindingCount: nonBlocking.length,
+    // 收敛判据的唯一事实源：只有 unresolvedBlockingCount 阻塞推进。
+    readyWhen: "unresolvedBlockingCount === 0（warning/note 不阻塞；不得仅为清零 warning 再次修订计划）",
     ...(current?.unknownDiffInfo ? { unknownDiff: current.unknownDiffInfo } : {}),
     independence: {
       // 隔离上下文证明与多来源证明是两个正交维度。

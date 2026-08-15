@@ -351,7 +351,7 @@ export const toolSchemas = {
     inputSchema: featureMutation({ batchId: string, jobId: string, capability: string }, ["batchId", "jobId", "capability"]),
   },
   dev_flow_start_isolated_review: {
-    description: "Declare that a claimed code review job will be executed in an isolated subagent context. The host SubagentOutput hook completes the declaration; agents cannot self-attest isolation.",
+    description: "Declare that a claimed code review job will be executed in an isolated subagent context. The host SubagentStop hook completes the declaration; agents cannot self-attest isolation.",
     inputSchema: featureMutation({ batchId: string, jobId: string, executionId: string, host: { enum: ["claude", "codex"] } }, ["batchId", "jobId", "executionId", "host"]),
   },
   dev_flow_submit_review_job: {

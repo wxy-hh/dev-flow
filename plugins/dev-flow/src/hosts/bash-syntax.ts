@@ -16,6 +16,10 @@ export interface HookEvent {
   tool_response?: unknown;
   tool_result?: unknown;
   prompt?: unknown;
+  agent_id?: unknown;
+  agent_transcript_path?: unknown;
+  parent_agent_id?: unknown;
+  session_id?: unknown;
 }
 
 const directWriteTools = new Set(["write", "edit", "multiedit", "applypatch", "apply_patch", "patch"]);

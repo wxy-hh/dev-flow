@@ -41,6 +41,15 @@ const blockingFinding = {
   recommendation: "补充测试或显式验证处置",
 };
 
+const warningFinding = {
+  severity: "warning",
+  category: "requirements-coverage",
+  targets: ["TEST-001"],
+  evidence: [{ path: "实施计划.md", line: 10 }],
+  claim: "测试命名可以更明确",
+  recommendation: "后续批量优化，不阻塞当前路线",
+};
+
 async function setupPlanReview(root, featureId) {
   return prepareReviewReadyFeature(root, {
     level: "M",
@@ -334,6 +343,8 @@ test("inspect shows unresolved blocking findings even while the batch is open", 
     assert.equal(gate.status, "jobs-open");
     const view = await inspection.inspectFeature(root, id, "review");
     assert.equal(view.content.unresolvedBlockingCount, 1);
+    assert.equal(view.content.nonBlockingFindingCount, 0);
+    assert.match(view.content.readyWhen, /warning\/note 不阻塞/);
     // 全部提交后 gate 才升级为 blocking，inspect 与 gate 的 findingIds 一致。
     for (const job of created.batch.jobs) {
       if (job.jobId === target.jobId) continue;
@@ -348,6 +359,35 @@ test("inspect shows unresolved blocking findings even while the batch is open", 
     assert.equal(blockingGate.status, "blocking");
     const after = await inspection.inspectFeature(root, id, "review");
     assert.equal(after.content.unresolvedBlockingCount, blockingGate.findingIds.length);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("warning-only findings do not block plan review and inspect states convergence", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "dev-flow-gate-warning-"));
+  try {
+    const id = "warning";
+    const state = await setupPlanReview(root, id);
+    const created = await jobs.createReviewBatch(root, id, state.revision);
+    const warningRole = created.batch.jobs[0].role;
+    const completed = await completeReviewJobs(root, id, created.state, created.batch, {
+      completions: {
+        [warningRole]: {
+          coverageSummary: "发现非阻塞 warning",
+          findings: [{ ...warningFinding, category: warningRole }],
+        },
+      },
+    });
+    const gate = await jobs.reviewGate(root, completed.state);
+    assert.equal(gate.status, "ready", `warning-only plan review should be ready, got ${gate.status}`);
+    const view = await inspection.inspectFeature(root, id, "review");
+    assert.equal(view.content.unresolvedBlockingCount, 0);
+    assert.equal(view.content.nonBlockingFindingCount, 1);
+    assert.match(view.content.readyWhen, /unresolvedBlockingCount === 0/);
+    const recorded = await steps.recordStep(root, id, completed.state.revision, "planning", {});
+    assert.equal(recorded.steps.planning.status, "satisfied");
+    assert.notEqual(stepOrder.currentOpenStep(recorded), "planning");
   } finally {
     await rm(root, { recursive: true, force: true });
   }

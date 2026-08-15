@@ -103,7 +103,7 @@ export async function runHookAdapter(host: HookHost): Promise<void> {
     }
   }
 
-  if (event.hook_event_name === "SubagentOutput") {
+  if (event.hook_event_name === "SubagentStop") {
     try {
       await recordSubagentReviewOutput(root, event, host);
     } catch (error) {
