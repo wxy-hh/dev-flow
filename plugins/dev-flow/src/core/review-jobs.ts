@@ -29,6 +29,7 @@ import {
 import { readProjectConfigSnapshot, readTraceability } from "./traceability-store.js";
 import { assertCurrentReviewProjection } from "./review-projection.js";
 import { satisfyObligations } from "../policy/obligations.js";
+import { assertImplementationPlanTraceCurrent } from "./traceability-gates.js";
 import {
   createInteraction,
   findInteractionForTarget,
@@ -580,11 +581,15 @@ export async function createReviewBatch(
   let result: CreateReviewBatchResult | undefined;
   const state = await mutatePrepared(root, id, expectedRevision, "review-batch-created", async (current, nextStateRevision) => {
     if (current.lifecycle !== "active") invalid("INVALID_LIFECYCLE", "only active features can create review batches");
+    const phase = currentOpenStep(current) === "code_review" ? "code" : "plan";
+    // 计划修订确认后 artifact sha 会同步，但 Trace 不会自动重登记；
+    // 这里只做 artifact↔Trace sha 一致性检查，避免带着 stale Trace 复用旧审查 job。
+    const currentTrace = current.traceability ? await readTraceability(root, current) : undefined;
+    if (currentTrace) assertImplementationPlanTraceCurrent(current as FeatureState, currentTrace);
     const ledger = await readReviewLedger(root, current);
     const reviewInput = await deriveReviewInput(root, current);
     const { basis } = reviewInput;
     const currentBasisHash = basisHash(basis);
-    const phase = currentOpenStep(current) === "code_review" ? "code" : "plan";
     const requirements = deriveReviewJobRequirements(current.route, current.classification.riskLabels, current.classification.controls.reviewRoles, phase);
     const isolationRequired = phase === "code"
       && codeReviewIsolationRequired(current)
@@ -606,15 +611,20 @@ export async function createReviewBatch(
     // 未知 diff：basis 变化落在所有角色切片之外（governed 文件、scope、capability、
     // topology 等变化）时，每个角色都会命中复用；无法归因到任何角色语义，保守全量重审。
     const prevCurrent = ledger.batches.find((batch) => batch.validity === "current");
+    const carriedByRole = new Map<string, Array<{ finding: ReviewFinding; originBatchId: string; basisHash: string }>>();
     const reusableByRole = new Map<string, { batch: ReviewBatch; job: ReviewJob }>();
     for (const requirement of requirements) {
       const currentRoleBasisHash = reviewInput.roleBasisHashes[requirement.role];
-      const reusable = [...ledger.batches].reverse().flatMap((candidate) => candidate.jobs.map((job) => ({ batch: candidate, job })))
-        .find(({ job }) => job.role === requirement.role
-          && job.roleBasisHash === currentRoleBasisHash
-          && job.status === "submitted"
-          && job.submission
-          && (!isolationRequired || jobHasEffectiveIsolationProof(ledger, job)));
+      const carried = carriedFindings(ledger, requirement.role, currentRoleBasisHash);
+      carriedByRole.set(requirement.role, carried);
+      const reusable = carried.length === 0
+        ? [...ledger.batches].reverse().flatMap((candidate) => candidate.jobs.map((job) => ({ batch: candidate, job })))
+          .find(({ job }) => job.role === requirement.role
+            && job.roleBasisHash === currentRoleBasisHash
+            && job.status === "submitted"
+            && job.submission
+            && (!isolationRequired || jobHasEffectiveIsolationProof(ledger, job)))
+        : undefined;
       if (reusable?.job.submission) reusableByRole.set(requirement.role, reusable);
     }
     const unknownDiff = prevCurrent !== undefined
@@ -638,7 +648,7 @@ export async function createReviewBatch(
         });
         continue;
       }
-      const carried = carriedFindings(ledger, requirement.role, currentRoleBasisHash);
+      const carried = carriedByRole.get(requirement.role) ?? [];
       const packageSha256 = await writeReviewPackage(root, current.featureId, {
         schemaVersion: 2,
         featureId: current.featureId,

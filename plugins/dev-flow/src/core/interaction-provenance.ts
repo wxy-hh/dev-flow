@@ -102,7 +102,11 @@ export function resolvePromptEvent(
     return [{ prompt, record, index }];
   });
   const textMatches = candidates.filter(({ prompt }) => textCompatible(prompt.text, input.userReply));
-  const matches = (textMatches.length ? textMatches : candidates.filter(({ prompt }) => Boolean(prompt.question)))
+  // 完全一致的宿主原文优先：多轮重试会积累若干共享前缀的相似回复，
+  // 前缀兼容会同时命中多条历史消息；只有原文相等才能唯一消解本次回答。
+  const exactMatches = textMatches.filter(({ prompt }) => normalizeReplyText(prompt.text) === normalizeReplyText(input.userReply));
+  const sourceMatches = exactMatches.length ? exactMatches : textMatches;
+  const matches = (sourceMatches.length ? sourceMatches : candidates.filter(({ prompt }) => Boolean(prompt.question)))
     .map(({ prompt, record }) => ({ eventId: prompt.eventId, revision: record.revision, at: prompt.at, text: prompt.text, host: prompt.host }));
   if (matches.length === 0) {
     throw new DevFlowError("INTERACTION_PROVENANCE_UNAVAILABLE", "没有找到呈现问题之后、来自当前宿主的唯一用户回答。", {

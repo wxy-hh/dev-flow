@@ -14,6 +14,7 @@ const units = await loadSource("plugins/dev-flow/src/core/implementation-units.t
 const checkpoints = await loadSource("plugins/dev-flow/src/core/checkpoints.ts");
 const decisions = await loadSource("plugins/dev-flow/src/core/decision-interactions.ts");
 const stepOrder = await loadSource("plugins/dev-flow/src/core/step-order.ts");
+const reviewJobs = await loadSource("plugins/dev-flow/src/core/review-jobs.ts");
 
 const projectConfig = {
   schemaVersion: 2,
@@ -116,6 +117,12 @@ test("revising the plan during implementation pauses the step, shows the impact,
     assert.equal(stepOrder.currentOpenStep(revised.state), "planning");
     assert.equal(revised.state.steps.planning, undefined);
     assert.ok(revised.state.traceability, "trace pointer stays until the revised plan is re-registered");
+    // sha 已同步但 Trace 仍是修订前切片：create_review_batch 必须失败关闭，
+    // 防止复用旧审查 job 后把未解决的 blocking 卡成只能走 risk-acceptance。
+    await assert.rejects(
+      () => reviewJobs.createReviewBatch(root, id, revised.state.revision),
+      (error) => error.code === "TRACE_SLICE_STALE",
+    );
     // 重新登记修订后的计划并推进，重做受影响单元（implementation 步骤在单元完成后登记）
     let reRegistered = (await artifacts.recordArtifactWithTrace(root, id, revised.state.revision, "implementation-plan", revisedDelta)).state;
     reRegistered = await steps.recordStep(root, id, reRegistered.revision, "planning", { reviewType: "plan" });

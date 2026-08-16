@@ -74,6 +74,24 @@ test("two later matching prompts remain ambiguous instead of guessing", () => {
   );
 });
 
+
+test("exact prompt text wins over shared-prefix historical messages", () => {
+  const events = [
+    { revision: 0, type: "started", at: "2026-01-01T00:00:00.000Z", data: { presentationEventId: "present-1" } },
+    { revision: 0, type: "host-event", at: "2026-01-01T00:00:01.000Z", data: { eventId: "short", type: "user-prompt", host: "codex", text: "接受风险", at: "2026-01-01T00:00:01.000Z" } },
+    { revision: 0, type: "host-event", at: "2026-01-01T00:00:02.000Z", data: { eventId: "long", type: "user-prompt", host: "codex", text: "接受风险：TASK-007 已覆盖", at: "2026-01-01T00:00:02.000Z" } },
+  ];
+  const resolved = provenance.resolvePromptEvent(events, {
+    host: "codex",
+    userReply: "接受风险：TASK-007 已覆盖",
+    presentedAt: "2026-01-01T00:00:00.500Z",
+    presentedRevision: 0,
+    presentationEventId: "present-1",
+  });
+  assert.equal(resolved.eventId, "long");
+});
+
+
 test("a prompt event captured by another host cannot be consumed by approval", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "dev-flow-host-provenance-"));
   try {

@@ -1,4 +1,4 @@
-/* dev-flow 5.1.3; built from source, deterministic build */
+/* dev-flow 5.1.4; built from source, deterministic build */
 
 // plugins/dev-flow/src/core/state-store.ts
 import { randomUUID as randomUUID9, createHash as createHash14 } from "node:crypto";
@@ -1145,6 +1145,7 @@ async function inspectTraceGate(root, state, step) {
     ledger = await readTraceability(root, state);
     const { config, sha256 } = await readProjectConfigSnapshot(root);
     assertTraceSliceCurrent(ledger, state.route, traceStep, sha256, verificationCommandHashes(config));
+    if (traceStep === "implementation_plan") assertImplementationPlanTraceCurrent(state, ledger);
     return { enforced: true, ledger, effectiveSummary: ledger.summary };
   } catch (error) {
     return {
@@ -1152,6 +1153,17 @@ async function inspectTraceGate(root, state, step) {
       ...ledger ? { ledger, effectiveSummary: ledger.summary } : {},
       blocker: blockerFor(traceStep, error)
     };
+  }
+}
+function assertImplementationPlanTraceCurrent(state, ledger) {
+  const artifact = state.artifacts["implementation-plan"];
+  if (!artifact) return;
+  const stalePlanNodes = Object.values(ledger.nodes).filter((node) => node.status === "current" && node.sourceArtifact === "implementation-plan" && node.sourceSha256 !== artifact.sha256).map((node) => ({ id: node.id, traceSha256: node.sourceSha256, artifactSha256: artifact.sha256 }));
+  if (stalePlanNodes.length) {
+    throw new DevFlowError("TRACE_SLICE_STALE", "implementation plan artifact changed without re-registering its Trace slice", {
+      stalePlanNodes,
+      recoveryHint: "\u8BA1\u5212\u4FEE\u8BA2\u786E\u8BA4\u540E\uFF0C\u5FC5\u987B\u7528 record_artifact_with_trace \u91CD\u767B\u8BB0\u5B9E\u65BD\u8BA1\u5212\uFF1B\u4EC5\u4FEE\u8BA2 artifact sha \u4E0D\u80FD\u5237\u65B0 Trace\u3002"
+    });
   }
 }
 async function inspectCurrentTrace(root, state) {
@@ -2287,7 +2299,7 @@ async function reconcileWorkspace(root, id, expectedRevision, host) {
     draft.workspace = workspace;
     if (contentChanged) markAffectedEvidenceStale(draft, changedPaths, reopenedLifecycle, legalCheckpointPaths);
     presentationEventId = queueNextOwnershipDecision(draft);
-    draft.lastUpdatedBy = { host, pluginVersion: "5.1.3" };
+    draft.lastUpdatedBy = { host, pluginVersion: "5.1.4" };
   }, () => ({
     observedHead: workspace.observedHead,
     commitCount: workspace.observedCommits.length,
@@ -3534,7 +3546,7 @@ async function recordTrustedWriteOwnership(root, paths, host, eventId2) {
       draft.workspace.ownershipSource[file] = "trusted-hook";
     }
     draft.workspace.unownedPaths = (draft.workspace.unownedPaths ?? []).filter((file) => !governed.includes(file));
-    draft.lastUpdatedBy = { host, pluginVersion: "5.1.3" };
+    draft.lastUpdatedBy = { host, pluginVersion: "5.1.4" };
   }, { eventId: eventId2, host, paths: governed, after });
 }
 async function recordHostAuthorizationEvent(root, type, record) {

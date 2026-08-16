@@ -61,6 +61,7 @@ export async function inspectTraceGate(root: string, state: FeatureState, step: 
     ledger = await readTraceability(root, state);
     const { config, sha256 } = await readProjectConfigSnapshot(root);
     assertTraceSliceCurrent(ledger, state.route, traceStep, sha256, verificationCommandHashes(config));
+    if (traceStep === "implementation_plan") assertImplementationPlanTraceCurrent(state, ledger);
     return { enforced: true, ledger, effectiveSummary: ledger.summary };
   } catch (error) {
     return {
@@ -68,6 +69,21 @@ export async function inspectTraceGate(root: string, state: FeatureState, step: 
       ...(ledger ? { ledger, effectiveSummary: ledger.summary } : {}),
       blocker: blockerFor(traceStep, error),
     };
+  }
+}
+
+/** 仅检查实施计划 artifact 与 Trace 中 implementation-plan 节点 sha 一致。 */
+export function assertImplementationPlanTraceCurrent(state: FeatureState, ledger: TraceabilityLedger): void {
+  const artifact = state.artifacts["implementation-plan"];
+  if (!artifact) return;
+  const stalePlanNodes = Object.values(ledger.nodes)
+    .filter((node) => node.status === "current" && node.sourceArtifact === "implementation-plan" && node.sourceSha256 !== artifact.sha256)
+    .map((node) => ({ id: node.id, traceSha256: node.sourceSha256, artifactSha256: artifact.sha256 }));
+  if (stalePlanNodes.length) {
+    throw new DevFlowError("TRACE_SLICE_STALE", "implementation plan artifact changed without re-registering its Trace slice", {
+      stalePlanNodes,
+      recoveryHint: "计划修订确认后，必须用 record_artifact_with_trace 重登记实施计划；仅修订 artifact sha 不能刷新 Trace。",
+    });
   }
 }
 
