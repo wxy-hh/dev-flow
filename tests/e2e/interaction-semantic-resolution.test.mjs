@@ -48,24 +48,24 @@ async function lockRouteConfirmation(fixture, featureId) {
   return pending;
 }
 
-test("带后缀事件 + 精简 userReply 仍可确认路线（回归 m-level-issue-8499 场景 B）", async () => {
+test("带后缀事件仍可确认路线（回归 m-level-issue-8499 场景 B）", async () => {
   const fixture = await createTinyApp();
   try {
     const pending = await lockRouteConfirmation(fixture, "route-sem-b");
     await store.recordHostEvent(fixture.root, { eventId: "answer-suffixed", type: "user-prompt", host: "claude", text: "确认这条路线（推荐）" });
-    const routed = (await store.answer({ root: fixture.root, featureId: pending.featureId, expectedRevision: pending.revision, host: "claude", credential: { source: "text", userReply: "确认这条路线" } })).state;
+    const routed = (await store.answerFromHostEvents({ root: fixture.root, featureId: pending.featureId, expectedRevision: pending.revision, host: "claude" })).state;
     assert.equal(routed.mode, "routed");
     assert.equal(routed.route, "m");
     assert.equal(decisions.pendingDecisionForState(routed), undefined);
   } finally { await fixture.dispose(); }
 });
 
-test("带后缀 userReply 原样回传仍可确认路线（回归 m-level-issue-8499 场景 C）", async () => {
+test("带后缀事件原样落账仍可确认路线（回归 m-level-issue-8499 场景 C）", async () => {
   const fixture = await createTinyApp();
   try {
     const pending = await lockRouteConfirmation(fixture, "route-sem-c");
     await store.recordHostEvent(fixture.root, { eventId: "answer-full", type: "user-prompt", host: "claude", text: "确认这条路线（推荐）" });
-    const routed = (await store.answer({ root: fixture.root, featureId: pending.featureId, expectedRevision: pending.revision, host: "claude", credential: { source: "text", userReply: "确认这条路线（推荐）" } })).state;
+    const routed = (await store.answerFromHostEvents({ root: fixture.root, featureId: pending.featureId, expectedRevision: pending.revision, host: "claude" })).state;
     assert.equal(routed.mode, "routed");
   } finally { await fixture.dispose(); }
 });
@@ -75,7 +75,7 @@ test("短答「可以」确认当前唯一待决的路线", async () => {
   try {
     const pending = await lockRouteConfirmation(fixture, "route-sem-short");
     await store.recordHostEvent(fixture.root, { eventId: "answer-short", type: "user-prompt", host: "claude", text: "可以" });
-    const routed = (await store.answer({ root: fixture.root, featureId: pending.featureId, expectedRevision: pending.revision, host: "claude", credential: { source: "text", userReply: "可以" } })).state;
+    const routed = (await store.answerFromHostEvents({ root: fixture.root, featureId: pending.featureId, expectedRevision: pending.revision, host: "claude" })).state;
     assert.equal(routed.mode, "routed");
   } finally { await fixture.dispose(); }
 });
@@ -86,7 +86,7 @@ test("无确认语义文本「等等」拒绝且不改变状态", async () => {
     const pending = await lockRouteConfirmation(fixture, "route-sem-neg");
     await store.recordHostEvent(fixture.root, { eventId: "answer-neg", type: "user-prompt", host: "claude", text: "等等" });
     await assert.rejects(
-      () => store.answer({ root: fixture.root, featureId: pending.featureId, expectedRevision: pending.revision, host: "claude", credential: { source: "text", userReply: "等等" } }),
+      () => store.answerFromHostEvents({ root: fixture.root, featureId: pending.featureId, expectedRevision: pending.revision, host: "claude" }),
       (error) => error.code === "DECISION_REPLY_NOT_RECOGNIZED",
     );
     const unchanged = await store.readState(fixture.root, pending.featureId);
@@ -96,19 +96,19 @@ test("无确认语义文本「等等」拒绝且不改变状态", async () => {
   } finally { await fixture.dispose(); }
 });
 
-test("否定前缀文本不与肯定事件兼容（拒绝不能被误判为确认）", async () => {
+test("否定前缀文本事件被拒绝（拒绝不能被误判为确认）", async () => {
   const fixture = await createTinyApp();
   try {
     const pending = await lockRouteConfirmation(fixture, "route-sem-negprefix");
-    await store.recordHostEvent(fixture.root, { eventId: "answer-affirm", type: "user-prompt", host: "claude", text: "确认这条路线" });
+    await store.recordHostEvent(fixture.root, { eventId: "answer-neg", type: "user-prompt", host: "claude", text: "不确认这条路线" });
     await assert.rejects(
-      () => store.answer({ root: fixture.root, featureId: pending.featureId, expectedRevision: pending.revision, host: "claude", credential: { source: "text", userReply: "不确认这条路线" } }),
-      (error) => error.code === "INTERACTION_PROVENANCE_UNAVAILABLE",
+      () => store.answerFromHostEvents({ root: fixture.root, featureId: pending.featureId, expectedRevision: pending.revision, host: "claude" }),
+      (error) => error.code === "DECISION_REPLY_NOT_RECOGNIZED",
     );
-    await store.recordHostEvent(fixture.root, { eventId: "answer-affirm-short", type: "user-prompt", host: "claude", text: "可以" });
+    await store.recordHostEvent(fixture.root, { eventId: "answer-neg-short", type: "user-prompt", host: "claude", text: "不可以" });
     await assert.rejects(
-      () => store.answer({ root: fixture.root, featureId: pending.featureId, expectedRevision: pending.revision, host: "claude", credential: { source: "text", userReply: "不可以" } }),
-      (error) => error.code === "INTERACTION_PROVENANCE_UNAVAILABLE",
+      () => store.answerFromHostEvents({ root: fixture.root, featureId: pending.featureId, expectedRevision: pending.revision, host: "claude" }),
+      (error) => error.code === "DECISION_REPLY_NOT_RECOGNIZED",
     );
     const unchanged = await store.readState(fixture.root, pending.featureId);
     assert.equal(unchanged.mode, "intake");
@@ -130,7 +130,7 @@ test("确认语义词不误伤多意图问题（workspace-ownership「可以」�
     await store.recordHostEvent(fixture.root, { eventId: "own-can", type: "user-prompt", host: "claude", text: "可以" });
     await assert.rejects(
       () => mcpCall(server, fixture.root, "dev_flow_answer", {
-        featureId: "route-sem-own", expectedRevision: pending.revision, userReply: "可以", host: "claude",
+        featureId: "route-sem-own", expectedRevision: pending.revision, host: "claude",
       }),
       (error) => error.code === "DECISION_REPLY_NOT_RECOGNIZED",
     );

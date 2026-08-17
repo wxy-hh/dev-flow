@@ -62,7 +62,7 @@ test("claude hook 子目录 cwd 下 AskUserQuestion 回答落入根账本并可�
     // 端到端：dev_flow_answer 应能消解追认（真实会话中此步失败）
     const before = await store.readState(fixture.root, "subdir-claude");
     await mcpCall(server, fixture.root, "dev_flow_answer", {
-      featureId: "subdir-claude", expectedRevision: before.revision, userReply: "确认登记", host: "claude",
+      featureId: "subdir-claude", expectedRevision: before.revision, host: "claude",
     });
     const after = await store.readState(fixture.root, "subdir-claude");
     assert.equal(after.governance.decisions.length, 1, "决策应已登记");

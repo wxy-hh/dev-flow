@@ -1,4 +1,5 @@
 import type { RouteId } from "../policy/types.js";
+import type { VerificationGuarantee } from "./project-config.js";
 import type { TraceArtifactKind, TraceabilityLedger, TraceDelta } from "../policy/traceability.js";
 import { applyTraceDelta, assertTraceabilityComplete, collectUncoveredAcceptanceCriteria, validateTraceGraph } from "./traceability.js";
 import { type TraceSourceBlock } from "./traceability-anchors.js";
@@ -35,6 +36,8 @@ export interface CompilePlanInput {
   projectConfigSha256: string;
   verificationCommandIds: string[];
   verificationCommandHashes: Record<string, string>;
+  /** Guarantees declared by project commands; used for aggregate targeted preflight. */
+  verificationCommandGuarantees?: Record<string, VerificationGuarantee[]>;
   /** 与正式登记一致的下一个 state revision（只影响 ledger 元数据）。 */
   nextStateRevision: number;
   /** 路线风险标签（ADR-0016：数据迁移/外部副作用/不可逆步骤要求恢复安排）。 */
@@ -162,6 +165,33 @@ function compileCore(input: CompilePlanInput): { diagnostics: PlanDiagnostic[]; 
   }
   // 测试先行只约束可自动测试的行为变更（spec §171 / §49）：test-first 任务
   // 覆盖的验收条件必须由行为测试覆盖，不能用"无法测试"声明非行为处置绕过。
+  // Phase 2 targeted preflight: every forward_verification command of every
+  // current UNIT must provide targeted. All violations are aggregated with the
+  // unit and command ID instead of surfacing one-at-a-time at checkpoint.
+  if (input.artifactKind === "implementation-plan") {
+    for (const node of Object.values(ledger.nodes)) {
+      if (node.kind !== "implementation-unit" || node.status !== "current") continue;
+      for (const reference of node.forwardVerification) {
+        if (typeof reference !== "string") {
+          diagnostics.push({
+            code: "TRACE_INLINE_VERIFICATION_FORBIDDEN",
+            position: node.id,
+            message: "v6 implementation-unit forward_verification 只能是 named command ID，不接受 inline object。",
+            recoveryHint: "将命令登记到 project config verification.commands 后在 Markdown 中引用其 ID。",
+          });
+          continue;
+        }
+        const guarantees = input.verificationCommandGuarantees?.[reference] ?? [];
+        if (guarantees.includes("targeted")) continue;
+        diagnostics.push({
+          code: "TRACE_VERIFICATION_COMMAND_NOT_TARGETED",
+          position: node.id,
+          message: `UNIT 前向验证命令 ${reference} 未声明 targeted guarantee。`,
+          recoveryHint: "为 project command 增加 targeted provides，或改用已提供 targeted 的 named command。",
+        });
+      }
+    }
+  }
   const testFirstAcCoveredByTest = new Set<`AC-${string}`>();
   for (const node of Object.values(ledger.nodes)) {
     if (node.kind !== "task" || node.tdd !== "test-first") continue;

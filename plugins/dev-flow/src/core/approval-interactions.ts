@@ -253,12 +253,15 @@ export async function resolveApprovalForAnswer(ctx: AnswerResolveContext): Promi
   let promptText: string | undefined;
   let promptEventId: string | undefined;
   if (credential.source === "text") {
+    const reply = credential.promptText;
+    promptEventId = credential.promptEventId;
     const events = await readFeatureEvents(root, featureId);
-    provenance = assertTokenEvidence(events, state, approval, credential.userReply, {}, host);
-    promptEventId = provenance.promptEventId;
-    promptText = provenance.promptEventId
+    const resolvedProvenance = assertTokenEvidence(events, state, approval, reply, { promptEventId }, host);
+    provenance = resolvedProvenance;
+    promptEventId = resolvedProvenance.promptEventId;
+    promptText = resolvedProvenance.promptEventId
       ? (events.find((item) => item.type === "host-event"
-        && (item.data as { eventId?: string }).eventId === provenance!.promptEventId)?.data as { text?: string } | undefined)?.text
+        && (item.data as { eventId?: string }).eventId === resolvedProvenance.promptEventId)?.data as { text?: string } | undefined)?.text
       : undefined;
   }
   let response: InteractionResponse | undefined;
@@ -297,12 +300,12 @@ export async function resolveApprovalForAnswer(ctx: AnswerResolveContext): Promi
     }
     return {
       mutate: (draft) => {
-        const phraseText = promptText ?? (credential.source === "text" ? credential.userReply : undefined);
+        const phraseText = promptText ?? (credential.source === "text" ? (credential.promptText) : undefined);
         response = resolveResponseForAnswer(draft, interaction, {
           source: credential.source,
           action: credential.source === "elicitation" ? credential.action : undefined,
           comment: credential.source === "elicitation" ? credential.comment : undefined,
-          userReply: credential.source === "text" ? credential.userReply : undefined,
+          userReply: credential.source === "text" ? promptText : undefined,
           promptText,
           promptEventId,
           host,

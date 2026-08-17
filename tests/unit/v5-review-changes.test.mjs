@@ -13,6 +13,7 @@ const units = await loadSource("plugins/dev-flow/src/core/implementation-units.t
 const checkpoints = await loadSource("plugins/dev-flow/src/core/checkpoints.ts");
 const verification = await loadSource("plugins/dev-flow/src/core/verification.ts");
 const stepOrder = await loadSource("plugins/dev-flow/src/core/step-order.ts");
+const evidenceStore = await loadSource("plugins/dev-flow/src/core/evidence-store.ts");
 
 const okCommand = { id: "unit-ok", command: process.execPath, args: ["-e", "process.exit(0)"], cwd: ".", provides: ["targeted", "behavior", "integration", "full"] };
 const failCommand = { id: "unit-fail", command: process.execPath, args: ["-e", "process.exit(1)"], cwd: ".", provides: ["targeted", "behavior", "integration", "full"] };
@@ -115,6 +116,15 @@ async function driveToReviewed(root, state) {
   current = await trustedWrite(root, id, "src/a.js", "export const a = 1;\n");
   const cp1 = await checkpoints.checkpointImplementationUnit(root, id, current.revision, "UNIT-001");
   current = cp1.state;
+  const cp1Unit = current.implementationUnits.find((unit) => unit.unitId === "UNIT-001");
+  const cp1Manifest = await checkpoints.readCheckpoint(root, id, cp1Unit.checkpointId);
+  assert.equal(cp1Manifest.schemaVersion, 3, "new checkpoint manifests must be v3");
+  assert.ok(cp1Manifest.blobRefs);
+  for (const [blobSha256, ref] of Object.entries(cp1Manifest.blobRefs)) {
+    const bytes = await evidenceStore.readEvidenceObject(root, id, ref);
+    const { createHash } = await import("node:crypto");
+    assert.equal(createHash("sha256").update(bytes).digest("hex"), blobSha256);
+  }
   const second = await units.beginImplementationUnit(root, id, current.revision, "UNIT-002");
   current = second;
   current = await trustedWrite(root, id, "src/b.js", "export const b = 2;\n");

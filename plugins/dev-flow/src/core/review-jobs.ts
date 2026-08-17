@@ -3,6 +3,7 @@ import { toPublicReviewJob, type ReviewAgentAttestation, type ReviewBasis, type 
 import type { AcceptanceCriterionNode, TraceNode, TraceabilityLedger, VerificationDispositionKind } from "../policy/traceability.js";
 import type { ReviewAssurance, ReviewDepth, ReviewFinding, ReviewFindingInput, ReviewFindingResolutionInput, ReviewRole } from "../policy/review.js";
 import { pathWithinFileScope } from "../policy/rollback.js";
+import { REVIEW_ROLE_SEMANTIC_SPECS } from "../policy/review-basis.js";
 import {
   assuranceForReview2a,
   assuranceForReviewBatch,
@@ -41,7 +42,6 @@ import {
   type PublicInteraction,
 } from "./user-interactions.js";
 import type { InteractionResponse, UserInteraction } from "../policy/interaction.js";
-import { resolveInteractionPromptEvent } from "./interaction-provenance.js";
 import type { AnswerResolveContext, AnswerResolveResult } from "./interaction-answer.js";
 import { carriedFindings } from "./review-findings.js";
 import { effectiveFindingState, unresolvedBlockingFindings } from "./review-findings.js";
@@ -53,7 +53,7 @@ import { reviewEnforcementRequired } from "../policy/contract.js";
 const digest = (value: string) => createHash("sha256").update(value).digest("hex");
 const leaseMilliseconds = 60 * 60 * 1000;
 const samplingLeaseMilliseconds = 120 * 1000;
-const basisArtifactKinds = ["requirements", "implementation-plan", "coverage-matrix", "rollback-units"] as const;
+const basisArtifactKinds = ["requirements", "implementation-plan"] as const;
 
 interface FrozenReviewArtifact {
   kind: typeof basisArtifactKinds[number];
@@ -246,8 +246,15 @@ async function deriveReviewInput(root: string, state: FeatureState): Promise<Der
     governedRootsFingerprint,
     featureOwnedFingerprint,
   };
+  // 与 deriveReviewJobRequirements 使用同一角色集：controlEnhancements 单独开启
+  // planReview（未显式给 reviewRoles）时回退默认 plan 角色，否则 job 有角色
+  // 却没有 roleBasisHash，ReviewLedger 校验会以 REVIEW_INTEGRITY_FAILED 拒绝批次。
+  const fallbackRoles: ReviewRole[] = ["requirements-coverage", "architecture-testability", "rollback-operability"];
+  const baseRoles = state.classification.controls.reviewRoles.length
+    ? state.classification.controls.reviewRoles
+    : fallbackRoles;
   const roles = [...new Set<ReviewRole>([
-    ...state.classification.controls.reviewRoles,
+    ...baseRoles,
     ...(state.classification.controls.codeReview !== "none" ? ["code-quality" as const, "requirement-fidelity" as const] : []),
   ])];
   const roleBasisHashes = Object.fromEntries(
@@ -278,50 +285,29 @@ export function roleBasisHash(
   trace: TraceabilityLedger | undefined,
   role: ReviewRole,
 ): string {
-  const artifacts = frozenArtifacts.filter((artifact) => {
-    if (role === "code-quality" || role === "requirement-fidelity") return true;
-    if (role === "requirements-coverage") return artifact.kind === "requirements" || artifact.kind === "implementation-plan";
-    if (role === "architecture-testability") return artifact.kind === "implementation-plan";
-    if (role === "rollback-operability") return artifact.kind === "implementation-plan" || artifact.kind === "rollback-units";
-    return artifact.kind === "requirements" || artifact.kind === "implementation-plan";
-  }).map(({ kind, path: artifactPath, sha256 }) => ({ kind, path: artifactPath, sha256 }));
-  const traceKinds: TraceNode["kind"][] = role === "requirements-coverage" || role === "requirement-fidelity"
-      ? ["requirement", "acceptance-criterion", "task", "test", "implementation-unit"]
-      : role === "architecture-testability"
-        ? ["task", "test", "implementation-unit"]
-        : role === "rollback-operability"
-          ? ["task", "implementation-unit", "recovery", "rollback"]
-          : ["requirement", "acceptance-criterion", "task", "test", "implementation-unit", "recovery", "rollback"];
+  const spec = REVIEW_ROLE_SEMANTIC_SPECS[role];
+  const artifacts = frozenArtifacts
+    .filter((artifact) => spec.artifactKinds.includes(artifact.kind))
+    .map(({ kind, path: artifactPath, sha256 }) => ({ kind, path: artifactPath, sha256 }));
   const traceSlice = Object.values(trace?.nodes ?? {})
-    .filter((node) => node.status !== "tombstoned" && traceKinds.includes(node.kind))
+    .filter((node) => node.status !== "tombstoned" && spec.traceKinds.includes(node.kind))
     .sort((left, right) => left.id.localeCompare(right.id))
     .map(({ sourceArtifact: _sourceArtifact, sourceSha256: _sourceSha256, sourceAnchor: _sourceAnchor, sourceBlockSha256: _sourceBlockSha256, status: _status, ...semantic }) => semantic);
-  const specialtyRisk: Partial<Record<ReviewRole, string[]>> = {
-    security: ["security"],
-    "data-irreversibility": ["data", "irreversible_consequence"],
-    "money-safety": ["money"],
-    "contract-failure": ["external"],
-    "recovery-observability": ["availability"],
-    "critical-correctness": ["critical_correctness"],
-  };
-  if (specialtyRisk[role]) {
-    // 专项角色绑定风险标签与相关执行语义切片；计划/Trace 变化必须
+  if (spec.riskLabels) {
+    // 专项角色绑定自己的风险标签与完整 plan 语义切片；计划/Trace 变化必须
     // 重新审查，避免只因风险标签未变就永久复用旧结果。
     return digest(canonicalReviewValueJson({
       role,
       route: basis.route,
       level: basis.classification.level,
-      riskLabels: basis.classification.riskLabels.filter((label) => specialtyRisk[role]!.includes(label)),
-      // Specialty roles follow structured execution semantics. Whole-document
-      // hashes would turn unrelated wording edits into a full risk re-review.
+      riskLabels: basis.classification.riskLabels.filter((label) => spec.riskLabels!.includes(label)),
       traceSlice,
     }));
   }
-  const referencedCommandIds = traceSlice.flatMap((node) => {
-    if (node.kind === "implementation-unit") return node.forwardVerification;
-    if (node.kind === "rollback") return [...node.forwardVerification, ...node.rollbackVerification];
-    return [];
-  }).filter((reference): reference is string => typeof reference === "string");
+  const referencedCommandIds = spec.bindReferencedCommandHashes
+    ? traceSlice.flatMap((node) => node.kind === "implementation-unit" ? node.forwardVerification : [])
+        .filter((reference): reference is string => typeof reference === "string")
+    : [];
   const referencedCommandHashes = Object.fromEntries([...new Set(referencedCommandIds)].sort()
     .filter((id) => basis.verificationCommandHashes?.[id] !== undefined)
     .map((id) => [id, basis.verificationCommandHashes![id]]));
@@ -329,17 +315,14 @@ export function roleBasisHash(
     role,
     route: basis.route,
     level: basis.classification.level,
-    artifacts,
+    ...(role === "architecture-testability" ? { topology: basis.classification.topology } : {}),
+    ...(artifacts.length ? { artifacts } : {}),
     traceSlice,
-    // code review 必须绑定 feature-owned 内容：源码/测试变化后不得复用旧审查
-    // （audit-log 遗留偏差 1 的 role-basis 根因）。
-    ...(role === "code-quality" || role === "requirement-fidelity"
+    ...(spec.bindFeatureOwnedContent
       ? { featureOwnedFingerprint: basis.featureOwnedFingerprint ?? "" }
       : {}),
-    // requirements-coverage 显式绑定非行为处置豁免清单：豁免变化必须使该角色
-    // basis 失效（traceSlice 已覆盖，这里把语义绑定写明，防止切片收窄后脱钩）。
-    ...(role === "requirements-coverage" ? { nonBehaviorDispositions: nonBehaviorDispositions(trace) } : {}),
-    ...(role === "architecture-testability" || role === "rollback-operability" ? { verificationCommandHashes: referencedCommandHashes } : {}),
+    ...(spec.bindNonBehaviorDispositions ? { nonBehaviorDispositions: nonBehaviorDispositions(trace) } : {}),
+    ...(spec.bindReferencedCommandHashes ? { verificationCommandHashes: referencedCommandHashes } : {}),
   }));
 }
 
@@ -573,6 +556,15 @@ export async function startIsolatedReview(
 }
 
 /** Create is idempotent for an unchanged Core-computed basis. */
+
+/** 纯函数：创建新批次时只把同 phase 的 current 批次置 stale（GPT-005）。 */
+export function staleCurrentBatchesOfPhase(batches: ReviewBatch[], phase: "plan" | "code"): ReviewBatch[] {
+  return batches.map((candidate) =>
+    candidate.validity === "current" && candidate.phase === phase
+      ? { ...candidate, validity: "stale" as const }
+      : candidate);
+}
+
 export async function createReviewBatch(
   root: string,
   id: string,
@@ -582,10 +574,9 @@ export async function createReviewBatch(
   const state = await mutatePrepared(root, id, expectedRevision, "review-batch-created", async (current, nextStateRevision) => {
     if (current.lifecycle !== "active") invalid("INVALID_LIFECYCLE", "only active features can create review batches");
     const phase = currentOpenStep(current) === "code_review" ? "code" : "plan";
-    // 计划修订确认后 artifact sha 会同步，但 Trace 不会自动重登记；
-    // 这里只做 artifact↔Trace sha 一致性检查，避免带着 stale Trace 复用旧审查 job。
+    // Plan review must never start on a missing/stale implementation-plan slice.
     const currentTrace = current.traceability ? await readTraceability(root, current) : undefined;
-    if (currentTrace) assertImplementationPlanTraceCurrent(current as FeatureState, currentTrace);
+    if (currentTrace) await assertImplementationPlanTraceCurrent(root, current as FeatureState, currentTrace);
     const ledger = await readReviewLedger(root, current);
     const reviewInput = await deriveReviewInput(root, current);
     const { basis } = reviewInput;
@@ -608,9 +599,6 @@ export async function createReviewBatch(
       return { mutate: () => undefined, unchanged: true, eventData: { batchId: existing.batchId, basisHash: currentBasisHash, idempotent: true } };
     }
     if (!requirements.length) invalid("REVIEW_ROUTE_UNSUPPORTED", "当前动态路线没有启用独立 plan-review 角色。");
-    // 未知 diff：basis 变化落在所有角色切片之外（governed 文件、scope、capability、
-    // topology 等变化）时，每个角色都会命中复用；无法归因到任何角色语义，保守全量重审。
-    const prevCurrent = ledger.batches.find((batch) => batch.validity === "current");
     const carriedByRole = new Map<string, Array<{ finding: ReviewFinding; originBatchId: string; basisHash: string }>>();
     const reusableByRole = new Map<string, { batch: ReviewBatch; job: ReviewJob }>();
     for (const requirement of requirements) {
@@ -627,15 +615,12 @@ export async function createReviewBatch(
         : undefined;
       if (reusable?.job.submission) reusableByRole.set(requirement.role, reusable);
     }
-    const unknownDiff = prevCurrent !== undefined
-      && reusableByRole.size === requirements.length
-      && prevCurrent.basisHash !== currentBasisHash;
     const batchId = randomUUID();
     const jobs: ReviewJob[] = [];
     for (const requirement of requirements) {
       const jobId = randomUUID();
       const currentRoleBasisHash = reviewInput.roleBasisHashes[requirement.role];
-      const reusable = unknownDiff ? undefined : reusableByRole.get(requirement.role);
+      const reusable = reusableByRole.get(requirement.role);
       if (reusable?.job.submission) {
         jobs.push({
           jobId,
@@ -697,30 +682,28 @@ export async function createReviewBatch(
       basisHash: currentBasisHash,
       validity: "current",
       progress: jobs.every((job) => job.status === "reused") ? "complete" : "open",
-      executionMode: "parallel-safe",
+      executionMode: "parallel-execution",
       assuranceLevel: assuranceForReview2a(),
       jobs,
-      // 未知 diff 诊断（issue 16）：basis 变化字段、未命中切片原因与全量重审决定。
-      ...(unknownDiff ? {
-        unknownDiffInfo: {
-          changedFields: Object.keys(basis).filter((key) => JSON.stringify((prevCurrent!.basis as unknown as Record<string, unknown>)[key]) !== JSON.stringify((basis as unknown as Record<string, unknown>)[key])),
-          reason: "basis 变化未落入任何角色语义切片，保守执行完整重审而不是静默复用。",
-        },
-      } : {}),
     };
     const batches = [
-      ...ledger.batches.map((candidate) => candidate.validity === "current" ? { ...candidate, validity: "stale" as const } : candidate),
+      ...staleCurrentBatchesOfPhase(ledger.batches, phase),
       batch,
     ];
     const pointer = await writeReviewSnapshot(root, cloneLedger(ledger, nextStateRevision, batches));
     result = { state: undefined as unknown as FeatureState, batch, created: true };
     return {
-      mutate: (draft) => { draft.review = pointer; },
+      mutate: (draft) => {
+        draft.review = pointer;
+        // A new current batch replaces the evidence that satisfied this phase.
+        // Only the phase being re-created reopens; the other phase stays intact.
+        if (phase === "plan") delete draft.steps.planning;
+        else delete draft.steps.code_review;
+      },
       eventData: {
         batchId,
         basisHash: currentBasisHash,
         roles: jobs.map((job) => job.role),
-        ...(batch.unknownDiffInfo ? { unknownDiff: batch.unknownDiffInfo } : {}),
       },
     };
   });
@@ -821,7 +804,7 @@ export async function releaseReviewJob(
   return { ...result!, state };
 }
 
-interface SubmittedReviewJob {
+export interface SubmittedReviewJob {
   batch: ReviewBatch;
   payloadSha256: string;
   findingEvents: ReviewFindingEvent[];
@@ -844,7 +827,7 @@ function normalizeReviewCompletion(parsed: ReturnType<typeof parseReviewJobCompl
   };
 }
 
-async function submitParsedReviewJob(
+export async function submitParsedReviewJob(
   root: string,
   featureId: string,
   ledger: ReviewLedger,
@@ -969,9 +952,6 @@ async function submitParsedReviewJob(
     jobs: batch.jobs.map((candidate) => candidate.jobId === job.jobId ? submitted : candidate),
     ...(Object.keys(dispositions).length ? { dispositions } : {}),
   };
-  if (hostAttestation && updatedBatch.executionMode === "isolated-sequential") {
-    updatedBatch = { ...updatedBatch, executionMode: "native-subagent" };
-  }
   updatedBatch = {
     ...updatedBatch,
     progress: updatedBatch.jobs.every((candidate) => candidate.status === "submitted" || candidate.status === "reused") ? "complete" : "open",
@@ -1137,7 +1117,7 @@ export async function beginReviewSampling(
     const packageContents = await readBoundReviewPackage(root, id, batch, sampling);
     const updatedBatch = withDerivedAssurance({
       ...batch,
-      executionMode: "mcp-sampling",
+      executionMode: "parallel-execution",
       jobs: batch.jobs.map((candidate) => candidate.jobId === jobId ? sampling : candidate),
     });
     const pointer = await writeReviewSnapshot(root, cloneLedger(
@@ -1485,17 +1465,12 @@ export async function resolveReviewRiskAcceptanceForAnswer(ctx: AnswerResolveCon
   let promptEventId: string | undefined;
   let promptText: string | undefined;
   if (credential.source === "text") {
+    promptEventId = credential.promptEventId;
+    promptText = credential.promptText;
     const events = await readFeatureEvents(root, featureId);
-    const resolvedPromptEventId = resolveInteractionPromptEvent(events, state, interaction, {
-      host,
-      userReply: credential.userReply,
-    }).eventId;
     const hostEvent = events.find((event) => event.type === "host-event"
-      && (event.data as { eventId?: unknown }).eventId === resolvedPromptEventId);
-    assertReviewRiskAcceptanceEvidence(hostEvent, interaction, resolvedPromptEventId, credential.userReply, host);
-    promptEventId = resolvedPromptEventId;
-    const capturedText = (hostEvent?.data as { text?: unknown } | undefined)?.text;
-    promptText = typeof capturedText === "string" ? capturedText : undefined;
+      && (event.data as { eventId?: unknown }).eventId === promptEventId);
+    assertReviewRiskAcceptanceEvidence(hostEvent, interaction, promptEventId, promptText, host);
   }
   let response: InteractionResponse | undefined;
   let replayed = false;
@@ -1513,7 +1488,7 @@ export async function resolveReviewRiskAcceptanceForAnswer(ctx: AnswerResolveCon
       const accepted = credential.source === "text"
         ? live.response?.action === "accept"
           && live.response.source === "text"
-          && live.response.userReply === credential.userReply
+          && live.response.userReply === promptText
           && live.response.promptEventId === promptEventId
           && live.response.host === host
         : live.response?.action === "accept"
@@ -1536,7 +1511,7 @@ export async function resolveReviewRiskAcceptanceForAnswer(ctx: AnswerResolveCon
       source: credential.source,
       action: credential.source === "elicitation" ? credential.action : undefined,
       comment: credential.source === "elicitation" ? credential.comment : undefined,
-      userReply: credential.source === "text" ? credential.userReply : undefined,
+      userReply: credential.source === "text" ? promptText : undefined,
       promptText,
       promptEventId,
       host,
@@ -1571,7 +1546,7 @@ export async function resolveReviewRiskAcceptanceForAnswer(ctx: AnswerResolveCon
         interactionId: interaction.id,
         basisHash: source?.job.roleBasisHash ?? batch.jobs.find((job) => job.role === finding.category)?.roleBasisHash ?? batch.basisHash,
         findingSetHash: binding.findingSetHash,
-        userEvidence: previewResponse.comment ?? (credential.source === "text" ? credential.userReply : credential.action),
+        userEvidence: previewResponse.comment ?? (credential.source === "text" ? (promptText ?? credential.promptText) : credential.action),
         at: previewResponse.respondedAt,
       };
     });
@@ -1703,9 +1678,13 @@ export async function reviewGate(
   const phase = query?.phase ?? (currentOpenStep(state) === "code_review" ? "code" : "plan");
   if (!reviewObligation(state, phase)) return { status: "ready" };
   const ledger = await readReviewLedger(root, state);
-  const batch = ledger.batches.find((candidate) => candidate.validity === "current");
-  if (!batch) return { status: "need-batch", cause: "missing" };
-  if ((batch.phase ?? "plan") !== phase) return { status: "need-batch", cause: "phase", batchId: batch.batchId };
+  const batch = ledger.batches.find((candidate) => candidate.validity === "current" && (candidate.phase ?? "plan") === phase);
+  if (!batch) {
+    const otherPhase = ledger.batches.find((candidate) => candidate.validity === "current");
+    return otherPhase
+      ? { status: "need-batch", cause: "phase" as const, batchId: otherPhase.batchId }
+      : { status: "need-batch", cause: "missing" as const };
+  }
   if (await reviewBasisStale(root, state, batch, phase)) return { status: "need-batch", cause: "stale", batchId: batch.batchId };
   if (batch.progress !== "complete") return { status: "jobs-open", batchId: batch.batchId, jobs: reviewJobsSummary(batch) };
   // 独立代码审查的隔离门禁（ADR-0017 / issue 19）：M/L 路线默认要求

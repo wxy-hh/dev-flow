@@ -88,6 +88,9 @@ export function matchDecisionReply(
   if (!normalized) throw new DevFlowError("DECISION_REPLY_REQUIRED", "请回答当前问题。", { userMessage: "当前问题还没有得到回答。", recoveryKind: "retry", recoveryInstruction: "请回复一个选项、能唯一指向它的简称或同义说法。", retryOriginal: true });
   const options = decision.options;
   let match: MatchedDecision | undefined;
+  const answerCodeMatch = options.find((option) => option.answerCode
+    && normalizeReplyText(option.answerCode) === normalized);
+  if (answerCodeMatch) match = { option: answerCodeMatch };
   if (decision.kind === "approval" && isExplicitApproval(userReply)) {
     const option = options.find((candidate) => candidate.id === "confirm");
     if (option) match = { option };

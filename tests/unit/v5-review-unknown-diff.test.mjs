@@ -11,8 +11,8 @@ import { completeReviewJobs, prepareReviewReadyFeature } from "../helpers/route-
 const jobs = await loadSource("plugins/dev-flow/src/core/review-jobs.ts");
 const store = await loadSource("plugins/dev-flow/src/core/state-store.ts");
 
-test("unknown diff outside all role slices forces a full conservative re-review", async () => {
-  const root = await mkdtemp(path.join(os.tmpdir(), "dev-flow-review-unknown-diff-"));
+test("role slices equal outside their semantics reuse every role instead of forcing full re-review", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "dev-flow-review-reuse-"));
   try {
     let state = await prepareReviewReadyFeature(root, {
       level: "M",
@@ -27,16 +27,16 @@ test("unknown diff outside all role slices forces a full conservative re-review"
     const first = await jobs.createReviewBatch(root, state.featureId, state.revision);
     state = (await completeReviewJobs(root, state.featureId, first.state, first.batch)).state;
 
-    // governed-root 字节变化不在任何角色切片内（artifacts/trace/project config 均未变）
+    // governed-root 字节变化不进入任何 plan role 语义切片
     await writeFile(path.join(root, "src", "extra.js"), "export const extra = 1;\n");
 
     const second = await jobs.createReviewBatch(root, state.featureId, state.revision);
     assert.notEqual(second.batch.basisHash, first.batch.basisHash);
-    assert.equal(second.batch.progress, "open");
+    assert.equal(second.batch.progress, "complete");
     assert.ok(second.batch.jobs.length > 0);
     for (const job of second.batch.jobs) {
-      assert.equal(job.status, "pending");
-      assert.equal(job.reusedFrom, undefined);
+      assert.equal(job.status, "reused");
+      assert.ok(job.reusedFrom, `${job.role} must reuse its prior submission`);
     }
   } finally {
     await rm(root, { recursive: true, force: true });
@@ -129,6 +129,13 @@ test("specialty roles reuse a requirements-only documentation change", async () 
       kind: "requirements",
       edit: (markdown) => `${markdown}\n补充说明：与安全无关的文案调整。\n`,
     });
+    // Requirements re-registration stales downstream plan nodes; refresh them.
+    state = await registerTraceFixture({
+      root,
+      featureId: state.featureId,
+      state,
+      kind: "implementation-plan",
+    });
     const second = await jobs.createReviewBatch(root, state.featureId, state.revision);
     const byRole = Object.fromEntries(second.batch.jobs.map((job) => [job.role, job]));
     assert.equal(byRole["requirements-coverage"].status, "pending");
@@ -154,16 +161,12 @@ test("specialty roles re-review a related structured execution change", async ()
     const first = await jobs.createReviewBatch(root, state.featureId, state.revision);
     state = (await completeReviewJobs(root, state.featureId, first.state, first.batch)).state;
 
-    const traceDelta = traceDeltaFor("implementation-plan", "m");
-    const unit = traceDelta.nodes.find((node) => node.kind === "implementation-unit");
-    unit.fileScope = ["src/security"];
     state = await registerTraceFixture({
       root,
       featureId: state.featureId,
       state,
       kind: "implementation-plan",
-      delta: traceDelta,
-      edit: (markdown) => `${markdown}\n补充安全边界：实现限制为 src/security。\n`,
+      edit: (markdown) => markdown.replace("- file_scope: [src]", "- file_scope: [src/security]"),
     });
     const second = await jobs.createReviewBatch(root, state.featureId, state.revision);
     const byRole = Object.fromEntries(second.batch.jobs.map((job) => [job.role, job]));

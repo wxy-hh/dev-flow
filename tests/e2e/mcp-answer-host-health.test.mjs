@@ -59,7 +59,6 @@ test("dev_flow_answer fails fast with HOOK_HEALTH_STALE and preserves the pendin
       () => mcpCall(server, fixture.root, "dev_flow_answer", {
         featureId: "issue-host-health",
         expectedRevision: status.control.expectedRevision,
-        userReply: "全部纳入当前任务",
         host: "claude",
       }),
       (error) => {
@@ -88,7 +87,6 @@ test("dev_flow_answer recovers once fresh host health and a real user event exis
     const answered = await mcpCall(server, fixture.root, "dev_flow_answer", {
       featureId: "issue-host-health",
       expectedRevision: status.control.expectedRevision,
-      userReply: "全部纳入当前任务",
       host: "claude",
     });
     assert.match(answered.message, /纳入当前任务/);

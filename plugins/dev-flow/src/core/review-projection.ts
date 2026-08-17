@@ -8,6 +8,7 @@ import type { ReviewFinding } from "../policy/review.js";
 import { DevFlowError } from "./errors.js";
 import { readReviewLedger } from "./review-store.js";
 import type { FeatureState } from "./state-store.js";
+import { currentOpenStep } from "./step-order.js";
 import { unresolvedBlockingFindings } from "./review-findings.js";
 
 const digest = (contents: string | Buffer): string => createHash("sha256").update(contents).digest("hex");
@@ -31,7 +32,7 @@ export interface ReviewProjectionFinding {
 }
 
 export interface ReviewProjection {
-  schemaVersion: 1;
+  schemaVersion: 2;
   featureId: string;
   route: string;
   reviewPointer: { path: string; sha256: string; revision: number };
@@ -41,6 +42,7 @@ export interface ReviewProjection {
     /** Honest labels for which evidence classes contributed; never invent verified. */
     evidenceSources: ReviewEvidenceSource[];
   };
+  /** Current phase expanded by default; phases always shows both summaries. */
   batch: {
     status: "not-created" | "current" | "stale";
     batchId?: string;
@@ -57,6 +59,28 @@ export interface ReviewProjection {
     dispositions?: Record<string, ReviewFindingDisposition>;
     unresolvedBlockingFindingIds?: string[];
   };
+  phases: {
+    plan: {
+      status: "not-created" | "current" | "stale";
+      batchId?: string;
+      basisHash?: string;
+      progress?: "open" | "complete";
+      executionMode?: string;
+      requiredRoles: Array<{ role: string; reviewDepth: "standard" | "full" }>;
+      jobs: ReviewProjectionJob[];
+      visibility: "coarse" | "complete";
+    };
+    code: {
+      status: "not-created" | "current" | "stale";
+      batchId?: string;
+      basisHash?: string;
+      progress?: "open" | "complete";
+      executionMode?: string;
+      requiredRoles: Array<{ role: string; reviewDepth: "standard" | "full" }>;
+      jobs: ReviewProjectionJob[];
+      visibility: "coarse" | "complete";
+    };
+  };
   staleBatches: Array<{ batchId: string; basisHash: string; progress: "open" | "complete" }>;
 }
 
@@ -70,10 +94,14 @@ function projectionError(message: string, details: Record<string, unknown> = {})
   throw new DevFlowError("REVIEW_PROJECTION_INVALID", message, details);
 }
 
-function currentBatch(ledger: ReviewLedger): ReviewBatch | undefined {
-  const batches = ledger.batches.filter((batch) => batch.validity === "current");
-  if (batches.length > 1) projectionError("review ledger has more than one current batch");
-  return batches[0];
+function currentBatch(ledger: ReviewLedger, state: FeatureState): ReviewBatch | undefined {
+  const current = ledger.batches.filter((batch) => batch.validity === "current");
+  if (current.length === 0) return undefined;
+  if (current.length === 1) return current[0];
+  // Phase 3: plan and code each keep their own current batch. Status/projection
+  // defaults to the phase currently open, without erasing the other phase.
+  const phase = currentOpenStep(state) === "code_review" ? "code" : "plan";
+  return current.find((batch) => (batch.phase ?? "plan") === phase) ?? current[0];
 }
 
 function publicJob(job: ReviewJob): ReviewProjectionJob {
@@ -126,7 +154,31 @@ function supersededReusedFindingIds(ledger: ReviewLedger, batch: ReviewBatch | u
  * reviewer cannot learn a sibling's findings before the batch is complete.
  */
 export function reviewProjectionModel(state: FeatureState, ledger: ReviewLedger): ReviewProjection {
-  const batch = currentBatch(ledger);
+  const batch = currentBatch(ledger, state);
+
+function phaseBatch(ledger: ReviewLedger, phase: "plan" | "code"): ReviewBatch | undefined {
+  return ledger.batches.find((batch) => batch.validity === "current" && (batch.phase ?? "plan") === phase);
+}
+
+function phaseSummary(
+  state: FeatureState,
+  ledger: ReviewLedger,
+  phase: "plan" | "code",
+  batch: ReviewBatch | undefined,
+): ReviewProjection["phases"]["plan"] {
+  const requiredRoles = batch
+    ? batch.jobs.map((job) => ({ role: job.role, reviewDepth: job.reviewDepth }))
+    : deriveReviewJobRequirements(state.route, state.classification.riskLabels, state.classification.controls.reviewRoles, phase)
+      .map((requirement) => ({ role: requirement.role, reviewDepth: requirement.reviewDepth }));
+  return {
+    status: batch ? batch.validity : "not-created",
+    ...(batch ? { batchId: batch.batchId, basisHash: batch.basisHash, progress: batch.progress, executionMode: batch.executionMode } : {}),
+    requiredRoles,
+    jobs: batch ? batch.jobs.map(publicJob) : [],
+    visibility: batch?.progress === "complete" ? "complete" : "coarse",
+  };
+}
+
   const staleBatches = ledger.batches.filter((candidate) => candidate.validity === "stale")
     .map((candidate) => ({ batchId: candidate.batchId, basisHash: candidate.basisHash, progress: candidate.progress }));
   const requiredRoles = batch
@@ -139,7 +191,7 @@ export function reviewProjectionModel(state: FeatureState, ledger: ReviewLedger)
     : undefined;
   const supersededFindingIds = complete ? supersededReusedFindingIds(ledger, batch) : undefined;
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
     featureId: state.featureId,
     route: state.route,
     reviewPointer: {
@@ -170,6 +222,10 @@ export function reviewProjectionModel(state: FeatureState, ledger: ReviewLedger)
         unresolvedBlockingFindingIds: unresolvedBlockingFindingIds(ledger),
       } : {}),
     },
+    phases: {
+      plan: phaseSummary(state, ledger, "plan", phaseBatch(ledger, "plan")),
+      code: phaseSummary(state, ledger, "code", phaseBatch(ledger, "code")),
+    },
     staleBatches,
   };
 }
@@ -179,7 +235,7 @@ export function renderReviewProjection(model: ReviewProjection): string {
   const lines = [
     "---",
     "dev_flow:",
-    "  schema_version: 1",
+    "  schema_version: 2",
     `  feature_id: ${model.featureId}`,
     `  route: ${model.route}`,
     "  kind: plan-review",
@@ -193,6 +249,8 @@ export function renderReviewProjection(model: ReviewProjection): string {
     `- Pointer: ${model.reviewPointer.path}`,
     `- Revision: ${model.reviewPointer.revision}`,
     `- Batch status: ${batch.status}`,
+    `- Plan phase: ${model.phases.plan.status}${model.phases.plan.batchId ? ` (${model.phases.plan.batchId}, ${model.phases.plan.progress ?? "unknown"})` : ""}`,
+    `- Code phase: ${model.phases.code.status}${model.phases.code.batchId ? ` (${model.phases.code.batchId}, ${model.phases.code.progress ?? "unknown"})` : ""}`,
     `- Evidence type: ${model.assurance.evidenceType}`,
     ...(model.assurance.level ? [`- Assurance: ${model.assurance.level}`] : []),
     ...(model.assurance.evidenceSources.length

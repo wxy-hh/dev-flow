@@ -20,6 +20,7 @@ export interface HookEvent {
   agent_transcript_path?: unknown;
   parent_agent_id?: unknown;
   session_id?: unknown;
+  last_assistant_message?: unknown;
 }
 
 const directWriteTools = new Set(["write", "edit", "multiedit", "applypatch", "apply_patch", "patch"]);

@@ -1,15 +1,18 @@
 import { createHash } from "node:crypto";
+import { stableJson } from "../policy/stable-json.js";
 import type { TraceDelta, TraceNode, TraceabilityLedger } from "../policy/traceability.js";
 import { routeDefinitionForFeature, traceEnforcementRequired } from "../policy/contract.js";
+import { parsePlanRevisionProposal, type ImplementationRuntimeProjection, type PlanRevisionProposal } from "../policy/plan-revision.js";
 import { reopenImplementationUnit } from "../policy/rollback.js";
 import { DevFlowError } from "./errors.js";
 import { readArtifactText } from "./artifacts.js";
-import { compileArtifactPlan } from "./plan-compile-context.js";
-import { readProjectConfigSnapshot } from "./traceability-store.js";
+import { compileArtifactPlan, compileArtifactPlanFromMarkdown } from "./plan-compile-context.js";
+import { verificationCommandHashesForRefs, type ProjectConfig } from "./project-config.js";
+import { putEvidenceObject, readEvidenceObject } from "./evidence-store.js";
+import { canonicalTraceJson, readProjectConfigSnapshot, writeTraceSnapshot } from "./traceability-store.js";
 import { currentOpenStep } from "./step-order.js";
 import { createInteraction, resolveResponseForAnswer, toPublicInteraction, type PresentedInteraction, type PublicInteraction } from "./user-interactions.js";
 import type { InteractionResponse, UserInteraction } from "../policy/interaction.js";
-import { resolveInteractionPromptEvent } from "./interaction-provenance.js";
 import { matchDecisionReply, pendingDecisionForState } from "./decision-interactions.js";
 import { mutate, mutatePrepared, readFeatureEvents, readState, type FeatureState } from "./state-store.js";
 import { prepareReviewInvalidation } from "./review-store.js";
@@ -155,6 +158,254 @@ export function applyPlanRevision(draft: FeatureState, interaction: UserInteract
   draft.lastUpdatedBy = { host, pluginVersion: __DEV_FLOW_VERSION__ };
 }
 
+
+function hash(value: string): string {
+  return createHash("sha256").update(value).digest("hex");
+}
+
+function shaOrNone(value: string | undefined): string {
+  return typeof value === "string" && /^[a-f0-9]{64}$/.test(value) ? value : "0".repeat(64);
+}
+
+function requirementsBasis(state: FeatureState, ledger: TraceabilityLedger): { artifactSha256: string; semanticSha256: string; sliceSha256: string } {
+  const artifactSha256 = shaOrNone(state.artifacts.requirements?.sha256);
+  const nodes = Object.values(ledger.nodes)
+    .filter((node) => node.status !== "tombstoned" && node.sourceArtifact === "requirements")
+    .sort((left, right) => left.id.localeCompare(right.id))
+    .map(({ sourceArtifact: _sourceArtifact, sourceSha256: _sourceSha256, sourceAnchor: _sourceAnchor, sourceBlockSha256: _sourceBlockSha256, status: _status, ...semantic }) => semantic);
+  const sliceSha256 = hash(stableJson({ nodes }));
+  return { artifactSha256, semanticSha256: sliceSha256, sliceSha256 };
+}
+
+function executionSemanticBasisHashForLedger(ledger: TraceabilityLedger, config: ProjectConfig): string {
+  const executionNodes = Object.values(ledger.nodes)
+    .filter((node) => node.status === "current" && node.kind !== "test")
+    .map((node) => node.kind === "implementation-unit" ? {
+      kind: node.kind, id: node.id, tasks: node.tasks, dependsOn: node.dependsOn, fileScope: node.fileScope,
+      covers: node.covers, forwardVerification: node.forwardVerification,
+    } : node.kind === "recovery" ? {
+      kind: node.kind, id: node.id, stepRef: node.stepRef, recoveryKind: node.recoveryKind, method: node.method, riskRef: node.riskRef,
+    } : node.kind === "task" ? { kind: node.kind, id: node.id, covers: node.covers, implementationUnit: node.implementationUnit }
+      : { kind: node.kind, id: node.id })
+    .sort((left, right) => left.id.localeCompare(right.id));
+  const executionVerificationRefs = Object.values(ledger.nodes)
+    .filter((node): node is Extract<typeof node, { kind: "implementation-unit" }> => node.status === "current" && node.kind === "implementation-unit")
+    .flatMap((node) => node.forwardVerification);
+  return hash(JSON.stringify({
+    nodes: executionNodes,
+    verificationCommandHashes: verificationCommandHashesForRefs(config, executionVerificationRefs),
+  }));
+}
+
+function projectionForCompilation(compilation: Awaited<ReturnType<typeof compileArtifactPlanFromMarkdown>>): ImplementationRuntimeProjection {
+  return {
+    units: (compilation.result.implementationUnits ?? []).map((unit) => ({
+      unitId: unit.unitId,
+      tasks: [...unit.tasks],
+      dependsOn: [...unit.dependsOn],
+      fileScope: [...unit.fileScope],
+      forwardVerification: [...unit.forwardVerification],
+    })),
+    recoveryArrangements: (compilation.result.recoveryArrangements ?? []).map((recovery) => ({
+      arrangementId: recovery.arrangementId,
+      stepRef: recovery.stepRef,
+      recoveryKind: recovery.recoveryKind,
+      method: recovery.method,
+      riskRef: recovery.riskRef,
+    })),
+  };
+}
+
+/**
+ * v6 plan revision preview: no traceDelta. The edited implementation-plan
+ * Markdown is compiled once, its proposal is frozen in the Evidence Store, and
+ * the interaction only stores the logical ref and public impact.
+ */
+export async function revisePlanFromMarkdown(
+  root: string,
+  id: string,
+  expectedRevision: number,
+  host: "claude" | "codex",
+): Promise<PlanRevisionResult> {
+  const initial = await readState(root, id);
+  if (initial.revision !== expectedRevision) throw new DevFlowError("STATE_REVISION_CONFLICT", "state revision changed", { currentRevision: initial.revision });
+  if (initial.lifecycle !== "active") throw new DevFlowError("INVALID_LIFECYCLE", "only active features can revise plans");
+  if (!traceEnforcementRequired(initial.route, initial.classification.controls)) {
+    throw new DevFlowError("TRACE_NOT_ENFORCED", "计划修订需要启用 Trace 的路线", { route: initial.route });
+  }
+  const currentStep = currentOpenStep(initial);
+  if (currentStep !== "implementation" && currentStep !== "planning") {
+    throw new DevFlowError("STEP_OUT_OF_ORDER", "计划修订只适用于 planning/implementation 阶段", { currentStep });
+  }
+  const compilation = await compileArtifactPlanFromMarkdown(root, id, initial, {
+    artifactKind: "implementation-plan",
+    nextStateRevision: expectedRevision + 1,
+  });
+  if (!compilation.result.ok || !compilation.result.ledger || !compilation.input) {
+    throw new DevFlowError("PLAN_INVALID", "修订后的实施计划编译未通过。", {
+      diagnostics: compilation.result.diagnostics,
+      recoveryHint: "按诊断修正 Markdown 后重新发起修订。",
+      retryOriginal: true,
+    });
+  }
+  const compiledInput = compilation.input;
+  const currentLedger = compiledInput.currentLedger;
+  const newLedger = compilation.result.ledger;
+  const impact = computePlanRevisionImpact(currentLedger, newLedger);
+  const affectedIds = new Set(impact.affectedIds);
+  const recoveryNodes = Object.values(currentLedger.nodes)
+    .filter((node): node is Extract<typeof node, { kind: "recovery" }> => node.kind === "recovery" && node.status === "current");
+  const recoveryStepRefs = new Set(recoveryNodes.map((node) => node.stepRef));
+  const unitTasks = new Map(
+    Object.values(currentLedger.nodes)
+      .filter((node): node is Extract<TraceNode, { kind: "implementation-unit" }> => node.kind === "implementation-unit" && node.status === "current")
+      .map((node) => [node.id, node.tasks] as const),
+  );
+  const units = initial.implementationUnits ?? [];
+  const checkpointedAffected = units.filter((unit) => affectedIds.has(unit.unitId) && unit.status === "checkpointed").map((unit) => unit.unitId);
+  const sideEffectUnits = checkpointedAffected.filter((unitId) => {
+    const tasks = unitTasks.get(unitId) ?? [];
+    return recoveryStepRefs.has(unitId)
+      || recoveryNodes.some((recovery) => recovery.stepRef.startsWith("TASK-") && tasks.includes(recovery.stepRef as `TASK-${string}`));
+  });
+  const requirements = requirementsBasis(initial, currentLedger);
+  const executionSemanticBasisHash = executionSemanticBasisHashForLedger(newLedger, compilation.config);
+  const traceStored = await putEvidenceObject(root, id, "trace", Buffer.from(canonicalTraceJson(newLedger), "utf8"));
+  const proposal: PlanRevisionProposal = {
+    schemaVersion: 1,
+    featureId: id,
+    artifact: { path: compilation.artifact.path, rawSha256: compiledInput.artifactSha256, semanticSha256: compilation.semanticSha256! },
+    basis: {
+      stateRevision: expectedRevision,
+      currentTraceSha256: shaOrNone(initial.traceability?.sha256),
+      requirementsArtifactSha256: requirements.artifactSha256,
+      requirementsSemanticSha256: requirements.semanticSha256,
+      requirementsSliceSha256: requirements.sliceSha256,
+      projectConfigSha256: compiledInput.projectConfigSha256,
+      executionSemanticBasisHash,
+    },
+    compiledTrace: traceStored.ref,
+    implementationProjection: projectionForCompilation(compilation),
+    impact: {
+      affectedUnits: [...affectedIds].sort(),
+      redoUnits: checkpointedAffected,
+      sideEffectUnits,
+      invalidatedPhases: Boolean(initial.review) ? ["plan", "code"] : [],
+    },
+  };
+  const proposalStored = await putEvidenceObject(root, id, "artifact-proposal", Buffer.from(`${stableJson(proposal)}\n`, "utf8"));
+  const reviewInvalidated = Boolean(initial.review) || Boolean(impact.fallbackReason);
+  const target = `plan-revision:${proposalStored.ref.sha256.slice(0, 16)}`;
+  let interaction: UserInteraction | undefined;
+  const state = await mutate(root, id, expectedRevision, "plan-revision-presented", (draft) => {
+    const activeUnit = (draft.implementationUnits ?? []).find((unit) => unit.status === "active");
+    const impactLines = [
+      `- 受影响的实现单元：${[...affectedIds].sort().join("、") || "无"}`,
+      `- 将重做的已完成单元：${checkpointedAffected.join("、") || "无"}`,
+      ...(sideEffectUnits.length ? [`- ⚠ 以下已完成单元可能包含有副作用的操作（删除/迁移/发布等），重新执行前必须确认当前状态安全：${sideEffectUnits.join("、")}`] : []),
+      `- 计划审查：${reviewInvalidated ? "失效，需要重新审查" : "未启用"}`,
+      ...(activeUnit ? [`- 当前步骤暂停：${activeUnit.unitId}（${activeUnit.status}）将回到待执行`] : []),
+      ...(impact.fallbackReason ? [`- ${impact.fallbackReason}`] : []),
+    ];
+    interaction = createInteraction(draft, {
+      kind: "plan-revision",
+      target,
+      basisHash: proposalStored.ref.sha256,
+      question: `修订实施计划将产生以下影响：\n${impactLines.join("\n")}\n确认修订吗？`,
+      options: [
+        { id: "confirm", label: "确认修订" },
+        { id: "cancel", label: "取消" },
+      ],
+      planRevision: {
+        affectedUnits: [...affectedIds].sort(),
+        redoUnits: checkpointedAffected,
+        sideEffectUnits,
+        reviewInvalidated,
+        ...(impact.fallbackReason ? { fallbackReason: impact.fallbackReason } : {}),
+      },
+      planRevisionProposal: proposalStored.ref,
+      planRevisionBasis: {
+        artifactSha256: compiledInput.artifactSha256,
+        projectConfigSha256: compiledInput.projectConfigSha256,
+        traceabilitySha256: shaOrNone(initial.traceability?.sha256),
+        semanticSha256: compilation.semanticSha256,
+        requirementsArtifactSha256: requirements.artifactSha256,
+        requirementsSemanticSha256: requirements.semanticSha256,
+        requirementsSliceSha256: requirements.sliceSha256,
+      },
+    });
+    draft.lastUpdatedBy = { host, pluginVersion: __DEV_FLOW_VERSION__ };
+  }, () => ({ presentationEventId: interaction?.presentationEventId }));
+  if (!interaction) throw new DevFlowError("INTERACTION_NOT_CREATED", target);
+  return { state, interaction: toPublicInteraction(interaction), interactionId: interaction.id };
+}
+
+interface ProposalApplication {
+  artifactSha256: string;
+  tracePointer: Awaited<ReturnType<typeof writeTraceSnapshot>>;
+  executionSemanticBasisHash: string;
+  reviewPointer: Awaited<ReturnType<typeof prepareReviewInvalidation>>;
+}
+
+async function prepareProposalApplication(
+  root: string,
+  featureId: string,
+  current: FeatureState,
+  proposalRef: UserInteraction["planRevisionProposal"],
+  nextStateRevision: number,
+): Promise<ProposalApplication> {
+  if (!proposalRef) throw new DevFlowError("PLAN_REVISION_PROPOSAL_MISSING", "plan revision proposal ref is missing");
+  const proposalBytes = await readEvidenceObject(root, featureId, proposalRef);
+  const proposal = parsePlanRevisionProposal(JSON.parse(proposalBytes.toString("utf8")));
+  if (proposal.featureId !== featureId) throw new DevFlowError("PLAN_REVISION_STALE", "proposal featureId mismatch");
+  const compilation = await compileArtifactPlanFromMarkdown(root, featureId, current, {
+    artifactKind: "implementation-plan",
+    nextStateRevision,
+  });
+  if (!compilation.result.ok || !compilation.result.ledger || !compilation.input) {
+    throw new DevFlowError("PLAN_INVALID", "计划在确认前已无法编译。", {
+      diagnostics: compilation.result.diagnostics,
+      recoveryHint: "按诊断重新发起计划修订。",
+      retryOriginal: true,
+    });
+  }
+  const proposalInput = compilation.input!;
+  const proposalLedger = compilation.result.ledger!;
+  const requirements = requirementsBasis(current, proposalInput.currentLedger);
+  const configSha = (await readProjectConfigSnapshot(root)).sha256;
+  const currentTraceSha = shaOrNone(current.traceability?.sha256);
+  const changed: string[] = [];
+  if (proposalInput.artifactSha256 !== proposal.artifact.rawSha256 || compilation.semanticSha256 !== proposal.artifact.semanticSha256) changed.push("implementation-plan");
+  if (currentTraceSha !== proposal.basis.currentTraceSha256) changed.push("traceability");
+  if (configSha !== proposal.basis.projectConfigSha256) changed.push("project-config");
+  if (requirements.artifactSha256 !== proposal.basis.requirementsArtifactSha256) changed.push("requirements-artifact");
+  if (requirements.semanticSha256 !== proposal.basis.requirementsSemanticSha256 || requirements.sliceSha256 !== proposal.basis.requirementsSliceSha256) changed.push("requirements-semantic");
+  if (changed.length) {
+    throw new DevFlowError("PLAN_REVISION_STALE", "计划、项目配置、requirements 或 Trace 已在预览后变化，请重新生成影响预览。", {
+      retryOriginal: true,
+      changed,
+    });
+  }
+  const expectedTrace = await readEvidenceObject(root, featureId, proposal.compiledTrace);
+  const storedLedger = JSON.parse(expectedTrace.toString("utf8")) as Record<string, unknown>;
+  const currentLedger = JSON.parse(canonicalTraceJson(proposalLedger)) as Record<string, unknown>;
+  for (const ledger of [storedLedger, currentLedger]) {
+    delete ledger.revision;
+    delete ledger.stateRevision;
+  }
+  if (stableJson(storedLedger) !== stableJson(currentLedger)) {
+    throw new DevFlowError("PLAN_REVISION_STALE", "proposal compiled Trace does not match the current Markdown compilation");
+  }
+  const tracePointer = await writeTraceSnapshot(root, proposalLedger);
+  const reviewPointer = await prepareReviewInvalidation(root, current, nextStateRevision);
+  return {
+    artifactSha256: proposalInput.artifactSha256,
+    tracePointer,
+    executionSemanticBasisHash: executionSemanticBasisHashForLedger(proposalLedger, compilation.config),
+    reviewPointer,
+  };
+}
+
 export interface SideEffectRerunResult {
   state: FeatureState;
   interaction: PublicInteraction;
@@ -175,48 +426,57 @@ export async function resolvePlanRevisionForAnswer(ctx: AnswerResolveContext): P
   let promptEventId: string | undefined;
   let promptText: string | undefined;
   if (credential.source === "text") {
-    const events = await readFeatureEvents(root, featureId);
-    const match = resolveInteractionPromptEvent(events, state, interaction, { host, userReply: credential.userReply });
-    promptEventId = match.eventId;
-    promptText = match.text;
+    promptEventId = credential.promptEventId;
+    promptText = credential.promptText;
   }
   const pending = pendingDecisionForState(state);
   const matchedId = credential.source === "elicitation"
     ? credential.action
-    : matchDecisionReply(pending!, promptText ?? credential.userReply).option.id;
+    : matchDecisionReply(pending!, promptText ?? credential.promptText).option.id;
   const confirms = matchedId === "confirm";
   let reviewInvalidation: ReturnType<typeof prepareReviewInvalidation> extends Promise<infer T> ? T : never;
+  let proposalApplication: ProposalApplication | undefined;
   let response: import("../policy/interaction.js").InteractionResponse | undefined;
   let currentArtifactSha256: string | undefined;
   const next = await mutatePrepared(root, featureId, expectedRevision, confirms ? "plan-revised" : "plan-revision-cancelled", async (current, nextStateRevision) => {
     if (confirms) {
       const live = current.interactions?.[interaction.id];
-      const basis = live?.planRevisionBasis;
-      const artifact = current.artifacts["implementation-plan"];
-      if (!basis || !artifact) throw new DevFlowError("PLAN_REVISION_STALE", "计划修订预览缺少当前依据，请重新生成。", { retryOriginal: true });
-      const contents = await readArtifactText(root, featureId, artifact.path);
-      currentArtifactSha256 = createHash("sha256").update(contents).digest("hex");
-      const currentConfigSha256 = (await readProjectConfigSnapshot(root)).sha256;
-      const currentTraceabilitySha256 = current.traceability?.sha256 ?? "none";
-      if (currentArtifactSha256 !== basis.artifactSha256 || currentConfigSha256 !== basis.projectConfigSha256 || currentTraceabilitySha256 !== basis.traceabilitySha256) {
-        throw new DevFlowError("PLAN_REVISION_STALE", "计划、项目配置或 Trace 已在预览后变化，请重新生成影响预览。", {
-          retryOriginal: true,
-          changed: [
-            ...(currentArtifactSha256 !== basis.artifactSha256 ? ["implementation-plan"] : []),
-            ...(currentConfigSha256 !== basis.projectConfigSha256 ? ["project-config"] : []),
-            ...(currentTraceabilitySha256 !== basis.traceabilitySha256 ? ["traceability"] : []),
-          ],
-        });
+      if (live?.planRevisionProposal) {
+        proposalApplication = await prepareProposalApplication(root, featureId, current, live.planRevisionProposal, nextStateRevision);
+      } else {
+        const basis = live?.planRevisionBasis;
+        const artifact = current.artifacts["implementation-plan"];
+        if (!basis || !artifact) throw new DevFlowError("PLAN_REVISION_STALE", "计划修订预览缺少当前依据，请重新生成。", { retryOriginal: true });
+        const contents = await readArtifactText(root, featureId, artifact.path);
+        currentArtifactSha256 = createHash("sha256").update(contents).digest("hex");
+        const currentConfigSha256 = (await readProjectConfigSnapshot(root)).sha256;
+        const currentTraceabilitySha256 = current.traceability?.sha256 ?? "none";
+        if (currentArtifactSha256 !== basis.artifactSha256 || currentConfigSha256 !== basis.projectConfigSha256 || currentTraceabilitySha256 !== basis.traceabilitySha256) {
+          throw new DevFlowError("PLAN_REVISION_STALE", "计划、项目配置或 Trace 已在预览后变化，请重新生成影响预览。", {
+            retryOriginal: true,
+            changed: [
+              ...(currentArtifactSha256 !== basis.artifactSha256 ? ["implementation-plan"] : []),
+              ...(currentConfigSha256 !== basis.projectConfigSha256 ? ["project-config"] : []),
+              ...(currentTraceabilitySha256 !== basis.traceabilitySha256 ? ["traceability"] : []),
+            ],
+          });
+        }
+        if (current.review) reviewInvalidation = await prepareReviewInvalidation(root, current, nextStateRevision);
       }
-      if (current.review) reviewInvalidation = await prepareReviewInvalidation(root, current, nextStateRevision);
     }
     return {
       mutate: (draft) => {
-        response = resolveResponseForAnswer(draft, interaction, { source: credential.source, action: credential.source === "elicitation" ? credential.action : undefined, comment: credential.source === "elicitation" ? credential.comment : undefined, userReply: credential.source === "text" ? credential.userReply : undefined, promptText, promptEventId, host });
+        response = resolveResponseForAnswer(draft, interaction, { source: credential.source, action: credential.source === "elicitation" ? credential.action : undefined, comment: credential.source === "elicitation" ? credential.comment : undefined, userReply: credential.source === "text" ? (credential.promptText) : undefined, promptText, promptEventId, host });
         if (confirms) {
           const live = draft.interactions![interaction.id];
-          applyPlanRevision(draft, live, host, currentArtifactSha256!);
-          if (reviewInvalidation) draft.review = reviewInvalidation;
+          applyPlanRevision(draft, live, host, proposalApplication?.artifactSha256 ?? currentArtifactSha256!);
+          if (proposalApplication) {
+            draft.traceability = proposalApplication.tracePointer;
+            draft.executionSemanticBasisHash = proposalApplication.executionSemanticBasisHash;
+            if (proposalApplication.reviewPointer) draft.review = proposalApplication.reviewPointer;
+          } else if (reviewInvalidation) {
+            draft.review = reviewInvalidation;
+          }
           // spec §179：有外部副作用的已完成单元在计划修订后绝不自动重跑，
           // 保持 checkpointed 并标为需要人工决定的恢复项，由新交互展示具体风险。
           const sideEffects = live.planRevision?.sideEffectUnits ?? [];
@@ -252,20 +512,18 @@ export async function resolveSideEffectRerunForAnswer(ctx: AnswerResolveContext)
   let promptEventId: string | undefined;
   let promptText: string | undefined;
   if (credential.source === "text") {
-    const events = await readFeatureEvents(root, featureId);
-    const match = resolveInteractionPromptEvent(events, state, interaction, { host, userReply: credential.userReply });
-    promptEventId = match.eventId;
-    promptText = match.text;
+    promptEventId = credential.promptEventId;
+    promptText = credential.promptText;
   }
   const pending = pendingDecisionForState(state);
   const matchedId = credential.source === "elicitation"
     ? credential.action
-    : matchDecisionReply(pending!, promptText ?? credential.userReply).option.id;
+    : matchDecisionReply(pending!, promptText ?? credential.promptText).option.id;
   const confirms = matchedId === "confirm";
   let response: import("../policy/interaction.js").InteractionResponse | undefined;
   const next = await mutatePrepared(root, featureId, expectedRevision, confirms ? "side-effect-rerun-confirmed" : "side-effect-rerun-kept", async () => ({
     mutate: (draft) => {
-      response = resolveResponseForAnswer(draft, interaction, { source: credential.source, action: credential.source === "elicitation" ? credential.action : undefined, comment: credential.source === "elicitation" ? credential.comment : undefined, userReply: credential.source === "text" ? credential.userReply : undefined, promptText, promptEventId, host });
+      response = resolveResponseForAnswer(draft, interaction, { source: credential.source, action: credential.source === "elicitation" ? credential.action : undefined, comment: credential.source === "elicitation" ? credential.comment : undefined, userReply: credential.source === "text" ? (credential.promptText) : undefined, promptText, promptEventId, host });
       if (confirms) {
         const live = draft.interactions![interaction.id];
         // 用户确认重跑：受影响副作用单元回 pending，重新 begin 时重做。

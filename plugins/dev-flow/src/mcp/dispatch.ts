@@ -1,23 +1,25 @@
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { recordArtifact, recordArtifactWithTrace, scaffoldArtifact, validatePlan } from "../core/artifacts.js";
+import { recordArtifact, recordArtifactFromMarkdown, scaffoldArtifact, validatePlanFromMarkdown } from "../core/artifacts.js";
 import { presentApproval } from "../core/approval-interactions.js";
 import { DevFlowError } from "../core/errors.js";
 import { finalize, recordStep } from "../core/feature-check.js";
-import { answer } from "../core/interaction-answer.js";
+import { answer, answerFromHostEvents } from "../core/interaction-answer.js";
 import {
-  initProject, updateProjectConfig, startFeature, lockClassification, recordDecision, reviseDecision, revisePlanDuringImplementation, abandonFeature, reclassifyFeature, recoverCorruptFeature, repairFeature, readState, pauseFeature, resumeFeature, reconcileWorkspace, assertHostHealth, registerRepositoryFact, registerRepositoryFacts,
+  initProject, updateProjectConfig, startFeature, lockClassification, recordDecision, reviseDecision, abandonFeature, reclassifyFeature, recoverCorruptFeature, repairFeature, readState, pauseFeature, resumeFeature, reconcileWorkspace, assertHostHealth, registerRepositoryFact, registerRepositoryFacts,
 } from "../core/state-store.js";
+import { revisePlanFromMarkdown } from "../core/plan-revision.js";
 import { readCompactStatus } from "../core/status-projection.js";
 import { inspectFeature, inspectionTopics } from "../core/inspection.js";
 import { presentQualityException } from "../core/quality-exceptions.js";
+import { completeReviewExecution, startReviewExecution } from "../core/review-execution.js";
 import { rebuildReviewProjection } from "../core/review-projection-rebuild.js";
 import { beginImplementationUnit, abandonImplementationUnit } from "../core/implementation-units.js";
 import { checkpointImplementationUnit } from "../core/checkpoints.js";
 import { executeRollback, presentRollbackGate, previewRollback, type RollbackPreview } from "../core/rollback.js";
 import { runVerification } from "../core/verification.js";
 import { presentAcceptanceConfirmation, recordAcceptanceEvidence } from "../core/acceptance.js";
-import { allowedRiskLabels } from "../policy/contract.js";
+import { allowedRiskLabels, traceEnforcementRequired } from "../policy/contract.js";
 import { type RepositoryObservation } from "../policy/governance-records.js";
 import { deriveRiskRequirements, recommendClassification, selectRoute } from "../policy/route.js";
 import { stableJson } from "../policy/stable-json.js";
@@ -26,21 +28,12 @@ import { elicitAndAnswer, interactionEnvelope, type ElicitationSelection } from 
 import { enableWindowsNotifications } from "./windows-notifications.js";
 import { validateToolInput } from "./input-validation.js";
 import { requestGrillDecision } from "../core/requirements-grill.js";
-import { validateTraceDelta } from "../core/traceability.js";
 import { inspectCurrentTrace } from "../core/traceability-gates.js";
 import {
-  beginReviewSampling,
-  claimReviewJob,
-  completeReviewSampling,
   createReviewBatch,
-  failReviewSampling,
   getReviewJob,
   presentReviewRiskAcceptance,
-  releaseReviewJob,
-  startIsolatedReview,
-  submitReviewJob,
 } from "../core/review-jobs.js";
-import { parseHostAttestation, parseReviewJobCompletion, toPublicReviewJob } from "../policy/review.js";
 import { getInteraction, toPublicInteraction, type PublicInteraction } from "../core/user-interactions.js";
 import { pendingDecisionForState, pendingInteractionForDecision } from "../core/decision-interactions.js";
 import type { AttentionEvent } from "./attention.js";
@@ -123,40 +116,8 @@ const classificationInputSchema = object(["level", "topology"], {
   acceptanceAssistSuggested: { type: "boolean" },
   controlEnhancements: controlEnhancementsSchema,
 });
-const traceArtifactKinds = ["requirements", "implementation-plan", "coverage-matrix", "rollback-units"] as const;
+const traceArtifactKinds = ["requirements", "implementation-plan"] as const;
 const traceId = (prefix: string) => ({ type: "string", pattern: `^${prefix}-[0-9]{3,}$` });
-const stringArray = { type: "array", minItems: 1, items: string };
-const relativeCwd = { type: "string", minLength: 1, pattern: "^(?!/)(?![A-Za-z]:)(?!.*(?:^|/)\\.\\.(?:/|$)).*$" };
-const inlineVerificationCommand = object(["command"], {
-  command: string,
-  args: { type: "array", items: string },
-  cwd: relativeCwd,
-});
-const verificationCommandRef = { oneOf: [string, inlineVerificationCommand] };
-const verificationCommandArray = { type: "array", minItems: 1, uniqueItems: true, items: verificationCommandRef };
-const traceNodeSchemas = [
-  object(["kind", "id"], { kind: { const: "requirement" }, id: traceId("REQ") }),
-  object(["kind", "id", "parentRequirement"], { kind: { const: "acceptance-criterion" }, id: traceId("AC"), parentRequirement: traceId("REQ"), verificationDisposition: object(["kind"], { kind: { enum: ["behavior-test", "type-check", "rule-check", "file-check", "human-acceptance"] }, reason: string, target: string }) }),
-  object(["kind", "id", "covers", "implementationUnit"], { kind: { const: "task" }, id: traceId("TASK"), covers: stringArray, implementationUnit: traceId("UNIT") }),
-  object(["kind", "id", "verifies"], { kind: { const: "test" }, id: traceId("TEST"), verifies: { type: "array", minItems: 1, items: traceId("AC") } }),
-  object(["kind", "id", "tasks", "dependsOn", "fileScope", "covers", "forwardVerification", "rollbackVerification"], {
-    kind: { const: "rollback" }, id: traceId("RU"), tasks: { type: "array", minItems: 1, items: traceId("TASK") },
-    dependsOn: { type: "array", items: traceId("RU") }, fileScope: stringArray, covers: stringArray,
-    forwardVerification: verificationCommandArray, rollbackVerification: verificationCommandArray,
-  }),
-  object(["kind", "id", "tasks", "dependsOn", "fileScope", "covers", "forwardVerification"], {
-    kind: { const: "implementation-unit" }, id: traceId("UNIT"), tasks: { type: "array", minItems: 1, items: traceId("TASK") },
-    dependsOn: { type: "array", items: traceId("UNIT") }, fileScope: stringArray, covers: stringArray,
-    forwardVerification: verificationCommandArray,
-  }),
-  object(["kind", "id", "stepRef", "recoveryKind", "method", "riskRef"], {
-    kind: { const: "recovery" }, id: traceId("REC"), stepRef: { type: "string", pattern: "^(UNIT|TASK)-[0-9]{3,}$" },
-    recoveryKind: { enum: ["rollback", "compensation"] }, method: string, riskRef: string,
-  }),
-];
-const traceDeltaSchema = object(["nodes"], {
-  nodes: { type: "array", items: { oneOf: traceNodeSchemas } },
-});
 const reviewEvidenceSchema = object(["path"], { path: string, line: { type: "integer", minimum: 1 } });
 const reviewFindingSchema = object(["severity", "category", "targets", "evidence", "claim", "recommendation"], {
   severity: { enum: ["blocking", "warning", "note"] },
@@ -170,22 +131,6 @@ const reviewResolutionSchema = object(["findingId", "evidence", "note"], {
   findingId: string,
   evidence: { type: "array", minItems: 1, items: reviewEvidenceSchema },
   note: string,
-});
-const reviewCompletionSchema = object(["coverageSummary", "findings"], {
-  coverageSummary: string,
-  findings: { type: "array", items: reviewFindingSchema },
-  resolutions: { type: "array", items: reviewResolutionSchema },
-});
-const reviewAttestationSchema = object(["host", "agentId", "issuedAt", "raw"], {
-  host: { enum: ["claude", "codex"] },
-  agentId: string,
-  issuedAt: string,
-  raw: string,
-  // 与 policy/review.ts 的 parseHostAttestation 白名单一致：hostEventId 必须指向
-  // 宿主捕获的 review-execution 事件才会被 Core 计入来源/隔离证明；isolated 只是
-  // 声明，不能单独形成证明。
-  hostEventId: string,
-  isolated: { type: "boolean" },
 });
 
 const scopeSchema = {
@@ -307,25 +252,17 @@ export const toolSchemas = {
     }, ["decisionId", "newConclusion", "reason", "host"]),
   },
   dev_flow_revise_plan: {
-    description: "Revise the implementation plan during planning/implementation: pause the current step, show affected units and side-effect warnings, then redo only the affected work after confirmation.",
-    inputSchema: featureMutation({
-      kind: { const: "implementation-plan" },
-      traceDelta: traceDeltaSchema,
-      host: { enum: ["claude", "codex"] },
-    }, ["kind", "traceDelta", "host"]),
+    description: "Revise the implementation plan from the edited structured Markdown; no traceDelta input exists.",
+    inputSchema: featureMutation({ host: { enum: ["claude", "codex"] } }, ["host"]),
   },
   dev_flow_status: { description: "Read the compact daily status of one feature.", inputSchema: object(["featureId"], { featureId: string }), annotations: { readOnlyHint: true } },
   dev_flow_inspect: { description: "Read one detailed topic; full state is never exposed through a single public response.", inputSchema: object(["featureId", "topic"], { featureId: string, topic: { enum: inspectionTopics } }), annotations: { readOnlyHint: true } },
   dev_flow_scaffold_artifact: { description: "Create only the current route artifact. For editable artifacts, read the registered path before editing, then record it. Generated status artifacts are read-only: scaffold them and continue with the requested step; do not edit or record them.", inputSchema: featureMutation({ kind: string }, ["kind"]) },
   dev_flow_record_artifact: { description: "Register an edited route artifact.", inputSchema: featureMutation({ kind: string }, ["kind"]) },
   dev_flow_validate_plan: {
-    description: "Read-only plan preflight: returns the complete diagnostic set in stable order with zero side effects; formal registration uses the same compile result.",
-    inputSchema: featureMutation({ kind: { enum: traceArtifactKinds }, traceDelta: traceDeltaSchema }, ["kind", "traceDelta"]),
+    description: "Read-only v6 plan preflight from the edited structured Markdown; no traceDelta input exists.",
+    inputSchema: featureMutation({ kind: { enum: traceArtifactKinds } }, ["kind"]),
     annotations: { readOnlyHint: true },
-  },
-  dev_flow_record_artifact_with_trace: {
-    description: "Atomically register one Trace source artifact and its complete Trace delta.",
-    inputSchema: featureMutation({ kind: { enum: traceArtifactKinds }, traceDelta: traceDeltaSchema }, ["kind", "traceDelta"]),
   },
   dev_flow_get_traceability: {
     description: "Read the current Trace pointer, ledger, effective summary, and current-step blockers.",
@@ -342,63 +279,28 @@ export const toolSchemas = {
     inputSchema: object(["featureId", "batchId", "jobId", "capability"], { featureId: string, batchId: string, jobId: string, capability: string }),
     annotations: { readOnlyHint: true },
   },
-  dev_flow_claim_review_job: {
-    description: "Claim one current review job using a high-entropy retry key; returns the job capability.",
-    inputSchema: featureMutation({ batchId: string, jobId: string, claimRequestId: string }, ["batchId", "jobId", "claimRequestId"]),
-  },
-  dev_flow_release_review_job: {
-    description: "Release the current review job claim back to pending using the same capability; expired claims remain releasable by their holder.",
-    inputSchema: featureMutation({ batchId: string, jobId: string, capability: string }, ["batchId", "jobId", "capability"]),
-  },
-  dev_flow_start_isolated_review: {
-    description: "Declare that a claimed code review job will be executed in an isolated subagent context. The host SubagentStop hook completes the declaration; agents cannot self-attest isolation.",
-    inputSchema: featureMutation({ batchId: string, jobId: string, executionId: string, host: { enum: ["claude", "codex"] } }, ["batchId", "jobId", "executionId", "host"]),
-  },
-  dev_flow_submit_review_job: {
-    description: "Submit one claimed job's structured completion. Host attestation is diagnostic unless a trusted verifier accepts it; Core still owns assurance. Isolation proof requires a real host-captured review-execution event or server sampling; agent-authored event claims never qualify.",
+  dev_flow_start_review_execution: {
+    description: "Claim all executable jobs of a current review batch in one CAS and create one review execution with lease/marker data.",
     inputSchema: featureMutation({
       batchId: string,
-      jobId: string,
-      capability: string,
-      completion: reviewCompletionSchema,
-      attestation: reviewAttestationSchema,
-    }, ["batchId", "jobId", "capability", "completion"]),
+      executionRequestId: string,
+      host: { enum: ["claude", "codex"] },
+    }, ["batchId", "executionRequestId", "host"]),
   },
-  dev_flow_sample_review_job: {
-    description: "Ask a sampling-capable MCP client to complete one pending review job. The server owns the one-use request and submits only a validated response.",
-    inputSchema: object(["featureId", "expectedRevision", "batchId", "jobId"], {
-      featureId: string,
-      expectedRevision: integer,
+  dev_flow_complete_review_execution: {
+    description: "Validate and submit only the captured envelopes of one review execution; un-submitted siblings stay open.",
+    inputSchema: featureMutation({
       batchId: string,
-      jobId: string,
-    }),
-  },
-  dev_flow_record_review_execution_event: {
-    expose: false, // 宿主接缝：agent 不可调用、不进入 tools/list，也无需 dispatch case
-    description: "Record one review-execution event for the active feature (host adapter seam for subagent reviews). Only this dedicated event type can prove review source or context isolation; ordinary user-prompt/tool events never qualify. contextId must identify the review context and implementationContextId the implementation context; submitReviewJob validates that contextId differs from implementationContextId.",
-    inputSchema: object(["event"], {
-      event: object(["eventId", "type", "host", "batchId", "jobId", "executionId", "sourceId", "contextId", "implementationContextId"], {
-        eventId: string,
-        type: { const: "review-execution" },
-        host: { enum: ["claude", "codex"] },
-        batchId: string,
-        jobId: string,
-        executionId: string,
-        sourceId: string,
-        contextId: string,
-        implementationContextId: string,
-        parentContextId: string,
-        text: string,
-      }),
-    }),
+      executionRequestId: string,
+    }, ["batchId", "executionRequestId"]),
   },
   dev_flow_present_review_risk_acceptance: {
     description: "Present a one-time user decision for an exact set of current blocking review findings.",
     inputSchema: featureMutation({ findingIds: { type: "array", minItems: 1, uniqueItems: true, items: string }, host: { enum: ["claude", "codex"] } }, ["findingIds", "host"]),
   },
   dev_flow_answer: {
-    description: "Answer the one current user decision in plain Chinese; Core resolves its kind and trusted host provenance.",
-    inputSchema: featureMutation({ userReply: string, host: { enum: ["claude", "codex"] } }, ["userReply", "host"]),
+    description: "Answer the one current user decision from the last captured same-host user event; callers never pass a reply string.",
+    inputSchema: featureMutation({ host: { enum: ["claude", "codex"] } }, ["host"]),
   },
   dev_flow_present_quality_exception: {
     description: "Present one workflow-quality risk for an explicit user decision; integrity failures cannot use this path.",
@@ -495,17 +397,6 @@ export const publicTools = (Object.keys(toolSchemas) as ToolName[]).filter((name
 const publicToolSet = new Set<string>(publicTools);
 
 // 运行时形状由入口 validateToolInput 按 schema 保证；此处只做类型窄化。
-function traceRegistrationInput(value: unknown): {
-  featureId: string; expectedRevision: number; kind: typeof traceArtifactKinds[number];
-  traceDelta: import("../policy/traceability.js").TraceDelta;
-} {
-  return value as {
-    featureId: string; expectedRevision: number; kind: typeof traceArtifactKinds[number];
-    traceDelta: import("../policy/traceability.js").TraceDelta;
-  };
-}
-
-// 运行时形状由入口 validateToolInput 按 schema 保证；此处只做类型窄化。
 function traceReadInput(value: unknown): { featureId: string } {
   return value as { featureId: string };
 }
@@ -521,21 +412,6 @@ function reviewGetInput(value: unknown): { featureId: string; batchId: string; j
 }
 
 // 运行时形状由入口 validateToolInput 按 schema 保证；此处只做类型窄化。
-function reviewSubmitInput(value: unknown): Record<string, unknown> & {
-  featureId: string; expectedRevision: number; batchId: string; jobId: string; capability: string; completion: unknown; attestation?: unknown;
-} {
-  return value as Record<string, unknown> & {
-    featureId: string; expectedRevision: number; batchId: string; jobId: string; capability: string; completion: unknown; attestation?: unknown;
-  };
-}
-
-// 运行时形状由入口 validateToolInput 按 schema 保证；此处只做类型窄化。
-function reviewSamplingInput(value: unknown): Record<string, unknown> & {
-  featureId: string; expectedRevision: number; batchId: string; jobId: string;
-} {
-  return value as Record<string, unknown> & { featureId: string; expectedRevision: number; batchId: string; jobId: string };
-}
-
 // 运行时形状由入口 validateToolInput 按 schema 保证；此处只做类型窄化。
 function unitMutationInput(value: unknown): Record<string, unknown> & {
   featureId: string; expectedRevision: number; unitId: string;
@@ -589,29 +465,6 @@ function rollbackGateMessage(preview: RollbackPreview): string {
 }
 
 /** A submitter may inspect its own accepted payload, never sibling review output. */
-function reviewSubmissionEnvelope(
-  result: Awaited<ReturnType<typeof submitReviewJob>>,
-  submittedJobId: string,
-) {
-  const job = result.batch.jobs.find((candidate) => candidate.jobId === submittedJobId);
-  if (!job) throw new DevFlowError("REVIEW_INTEGRITY_FAILED", "submitted review job is missing from its batch", { submittedJobId });
-   const publicJob = toPublicReviewJob(job);
-  return {
-    state: result.state,
-    idempotent: result.idempotent,
-    job: publicJob,
-    batch: {
-      batchId: result.batch.batchId,
-      basisHash: result.batch.basisHash,
-      validity: result.batch.validity,
-      progress: result.batch.progress,
-      assuranceLevel: result.batch.assuranceLevel,
-      executionMode: result.batch.executionMode,
-      jobs: result.batch.jobs.map(({ jobId, role, reviewDepth, status }) => ({ jobId, role, reviewDepth, status })),
-    },
-  };
-}
-
 const classificationBasisKeys = ["scopeFactRefs", "topologyFactRefs", "uncertaintyFactRefs", "riskFactRefs", "decisionRefs", "controlEnhancements"] as const;
 
 function normalizeLockClassification(value: Record<string, unknown>): Record<string, unknown> {
@@ -797,16 +650,6 @@ export class McpConnection {
   }
 }
 
-function samplingFailureCode(error: unknown): "client-error" | "timeout" | "invalid-response" | "validation-failed" {
-  if (error instanceof DevFlowError) {
-    if (error.code === "REVIEW_SAMPLING_TIMEOUT" || error.code === "REVIEW_SAMPLING_REQUEST_EXPIRED") return "timeout";
-    if (error.code === "REVIEW_SAMPLING_RESPONSE_INVALID") return "invalid-response";
-  }
-  if (error instanceof Error && (/^client request failed:/.test(error.message) || /^MCP client stream closed/.test(error.message))) {
-    return "client-error";
-  }
-  return "validation-failed";
-}
 
 /**
  * dispatch 的窄端口：MCP 客户端能力（elicit/sampleReview）与注意力通知。
@@ -875,7 +718,7 @@ export async function dispatch(root: string, name: string, a: any, ports: Dispat
       });
     }
     case "dev_flow_revise_plan": {
-      const result = await revisePlanDuringImplementation(root, a.featureId, a.expectedRevision, a.traceDelta, a.host);
+      const result = await revisePlanFromMarkdown(root, a.featureId, a.expectedRevision, a.host);
       return elicitAndAnswer(pipelinePorts, result, {
         root, featureId: a.featureId, host: a.host,
         decision: "plan-revision",
@@ -905,16 +748,16 @@ export async function dispatch(root: string, name: string, a: any, ports: Dispat
     case "dev_flow_status": return readCompactStatus(root, a.featureId);
     case "dev_flow_inspect": return inspectFeature(root, a.featureId, a.topic);
     case "dev_flow_scaffold_artifact": return scaffoldArtifact(root, a.featureId, a.expectedRevision, a.kind);
-    case "dev_flow_record_artifact": return recordArtifact(root, a.featureId, a.expectedRevision, a.kind);
-    case "dev_flow_record_artifact_with_trace": {
-      const input = traceRegistrationInput(a);
-      validateTraceDelta(input.traceDelta);
-      return recordArtifactWithTrace(root, input.featureId, input.expectedRevision, input.kind, input.traceDelta);
+    case "dev_flow_record_artifact": {
+      const state = await readState(root, a.featureId);
+      const traceKind = a.kind === "requirements" || a.kind === "implementation-plan";
+      if (traceKind && traceEnforcementRequired(state.route as import("../policy/types.js").RouteId, state.classification.controls)) {
+        return recordArtifactFromMarkdown(root, a.featureId, a.expectedRevision, a.kind);
+      }
+      return recordArtifact(root, a.featureId, a.expectedRevision, a.kind);
     }
     case "dev_flow_validate_plan": {
-      const input = traceRegistrationInput(a);
-      validateTraceDelta(input.traceDelta);
-      return validatePlan(root, input.featureId, input.kind, input.traceDelta);
+      return validatePlanFromMarkdown(root, a.featureId, a.kind);
     }
     case "dev_flow_get_traceability": {
       const input = traceReadInput(a);
@@ -936,82 +779,29 @@ export async function dispatch(root: string, name: string, a: any, ports: Dispat
       const input = reviewGetInput(a);
       return getReviewJob(root, input.featureId, input.batchId, input.jobId, input.capability);
     }
-    case "dev_flow_claim_review_job": {
+    case "dev_flow_start_review_execution": {
       const input = reviewMutationInput(a);
-      return claimReviewJob(root, input.featureId, input.expectedRevision, input.batchId as string, input.jobId as string, input.claimRequestId as string);
-    }
-    case "dev_flow_release_review_job": {
-      const input = reviewMutationInput(a);
-      return releaseReviewJob(root, input.featureId, input.expectedRevision, input.batchId as string, input.jobId as string, input.capability as string);
-    }
-    case "dev_flow_start_isolated_review": {
-      const input = reviewMutationInput(a);
-      if (typeof input.executionId !== "string" || !input.executionId || (input.host !== "claude" && input.host !== "codex")) {
-        throw new DevFlowError("INVALID_TOOL_INPUT", "dev_flow_start_isolated_review input does not match its schema");
-      }
-      return startIsolatedReview(root, input.featureId, input.expectedRevision, input.batchId as string, input.jobId as string, input.executionId, input.host as "claude" | "codex");
-    }
-    case "dev_flow_submit_review_job": {
-      const input = reviewSubmitInput(a);
-      try { parseReviewJobCompletion(input.completion); }
-      catch (error) {
-        throw new DevFlowError("INVALID_TOOL_INPUT", "dev_flow_submit_review_job input does not match its schema", {
-          mutationApplied: false,
-          ...(error instanceof Error ? { cause: error.message } : {}),
-        });
-      }
-      if (input.attestation !== undefined) {
-        try { parseHostAttestation(input.attestation); }
-        catch (error) {
-          throw new DevFlowError("INVALID_TOOL_INPUT", "dev_flow_submit_review_job attestation does not match its schema", {
-            mutationApplied: false,
-            ...(error instanceof Error ? { cause: error.message } : {}),
-          });
-        }
-      }
-      const result = await submitReviewJob(
-        root, input.featureId, input.expectedRevision, input.batchId, input.jobId, input.capability, input.completion, input.attestation,
-      );
-      return reviewSubmissionEnvelope(result, input.jobId);
-    }
-    case "dev_flow_sample_review_job": {
-      const input = reviewSamplingInput(a);
-      // Capability negotiation is intentionally before beginReviewSampling so an
-      // unsupported client cannot create a server-held job or mutate the pointer.
-      ports.assertSamplingSupported();
-      const started = await beginReviewSampling(root, input.featureId, input.expectedRevision, input.batchId, input.jobId);
-      try {
-        const completion = await ports.sampleReview({
-          role: started.job.role,
-          reviewDepth: started.job.reviewDepth,
-          package: started.package,
-        });
-        const completed = await completeReviewSampling(
-          root, input.featureId, started.state.revision, input.batchId, input.jobId, started.requestId, completion,
-        );
-        return reviewSubmissionEnvelope({ ...completed, idempotent: false }, input.jobId);
-      } catch (error) {
+      const host = input.host as "claude" | "codex";
+      let sampleReview: ((job: { role: string; reviewDepth: string; package: unknown }) => Promise<unknown>) | undefined;
+      if (host !== "claude") {
         try {
-          await failReviewSampling(
-            root,
-            input.featureId,
-            started.state.revision,
-            input.batchId,
-            input.jobId,
-            started.requestId,
-            samplingFailureCode(error),
-          );
-        } catch {
-          // A CAS conflict or a concurrent recovery must not turn a sampling
-          // failure into a successful response. The original failure is safer.
+          ports.assertSamplingSupported();
+          sampleReview = (job) => ports.sampleReview(job);
+        } catch (error) {
+          if (error instanceof DevFlowError && error.code === "REVIEW_SAMPLING_UNSUPPORTED") {
+            throw new DevFlowError("REVIEW_EXECUTION_UNAVAILABLE", `${host} review execution is unavailable until a trusted sampling path is wired`, {
+              host,
+              recoveryHint: "Codex 当前只允许 server sampling；客户端未声明 sampling/createMessage 时 review 不能启动。更新插件并重开会话，或走既有 quality-exception。",
+            });
+          }
+          throw error;
         }
-        const code = error instanceof DevFlowError ? error.code : "REVIEW_SAMPLING_FAILED";
-        throw new DevFlowError("REVIEW_SAMPLING_FAILED", "sampling review did not produce an accepted completion", {
-          batchId: input.batchId,
-          jobId: input.jobId,
-          causeCode: code,
-      });
+      }
+      return startReviewExecution(root, input.featureId, input.expectedRevision, input.batchId as string, host, input.executionRequestId as string, { sampleReview });
     }
+    case "dev_flow_complete_review_execution": {
+      const input = reviewMutationInput(a);
+      return completeReviewExecution(root, input.featureId, input.expectedRevision, input.batchId as string, input.executionRequestId as string);
     }
     case "dev_flow_record_decision": {
       // ADR-0008：较早聊天中的决定先追认；整句命中最近未消费消息时可自动落账。
@@ -1033,6 +823,7 @@ export async function dispatch(root: string, name: string, a: any, ports: Dispat
         extra: { decisionId: result.decisionId },
       });
     }
+
     case "dev_flow_present_review_risk_acceptance": {
       const input = reviewMutationInput(a);
       if (!Array.isArray(input.findingIds) || !input.findingIds.length || input.findingIds.some((findingId) => typeof findingId !== "string" || !findingId)) {
@@ -1121,12 +912,11 @@ export async function dispatch(root: string, name: string, a: any, ports: Dispat
        const prior = await readState(root, a.featureId);
        const priorDecision = pendingDecisionForState(prior);
        const priorInteraction = priorDecision ? pendingInteractionForDecision(prior, priorDecision) : undefined;
-       const result = await answer({
+       const result = await answerFromHostEvents({
          root,
          featureId: a.featureId,
          expectedRevision: a.expectedRevision,
          host: a.host,
-         credential: { source: "text", userReply: a.userReply },
        });
        const interaction = priorInteraction ? getInteraction(result.state, priorInteraction.id) : undefined;
        const publicInteraction = interaction ? toPublicInteraction(interaction) : undefined;

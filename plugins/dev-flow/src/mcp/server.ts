@@ -48,7 +48,7 @@ const readOnlyResponseTools = new Set([
 function isFeatureState(value: unknown): value is FeatureState {
   const schemaVersion = (value as { schemaVersion?: unknown } | null)?.schemaVersion;
   return Boolean(value && typeof value === "object" && !Array.isArray(value)
-    && (schemaVersion === 4 || schemaVersion === 5)
+    && schemaVersion === 6
     && typeof (value as { featureId?: unknown }).featureId === "string"
     && typeof (value as { revision?: unknown }).revision === "number"
     && typeof (value as { mode?: unknown }).mode === "string");

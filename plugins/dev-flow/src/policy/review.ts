@@ -8,11 +8,7 @@ export type ReviewAssurance =
   | "independent-sampling"
   | "multi-agent-verified";
 
-export type ReviewExecutionMode =
-  | "isolated-sequential"
-  | "parallel-safe"
-  | "mcp-sampling"
-  | "native-subagent";
+export type ReviewExecutionMode = "parallel-execution";
 
 export type ReviewRole =
   | "code-quality"
@@ -80,7 +76,7 @@ export interface ReviewPointer {
 }
 
 export interface ReviewBasisArtifact {
-  kind: "requirements" | "implementation-plan" | "coverage-matrix" | "rollback-units";
+  kind: "requirements" | "implementation-plan";
   path: string;
   sha256: string;
 }
@@ -271,8 +267,8 @@ export type ReviewFindingEvent =
 
 export interface ReviewBatch {
   batchId: string;
-  /** Missing only on early 5.0 plan-review snapshots loaded at the compatibility edge. */
-  phase?: "plan" | "code";
+  /** v6 contract: every batch declares its review phase (GPT-005). */
+  phase: "plan" | "code";
   basis: ReviewBasis;
   basisHash: string;
   validity: "current" | "stale";
@@ -286,7 +282,7 @@ export interface ReviewBatch {
 }
 
 export interface ReviewLedger {
-  schemaVersion: 2;
+  schemaVersion: 3;
   featureId: string;
   revision: number;
   stateRevision: number;

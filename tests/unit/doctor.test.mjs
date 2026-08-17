@@ -8,6 +8,7 @@ import { loadSource } from "../helpers/load-source.mjs";
 const store = await loadSource("plugins/dev-flow/src/core/state-store.ts");
 const journal = await loadSource("plugins/dev-flow/src/core/rollback-journal.ts");
 const reviewStore = await loadSource("plugins/dev-flow/src/core/review-store.ts");
+const evidenceStore = await loadSource("plugins/dev-flow/src/core/evidence-store.ts");
 const { createInteraction } = await loadSource("plugins/dev-flow/src/core/user-interactions.ts");
 const { collectDoctorReport } = await loadSource("plugins/dev-flow/src/mcp/doctor.ts");
 const pluginRoot = path.resolve("plugins/dev-flow");
@@ -27,6 +28,27 @@ test("doctor reports project, active state, bundles and wiring without mutating 
     assert.ok(report.diagnostics.some((item) => item.code === "ACTIVE_FEATURE_STATE" && item.status === "ok"));
     assert.equal(report.mcp.server, "running");
     assert.ok(report.diagnostics.some((item) => item.code === "PLUGIN_WIRING_VALID" && item.status === "ok"));
+  } finally { await fixture.dispose(); }
+});
+
+test("doctor reports evidence store hot/cold summary and reachable pack damage", async () => {
+  const fixture = await createTinyApp();
+  try {
+    await store.initProject(fixture.root, strictProjectConfig);
+    await store.startFeature(fixture.root, { featureId: "feature", host: "claude", level: "XS", topology: "local" });
+    const empty = await collectDoctorReport(fixture.root, pluginRoot, "1.0.0", ["dev_flow_doctor"]);
+    assert.equal(empty.evidenceStore.catalogPresent, true);
+    assert.ok(empty.diagnostics.some((item) => item.code === "EVIDENCE_STORE_CATALOG_VALID" && item.status === "ok"));
+
+    const put = await evidenceStore.putEvidenceObject(fixture.root, "feature", "trace", "doctor-probe");
+    const tracePack = put.catalog.packs.find((pack) => put.catalog.objects.some((entry) => entry.sha256 === put.ref.sha256 && entry.packSha256 === pack.packSha256));
+    const packFile = path.join(fixture.root, ".dev-flow", "features", "feature", "evidence", "packs", "hot", `${tracePack.packSha256}.pack`);
+    await rm(packFile);
+    const damaged = await collectDoctorReport(fixture.root, pluginRoot, "1.0.0", ["dev_flow_doctor"]);
+    assert.ok(damaged.evidenceStore.objectCount >= 1);
+    assert.equal(damaged.evidenceStore.integrityIssues.length, 1);
+    assert.equal(damaged.evidenceStore.integrityIssues[0].code, "EVIDENCE_STORE_REACHABLE_PACK_DAMAGED");
+    assert.ok(damaged.diagnostics.some((item) => item.code === "EVIDENCE_STORE_INTEGRITY_FAILED" && item.status === "error"));
   } finally { await fixture.dispose(); }
 });
 

@@ -57,7 +57,7 @@ async function setup() {
     },
   }, { scanned: ["assumption", "free-space", "tbd", "fallback", "scope", "acceptance"], items: [] });
   await stateStore.recordHostEvent(root, { eventId: `route-${state.revision}`, type: "user-prompt", host: "claude", text: "确认这条路线" });
-  state = (await stateStore.answer({ root, featureId: "diag", expectedRevision: state.revision, host: "claude", credential: { source: "text", userReply: "确认这条路线" } })).state;
+  state = (await stateStore.answerFromHostEvents({ root, featureId: "diag", expectedRevision: state.revision, host: "claude" })).state;
   state = await registerTraceFixture({
     root, featureId: "diag", state, kind: "requirements",
     delta: twoClosureTraceDeltaFor("requirements", "m"),
@@ -70,10 +70,10 @@ async function setup() {
 
 const markdownFor = (delta) => delta.nodes.map((node) => {
   if (node.kind === "task") {
-    return `<!-- dev-flow:id=${node.id} kind=task -->\n### ${node.id}\n\n- covers: ${node.covers.join(", ")}\n- implementation_unit: ${node.implementationUnit}\n`;
+    return `<!-- dev-flow:id=${node.id} kind=task -->\n### ${node.id}\n\n- covers: [${node.covers.join(", ")}]\n- implementation_unit: ${node.implementationUnit}\n- tdd: direct\n`;
   }
   if (node.kind === "implementation-unit") {
-    return `<!-- dev-flow:id=${node.id} kind=implementation-unit -->\n### ${node.id}\n\n- tasks: ${node.tasks.join(", ")}\n- depends_on: [${node.dependsOn.join(", ")}]\n- file_scope: ${node.fileScope.join(", ")}\n- covers: ${node.covers.join(", ")}\n- forward_verification: ${node.forwardVerification.join(", ")}\n`;
+    return `<!-- dev-flow:id=${node.id} kind=implementation-unit -->\n### ${node.id}\n\n- tasks: [${node.tasks.join(", ")}]\n- depends_on: [${node.dependsOn.join(", ")}]\n- file_scope: [${node.fileScope.join(", ")}]\n- covers: [${node.covers.join(", ")}]\n- forward_verification: [${node.forwardVerification.join(", ")}]\n`;
   }
   throw new Error(`unsupported kind ${node.kind}`);
 }).join("\n");
@@ -99,7 +99,7 @@ test("preflight returns graph, uncovered-AC and recovery diagnostics together in
     await writeFile(planPath, markdownFor(delta));
 
     const before = await stateStore.readState(root, featureId);
-    const result = await artifacts.validatePlan(root, featureId, "implementation-plan", delta);
+    const result = await artifacts.validatePlanFromMarkdown(root, featureId, "implementation-plan");
     assert.equal(result.ok, false);
     // 图错误不再吞掉其他诊断：一次返回 图错误 + 两个未覆盖 AC + 缺失恢复安排。
     const codes = result.diagnostics.map((d) => d.code);
@@ -134,9 +134,9 @@ test("formal registration surfaces the same complete diagnostic set as preflight
     const planPath = path.join(root, ".dev-flow", "features", featureId, state.artifacts["implementation-plan"].path);
     await writeFile(planPath, markdownFor(delta));
 
-    const preflight = await artifacts.validatePlan(root, featureId, "implementation-plan", delta);
+    const preflight = await artifacts.validatePlanFromMarkdown(root, featureId, "implementation-plan");
     await assert.rejects(
-      () => artifacts.recordArtifactWithTrace(root, featureId, state.revision, "implementation-plan", delta),
+      () => artifacts.recordArtifactFromMarkdown(root, featureId, state.revision, "implementation-plan"),
       (error) => {
         assert.equal(error.code, "PLAN_INVALID");
         assert.deepEqual(error.details.diagnostics, preflight.diagnostics,

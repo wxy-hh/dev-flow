@@ -8,7 +8,6 @@ import { storeScreenshotArtifact } from "./acceptance-store.js";
 import { DevFlowError } from "./errors.js";
 import { createInteraction, getInteraction, resolveResponseForAnswer, toPublicInteraction, type PresentedInteraction, type PublicInteraction } from "./user-interactions.js";
 import type { InteractionResponse, UserInteraction } from "../policy/interaction.js";
-import { resolveInteractionPromptEvent } from "./interaction-provenance.js";
 import type { AnswerResolveContext, AnswerResolveResult } from "./interaction-answer.js";
 
 const digest = (value: string | Buffer): string => createHash("sha256").update(value).digest("hex");
@@ -166,9 +165,8 @@ export async function resolveAcceptanceConfirmationForAnswer(ctx: AnswerResolveC
   let promptEventId: string | undefined;
   let promptText: string | undefined;
   if (credential.source === "text") {
-    const prompt = resolveInteractionPromptEvent(await readFeatureEvents(root, featureId), state, interaction, { host, userReply: credential.userReply });
-    promptEventId = prompt.eventId;
-    promptText = prompt.text;
+    promptEventId = credential.promptEventId;
+    promptText = credential.promptText;
   }
   let response: InteractionResponse | undefined;
   const next = await mutatePrepared(root, featureId, expectedRevision, "acceptance-confirmation-resolved", async (current) => {
@@ -183,7 +181,7 @@ export async function resolveAcceptanceConfirmationForAnswer(ctx: AnswerResolveC
           source: credential.source,
           action: credential.source === "elicitation" ? credential.action : undefined,
           comment: credential.source === "elicitation" ? credential.comment : undefined,
-          userReply: credential.source === "text" ? credential.userReply : undefined,
+          userReply: credential.source === "text" ? (credential.promptText) : undefined,
           promptText,
           promptEventId,
           host,

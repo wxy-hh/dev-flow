@@ -51,6 +51,8 @@ export interface InteractionInput {
   options: InteractionOption[];
   recommendation?: GrillRecommendation;
   presentationEventId?: string;
+  /** v6 presentation cursor; normally stamped by mutatePrepared, callers may pass it explicitly. */
+  presentationEventSequence?: number;
   workspacePaths?: string[];
   workspaceBatchPaths?: string[];
   workspaceRemainingPaths?: string[];
@@ -61,6 +63,7 @@ export interface InteractionInput {
   /** 实施中计划修订候选：展示受影响单元与副作用警示，确认后局部重做。 */
   planRevision?: { affectedUnits: string[]; redoUnits: string[]; sideEffectUnits: string[]; reviewInvalidated: boolean; fallbackReason?: string };
   planRevisionBasis?: UserInteraction["planRevisionBasis"];
+  planRevisionProposal?: UserInteraction["planRevisionProposal"];
   /** 副作用单元重跑确认候选：计划修订后不会自动重跑有副作用的已完成单元。 */
   sideEffectRerun?: { units: string[] };
   acceptanceConfirmation?: { acceptanceCriterionIds: string[]; deliveryFingerprint: string; dispositionHash: string };
@@ -76,10 +79,13 @@ function validateOptions(options: InteractionOption[]): void {
     throw new DevFlowError("INTERACTION_OPTIONS_INVALID", "每个用户问题必须只有 2-3 个选项。", { userMessage: "当前问题的选项数量不符合交互合同。", recoveryKind: "repair", recoveryInstruction: "将选项收敛为 2-3 个简明选择，并保留一个推荐答案。", retryOriginal: false });
   }
   const seen = new Set<string>();
+  const seenLabels = new Set<string>();
   const invalidIds: string[] = [];
+  const duplicateLabels: string[] = [];
   for (const option of options) {
     if (!option || !/^[a-z][a-z0-9-]{0,63}$/.test(option.id)) invalidIds.push(option?.id ?? "<missing>");
-    if (!option || !option.label.trim() || seen.has(option.id)) {
+    const normalizedLabel = option?.label?.trim() ?? "";
+    if (!option || !normalizedLabel || seen.has(option.id)) {
       throw new DevFlowError("INTERACTION_OPTIONS_INVALID", "option ids must be unique lowercase action ids with labels", {
         pattern: "^[a-z][a-z0-9-]{0,63}$",
         examples: ["document-only", "inject-signal"],
@@ -88,7 +94,15 @@ function validateOptions(options: InteractionOption[]): void {
         recoveryHint: "为每个选项提供唯一的、匹配上述正则的 action id 与非空 label。",
       });
     }
+    if (seenLabels.has(normalizedLabel)) duplicateLabels.push(option.label.trim());
     seen.add(option.id);
+    seenLabels.add(normalizedLabel);
+  }
+  if (duplicateLabels.length > 0) {
+    throw new DevFlowError("INTERACTION_OPTIONS_INVALID", "option labels must be unique after trimming", {
+      duplicateLabels,
+      recoveryHint: "为每个选项提供可区分、去空格后互不相同的 label，避免回答匹配歧义。",
+    });
   }
 }
 
@@ -121,6 +135,7 @@ export function createInteraction(state: FeatureState, input: InteractionInput):
     ...(input.recommendation ? { recommendation: { ...input.recommendation } } : {}),
     presentedAt: new Date().toISOString(),
     presentedRevision: state.revision,
+    ...(input.presentationEventSequence !== undefined ? { presentationEventSequence: input.presentationEventSequence } : {}),
     presentationEventId: input.presentationEventId ?? randomUUID(),
     ...(input.workspacePaths ? { workspacePaths: [...input.workspacePaths] } : {}),
     ...(input.workspaceBatchPaths ? { workspaceBatchPaths: [...input.workspaceBatchPaths] } : {}),
@@ -129,6 +144,7 @@ export function createInteraction(state: FeatureState, input: InteractionInput):
     ...(input.revision ? { revision: { ...input.revision, affected: [...input.revision.affected] } } : {}),
     ...(input.planRevision ? { planRevision: { ...input.planRevision, affectedUnits: [...input.planRevision.affectedUnits], redoUnits: [...input.planRevision.redoUnits], sideEffectUnits: [...input.planRevision.sideEffectUnits] } } : {}),
     ...(input.planRevisionBasis ? { planRevisionBasis: { ...input.planRevisionBasis } } : {}),
+    ...(input.planRevisionProposal ? { planRevisionProposal: { ...input.planRevisionProposal } } : {}),
     ...(input.sideEffectRerun ? { sideEffectRerun: { units: [...input.sideEffectRerun.units] } } : {}),
     ...(input.acceptanceConfirmation ? { acceptanceConfirmation: { ...input.acceptanceConfirmation, acceptanceCriterionIds: [...input.acceptanceConfirmation.acceptanceCriterionIds] } } : {}),
     status: "pending",

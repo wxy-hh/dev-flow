@@ -20,6 +20,9 @@ const projection = await loadSource("plugins/dev-flow/src/core/review-projection
 const units = await loadSource("plugins/dev-flow/src/core/implementation-units.ts");
 const contract = await loadSource("plugins/dev-flow/src/policy/contract.ts");
 const evidencePolicy = await loadSource("plugins/dev-flow/src/policy/evidence.ts");
+const reviewExecution = await loadSource("plugins/dev-flow/src/core/review-execution.ts");
+const reviewAdapter = await loadSource("plugins/dev-flow/src/hosts/review-execution-adapter.ts");
+const interactionAnswer = await loadSource("plugins/dev-flow/src/core/interaction-answer.ts");
 const run = promisify(execFile);
 
 export const routeFlowConfig = {
@@ -29,7 +32,7 @@ export const routeFlowConfig = {
   governedRoots: ["src"],
 };
 
-const TRACE_KINDS = new Set(["requirements", "implementation-plan", "coverage-matrix", "rollback-units"]);
+const TRACE_KINDS = new Set(["requirements", "implementation-plan"]);
 
 function claimCapability(jobId, host = "route-flow") {
   return `claim-${jobId}-${host}-1234567890abcdef`;
@@ -58,6 +61,30 @@ async function completeReviewJobs(root, featureId, state, batch, options = {}) {
   // 为每个 job 记录 review-execution 事件并随提交携带隔离声明；options.codeIsolation
   // 为 false 时跳过（用于测试隔离门禁的负路径）。
   const needsIsolation = batch.phase === "code" && options.codeIsolation !== false;
+  const useReviewExecution = options.reviewExecution !== false
+    && options.legacyClaimSubmit !== true
+    && options.codeIsolation !== false
+    && options.replaySubmit !== true;
+  if (useReviewExecution) {
+    const requestId = `route-flow-exec-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    const started = await reviewExecution.startReviewExecution(root, featureId, current.revision, batch.batchId, "claude", requestId);
+    for (const job of started.jobs) {
+      const marker = `dev-flow:isolated-review:${job.declarationId}`;
+      const completion = JSON.stringify((options.completions?.[job.role]) ?? { coverageSummary: `${job.role} route review complete`, findings: [] });
+      const adapterResult = await reviewAdapter.recordSubagentReviewOutput(root, {
+        hook_event_name: "SubagentStop",
+        session_id: "implementation-session",
+        agent_id: `review-agent-${job.jobId}`,
+        agent_transcript_path: "/nonexistent/transcript.jsonl",
+        last_assistant_message: `${marker}\n${completion}`,
+        prompt: marker,
+        tool_input: {},
+      }, "claude");
+      assert.equal(adapterResult.recorded, true);
+    }
+    const completed = await reviewExecution.completeReviewExecution(root, featureId, started.state.revision, batch.batchId, requestId);
+    return { state: completed.state, observedPending: [{ kind: "review-execution-complete", batchId: batch.batchId }] };
+  }
   for (const job of batch.jobs) {
     // A reused job carries a prior submission and needs no claim or submit;
     // re-claiming it would fail with REVIEW_JOB_ALREADY_SUBMITTED.
@@ -128,12 +155,20 @@ async function satisfyHumanGate(root, featureId, state, step, options = {}) {
   const host = options.gateHosts?.[step] ?? options.host ?? "claude";
   if (options.recordPrompt) await options.recordPrompt({ root, eventId, host, text: reply });
   else await store.recordHostEvent(root, { eventId, type: "user-prompt", host, text: reply });
-  return (await store.answer({
+  if (options.legacyUserReply) {
+    return (await store.answer({
+      root,
+      featureId,
+      expectedRevision: presented.state.revision,
+      host,
+      credential: { source: "text", userReply: reply },
+    })).state;
+  }
+  return (await interactionAnswer.answerFromHostEvents({
     root,
     featureId,
     expectedRevision: presented.state.revision,
     host,
-    credential: { source: "text", userReply: reply },
   })).state;
 }
 
@@ -213,6 +248,7 @@ export async function driveUntil(root, featureId, state, options = {}) {
         completions: options.reviewCompletions,
         replaySubmit: options.replaySubmit,
         codeIsolation: options.codeIsolation,
+        reviewExecution: options.reviewExecution,
       });
       current = completed.state;
       reviewObservations.pendingSeen = completed.observedPending.length > 0;
@@ -309,6 +345,7 @@ export async function driveUntil(root, featureId, state, options = {}) {
           completions: options.reviewCompletions,
           replaySubmit: options.replaySubmit,
           codeIsolation: options.codeIsolation,
+          reviewExecution: options.reviewExecution,
           skipPendingAssert: true,
         });
         current = completedCode.state;

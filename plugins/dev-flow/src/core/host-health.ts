@@ -9,6 +9,8 @@ export interface HostHealthSignal {
   kind: HostHealthKind;
   eventId: string;
   at: string;
+  adapterVersion?: string;
+  capabilities?: string[];
 }
 
 const healthWindowMs = 15 * 60 * 1000;
@@ -22,7 +24,13 @@ export async function readHostHealth(root: string): Promise<HostHealthSignal[]> 
         const signal = JSON.parse(line) as Partial<HostHealthSignal>;
         return (signal.host === "claude" || signal.host === "codex")
           && typeof signal.kind === "string" && typeof signal.eventId === "string" && typeof signal.at === "string"
-          ? [signal as HostHealthSignal] : [];
+          ? [{
+              ...signal,
+              ...(signal.adapterVersion !== undefined ? { adapterVersion: String(signal.adapterVersion) } : {}),
+              ...(Array.isArray(signal.capabilities)
+                ? { capabilities: signal.capabilities.filter((value): value is string => typeof value === "string") }
+                : {}),
+            } as HostHealthSignal] : [];
       } catch { return []; }
     });
   } catch (error) {

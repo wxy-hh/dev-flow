@@ -15,6 +15,7 @@ const acceptance = await loadSource("plugins/dev-flow/src/core/acceptance.ts");
 const inspection = await loadSource("plugins/dev-flow/src/core/inspection.ts");
 const reviewJobs = await loadSource("plugins/dev-flow/src/core/review-jobs.ts");
 const { registerTraceFixture } = await import("../helpers/trace-fixtures.mjs");
+import { v6ImplementationPlanMarkdown, v6RequirementsMarkdown } from "../helpers/v6-fixtures.mjs";
 
 const config = {
   schemaVersion: 2,
@@ -23,26 +24,11 @@ const config = {
   governedRoots: ["src"],
 };
 
-const requirements = {
-  nodes: [
-    { kind: "requirement", id: "REQ-001" },
-    { kind: "acceptance-criterion", id: "AC-001", parentRequirement: "REQ-001", verificationDisposition: { kind: "human-acceptance", reason: "用户确认页面结果" } },
-  ],
-};
-
-const plan = {
-  nodes: [
-    { kind: "task", id: "TASK-001", covers: ["REQ-001", "AC-001"], implementationUnit: "UNIT-001" },
-    { kind: "test", id: "TEST-001", verifies: ["AC-001"] },
-    { kind: "implementation-unit", id: "UNIT-001", tasks: ["TASK-001"], dependsOn: [], fileScope: ["src"], covers: ["REQ-001", "AC-001"], forwardVerification: ["pass"] },
-  ],
-};
-
-const planMarkdown = [
-  "<!-- dev-flow:id=TASK-001 kind=task -->\n### TASK-001\n\n- covers: REQ-001, AC-001\n- implementation_unit: UNIT-001\n",
-  "<!-- dev-flow:id=TEST-001 kind=test -->\n### TEST-001\n\n- 验证方法：\n",
-  "<!-- dev-flow:id=UNIT-001 kind=implementation-unit -->\n### UNIT-001\n\n- tasks: TASK-001\n- depends_on: []\n- file_scope: src\n- covers: REQ-001, AC-001\n- forward_verification: pass\n",
-].join("\n");
+const requirementsMarkdown = v6RequirementsMarkdown().replace(
+  "- parent_requirement: REQ-001\n- verification_kind: behavior-test",
+  "- parent_requirement: REQ-001\n- verification_kind: human-acceptance\n- verification_reason: 用户确认页面结果",
+);
+const planMarkdown = v6ImplementationPlanMarkdown({ commandId: "pass", tdd: "direct" });
 
 async function setup() {
   const root = await mkdtemp(path.join(os.tmpdir(), "dev-flow-acceptance-authority-"));
@@ -59,12 +45,12 @@ async function setup() {
       controlEnhancements: { trace: true },
     },
   });
-  state = await registerTraceFixture({ root, featureId: state.featureId, state, kind: "requirements", delta: requirements, edit: (markdown) => markdown });
+  state = await registerTraceFixture({ root, featureId: state.featureId, state, kind: "requirements", edit: () => requirementsMarkdown });
   state = await checks.recordStep(root, "acceptance", state.revision, "requirements_alignment", {});
   state = await artifacts.scaffoldArtifact(root, "acceptance", state.revision, "implementation-plan");
   const planPath = path.join(root, ".dev-flow", "features", "acceptance", state.artifacts["implementation-plan"].path);
   await writeFile(planPath, planMarkdown);
-  state = (await artifacts.recordArtifactWithTrace(root, "acceptance", state.revision, "implementation-plan", plan)).state;
+  state = (await artifacts.recordArtifactFromMarkdown(root, "acceptance", state.revision, "implementation-plan")).state;
   state = await checks.recordStep(root, "acceptance", state.revision, "planning", { reviewType: "plan" });
   const begun = await units.beginImplementationUnit(root, "acceptance", state.revision, "UNIT-001");
   state = (await checkpoints.checkpointImplementationUnit(root, "acceptance", begun.revision, "UNIT-001")).state;
@@ -166,15 +152,13 @@ test("可信用户确认绑定当前依据且只能消费一次", async () => {
   try {
     const presented = await acceptance.presentAcceptanceConfirmation(root, "acceptance", state.revision, ["AC-001"]);
     await store.recordHostEvent(root, { eventId: "accept-prompt", type: "user-prompt", host: "codex", text: "确认验收" });
-    const confirmed = await store.answer({
+    const confirmed = await store.answerFromHostEvents({
       root, featureId: "acceptance", expectedRevision: presented.state.revision, host: "codex",
-      credential: { source: "text", userReply: "确认验收" },
     });
     assert.equal(confirmed.action, "confirm");
     await assert.rejects(
-      () => store.answer({
+      () => store.answerFromHostEvents({
         root, featureId: "acceptance", expectedRevision: confirmed.state.revision, host: "codex",
-        credential: { source: "text", userReply: "确认验收" },
       }),
       (error) => error.code === "INTERACTION_NOT_PENDING",
     );

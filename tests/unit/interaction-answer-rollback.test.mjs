@@ -143,9 +143,8 @@ test("文本凭证绑定呈现之后的用户事件：门禁 confirmed", async (
       at: new Date().toISOString(),
     });
 
-    const result = await store.answer({
+    const result = await store.answerFromHostEvents({
       root, featureId: "f", expectedRevision: bumped.revision, host: "codex",
-      credential: { source: "text", userReply: "确认回撤" },
     });
     assert.equal(result.action, "confirm");
     assert.equal(result.state.rollbackGate.status, "confirmed");
@@ -168,11 +167,10 @@ test("呈现之前的用户事件不能确认门禁（later-turn 证明失败关
     const presented = await rollback.presentRollbackGate(root, "f", state.revision, targetCheckpointId);
 
     await assert.rejects(
-      () => store.answer({
+      () => store.answerFromHostEvents({
         root, featureId: "f", expectedRevision: presented.state.revision, host: "codex",
-        credential: { source: "text", userReply: "确认回撤" },
       }),
-      (error) => error.code === "INTERACTION_PROVENANCE_UNAVAILABLE",
+      (error) => error.code === "INTERACTION_EVENT_MISSING",
     );
     const unchanged = await store.readState(root, "f");
     assert.equal(unchanged.revision, presented.state.revision, "失败不得推进 revision");
@@ -196,11 +194,10 @@ test("来自其他宿主的用户事件不能确认门禁", async () => {
     });
 
     await assert.rejects(
-      () => store.answer({
+      () => store.answerFromHostEvents({
         root, featureId: "f", expectedRevision: bumped.revision, host: "codex",
-        credential: { source: "text", userReply: "确认回撤" },
       }),
-      (error) => error.code === "HOST_EVENT_HOST_MISMATCH",
+      (error) => error.code === "INTERACTION_EVENT_MISSING",
     );
     const unchanged = await store.readState(root, "f");
     assert.equal(unchanged.rollbackGate.status, "pending");
@@ -223,11 +220,10 @@ test("工具事件不能确认门禁（非 user-prompt 失败关闭）", async (
     });
 
     await assert.rejects(
-      () => store.answer({
+      () => store.answerFromHostEvents({
         root, featureId: "f", expectedRevision: bumped.revision, host: "codex",
-        credential: { source: "text", userReply: "确认回撤" },
       }),
-      (error) => error.code === "INTERACTION_PROVENANCE_UNAVAILABLE",
+      (error) => error.code === "INTERACTION_EVENT_MISSING",
     );
     const unchanged = await store.readState(root, "f");
     assert.equal(unchanged.rollbackGate.status, "pending");
@@ -250,11 +246,10 @@ test("文本与捕获事件不兼容时拒绝且门禁保持 pending", async () 
     });
 
     await assert.rejects(
-      () => store.answer({
+      () => store.answerFromHostEvents({
         root, featureId: "f", expectedRevision: bumped.revision, host: "codex",
-        credential: { source: "text", userReply: "确认回撤" },
       }),
-      (error) => error.code === "INTERACTION_PROVENANCE_UNAVAILABLE",
+      (error) => error.code === "DECISION_REPLY_NOT_RECOGNIZED",
     );
     const unchanged = await store.readState(root, "f");
     assert.equal(unchanged.rollbackGate.status, "pending");

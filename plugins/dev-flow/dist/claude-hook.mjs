@@ -1,75 +1,79 @@
-/* dev-flow 5.1.4; built from source, deterministic build */
-
-// plugins/dev-flow/src/core/state-store.ts
-import { randomUUID as randomUUID9, createHash as createHash14 } from "node:crypto";
-import { access as access2, mkdir as mkdir6, open as open6, readdir as readdir5, readFile as readFile11, rename as rename5, rm, writeFile as writeFile2 } from "node:fs/promises";
-import { hostname } from "node:os";
-import path13 from "node:path";
-
-// plugins/dev-flow/policy/contract.json
-var contract_default = {
-  schemaVersion: 4,
-  routes: {
-    xs: {
-      orderedSteps: ["locate", "implementation", "verification", "finalize"],
-      stages: ["locate", "implementation", "verification", "finalize"],
-      requiredArtifacts: []
-    },
-    s: {
-      orderedSteps: ["boundary", "implementation", "verification", "finalize"],
-      stages: ["boundary", "implementation", "verification", "finalize"],
-      requiredArtifacts: []
-    },
-    m: {
-      orderedSteps: ["planning", "implementation", "code_review", "verification", "finalize"],
-      stages: ["planning", "implementation", "code_review", "verification", "finalize"],
-      requiredArtifacts: []
-    },
-    l: {
-      orderedSteps: ["requirements_alignment", "planning", "plan_review", "execution_approval", "implementation", "code_review", "verification", "finalize"],
-      stages: ["requirements_alignment", "planning", "plan_review", "execution_approval", "implementation", "code_review", "verification", "finalize"],
-      requiredArtifacts: ["requirements", "implementation-plan"],
-      artifactSteps: { requirements_alignment: ["requirements"], planning: ["implementation-plan"] }
-    }
-  },
-  riskEnhancements: {
-    security: { checks: ["security-boundary"], verification: "behavior" },
-    data: { checks: ["data-integrity", "rollback"], verification: "integration" },
-    money: { checks: ["idempotency", "reconciliation", "rollback"], verification: "integration" },
-    external: { checks: ["contract-failure"], verification: "integration" },
-    availability: { checks: ["degradation-recovery"], verification: "integration" },
-    critical_correctness: { checks: ["full-code-review"], verification: "full" },
-    irreversible_consequence: { checks: ["backup-preview-abort-compensation", "full-code-review"], verification: "full" }
-  },
-  topologyMinimumLevel: {
-    local: "XS",
-    "shared-contract": "M",
-    "multi-chain": "L",
-    "coordinated-rollback": "L"
-  },
-  topologyStrictOrder: ["local", "shared-contract", "multi-chain", "coordinated-rollback"]
+/* dev-flow 6.0.0; built from source, deterministic build */
+var __getOwnPropNames = Object.getOwnPropertyNames;
+var __esm = (fn, res) => function __init() {
+  return fn && (res = (0, fn[__getOwnPropNames(fn)[0]])(fn = 0)), res;
 };
 
-// plugins/dev-flow/src/policy/types.ts
-var ZERO_WORKFLOW_CAPABILITIES = Object.freeze({
-  trace: 0,
-  review: 0,
-  checkpoints: 0,
-  rollbackExecution: 0
+// plugins/dev-flow/policy/contract.json
+var contract_default;
+var init_contract = __esm({
+  "plugins/dev-flow/policy/contract.json"() {
+    contract_default = {
+      schemaVersion: 6,
+      routes: {
+        xs: {
+          orderedSteps: ["locate", "implementation", "verification", "finalize"],
+          stages: ["locate", "implementation", "verification", "finalize"],
+          requiredArtifacts: []
+        },
+        s: {
+          orderedSteps: ["boundary", "implementation", "verification", "finalize"],
+          stages: ["boundary", "implementation", "verification", "finalize"],
+          requiredArtifacts: []
+        },
+        m: {
+          orderedSteps: ["planning", "implementation", "code_review", "verification", "finalize"],
+          stages: ["planning", "implementation", "code_review", "verification", "finalize"],
+          requiredArtifacts: []
+        },
+        l: {
+          orderedSteps: ["requirements_alignment", "planning", "plan_review", "execution_approval", "implementation", "code_review", "verification", "finalize"],
+          stages: ["requirements_alignment", "planning", "plan_review", "execution_approval", "implementation", "code_review", "verification", "finalize"],
+          requiredArtifacts: ["requirements", "implementation-plan"],
+          artifactSteps: { requirements_alignment: ["requirements"], planning: ["implementation-plan"] }
+        }
+      },
+      riskEnhancements: {
+        security: { checks: ["security-boundary"], verification: "behavior" },
+        data: { checks: ["data-integrity", "rollback"], verification: "integration" },
+        money: { checks: ["idempotency", "reconciliation", "rollback"], verification: "integration" },
+        external: { checks: ["contract-failure"], verification: "integration" },
+        availability: { checks: ["degradation-recovery"], verification: "integration" },
+        critical_correctness: { checks: ["full-code-review"], verification: "full" },
+        irreversible_consequence: { checks: ["backup-preview-abort-compensation", "full-code-review"], verification: "full" }
+      },
+      topologyMinimumLevel: {
+        local: "XS",
+        "shared-contract": "M",
+        "multi-chain": "L",
+        "coordinated-rollback": "L"
+      },
+      topologyStrictOrder: ["local", "shared-contract", "multi-chain", "coordinated-rollback"]
+    };
+  }
 });
-var SUPPORTED_WORKFLOW_CAPABILITIES = Object.freeze({
-  trace: 1,
-  review: 1,
-  checkpoints: 1,
-  rollbackExecution: 1
+
+// plugins/dev-flow/src/policy/types.ts
+var ZERO_WORKFLOW_CAPABILITIES, SUPPORTED_WORKFLOW_CAPABILITIES;
+var init_types = __esm({
+  "plugins/dev-flow/src/policy/types.ts"() {
+    "use strict";
+    ZERO_WORKFLOW_CAPABILITIES = Object.freeze({
+      trace: 0,
+      review: 0,
+      checkpoints: 0,
+      rollbackExecution: 0
+    });
+    SUPPORTED_WORKFLOW_CAPABILITIES = Object.freeze({
+      trace: 1,
+      review: 1,
+      checkpoints: 1,
+      rollbackExecution: 1
+    });
+  }
 });
 
 // plugins/dev-flow/src/policy/contract.ts
-var contract = contract_default;
-if (contract.schemaVersion !== 4) {
-  throw new Error(`unsupported contract schema ${String(contract.schemaVersion)}`);
-}
-var allowedRiskLabels = Object.freeze(Object.keys(contract.riskEnhancements));
 function routeDefinition(route) {
   return contract.routes[route];
 }
@@ -141,159 +145,251 @@ function reviewLedgerRequired(route, controls) {
 function checkpointsEnforcementRequired(route, controls) {
   return controls ? controls.checkpoints === "unit-chain" && controls.trace : false;
 }
+var contract, allowedRiskLabels;
+var init_contract2 = __esm({
+  "plugins/dev-flow/src/policy/contract.ts"() {
+    "use strict";
+    init_contract();
+    init_types();
+    contract = contract_default;
+    if (contract.schemaVersion !== 6) {
+      throw new Error(`unsupported contract schema ${String(contract.schemaVersion)}`);
+    }
+    allowedRiskLabels = Object.freeze(Object.keys(contract.riskEnhancements));
+  }
+});
+
+// plugins/dev-flow/src/policy/evidence-store.ts
+function isRecord(value) {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+function isSha256(value) {
+  return typeof value === "string" && /^[a-f0-9]{64}$/.test(value);
+}
+function parseEvidenceObjectKind(value) {
+  if (typeof value !== "string" || !EVIDENCE_OBJECT_KINDS.includes(value)) {
+    throw new TypeError(`invalid evidence object kind: ${String(value)}`);
+  }
+  return value;
+}
+function parseEvidenceObjectRef(value) {
+  if (!isRecord(value) || Object.keys(value).sort().join(",") !== "kind,sha256,size" || !isSha256(value.sha256) || !Number.isInteger(value.size) || value.size < 0) {
+    throw new TypeError("invalid evidence object ref");
+  }
+  return {
+    kind: parseEvidenceObjectKind(value.kind),
+    sha256: value.sha256,
+    size: value.size
+  };
+}
+function parseEvidenceStoreEntry(value) {
+  if (!isRecord(value) || !isSha256(value.sha256) || !Number.isInteger(value.size) || value.size < 0 || !isSha256(value.packSha256) || !Number.isInteger(value.offset) || value.offset < 0 || !Number.isInteger(value.compressedLength) || value.compressedLength <= 0) {
+    throw new TypeError("invalid evidence store entry");
+  }
+  return {
+    sha256: value.sha256,
+    kind: parseEvidenceObjectKind(value.kind),
+    size: value.size,
+    packSha256: value.packSha256,
+    offset: value.offset,
+    compressedLength: value.compressedLength
+  };
+}
+function parseEvidencePackDescriptor(value) {
+  if (!isRecord(value) || !isSha256(value.packSha256) || !isSha256(value.indexSha256) || value.location !== "hot" && value.location !== "cold" || !Number.isInteger(value.objectCount) || value.objectCount < 0 || !Number.isInteger(value.totalRawSize) || value.totalRawSize < 0) {
+    throw new TypeError("invalid evidence pack descriptor");
+  }
+  return {
+    packSha256: value.packSha256,
+    indexSha256: value.indexSha256,
+    location: value.location,
+    objectCount: value.objectCount,
+    totalRawSize: value.totalRawSize
+  };
+}
+function parseEvidenceStoreCatalog(value) {
+  if (!isRecord(value) || value.schemaVersion !== 1 || typeof value.featureId !== "string" || !value.featureId || !Number.isInteger(value.revision) || value.revision < 0 || !Array.isArray(value.objects) || !Array.isArray(value.packs)) {
+    throw new TypeError("invalid evidence store catalog");
+  }
+  const objects = value.objects.map(parseEvidenceStoreEntry);
+  const packs = value.packs.map(parseEvidencePackDescriptor);
+  const packShas = new Set(packs.map((pack) => pack.packSha256));
+  const seen = /* @__PURE__ */ new Set();
+  for (const object of objects) {
+    if (!packShas.has(object.packSha256)) throw new TypeError("catalog object references a missing pack");
+    const key = `${object.kind}\0${object.sha256}`;
+    if (seen.has(key)) throw new TypeError("catalog contains duplicate object ref");
+    seen.add(key);
+  }
+  return {
+    schemaVersion: 1,
+    featureId: value.featureId,
+    revision: value.revision,
+    objects,
+    packs
+  };
+}
+function parseEvidenceStorePointer(value) {
+  if (!isRecord(value) || !isSha256(value.catalogSha256) || !Number.isInteger(value.objectCount) || value.objectCount < 0 || !Number.isInteger(value.packCount) || value.packCount < 0) {
+    throw new TypeError("invalid evidence store pointer");
+  }
+  return {
+    catalogSha256: value.catalogSha256,
+    objectCount: value.objectCount,
+    packCount: value.packCount
+  };
+}
+function parseWorkspaceSnapshotManifest(value) {
+  if (!isRecord(value) || value.schemaVersion !== 1 || typeof value.featureId !== "string" || !value.featureId || typeof value.capturedAt !== "string" || !Number.isFinite(Date.parse(value.capturedAt)) || !Array.isArray(value.files)) {
+    throw new TypeError("invalid workspace snapshot manifest");
+  }
+  const files = value.files.map((file) => {
+    if (!isRecord(file) || typeof file.path !== "string" || !file.path || !isSha256(file.sha256) || typeof file.mode !== "string" || !/^[0-7]{3,4}$/.test(file.mode) || file.kind !== "file" && file.kind !== "symlink") {
+      throw new TypeError("invalid workspace snapshot file record");
+    }
+    const record = {
+      path: file.path,
+      sha256: file.sha256,
+      mode: file.mode,
+      kind: file.kind
+    };
+    if (file.kind === "symlink") {
+      if (typeof file.linkTarget !== "string") throw new TypeError("symlink snapshot requires linkTarget");
+      record.linkTarget = file.linkTarget;
+    } else if (file.linkTarget !== void 0) {
+      throw new TypeError("file snapshot cannot contain linkTarget");
+    }
+    return record;
+  });
+  return {
+    schemaVersion: 1,
+    featureId: value.featureId,
+    capturedAt: value.capturedAt,
+    files
+  };
+}
+var EVIDENCE_OBJECT_KINDS;
+var init_evidence_store = __esm({
+  "plugins/dev-flow/src/policy/evidence-store.ts"() {
+    "use strict";
+    EVIDENCE_OBJECT_KINDS = [
+      "artifact-proposal",
+      "trace",
+      "review-ledger",
+      "review-package",
+      "review-execution",
+      "review-result",
+      "file-snapshot",
+      "evidence-baseline",
+      "checkpoint-pack",
+      "verification-log",
+      "repair-log",
+      "workspace-lineage",
+      "governance-ledger",
+      "interaction-ledger",
+      "event-segment"
+    ];
+  }
+});
 
 // plugins/dev-flow/src/core/errors.ts
-var chineseRecovery = (code) => {
-  if (code.includes("REVISION") || code.includes("CONFLICT")) {
-    return { kind: "refresh", instruction: "\u5237\u65B0\u5F53\u524D\u72B6\u6001\u540E\u91CD\u8BD5\u539F\u64CD\u4F5C\u3002", requiresUserDecision: false, retryOriginal: true };
-  }
-  if (code.includes("INTEGRITY") || code.includes("CORRUPT") || code.includes("UNREADABLE")) {
-    return { kind: "repair", instruction: "\u8FD0\u884C doctor \u68C0\u67E5\u5F53\u524D\u72B6\u6001\uFF1B\u4E0D\u8981\u624B\u52A8\u4FEE\u6539\u63A7\u5236\u6587\u4EF6\u3002", requiresUserDecision: false, retryOriginal: false };
-  }
-  if (code.includes("REQUIRED") || code.includes("INCOMPLETE") || code.includes("STALE")) {
-    return { kind: "retry", instruction: "\u6309\u5F53\u524D\u72B6\u6001\u63D0\u793A\u8865\u9F50\u7F3A\u5931\u8BC1\u636E\u540E\u91CD\u8BD5\u3002", requiresUserDecision: false, retryOriginal: true };
-  }
-  return { kind: "ask-user", instruction: "\u8BF7\u786E\u8BA4\u662F\u5426\u6309\u63A8\u8350\u6062\u590D\u52A8\u4F5C\u7EE7\u7EED\u3002", requiresUserDecision: true, retryOriginal: false };
-};
-var safeDetailKeys = /* @__PURE__ */ new Set([
-  "path",
-  "paths",
-  "file",
-  "files",
-  "field",
-  "allowed",
-  "missing",
-  "missingGuarantees",
-  "command",
-  "commandId",
-  "currentRevision",
-  "expectedRevision",
-  "expectedStage",
-  "schemaVersion",
-  "decisionIds",
-  "approvalIds",
-  "incomplete",
-  "conflicts",
-  "issues",
-  "recoveryHint",
-  "itemId",
-  "required"
-]);
 function safeFailureDetails(details) {
   return Object.fromEntries(Object.entries(details).filter(([key, value]) => {
     if (key === "currentSha256") return typeof value === "string" && /^[a-f0-9]{64}$/.test(value);
     return safeDetailKeys.has(key) && !/(?:capability|token|secret|hash|sha|fingerprint)/iu.test(key) && (typeof value !== "string" || value.length <= 2e3);
   }));
 }
-var DevFlowError = class extends Error {
-  constructor(code, message, details = {}) {
-    super(`${code}: ${message}`);
-    this.code = code;
-    this.details = details;
-    this.name = "DevFlowError";
-    this.userMessage = typeof details.userMessage === "string" ? details.userMessage : "\u5F53\u524D\u52A8\u4F5C\u672A\u5B8C\u6210\u3002";
-    this.cause = typeof details.cause === "string" ? details.cause : /[\u3400-\u9fff]/u.test(message) ? message : `\u672A\u6EE1\u8DB3\u9519\u8BEF\u7801 ${code} \u5BF9\u5E94\u7684\u6D41\u7A0B\u6761\u4EF6\u3002`;
-    this.impact = typeof details.impact === "string" ? details.impact : "\u6D41\u7A0B\u4FDD\u6301\u5728\u5F53\u524D\u9636\u6BB5\uFF0C\u5DF2\u6709\u7528\u6237\u6587\u4EF6\u4E0D\u4F1A\u88AB\u81EA\u52A8\u6539\u5199\u3002";
-    this.recovery = {
-      ...chineseRecovery(code),
-      ...typeof details.recoveryKind === "string" ? { kind: details.recoveryKind } : {},
-      ...typeof details.recoveryInstruction === "string" ? { instruction: details.recoveryInstruction } : {},
-      ...typeof details.requiresUserDecision === "boolean" ? { requiresUserDecision: details.requiresUserDecision } : {},
-      ...typeof details.retryOriginal === "boolean" ? { retryOriginal: details.retryOriginal } : {}
+var chineseRecovery, safeDetailKeys, DevFlowError;
+var init_errors = __esm({
+  "plugins/dev-flow/src/core/errors.ts"() {
+    "use strict";
+    chineseRecovery = (code) => {
+      if (code.includes("REVISION") || code.includes("CONFLICT")) {
+        return { kind: "refresh", instruction: "\u5237\u65B0\u5F53\u524D\u72B6\u6001\u540E\u91CD\u8BD5\u539F\u64CD\u4F5C\u3002", requiresUserDecision: false, retryOriginal: true };
+      }
+      if (code.includes("INTEGRITY") || code.includes("CORRUPT") || code.includes("UNREADABLE")) {
+        return { kind: "repair", instruction: "\u8FD0\u884C doctor \u68C0\u67E5\u5F53\u524D\u72B6\u6001\uFF1B\u4E0D\u8981\u624B\u52A8\u4FEE\u6539\u63A7\u5236\u6587\u4EF6\u3002", requiresUserDecision: false, retryOriginal: false };
+      }
+      if (code.includes("REQUIRED") || code.includes("INCOMPLETE") || code.includes("STALE")) {
+        return { kind: "retry", instruction: "\u6309\u5F53\u524D\u72B6\u6001\u63D0\u793A\u8865\u9F50\u7F3A\u5931\u8BC1\u636E\u540E\u91CD\u8BD5\u3002", requiresUserDecision: false, retryOriginal: true };
+      }
+      return { kind: "ask-user", instruction: "\u8BF7\u786E\u8BA4\u662F\u5426\u6309\u63A8\u8350\u6062\u590D\u52A8\u4F5C\u7EE7\u7EED\u3002", requiresUserDecision: true, retryOriginal: false };
+    };
+    safeDetailKeys = /* @__PURE__ */ new Set([
+      "path",
+      "paths",
+      "file",
+      "files",
+      "field",
+      "allowed",
+      "missing",
+      "missingGuarantees",
+      "command",
+      "commandId",
+      "currentRevision",
+      "expectedRevision",
+      "expectedStage",
+      "schemaVersion",
+      "decisionIds",
+      "approvalIds",
+      "incomplete",
+      "conflicts",
+      "issues",
+      "recoveryHint",
+      "itemId",
+      "required"
+    ]);
+    DevFlowError = class extends Error {
+      constructor(code, message, details = {}) {
+        super(`${code}: ${message}`);
+        this.code = code;
+        this.details = details;
+        this.name = "DevFlowError";
+        this.userMessage = typeof details.userMessage === "string" ? details.userMessage : "\u5F53\u524D\u52A8\u4F5C\u672A\u5B8C\u6210\u3002";
+        this.cause = typeof details.cause === "string" ? details.cause : /[\u3400-\u9fff]/u.test(message) ? message : `\u672A\u6EE1\u8DB3\u9519\u8BEF\u7801 ${code} \u5BF9\u5E94\u7684\u6D41\u7A0B\u6761\u4EF6\u3002`;
+        this.impact = typeof details.impact === "string" ? details.impact : "\u6D41\u7A0B\u4FDD\u6301\u5728\u5F53\u524D\u9636\u6BB5\uFF0C\u5DF2\u6709\u7528\u6237\u6587\u4EF6\u4E0D\u4F1A\u88AB\u81EA\u52A8\u6539\u5199\u3002";
+        this.recovery = {
+          ...chineseRecovery(code),
+          ...typeof details.recoveryKind === "string" ? { kind: details.recoveryKind } : {},
+          ...typeof details.recoveryInstruction === "string" ? { instruction: details.recoveryInstruction } : {},
+          ...typeof details.requiresUserDecision === "boolean" ? { requiresUserDecision: details.requiresUserDecision } : {},
+          ...typeof details.retryOriginal === "boolean" ? { retryOriginal: details.retryOriginal } : {}
+        };
+      }
+      userMessage;
+      cause;
+      impact;
+      recovery;
+      toFailure() {
+        const technical = safeFailureDetails(this.details);
+        if (this.code.includes("REVISION_CONFLICT")) {
+          technical.basisChanged = false;
+          technical.safeToRefresh = true;
+        }
+        return {
+          code: this.code,
+          userMessage: this.userMessage,
+          cause: this.cause,
+          impact: this.impact,
+          recovery: { ...this.recovery },
+          ...Object.keys(technical).length ? { technical } : {}
+        };
+      }
     };
   }
-  userMessage;
-  cause;
-  impact;
-  recovery;
-  toFailure() {
-    const technical = safeFailureDetails(this.details);
-    if (this.code.includes("REVISION_CONFLICT")) {
-      technical.basisChanged = false;
-      technical.safeToRefresh = true;
-    }
-    return {
-      code: this.code,
-      userMessage: this.userMessage,
-      cause: this.cause,
-      impact: this.impact,
-      recovery: { ...this.recovery },
-      ...Object.keys(technical).length ? { technical } : {}
-    };
-  }
-};
+});
 
-// plugins/dev-flow/src/core/schema-migration.ts
-import { createHash } from "node:crypto";
-function migrateFeatureState(raw) {
-  const version = raw?.schemaVersion;
-  if (version === 5) return raw;
-  if (version === 4) return migrateV4ToV5(raw);
-  throw new DevFlowError("UNSUPPORTED_FEATURE_SCHEMA", `\u4E0D\u652F\u6301\u7684 feature state schema v${String(version)}\u3002`, {
-    userMessage: `\u68C0\u6D4B\u5230\u4E0D\u652F\u6301\u7684\u65E7\u72B6\u6001 schema\uFF08v${String(version)}\uFF09\u3002`,
-    cause: "\u672C\u7248\u672C\u652F\u6301 schema v4\uFF08\u81EA\u52A8\u8F6C\u6362\uFF09\u4E0E v5\uFF1B\u66F4\u65E9\u7684 schema \u4E0D\u8FC1\u79FB\u3002",
-    impact: "\u65E7 feature \u4E0D\u4F1A\u88AB\u8BFB\u53D6\u3001\u8986\u76D6\u6216\u731C\u6D4B\u3002",
-    recoveryKind: "repair",
-    recoveryInstruction: "\u56DE\u5230\u4EA7\u751F\u8BE5\u72B6\u6001\u7684 Dev Flow \u7248\u672C\u5B8C\u6210\u6216\u653E\u5F03\u8BE5 feature\uFF0C\u5907\u4EFD .dev-flow \u540E\u91CD\u65B0\u521D\u59CB\u5316\u3002",
-    retryOriginal: false,
-    schemaVersion: version
-  });
+// plugins/dev-flow/src/policy/stable-json.ts
+function stableJson(value) {
+  if (value === null || typeof value !== "object") return JSON.stringify(value);
+  if (Array.isArray(value)) return `[${value.map(stableJson).join(",")}]`;
+  return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${stableJson(value[key])}`).join(",")}}`;
 }
-function migrateV4ToV5(v4) {
-  const ledger = {
-    decisions: migrateDecisions(v4),
-    claims: [],
-    authorizations: migrateAuthorizations(v4),
-    credentials: migrateCredentials(v4),
-    repositoryFacts: []
-  };
-  const { decisionLedger: _decisionLedger, qualityExceptions: _qualityExceptions, ...rest } = v4;
-  void _decisionLedger;
-  void _qualityExceptions;
-  return { ...rest, schemaVersion: 5, governance: ledger };
-}
-function migrateDecisions(v4) {
-  return (v4.decisionLedger ?? []).filter((record) => record.status === "resolved" && (record.conclusion ?? record.evidence ?? "").trim().length > 0).map((record) => ({
-    recordId: record.id,
-    kind: "decision",
-    question: record.question,
-    conclusion: (record.conclusion ?? record.evidence ?? "").trim()
-  }));
-}
-function migrateAuthorizations(v4) {
-  return (v4.qualityExceptions ?? []).map((item) => ({
-    recordId: `AUTH-${createHash("sha256").update(`${item.kind}|${item.fingerprint}|${item.at}`).digest("hex").slice(0, 16)}`,
-    kind: "authorization",
-    authorizationType: "risk-acceptance",
-    target: item.riskSummary,
-    basis: item.fingerprint ? { kind: "content", sha256: item.fingerprint } : void 0,
-    recordedAt: item.at
-  }));
-}
-function migrateCredentials(v4) {
-  const hostIsValid = (host) => host === "claude" || host === "codex";
-  const credentials = [];
-  for (const raw of Object.values(v4.interactions ?? {})) {
-    const interaction = raw;
-    const response = interaction?.response;
-    if (interaction?.status !== "resolved" || !response) continue;
-    if (!hostIsValid(response.host)) continue;
-    if (!interaction.id) continue;
-    const eventId2 = response.promptEventId ?? interaction.presentationEventId;
-    credentials.push({
-      recordId: `CRED-${interaction.id}`,
-      kind: "credential",
-      source: response.source === "elicitation" ? "native-form" : "text",
-      host: response.host,
-      interactionId: interaction.id,
-      ...response.selectedOptionId ? { optionId: response.selectedOptionId } : {},
-      ...response.rawReply ?? response.userReply ? { rawText: response.rawReply ?? response.userReply } : {},
-      ...eventId2 ? { basis: { kind: "event", eventId: eventId2 } } : {},
-      ...response.respondedAt ? { recordedAt: response.respondedAt } : {}
-    });
+var init_stable_json = __esm({
+  "plugins/dev-flow/src/policy/stable-json.ts"() {
+    "use strict";
   }
-  return credentials;
-}
+});
 
 // plugins/dev-flow/src/policy/obligations.ts
 function reopenObligations(obligations, kinds) {
@@ -301,17 +397,65 @@ function reopenObligations(obligations, kinds) {
   const selected = new Set(kinds);
   return obligations.map((obligation) => selected.has(obligation.kind) && obligation.status !== "pending" ? { ...obligation, status: "pending" } : obligation);
 }
+var init_obligations = __esm({
+  "plugins/dev-flow/src/policy/obligations.ts"() {
+    "use strict";
+    init_stable_json();
+  }
+});
+
+// plugins/dev-flow/src/policy/validation.ts
+var init_validation = __esm({
+  "plugins/dev-flow/src/policy/validation.ts"() {
+    "use strict";
+    init_contract2();
+  }
+});
+
+// plugins/dev-flow/src/policy/route.ts
+var init_route = __esm({
+  "plugins/dev-flow/src/policy/route.ts"() {
+    "use strict";
+    init_contract2();
+    init_obligations();
+    init_validation();
+  }
+});
+
+// plugins/dev-flow/src/policy/evidence.ts
+var init_evidence = __esm({
+  "plugins/dev-flow/src/policy/evidence.ts"() {
+    "use strict";
+    init_contract2();
+    init_route();
+  }
+});
 
 // plugins/dev-flow/src/policy/stages.ts
 function firstOpenStep(orderedSteps, steps) {
   return orderedSteps.find((step) => steps[step]?.status !== "satisfied");
 }
+var init_stages = __esm({
+  "plugins/dev-flow/src/policy/stages.ts"() {
+    "use strict";
+    init_contract2();
+    init_evidence();
+  }
+});
 
 // plugins/dev-flow/src/core/step-order.ts
 function currentOpenStep(state) {
   if (state.mode !== "routed") return void 0;
   return firstOpenStep(routeDefinitionForFeature(state.route, state.classification.controls).orderedSteps, state.steps);
 }
+var init_step_order = __esm({
+  "plugins/dev-flow/src/core/step-order.ts"() {
+    "use strict";
+    init_contract2();
+    init_stages();
+    init_errors();
+  }
+});
 
 // plugins/dev-flow/src/core/path-normalization.ts
 import path from "node:path";
@@ -321,33 +465,57 @@ function normalizeUnicode(value) {
 function normalizeProjectPath(value) {
   return path.posix.normalize(normalizeUnicode(value).replaceAll("\\", "/"));
 }
+var init_path_normalization = __esm({
+  "plugins/dev-flow/src/core/path-normalization.ts"() {
+    "use strict";
+  }
+});
+
+// plugins/dev-flow/src/core/repository-fact-store.ts
+var init_repository_fact_store = __esm({
+  "plugins/dev-flow/src/core/repository-fact-store.ts"() {
+    "use strict";
+    init_errors();
+  }
+});
 
 // plugins/dev-flow/src/policy/governance-records.ts
-var EMPTY_GOVERNANCE_LEDGER = Object.freeze({
-  decisions: [],
-  claims: [],
-  authorizations: [],
-  credentials: [],
-  repositoryFacts: []
+var EMPTY_GOVERNANCE_LEDGER;
+var init_governance_records = __esm({
+  "plugins/dev-flow/src/policy/governance-records.ts"() {
+    "use strict";
+    EMPTY_GOVERNANCE_LEDGER = Object.freeze({
+      decisions: [],
+      claims: [],
+      authorizations: [],
+      credentials: [],
+      repositoryFacts: []
+    });
+  }
 });
 
-// plugins/dev-flow/src/core/fingerprint.ts
-import { execFile } from "node:child_process";
-import { createHash as createHash2 } from "node:crypto";
-import { readdir, readFile, readlink, realpath, lstat } from "node:fs/promises";
-import path2 from "node:path";
-import { promisify } from "node:util";
+// plugins/dev-flow/src/core/repository-facts.ts
+var init_repository_facts = __esm({
+  "plugins/dev-flow/src/core/repository-facts.ts"() {
+    "use strict";
+    init_errors();
+    init_path_normalization();
+    init_repository_fact_store();
+    init_governance_records();
+    init_state_store();
+  }
+});
 
 // plugins/dev-flow/src/policy/rollback.ts
-var IMPLEMENTATION_UNIT_TRANSITIONS = Object.freeze({
-  pending: Object.freeze(["active"]),
-  active: Object.freeze(["verified"]),
-  verified: Object.freeze(["checkpointed", "active"]),
-  checkpointed: Object.freeze(["rolled_back"]),
-  rolled_back: Object.freeze(["active"])
-});
-function pathWithinFileScope(path19, fileScope) {
-  return fileScope.some((pattern) => scopePatternMatches(pattern.normalize("NFC"), path19.normalize("NFC")));
+function reopenImplementationUnit(unit) {
+  if (unit.status === "pending") return;
+  unit.status = "pending";
+  delete unit.startedFingerprint;
+  delete unit.beginNonce;
+  delete unit.checkpointId;
+}
+function pathWithinFileScope(path26, fileScope) {
+  return fileScope.some((pattern) => scopePatternMatches(pattern.normalize("NFC"), path26.normalize("NFC")));
 }
 function isSafeFileScopePattern(value) {
   if (typeof value !== "string" || !value || value.trim() !== value) return false;
@@ -390,10 +558,158 @@ function globSegmentMatches(pattern, segment) {
   if (head2 === "?") return segment.length > 0 && globSegmentMatches(rest.join(""), segment.slice(1));
   return segment.startsWith(head2) && globSegmentMatches(rest.join(""), segment.slice(head2.length));
 }
+function invalid(message, code = "ROLLBACK_PROTOCOL_INVALID") {
+  throw new RollbackProtocolError(code, message);
+}
+function isRecord2(value) {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+function isImplementationUnitId(value) {
+  return typeof value === "string" && IMPLEMENTATION_UNIT_ID.test(value);
+}
+function isSha2562(value) {
+  return typeof value === "string" && SHA256.test(value);
+}
+function isTimestamp(value) {
+  return typeof value === "string" && !Number.isNaN(Date.parse(value));
+}
+function isNonEmptyString(value) {
+  return typeof value === "string" && value.trim().length > 0;
+}
+function hasOnlyKeys(value, keys) {
+  return Object.keys(value).every((key) => keys.includes(key));
+}
+function parseFileRecord(value, index) {
+  if (!isRecord2(value) || !hasOnlyKeys(value, ["path", "change", "renamedFrom", "beforeSha256", "afterSha256", "beforeBlobSha256", "afterBlobSha256", "beforeMode", "afterMode", "beforeKind", "afterKind"]) || !isNonEmptyString(value.path) || typeof value.change !== "string" || !fileChanges.includes(value.change)) {
+    invalid(`checkpoint file record ${index} has an invalid shape`);
+  }
+  const label = `checkpoint file record ${index}`;
+  const change = value.change;
+  const beforeOk = change !== "added" ? isSha2562(value.beforeSha256) && isSha2562(value.beforeBlobSha256) && typeof value.beforeMode === "string" && FILE_MODE.test(value.beforeMode) && (value.beforeKind === "file" || value.beforeKind === "symlink") : value.beforeSha256 === void 0 && value.beforeBlobSha256 === void 0 && value.beforeMode === void 0;
+  const afterOk = change !== "deleted" ? isSha2562(value.afterSha256) && isSha2562(value.afterBlobSha256) && typeof value.afterMode === "string" && FILE_MODE.test(value.afterMode) && (value.afterKind === "file" || value.afterKind === "symlink") : value.afterSha256 === void 0 && value.afterBlobSha256 === void 0 && value.afterMode === void 0;
+  if (!beforeOk) invalid(`${label} has invalid before fields for change ${change}`);
+  if (!afterOk) invalid(`${label} has invalid after fields for change ${change}`);
+  if (change === "renamed" && !isNonEmptyString(value.renamedFrom)) invalid(`${label} renamed record requires renamedFrom`);
+  if (change !== "renamed" && value.renamedFrom !== void 0) invalid(`${label} only renamed records may carry renamedFrom`);
+  return {
+    path: value.path,
+    change,
+    ...value.renamedFrom !== void 0 ? { renamedFrom: value.renamedFrom } : {},
+    ...change !== "added" ? { beforeSha256: value.beforeSha256, beforeBlobSha256: value.beforeBlobSha256, beforeMode: value.beforeMode, beforeKind: value.beforeKind } : {},
+    ...change !== "deleted" ? { afterSha256: value.afterSha256, afterBlobSha256: value.afterBlobSha256, afterMode: value.afterMode, afterKind: value.afterKind } : {}
+  };
+}
+function parseVerificationAttempt(value, index) {
+  if (!isRecord2(value) || !hasOnlyKeys(value, ["attemptId", "commandId", "command", "status", "startedAt", "completedAt", "phase", "cwd", "outputTail"]) || !isNonEmptyString(value.attemptId) || !isNonEmptyString(value.commandId) || !isNonEmptyString(value.command) || value.status !== "passed" && value.status !== "failed" || !isTimestamp(value.startedAt) || !isTimestamp(value.completedAt)) {
+    invalid(`checkpoint verification attempt ${index} has an invalid shape`);
+  }
+  if (value.phase !== void 0 && value.phase !== "preflight" && value.phase !== "forward" || value.cwd !== void 0 && !isNonEmptyString(value.cwd) || value.outputTail !== void 0 && typeof value.outputTail !== "string") {
+    invalid(`checkpoint verification attempt ${index} has invalid diagnostics`);
+  }
+  return {
+    attemptId: value.attemptId,
+    commandId: value.commandId,
+    command: value.command,
+    status: value.status,
+    startedAt: value.startedAt,
+    completedAt: value.completedAt,
+    ...value.phase !== void 0 ? { phase: value.phase } : {},
+    ...value.cwd !== void 0 ? { cwd: value.cwd } : {},
+    ...value.outputTail !== void 0 ? { outputTail: value.outputTail } : {}
+  };
+}
+function parseCheckpointManifest(value) {
+  if (isRecord2(value) && value.schemaVersion === 1) {
+    invalid("Dev Flow 4.x checkpoint manifest schema v1 is not supported by 5.0", "UNSUPPORTED_CHECKPOINT_SCHEMA");
+  }
+  if (!isRecord2(value) || !hasOnlyKeys(value, ["schemaVersion", "checkpointId", "unitId", "sequence", "basisHash", "startedFingerprint", "completedFingerprint", "startedAt", "completedAt", "files", "forwardPatchSha256", "reversePatchSha256", "verificationAttempts", "requirementsSha256", "planSha256", "traceabilitySha256", "approvalBasisHash", "projectConfigSha256", "verificationCommands", "verificationCommandHashes", "beginNonce", "blobRefs"]) || value.schemaVersion !== 2 && value.schemaVersion !== 3 || !isNonEmptyString(value.checkpointId) || !isImplementationUnitId(value.unitId) || typeof value.sequence !== "number" || !Number.isInteger(value.sequence) || value.sequence < 1 || !isSha2562(value.basisHash) || !isSha2562(value.startedFingerprint) || !isSha2562(value.completedFingerprint) || value.beginNonce !== void 0 && !isNonEmptyString(value.beginNonce) || !isTimestamp(value.startedAt) || !isTimestamp(value.completedAt) || !Array.isArray(value.files) || !isSha2562(value.forwardPatchSha256) || !isSha2562(value.reversePatchSha256) || !Array.isArray(value.verificationAttempts) || value.requirementsSha256 !== "" && !isSha2562(value.requirementsSha256) || value.planSha256 !== "" && !isSha2562(value.planSha256) || value.traceabilitySha256 !== "" && !isSha2562(value.traceabilitySha256) || !isSha2562(value.approvalBasisHash) || !isSha2562(value.projectConfigSha256) || !Array.isArray(value.verificationCommands)) {
+    invalid("checkpoint manifest has an invalid shape");
+  }
+  const files = value.files.map((file, index) => parseFileRecord(file, index));
+  const verificationAttempts = value.verificationAttempts.map((attempt, index) => parseVerificationAttempt(attempt, index));
+  const verificationCommands = value.verificationCommands.map((command, index) => {
+    if (!isRecord2(command) || !hasOnlyKeys(command, ["commandId", "command"]) || !isNonEmptyString(command.commandId) || !isNonEmptyString(command.command)) {
+      invalid(`checkpoint verification command ${index} has an invalid shape`);
+    }
+    return { commandId: command.commandId, command: command.command };
+  });
+  const declaredCommandIds = new Set(verificationCommands.map((command) => command.commandId));
+  if (value.verificationCommandHashes !== void 0 && (!isRecord2(value.verificationCommandHashes) || Object.entries(value.verificationCommandHashes).some(([id, hash2]) => !declaredCommandIds.has(id) || !isSha2562(hash2)))) {
+    invalid("checkpoint verification command hashes have an invalid shape");
+  }
+  for (const attempt of verificationAttempts) {
+    if (!declaredCommandIds.has(attempt.commandId)) {
+      invalid(`checkpoint verification attempt ${attempt.attemptId} references undeclared command ${attempt.commandId}`);
+    }
+  }
+  let blobRefs;
+  if (value.blobRefs !== void 0) {
+    if (value.schemaVersion !== 3 || !isRecord2(value.blobRefs)) invalid("checkpoint blob refs are only valid on schema v3");
+    blobRefs = Object.fromEntries(Object.entries(value.blobRefs).map(([blobSha256, ref]) => {
+      if (!isSha2562(blobSha256)) invalid("checkpoint blob ref key is not a sha256");
+      const parsed = parseEvidenceObjectRef(ref);
+      if (parsed.kind !== "checkpoint-pack" || parsed.sha256 !== blobSha256) {
+        invalid("checkpoint blob ref does not match its content sha");
+      }
+      return [blobSha256, parsed];
+    }));
+  }
+  return {
+    schemaVersion: value.schemaVersion,
+    checkpointId: value.checkpointId,
+    unitId: value.unitId,
+    sequence: value.sequence,
+    basisHash: value.basisHash,
+    startedFingerprint: value.startedFingerprint,
+    completedFingerprint: value.completedFingerprint,
+    startedAt: value.startedAt,
+    completedAt: value.completedAt,
+    files,
+    forwardPatchSha256: value.forwardPatchSha256,
+    reversePatchSha256: value.reversePatchSha256,
+    verificationAttempts,
+    requirementsSha256: value.requirementsSha256,
+    planSha256: value.planSha256,
+    traceabilitySha256: value.traceabilitySha256,
+    approvalBasisHash: value.approvalBasisHash,
+    projectConfigSha256: value.projectConfigSha256,
+    verificationCommands,
+    ...value.verificationCommandHashes !== void 0 ? { verificationCommandHashes: Object.fromEntries(Object.entries(value.verificationCommandHashes).map(([id, hash2]) => [id, hash2])) } : {},
+    ...typeof value.beginNonce === "string" ? { beginNonce: value.beginNonce } : {},
+    ...blobRefs ? { blobRefs } : {}
+  };
+}
+var IMPLEMENTATION_UNIT_TRANSITIONS, fileChanges, IMPLEMENTATION_UNIT_ID, SHA256, FILE_MODE, RollbackProtocolError;
+var init_rollback = __esm({
+  "plugins/dev-flow/src/policy/rollback.ts"() {
+    "use strict";
+    init_evidence_store();
+    IMPLEMENTATION_UNIT_TRANSITIONS = Object.freeze({
+      pending: Object.freeze(["active"]),
+      active: Object.freeze(["verified"]),
+      verified: Object.freeze(["checkpointed", "active"]),
+      checkpointed: Object.freeze(["rolled_back"]),
+      rolled_back: Object.freeze(["active"])
+    });
+    fileChanges = ["added", "modified", "deleted", "renamed", "mode-changed"];
+    IMPLEMENTATION_UNIT_ID = /^UNIT-[0-9]{3,}$/;
+    SHA256 = /^[0-9a-f]{64}$/;
+    FILE_MODE = /^[0-7]{3,4}$/;
+    RollbackProtocolError = class extends Error {
+      constructor(code, message) {
+        super(`${code}: ${message}`);
+        this.code = code;
+      }
+    };
+  }
+});
 
 // plugins/dev-flow/src/core/fingerprint.ts
-var runFile = promisify(execFile);
-var ignored = /* @__PURE__ */ new Set([".git", ".dev-flow", "node_modules"]);
+import { execFile } from "node:child_process";
+import { createHash } from "node:crypto";
+import { readdir, readFile, readlink, realpath, lstat } from "node:fs/promises";
+import path2 from "node:path";
+import { promisify } from "node:util";
 function controlPath(relative) {
   return relative === ".git" || relative.startsWith(".git/") || relative === ".dev-flow" || relative.startsWith(".dev-flow/") || relative === "node_modules" || relative.startsWith("node_modules/");
 }
@@ -525,41 +841,41 @@ async function enumerateProtectedFiles(root, input) {
 }
 async function fingerprintGovernedRoots(root, input) {
   const files = await enumerateProtectedFiles(root, input);
-  const digest7 = createHash2("sha256");
+  const digest8 = createHash("sha256");
   for (const relative of files) {
     const absolute = path2.join(root, relative);
     const metadata = await lstat(absolute);
-    digest7.update(relative);
-    digest7.update("\0");
+    digest8.update(relative);
+    digest8.update("\0");
     if (metadata.isSymbolicLink()) {
-      digest7.update("symlink\0");
-      digest7.update(await readlink(absolute));
+      digest8.update("symlink\0");
+      digest8.update(await readlink(absolute));
     } else {
-      digest7.update("file\0");
-      digest7.update(await readFile(absolute));
+      digest8.update("file\0");
+      digest8.update(await readFile(absolute));
     }
-    digest7.update("\0");
+    digest8.update("\0");
   }
-  return digest7.digest("hex");
+  return digest8.digest("hex");
 }
 async function fingerprintFeatureOwned(root, input, ownership) {
   const files = (await enumerateProtectedFiles(root, input)).filter((file) => ownership[file] === "feature");
-  const digest7 = createHash2("sha256");
+  const digest8 = createHash("sha256");
   for (const relative of files) {
     const absolute = path2.join(root, relative);
     const metadata = await lstat(absolute);
-    digest7.update(relative);
-    digest7.update("\0");
+    digest8.update(relative);
+    digest8.update("\0");
     if (metadata.isSymbolicLink()) {
-      digest7.update("symlink\0");
-      digest7.update(await readlink(absolute));
+      digest8.update("symlink\0");
+      digest8.update(await readlink(absolute));
     } else {
-      digest7.update("file\0");
-      digest7.update(await readFile(absolute));
+      digest8.update("file\0");
+      digest8.update(await readFile(absolute));
     }
-    digest7.update("\0");
+    digest8.update("\0");
   }
-  return digest7.digest("hex");
+  return digest8.digest("hex");
 }
 async function snapshotGovernedRoots(root, input) {
   const files = await enumerateProtectedFiles(root, input);
@@ -571,7 +887,7 @@ async function snapshotGovernedRoots(root, input) {
     const bytes = symbolic ? Buffer.from(await readlink(absolute)) : await readFile(absolute);
     snapshots.push({
       path: relative,
-      sha256: createHash2("sha256").update(bytes).digest("hex"),
+      sha256: createHash("sha256").update(bytes).digest("hex"),
       mode: (metadata.mode & 511).toString(8).padStart(3, "0"),
       kind: symbolic ? "symlink" : "file",
       ...symbolic ? { linkTarget: bytes.toString("utf8") } : {}
@@ -579,17 +895,28 @@ async function snapshotGovernedRoots(root, input) {
   }
   return snapshots;
 }
+var runFile, ignored;
+var init_fingerprint = __esm({
+  "plugins/dev-flow/src/core/fingerprint.ts"() {
+    "use strict";
+    init_rollback();
+    init_errors();
+    init_path_normalization();
+    runFile = promisify(execFile);
+    ignored = /* @__PURE__ */ new Set([".git", ".dev-flow", "node_modules"]);
+  }
+});
 
 // plugins/dev-flow/src/core/project-config.ts
 import path3 from "node:path";
-import { createHash as createHash3 } from "node:crypto";
+import { createHash as createHash2 } from "node:crypto";
 function verificationCommandHashes(config) {
   return Object.fromEntries(config.verification.commands.map((command) => [
     command.id,
     // `provides` is a governance declaration, not executable command
     // identity. Expanding guarantees must not invalidate evidence that ran
     // the same command bytes with the same cwd/args.
-    createHash3("sha256").update(JSON.stringify({ id: command.id, command: command.command, args: command.args, cwd: command.cwd })).digest("hex")
+    createHash2("sha256").update(JSON.stringify({ id: command.id, command: command.command, args: command.args, cwd: command.cwd })).digest("hex")
   ]));
 }
 function verificationGuarantees(config) {
@@ -666,74 +993,61 @@ function validateProjectConfig(value) {
     });
   }
 }
-
-// plugins/dev-flow/src/core/traceability-store.ts
-import { createHash as createHash4, randomUUID } from "node:crypto";
-import { mkdir, open, readFile as readFile2, readdir as readdir2, rename } from "node:fs/promises";
-import path4 from "node:path";
+var init_project_config = __esm({
+  "plugins/dev-flow/src/core/project-config.ts"() {
+    "use strict";
+    init_errors();
+    init_path_normalization();
+  }
+});
 
 // plugins/dev-flow/src/core/traceability.ts
-var idPrefix = {
-  requirement: "REQ",
-  "acceptance-criterion": "AC",
-  task: "TASK",
-  test: "TEST",
-  "implementation-unit": "UNIT",
-  rollback: "RU",
-  recovery: "REC"
-};
-function invalid(message, details = {}) {
+function invalid2(message, details = {}) {
   throw new DevFlowError("TRACE_GRAPH_INVALID", message, details);
 }
 function sliceError(code, message, details = {}) {
   throw new DevFlowError(code, message, details);
 }
-function isRecord(value) {
+function isRecord3(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 function isStringArray(value, allowEmpty = false) {
   return Array.isArray(value) && (allowEmpty || value.length > 0) && value.every((item) => typeof item === "string" && item.length > 0);
 }
-function isSafeCommandCwd(value) {
-  return typeof value === "string" && value.length > 0 && !value.startsWith("/") && !/^[A-Za-z]:[\\/]/.test(value) && !value.split(/[\\/]+/).includes("..");
-}
 function isVerificationCommandRef(value) {
-  if (typeof value === "string") return value.length > 0;
-  if (!isRecord(value) || Object.keys(value).some((key) => !["command", "args", "cwd"].includes(key)) || typeof value.command !== "string" || !value.command.trim() || value.args !== void 0 && (!Array.isArray(value.args) || value.args.some((arg) => typeof arg !== "string")) || value.cwd !== void 0 && !isSafeCommandCwd(value.cwd)) return false;
-  return true;
+  return typeof value === "string" && value.length > 0;
 }
 function isVerificationCommandArray(value) {
   return Array.isArray(value) && value.length > 0 && value.every(isVerificationCommandRef);
 }
 function assertId(kind, id) {
   if (typeof id !== "string" || !new RegExp(`^${idPrefix[kind]}-[0-9]{3,}$`).test(id)) {
-    invalid("node ID does not match its kind", { kind, id });
+    invalid2("node ID does not match its kind", { kind, id });
   }
 }
 function assertSafeFileScope(fileScope, id, persisted = false) {
   for (const pattern of fileScope) {
     if (persisted && pattern !== normalizeUnicode(pattern)) {
-      invalid("persisted rollback fileScope must use Unicode NFC", { id, field: "fileScope", pattern });
+      invalid2("persisted rollback fileScope must use Unicode NFC", { id, field: "fileScope", pattern });
     }
     if (!isSafeFileScopePattern(pattern)) {
-      invalid(persisted ? "persisted rollback fileScope is unsafe" : "rollback fileScope is unsafe", { id, field: "fileScope", pattern });
+      invalid2(persisted ? "persisted rollback fileScope is unsafe" : "rollback fileScope is unsafe", { id, field: "fileScope", pattern });
     }
   }
 }
-var dispositionKinds = /* @__PURE__ */ new Set(["behavior-test", "type-check", "rule-check", "file-check", "human-acceptance"]);
 function validateVerificationDisposition(value, id) {
-  if (!isRecord(value) || Object.keys(value).some((key) => !["kind", "reason", "target"].includes(key)) || typeof value.kind !== "string" || !dispositionKinds.has(value.kind)) {
-    invalid("acceptance-criterion verificationDisposition is invalid", { id });
+  if (!isRecord3(value) || Object.keys(value).some((key) => !["kind", "reason", "target"].includes(key)) || typeof value.kind !== "string" || !dispositionKinds.has(value.kind)) {
+    invalid2("acceptance-criterion verificationDisposition is invalid", { id });
   }
   if (value.kind !== "behavior-test") {
     if (typeof value.reason !== "string" || !value.reason.trim()) {
-      invalid("non-behavior verification disposition requires a non-empty reason", { id });
+      invalid2("non-behavior verification disposition requires a non-empty reason", { id });
     }
     if (value.target !== void 0 && (typeof value.target !== "string" || !value.target.trim())) {
-      invalid("verification disposition target must be a non-empty string", { id });
+      invalid2("verification disposition target must be a non-empty string", { id });
     }
   } else if (value.reason !== void 0 && typeof value.reason !== "string") {
-    invalid("verification disposition reason must be a string", { id });
+    invalid2("verification disposition reason must be a string", { id });
   }
 }
 function currentNodes(nodes) {
@@ -776,7 +1090,7 @@ function traceSummary(nodes) {
 }
 function assertReference(nodes, id, kinds, details) {
   const node = nodeById(nodes, id);
-  if (!node || !kinds.includes(node.kind)) invalid("graph reference is missing or has the wrong kind", { id, ...details });
+  if (!node || !kinds.includes(node.kind)) invalid2("graph reference is missing or has the wrong kind", { id, ...details });
   return node;
 }
 function assertRollbackDag(nodes) {
@@ -784,7 +1098,7 @@ function assertRollbackDag(nodes) {
   const visited = /* @__PURE__ */ new Set();
   const visit = (id) => {
     if (visited.has(id)) return;
-    if (visiting.has(id)) invalid("rollback dependency graph contains a cycle", { id });
+    if (visiting.has(id)) invalid2("rollback dependency graph contains a cycle", { id });
     visiting.add(id);
     const node = nodeById(nodes, id);
     if (node?.kind === "rollback") for (const dependency of node.dependsOn) visit(dependency);
@@ -798,7 +1112,7 @@ function assertImplementationDag(nodes) {
   const visited = /* @__PURE__ */ new Set();
   const visit = (id) => {
     if (visited.has(id)) return;
-    if (visiting.has(id)) invalid("implementation unit dependency graph contains a cycle", { id });
+    if (visiting.has(id)) invalid2("implementation unit dependency graph contains a cycle", { id });
     visiting.add(id);
     const node = nodeById(nodes, id);
     if (node?.kind === "implementation-unit") for (const dependency of node.dependsOn) visit(dependency);
@@ -816,75 +1130,56 @@ function sameEdges(left, right) {
 function sameSummary(left, right) {
   return left.total === right.total && left.current === right.current && left.stale === right.stale && left.tombstoned === right.tombstoned;
 }
-var statusValues = /* @__PURE__ */ new Set(["current", "stale", "tombstoned"]);
-var sourceArtifacts = /* @__PURE__ */ new Set(["requirements", "implementation-plan", "coverage-matrix", "rollback-units"]);
-var hex64 = /^[a-f0-9]{64}$/;
 function assertPersistedNode(recordId, value, options) {
-  if (!isRecord(value)) invalid("persisted node is not an object", { id: recordId });
+  if (!isRecord3(value)) invalid2("persisted node is not an object", { id: recordId });
   const kind = value.kind;
-  if (typeof kind !== "string" || !(kind in idPrefix)) invalid("persisted node has an unknown kind", { id: recordId, kind });
+  if (typeof kind !== "string" || !(kind in idPrefix)) invalid2("persisted node has an unknown kind", { id: recordId, kind });
   assertId(kind, value.id);
-  if (value.id !== recordId) invalid("persisted node id does not match its record key", { id: recordId, nodeId: value.id });
-  if (!statusValues.has(value.status)) invalid("persisted node has an invalid status", { id: recordId, status: value.status });
+  if (value.id !== recordId) invalid2("persisted node id does not match its record key", { id: recordId, nodeId: value.id });
+  if (!statusValues.has(value.status)) invalid2("persisted node has an invalid status", { id: recordId, status: value.status });
   if (typeof value.sourceArtifact !== "string" || !sourceArtifacts.has(value.sourceArtifact)) {
-    invalid("persisted node has an invalid sourceArtifact", { id: recordId, sourceArtifact: value.sourceArtifact });
+    invalid2("persisted node has an invalid sourceArtifact", { id: recordId, sourceArtifact: value.sourceArtifact });
   }
   if (typeof value.sourceSha256 !== "string" || !hex64.test(value.sourceSha256)) {
-    invalid("persisted node has an invalid sourceSha256", { id: recordId });
+    invalid2("persisted node has an invalid sourceSha256", { id: recordId });
   }
   if (typeof value.sourceAnchor !== "string" || !value.sourceAnchor.includes(`id=${value.id}`)) {
-    invalid("persisted node has an invalid sourceAnchor", { id: recordId });
+    invalid2("persisted node has an invalid sourceAnchor", { id: recordId });
   }
   if (typeof value.sourceBlockSha256 !== "string" || !hex64.test(value.sourceBlockSha256)) {
-    invalid("persisted node has an invalid sourceBlockSha256", { id: recordId });
+    invalid2("persisted node has an invalid sourceBlockSha256", { id: recordId });
   }
   if (kind === "acceptance-criterion") {
     assertId("requirement", value.parentRequirement);
     if (value.verificationDisposition !== void 0) validateVerificationDisposition(value.verificationDisposition, recordId);
   }
   if (kind === "task") {
-    if (!isStringArray(value.covers)) invalid("persisted task covers is invalid", { id: recordId });
+    if (!isStringArray(value.covers)) invalid2("persisted task covers is invalid", { id: recordId });
     assertId("implementation-unit", value.implementationUnit);
     if (value.tdd !== void 0 && value.tdd !== "test-first" && value.tdd !== "direct") {
-      invalid("persisted task tdd is invalid", { id: recordId });
+      invalid2("persisted task tdd is invalid", { id: recordId });
     }
   }
   if (kind === "test") {
-    if (!isStringArray(value.verifies)) invalid("persisted test verifies is invalid", { id: recordId });
+    if (!isStringArray(value.verifies)) invalid2("persisted test verifies is invalid", { id: recordId });
   }
   if (kind === "recovery") {
-    if (typeof value.stepRef !== "string" || !/^(?:UNIT|TASK)-[0-9]{3,}$/.test(value.stepRef)) invalid("persisted recovery stepRef is invalid", { id: recordId });
-    if (value.recoveryKind !== "rollback" && value.recoveryKind !== "compensation") invalid("persisted recovery recoveryKind is invalid", { id: recordId });
-    if (typeof value.method !== "string" || !value.method.trim()) invalid("persisted recovery method is invalid", { id: recordId });
-    if (typeof value.riskRef !== "string" || !value.riskRef.trim()) invalid("persisted recovery riskRef is invalid", { id: recordId });
+    if (typeof value.stepRef !== "string" || !/^(?:UNIT|TASK)-[0-9]{3,}$/.test(value.stepRef)) invalid2("persisted recovery stepRef is invalid", { id: recordId });
+    if (value.recoveryKind !== "rollback" && value.recoveryKind !== "compensation") invalid2("persisted recovery recoveryKind is invalid", { id: recordId });
+    if (typeof value.method !== "string" || !value.method.trim()) invalid2("persisted recovery method is invalid", { id: recordId });
+    if (typeof value.riskRef !== "string" || !value.riskRef.trim()) invalid2("persisted recovery riskRef is invalid", { id: recordId });
   }
   if (kind === "rollback") {
-    for (const [field, allowEmpty] of [["tasks", false], ["dependsOn", true], ["fileScope", false], ["covers", false], ["forwardVerification", false], ["rollbackVerification", false]]) {
-      if (field === "forwardVerification" || field === "rollbackVerification") {
-        if (!isVerificationCommandArray(value[field])) invalid("persisted rollback verification field is invalid", { id: recordId, field });
-      } else if (!isStringArray(value[field], allowEmpty)) {
-        invalid("persisted rollback field is invalid", { id: recordId, field });
-      }
-    }
-    if (value.sourceArtifact !== "implementation-plan" && value.sourceArtifact !== "rollback-units") {
-      invalid("persisted rollback has an invalid sourceArtifact", { id: recordId });
-    }
-    if (typeof value.verificationConfigSha256 !== "string" || !hex64.test(value.verificationConfigSha256)) {
-      invalid("persisted rollback has an invalid verificationConfigSha256", { id: recordId });
-    }
-    const allowLegacyRepair = value.status !== "tombstoned" && value.sourceArtifact === options.allowUnsafeFileScopeSourceArtifact;
-    if (value.status !== "tombstoned" && !allowLegacyRepair) {
-      assertSafeFileScope(value.fileScope, recordId, true);
-    }
+    invalid2("rollback nodes are not a v6 Trace kind; use recovery", { id: recordId });
   }
   if (kind === "implementation-unit") {
     if (!isStringArray(value.tasks) || !isStringArray(value.dependsOn, true) || !isStringArray(value.fileScope) || !isStringArray(value.covers) || !isVerificationCommandArray(value.forwardVerification)) {
-      invalid("persisted implementation unit fields are invalid", { id: recordId });
+      invalid2("persisted implementation unit fields are invalid", { id: recordId });
     }
     for (const taskId of value.tasks) assertId("task", taskId);
     for (const dependency of value.dependsOn) assertId("implementation-unit", dependency);
     assertSafeFileScope(value.fileScope, recordId, true);
-    if (typeof value.verificationConfigSha256 !== "string" || !hex64.test(value.verificationConfigSha256)) invalid("persisted implementation unit verification configuration is invalid", { id: recordId });
+    if (typeof value.verificationConfigSha256 !== "string" || !hex64.test(value.verificationConfigSha256)) invalid2("persisted implementation unit verification configuration is invalid", { id: recordId });
   }
 }
 function acceptanceCriterionCovered(nodes, node) {
@@ -895,38 +1190,38 @@ function acceptanceCriterionCovered(nodes, node) {
   return Boolean(disposition.reason?.trim());
 }
 function assertPersistedLedgerShape(ledger, options) {
-  if (typeof ledger.featureId !== "string" || !ledger.featureId) invalid("ledger featureId is invalid");
-  if (!Number.isInteger(ledger.revision) || ledger.revision < 0) invalid("ledger revision is invalid");
-  if (!Number.isInteger(ledger.stateRevision) || ledger.stateRevision < 0) invalid("ledger stateRevision is invalid");
+  if (typeof ledger.featureId !== "string" || !ledger.featureId) invalid2("ledger featureId is invalid");
+  if (!Number.isInteger(ledger.revision) || ledger.revision < 0) invalid2("ledger revision is invalid");
+  if (!Number.isInteger(ledger.stateRevision) || ledger.stateRevision < 0) invalid2("ledger stateRevision is invalid");
   if (typeof ledger.projectConfigSha256 !== "string" || !hex64.test(ledger.projectConfigSha256)) {
-    invalid("ledger projectConfigSha256 is invalid");
+    invalid2("ledger projectConfigSha256 is invalid");
   }
-  if (ledger.verificationCommandHashes !== void 0 && (!isRecord(ledger.verificationCommandHashes) || Object.values(ledger.verificationCommandHashes).some((value) => typeof value !== "string" || !hex64.test(value)))) {
-    invalid("ledger verification command hashes are invalid");
+  if (ledger.verificationCommandHashes !== void 0 && (!isRecord3(ledger.verificationCommandHashes) || Object.values(ledger.verificationCommandHashes).some((value) => typeof value !== "string" || !hex64.test(value)))) {
+    invalid2("ledger verification command hashes are invalid");
   }
   for (const [id, node] of Object.entries(ledger.nodes)) assertPersistedNode(id, node, options);
 }
 function validateTraceGraph(ledger, route, mode, options = {}) {
-  if (!isRecord(ledger) || ledger.schemaVersion !== 1 || !isRecord(ledger.nodes) || !Array.isArray(ledger.edges)) invalid("traceability ledger has an invalid shape");
+  if (!isRecord3(ledger) || ledger.schemaVersion !== 2 || !isRecord3(ledger.nodes) || !Array.isArray(ledger.edges)) invalid2("traceability ledger has an invalid shape");
   assertPersistedLedgerShape(ledger, options);
   const nodes = ledger.nodes;
   for (const node of currentNodes(nodes)) {
     if (node.kind === "acceptance-criterion") assertReference(nodes, node.parentRequirement, ["requirement"], { from: node.id });
     if (node.kind === "task") {
-      if (node.covers.length === 0) invalid("task cannot be orphaned", { id: node.id });
+      if (node.covers.length === 0) invalid2("task cannot be orphaned", { id: node.id });
       for (const covered of node.covers) assertReference(nodes, covered, ["requirement", "acceptance-criterion"], { from: node.id });
       const unit = nodeById(nodes, node.implementationUnit);
-      if (!unit && !(route === "l" && mode === "partial")) invalid("task references a missing implementation unit", { id: node.id, implementationUnit: node.implementationUnit });
-      if (unit && unit.kind !== "implementation-unit") invalid("task implementation unit has the wrong kind", { id: node.id });
+      if (!unit && !(route === "l" && mode === "partial")) invalid2("task references a missing implementation unit", { id: node.id, implementationUnit: node.implementationUnit });
+      if (unit && unit.kind !== "implementation-unit") invalid2("task implementation unit has the wrong kind", { id: node.id });
       if (unit?.kind === "implementation-unit" && !unit.tasks.includes(node.id)) {
-        invalid("implementation unit must list the task", { id: node.id, implementationUnit: node.implementationUnit });
+        invalid2("implementation unit must list the task", { id: node.id, implementationUnit: node.implementationUnit });
       }
     }
     if (node.kind === "test") for (const verified of node.verifies) assertReference(nodes, verified, ["acceptance-criterion"], { from: node.id });
     if (node.kind === "rollback") {
       for (const taskId of node.tasks) {
         const task = assertReference(nodes, taskId, ["task"], { from: node.id });
-        if (task.kind !== "task") invalid("rollback arrangement task reference is invalid", { id: node.id, taskId });
+        if (task.kind !== "task") invalid2("rollback arrangement task reference is invalid", { id: node.id, taskId });
       }
       for (const dependency of node.dependsOn) assertReference(nodes, dependency, ["rollback"], { from: node.id });
       for (const covered of node.covers) assertReference(nodes, covered, ["requirement", "acceptance-criterion"], { from: node.id });
@@ -934,7 +1229,7 @@ function validateTraceGraph(ledger, route, mode, options = {}) {
     if (node.kind === "implementation-unit") {
       for (const taskId of node.tasks) {
         const task = assertReference(nodes, taskId, ["task"], { from: node.id });
-        if (task.kind !== "task" || task.implementationUnit !== node.id) invalid("implementation unit tasks must be symmetric with task implementationUnit", { id: node.id, taskId });
+        if (task.kind !== "task" || task.implementationUnit !== node.id) invalid2("implementation unit tasks must be symmetric with task implementationUnit", { id: node.id, taskId });
       }
       for (const dependency of node.dependsOn) assertReference(nodes, dependency, ["implementation-unit"], { from: node.id });
       for (const covered of node.covers) assertReference(nodes, covered, ["requirement", "acceptance-criterion"], { from: node.id });
@@ -946,15 +1241,15 @@ function validateTraceGraph(ledger, route, mode, options = {}) {
   assertRollbackDag(nodes);
   assertImplementationDag(nodes);
   const edges = deriveTraceEdges(nodes);
-  if (!sameEdges(ledger.edges, edges)) invalid("ledger edges do not match nodes");
-  if (!sameSummary(ledger.summary, traceSummary(nodes))) invalid("ledger summary does not match nodes");
+  if (!sameEdges(ledger.edges, edges)) invalid2("ledger edges do not match nodes");
+  if (!sameSummary(ledger.summary, traceSummary(nodes))) invalid2("ledger summary does not match nodes");
   if (mode === "complete") {
     const kinds = new Set(currentNodes(nodes).map((node) => node.kind));
-    for (const kind of ["requirement", "acceptance-criterion", "task", "implementation-unit"]) if (!kinds.has(kind)) invalid("complete graph is missing a required node kind", { kind });
-    if (currentNodes(nodes).some((node) => node.status !== "current")) invalid("complete graph cannot contain stale nodes");
+    for (const kind of ["requirement", "acceptance-criterion", "task", "implementation-unit"]) if (!kinds.has(kind)) invalid2("complete graph is missing a required node kind", { kind });
+    if (currentNodes(nodes).some((node) => node.status !== "current")) invalid2("complete graph cannot contain stale nodes");
     for (const node of currentNodes(nodes)) {
       if (node.kind === "acceptance-criterion" && !acceptanceCriterionCovered(nodes, node)) {
-        invalid("every acceptance criterion requires a test or an explicit verification disposition", { id: node.id });
+        invalid2("every acceptance criterion requires a test or an explicit verification disposition", { id: node.id });
       }
     }
   }
@@ -1029,13 +1324,50 @@ function assertTraceSliceCurrent(ledger, route, step, currentProjectConfigSha256
     throw error;
   }
 }
+var idPrefix, dispositionKinds, statusValues, sourceArtifacts, hex64;
+var init_traceability = __esm({
+  "plugins/dev-flow/src/core/traceability.ts"() {
+    "use strict";
+    init_errors();
+    init_rollback();
+    init_path_normalization();
+    idPrefix = {
+      requirement: "REQ",
+      "acceptance-criterion": "AC",
+      task: "TASK",
+      test: "TEST",
+      "implementation-unit": "UNIT",
+      rollback: "RU",
+      recovery: "REC"
+    };
+    dispositionKinds = /* @__PURE__ */ new Set(["behavior-test", "type-check", "rule-check", "file-check", "human-acceptance"]);
+    statusValues = /* @__PURE__ */ new Set(["current", "stale", "tombstoned"]);
+    sourceArtifacts = /* @__PURE__ */ new Set(["requirements", "implementation-plan"]);
+    hex64 = /^[a-f0-9]{64}$/;
+  }
+});
 
 // plugins/dev-flow/src/core/traceability-store.ts
+import { createHash as createHash3, randomUUID } from "node:crypto";
+import { mkdir, open, readFile as readFile2, readdir as readdir2, rename } from "node:fs/promises";
+import path4 from "node:path";
 function digest(contents) {
-  return createHash4("sha256").update(contents).digest("hex");
+  return createHash3("sha256").update(contents).digest("hex");
 }
 function integrity(message, details = {}) {
   throw new DevFlowError("TRACEABILITY_INTEGRITY_FAILED", message, details);
+}
+function isRecord4(value) {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+function assertSupportedTraceSchema(ledger) {
+  if (!isRecord4(ledger)) integrity("Trace snapshot has an invalid shape");
+  if (ledger.schemaVersion === 1) {
+    throw new DevFlowError("UNSUPPORTED_TRACE_SCHEMA", "\u68C0\u6D4B\u5230\u65E7 Trace ledger schema\u3002", {
+      recoveryHint: "\u7528\u4EA7\u751F\u8BE5\u72B6\u6001\u7684\u65E7\u63D2\u4EF6\u6536\u5C3E\uFF0C\u5907\u4EFD .dev-flow \u540E\u7528 6.0 \u91CD\u65B0\u521D\u59CB\u5316"
+    });
+  }
+  if (ledger.schemaVersion !== 2) integrity("Trace snapshot has an invalid schemaVersion");
 }
 function safeSnapshotPath(pointer) {
   if (!/^traceability\/snapshots\/[a-f0-9]{64}\.json$/.test(pointer.path) || pointer.path !== `traceability/snapshots/${pointer.sha256}.json`) {
@@ -1067,6 +1399,7 @@ async function readTraceabilityWithOptions(root, state, options = {}) {
   } catch {
     integrity("Trace snapshot is not valid JSON", { featureId: state.featureId });
   }
+  assertSupportedTraceSchema(ledger);
   try {
     validateTraceGraph(ledger, state.route, "partial", options);
   } catch (error) {
@@ -1109,8 +1442,72 @@ async function readProjectConfigSnapshot(root) {
   }
   return { config, sha256: digest(raw), contents: raw };
 }
+var init_traceability_store = __esm({
+  "plugins/dev-flow/src/core/traceability-store.ts"() {
+    "use strict";
+    init_errors();
+    init_project_config();
+    init_traceability();
+  }
+});
+
+// plugins/dev-flow/src/core/traceability-anchors.ts
+import { createHash as createHash4 } from "node:crypto";
+function invalidAnchor(message, details = {}) {
+  throw new DevFlowError("TRACE_SOURCE_ANCHOR_INVALID", message, details);
+}
+function parseTraceSourceBlocks(markdown) {
+  const devFlowComments = markdown.match(/<!-- dev-flow:[\s\S]*?-->/g) ?? [];
+  TRACE_ANCHOR.lastIndex = 0;
+  const anchors = [];
+  let match;
+  while ((match = TRACE_ANCHOR.exec(markdown)) !== null) {
+    const [, prefix, suffix, rawKind] = match;
+    const kind = rawKind;
+    if (expectedKind[prefix] !== kind) {
+      invalidAnchor("anchor ID prefix does not match its kind", { prefix, kind });
+    }
+    const id = `${prefix}-${suffix}`;
+    if (anchors.some((anchor) => anchor.id === id)) {
+      invalidAnchor("anchor ID is declared more than once", { id });
+    }
+    anchors.push({ id, kind, sourceAnchor: match[0], index: match.index });
+  }
+  if (anchors.length === 0 || anchors.length !== devFlowComments.length) {
+    invalidAnchor("trace artifacts require one or more exact declaration anchors");
+  }
+  return anchors.map((anchor, index) => {
+    const end = anchors[index + 1]?.index ?? markdown.length;
+    const sourceBlock = markdown.slice(anchor.index, end);
+    return {
+      id: anchor.id,
+      kind: anchor.kind,
+      sourceAnchor: anchor.sourceAnchor,
+      sourceBlockSha256: createHash4("sha256").update(sourceBlock, "utf8").digest("hex")
+    };
+  });
+}
+var TRACE_ANCHOR, expectedKind;
+var init_traceability_anchors = __esm({
+  "plugins/dev-flow/src/core/traceability-anchors.ts"() {
+    "use strict";
+    init_errors();
+    TRACE_ANCHOR = /<!-- dev-flow:id=(REQ|AC|TASK|TEST|UNIT|RU|REC)-([0-9]{3,}) kind=(requirement|acceptance-criterion|task|test|implementation-unit|rollback|recovery) -->/g;
+    expectedKind = {
+      REQ: "requirement",
+      AC: "acceptance-criterion",
+      TASK: "task",
+      TEST: "test",
+      UNIT: "implementation-unit",
+      RU: "rollback",
+      REC: "recovery"
+    };
+  }
+});
 
 // plugins/dev-flow/src/core/traceability-gates.ts
+import { readFile as readFile3 } from "node:fs/promises";
+import path5 from "node:path";
 function traceSliceForWorkflowStep(step) {
   if (step === "requirements_alignment") return "requirements";
   if (step === "planning") return "implementation_plan";
@@ -1143,9 +1540,9 @@ async function inspectTraceGate(root, state, step) {
   let ledger;
   try {
     ledger = await readTraceability(root, state);
-    const { config, sha256 } = await readProjectConfigSnapshot(root);
-    assertTraceSliceCurrent(ledger, state.route, traceStep, sha256, verificationCommandHashes(config));
-    if (traceStep === "implementation_plan") assertImplementationPlanTraceCurrent(state, ledger);
+    const { config, sha256: sha2564 } = await readProjectConfigSnapshot(root);
+    assertTraceSliceCurrent(ledger, state.route, traceStep, sha2564, verificationCommandHashes(config));
+    if (traceStep === "implementation_plan") await assertImplementationPlanTraceCurrent(root, state, ledger);
     return { enforced: true, ledger, effectiveSummary: ledger.summary };
   } catch (error) {
     return {
@@ -1155,14 +1552,60 @@ async function inspectTraceGate(root, state, step) {
     };
   }
 }
-function assertImplementationPlanTraceCurrent(state, ledger) {
+async function assertImplementationPlanTraceCurrent(root, state, ledger) {
   const artifact = state.artifacts["implementation-plan"];
   if (!artifact) return;
-  const stalePlanNodes = Object.values(ledger.nodes).filter((node) => node.status === "current" && node.sourceArtifact === "implementation-plan" && node.sourceSha256 !== artifact.sha256).map((node) => ({ id: node.id, traceSha256: node.sourceSha256, artifactSha256: artifact.sha256 }));
+  const planNodes = Object.values(ledger.nodes).filter((node) => node.sourceArtifact === "implementation-plan" && node.status !== "tombstoned");
+  const currentPlanNodes = planNodes.filter((node) => node.status === "current");
+  if (currentPlanNodes.length === 0) {
+    if (planNodes.some((node) => node.status === "stale")) {
+      throw new DevFlowError("TRACE_SLICE_STALE", "implementation-plan Trace slice has no current nodes and contains stale nodes", {
+        stalePlanNodeIds: planNodes.filter((node) => node.status === "stale").map((node) => node.id).sort(),
+        recoveryHint: "\u91CD\u65B0\u767B\u8BB0\u5F53\u524D\u5B9E\u65BD\u8BA1\u5212 Markdown \u5237\u65B0 Trace \u540E\u518D\u7EE7\u7EED\u3002"
+      });
+    }
+    throw new DevFlowError("TRACE_SLICE_MISSING", "implementation-plan Trace slice has no current nodes", {
+      recoveryHint: "\u767B\u8BB0\u5B9E\u65BD\u8BA1\u5212 Markdown \u751F\u6210 implementation-plan Trace slice \u540E\u518D\u7EE7\u7EED\u3002"
+    });
+  }
+  const stalePlanNodes = currentPlanNodes.filter((node) => node.sourceSha256 !== artifact.sha256).map((node) => ({ id: node.id, traceSha256: node.sourceSha256, artifactSha256: artifact.sha256 }));
   if (stalePlanNodes.length) {
     throw new DevFlowError("TRACE_SLICE_STALE", "implementation plan artifact changed without re-registering its Trace slice", {
       stalePlanNodes,
-      recoveryHint: "\u8BA1\u5212\u4FEE\u8BA2\u786E\u8BA4\u540E\uFF0C\u5FC5\u987B\u7528 record_artifact_with_trace \u91CD\u767B\u8BB0\u5B9E\u65BD\u8BA1\u5212\uFF1B\u4EC5\u4FEE\u8BA2 artifact sha \u4E0D\u80FD\u5237\u65B0 Trace\u3002"
+      recoveryHint: "\u91CD\u65B0\u767B\u8BB0\u5F53\u524D\u5B9E\u65BD\u8BA1\u5212 Markdown\uFF1B\u4FEE\u8BA2\u786E\u8BA4\u5DF2\u539F\u5B50\u767B\u8BB0 Trace\uFF0C\u4E0D\u518D\u9700\u8981\u624B\u5DE5 record_artifact_with_trace\u3002"
+    });
+  }
+  const contents = await readFile3(path5.join(root, ".dev-flow", "features", state.featureId, normalizeUnicode(artifact.path)), "utf8");
+  const blocks = new Map(parseTraceSourceBlocks(contents).map((block2) => [`${block2.kind}:${block2.id}`, block2]));
+  for (const node of currentPlanNodes) {
+    const block2 = blocks.get(`${node.kind}:${node.id}`);
+    if (!block2) {
+      throw new DevFlowError("TRACE_SLICE_STALE", "implementation plan Markdown source manifest does not match Trace", {
+        missingBlock: { id: node.id, kind: node.kind },
+        recoveryHint: "\u91CD\u65B0\u767B\u8BB0\u5F53\u524D\u5B9E\u65BD\u8BA1\u5212 Markdown\u3002"
+      });
+    }
+    if (block2.sourceBlockSha256 !== node.sourceBlockSha256) {
+      throw new DevFlowError("TRACE_SLICE_STALE", "implementation plan block changed without re-registering Trace", {
+        changedBlock: { id: node.id },
+        recoveryHint: "\u91CD\u65B0\u767B\u8BB0\u5F53\u524D\u5B9E\u65BD\u8BA1\u5212 Markdown\u3002"
+      });
+    }
+  }
+  const referenced = /* @__PURE__ */ new Set();
+  for (const node of currentPlanNodes) {
+    if (node.kind === "task") for (const id of node.covers) referenced.add(id);
+    if (node.kind === "test") for (const id of node.verifies) referenced.add(id);
+    if (node.kind === "implementation-unit") {
+      for (const id of [...node.tasks, ...node.dependsOn, ...node.covers]) referenced.add(id);
+    }
+    if (node.kind === "recovery") referenced.add(node.stepRef);
+  }
+  const missingReferences = [...referenced].filter((id) => ledger.nodes[id]?.status !== "current").sort();
+  if (missingReferences.length) {
+    throw new DevFlowError("TRACE_SLICE_STALE", "implementation-plan Trace slice references stale or missing nodes", {
+      missingReferences,
+      recoveryHint: "\u91CD\u65B0\u767B\u8BB0\u4E0A\u6E38 requirements \u6216\u8BA1\u5212 Markdown\uFF0C\u4F7F\u88AB\u5F15\u7528\u8282\u70B9\u6062\u590D current\u3002"
     });
   }
 }
@@ -1183,16 +1626,21 @@ async function assertTraceGateCurrent(root, state, step) {
     }
   );
 }
-
-// plugins/dev-flow/src/core/review-store.ts
-import { createHash as createHash5, randomUUID as randomUUID2 } from "node:crypto";
-import { mkdir as mkdir2, open as open2, readFile as readFile3, readdir as readdir3, rename as rename2 } from "node:fs/promises";
-import path5 from "node:path";
+var init_traceability_gates = __esm({
+  "plugins/dev-flow/src/core/traceability-gates.ts"() {
+    "use strict";
+    init_contract2();
+    init_errors();
+    init_step_order();
+    init_traceability_store();
+    init_traceability();
+    init_project_config();
+    init_traceability_anchors();
+    init_path_normalization();
+  }
+});
 
 // plugins/dev-flow/src/policy/review.ts
-var defaultReviewIdentityVerifier = {
-  verify: () => ({ trusted: false })
-};
 function assuranceForReviewBatch(batch, verifier = defaultReviewIdentityVerifier) {
   const attested = batch.jobs.filter((job) => job.status === "submitted" && job.submission?.attestation);
   const trusted = attested.filter((job) => verifier.verify(job.submission.attestation).trusted);
@@ -1212,19 +1660,6 @@ function evidenceSourcesForReviewBatch(batch) {
   if (batch.jobs.some((job) => job.submission?.attestation)) sources.push("host-attestation");
   return sources;
 }
-var reviewRoles = [
-  "code-quality",
-  "requirement-fidelity",
-  "requirements-coverage",
-  "architecture-testability",
-  "rollback-operability",
-  "security",
-  "data-irreversibility",
-  "money-safety",
-  "contract-failure",
-  "recovery-observability",
-  "critical-correctness"
-];
 function deriveReviewJobRequirements(route, riskLabels, derivedRoles, phase = "plan") {
   if (phase === "code") {
     const reviewDepth2 = riskLabels.includes("critical_correctness") ? "full" : "standard";
@@ -1239,8 +1674,33 @@ function deriveReviewJobRequirements(route, riskLabels, derivedRoles, phase = "p
   const reviewDepth = riskLabels.includes("critical_correctness") ? "full" : "standard";
   return reviewRoles.filter((role) => roles.includes(role)).map((role) => ({ role, reviewDepth }));
 }
+var defaultReviewIdentityVerifier, reviewRoles;
+var init_review = __esm({
+  "plugins/dev-flow/src/policy/review.ts"() {
+    "use strict";
+    defaultReviewIdentityVerifier = {
+      verify: () => ({ trusted: false })
+    };
+    reviewRoles = [
+      "code-quality",
+      "requirement-fidelity",
+      "requirements-coverage",
+      "architecture-testability",
+      "rollback-operability",
+      "security",
+      "data-irreversibility",
+      "money-safety",
+      "contract-failure",
+      "recovery-observability",
+      "critical-correctness"
+    ];
+  }
+});
 
 // plugins/dev-flow/src/core/review-store.ts
+import { createHash as createHash5, randomUUID as randomUUID2 } from "node:crypto";
+import { mkdir as mkdir2, open as open2, readFile as readFile4, readdir as readdir3, rename as rename2 } from "node:fs/promises";
+import path6 from "node:path";
 function sortValue(value) {
   if (Array.isArray(value)) return value.map(sortValue);
   if (value && typeof value === "object") {
@@ -1248,7 +1708,6 @@ function sortValue(value) {
   }
   return value;
 }
-var digest2 = (contents) => createHash5("sha256").update(contents).digest("hex");
 function canonicalReviewValueJson(value) {
   return `${JSON.stringify(sortValue(value), null, 2)}
 `;
@@ -1275,11 +1734,11 @@ function sameSummary2(left, right) {
 function validHash(value) {
   return typeof value === "string" && /^[a-f0-9]{64}$/.test(value);
 }
-function isRecord2(value) {
+function isRecord5(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 function validSamplingAttempt(value) {
-  if (!isRecord2(value) || !validHash(value.requestSha256) || typeof value.issuedAt !== "string" || typeof value.leaseExpiresAt !== "string" || value.status !== "issued" && value.status !== "failed" && value.status !== "submitted") return false;
+  if (!isRecord5(value) || !validHash(value.requestSha256) || typeof value.issuedAt !== "string" || typeof value.leaseExpiresAt !== "string" || value.status !== "issued" && value.status !== "failed" && value.status !== "submitted") return false;
   if (value.status === "issued") {
     return value.completedAt === void 0 && value.payloadSha256 === void 0 && value.failureCode === void 0;
   }
@@ -1302,12 +1761,12 @@ function validSamplingAttempts(value, status, submission) {
   return attempts.every((attempt) => attempt.status === "failed" || attempt.status === "submitted") && attempts.filter((attempt) => attempt.status === "submitted").length === 1 && attempts.some((attempt) => attempt.status === "submitted" && attempt.requestSha256 === submission.samplingProvenance.requestSha256 && attempt.issuedAt === submission.samplingProvenance.issuedAt && attempt.completedAt === submission.samplingProvenance.completedAt && attempt.payloadSha256 === submission.payloadSha256);
 }
 function validAttestation(value) {
-  return isRecord2(value) && (value.host === "claude" || value.host === "codex") && typeof value.agentId === "string" && value.agentId.trim().length > 0 && typeof value.issuedAt === "string" && !Number.isNaN(Date.parse(value.issuedAt)) && typeof value.raw === "string" && value.raw.trim().length > 0 && validHash(value.rawSha256) && typeof value.acceptedAt === "string" && digest2(value.raw) === value.rawSha256;
+  return isRecord5(value) && (value.host === "claude" || value.host === "codex") && typeof value.agentId === "string" && value.agentId.trim().length > 0 && typeof value.issuedAt === "string" && !Number.isNaN(Date.parse(value.issuedAt)) && typeof value.raw === "string" && value.raw.trim().length > 0 && validHash(value.rawSha256) && typeof value.acceptedAt === "string" && digest2(value.raw) === value.rawSha256;
 }
 function validateBatch(value) {
   if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
   const batch = value;
-  if (typeof batch.batchId !== "string" || !batch.batchId || !validHash(batch.basisHash) || !batch.basis || batch.validity !== "current" && batch.validity !== "stale" || batch.progress !== "open" && batch.progress !== "complete" || batch.executionMode !== "isolated-sequential" && batch.executionMode !== "parallel-safe" && batch.executionMode !== "mcp-sampling" && batch.executionMode !== "native-subagent" || batch.assuranceLevel !== "multi-perspective" && batch.assuranceLevel !== "independent-sampling" && batch.assuranceLevel !== "multi-agent-verified" || !Array.isArray(batch.jobs)) return false;
+  if (typeof batch.batchId !== "string" || !batch.batchId || !validHash(batch.basisHash) || batch.phase !== "plan" && batch.phase !== "code" || !batch.basis || batch.validity !== "current" && batch.validity !== "stale" || batch.progress !== "open" && batch.progress !== "complete" || batch.executionMode !== "parallel-execution" || batch.assuranceLevel !== "multi-perspective" && batch.assuranceLevel !== "independent-sampling" && batch.assuranceLevel !== "multi-agent-verified" || !Array.isArray(batch.jobs)) return false;
   const ids = /* @__PURE__ */ new Set();
   const attestationRaws = /* @__PURE__ */ new Set();
   return batch.jobs.every((job) => {
@@ -1337,24 +1796,33 @@ function validateBatch(value) {
 function validateLedger(value) {
   if (typeof value !== "object" || value === null || Array.isArray(value)) integrity2("review snapshot has an invalid shape");
   const ledger = value;
-  if (ledger.schemaVersion === 1) {
-    throw new DevFlowError("UNSUPPORTED_REVIEW_SCHEMA", "\u68C0\u6D4B\u5230 Dev Flow 4.x review ledger schema v1\u3002", {
-      recoveryHint: "\u56DE\u5230 4.x \u5B8C\u6210\u6216\u653E\u5F03\u8BE5 feature\uFF0C\u5907\u4EFD .dev-flow \u540E\u7528 5.0 \u91CD\u65B0\u521D\u59CB\u5316"
+  if (ledger.schemaVersion === 1 || ledger.schemaVersion === 2) {
+    throw new DevFlowError("UNSUPPORTED_REVIEW_SCHEMA", "\u68C0\u6D4B\u5230\u65E7 review ledger schema\u3002", {
+      recoveryHint: "\u7528\u4EA7\u751F\u8BE5\u72B6\u6001\u7684\u65E7\u63D2\u4EF6\u6536\u5C3E\uFF0C\u5907\u4EFD .dev-flow \u540E\u7528 6.0 \u91CD\u65B0\u521D\u59CB\u5316"
     });
   }
-  if (ledger.schemaVersion !== 2 || typeof ledger.featureId !== "string" || !ledger.featureId || !Number.isInteger(ledger.revision) || (ledger.revision ?? -1) < 0 || !Number.isInteger(ledger.stateRevision) || (ledger.stateRevision ?? -1) < 0 || !Array.isArray(ledger.batches) || !ledger.batches.every(validateBatch) || !validateSummary(ledger.summary)) {
+  if (ledger.schemaVersion !== 3 || typeof ledger.featureId !== "string" || !ledger.featureId || !Number.isInteger(ledger.revision) || (ledger.revision ?? -1) < 0 || !Number.isInteger(ledger.stateRevision) || (ledger.stateRevision ?? -1) < 0 || !Array.isArray(ledger.batches) || !ledger.batches.every(validateBatch) || !validateSummary(ledger.summary)) {
     integrity2("review snapshot has an invalid shape");
   }
   const batchIds = /* @__PURE__ */ new Set();
+  const currentByPhase = /* @__PURE__ */ new Map();
   for (const batch of ledger.batches) {
+    if (batch.validity === "current") {
+      const phase = batch.phase ?? "plan";
+      const existing = currentByPhase.get(phase);
+      if (existing !== void 0 && existing !== batch.batchId) {
+        integrity2("review ledger must keep at most one current batch per phase", { phase, first: existing, second: batch.batchId });
+      }
+      currentByPhase.set(phase, batch.batchId);
+    }
     if (batchIds.has(batch.batchId) || batch.basis.featureId !== ledger.featureId || !validBasisHash(batch.basis, batch.basisHash) || batch.progress === "complete" !== batch.jobs.every((job) => job.status === "submitted" || job.status === "reused")) {
       integrity2("review snapshot batch is inconsistent");
     }
     if (batch.assuranceLevel !== assuranceForReviewBatch(batch)) {
       integrity2("review batch assurance is not derived from persisted provenance", { batchId: batch.batchId });
     }
-    if (batch.executionMode === "isolated-sequential" && batch.assuranceLevel !== "multi-perspective") {
-      integrity2("isolated review batch assurance is not Core-derived", { batchId: batch.batchId });
+    if (batch.executionMode !== "parallel-execution") {
+      integrity2("review batch executionMode must be parallel-execution", { batchId: batch.batchId });
     }
     batchIds.add(batch.batchId);
   }
@@ -1406,7 +1874,7 @@ async function readReviewLedger(root, state) {
   const relative = safeSnapshotPath2(pointer);
   let contents;
   try {
-    contents = await readFile3(path5.join(root, ".dev-flow", "features", state.featureId, relative), "utf8");
+    contents = await readFile4(path6.join(root, ".dev-flow", "features", state.featureId, relative), "utf8");
   } catch {
     integrity2("review snapshot cannot be read", { featureId: state.featureId, path: relative });
   }
@@ -1423,27 +1891,1333 @@ async function readReviewLedger(root, state) {
   }
   return ledger;
 }
+var digest2;
+var init_review_store = __esm({
+  "plugins/dev-flow/src/core/review-store.ts"() {
+    "use strict";
+    init_review();
+    init_errors();
+    digest2 = (contents) => createHash5("sha256").update(contents).digest("hex");
+  }
+});
 
-// plugins/dev-flow/src/core/workspace-store.ts
-import { lstat as lstat2, readFile as readFile4, readlink as readlink2 } from "node:fs/promises";
-import path6 from "node:path";
-import { createHash as createHash6 } from "node:crypto";
-async function trustedWriteSummary(root, file) {
-  const target = path6.join(root, file);
+// plugins/dev-flow/src/policy/event-segment.ts
+function isRecord6(value) {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+function parseFeatureEventSegment(value) {
+  if (!isRecord6(value) || value.schemaVersion !== 1 || typeof value.featureId !== "string" || !value.featureId || !Number.isInteger(value.firstSequence) || value.firstSequence < 0 || !Number.isInteger(value.lastSequence) || value.lastSequence < value.firstSequence || value.previousSegmentSha256 !== void 0 && typeof value.previousSegmentSha256 !== "string" || !Number.isInteger(value.recordCount) || value.recordCount < 0 || value.codec !== "jsonl" || !Array.isArray(value.records)) {
+    throw new TypeError("invalid feature event segment");
+  }
+  const records = value.records.map((record) => {
+    if (!isRecord6(record) || !Number.isInteger(record.eventSequence) || !Number.isInteger(record.revision) || typeof record.type !== "string" || !record.type || typeof record.at !== "string" || Number.isNaN(Date.parse(record.at))) {
+      throw new TypeError("invalid feature event segment record");
+    }
+    return {
+      eventSequence: Number(record.eventSequence),
+      revision: Number(record.revision),
+      type: String(record.type),
+      at: String(record.at),
+      data: record.data
+    };
+  });
+  return {
+    schemaVersion: 1,
+    featureId: String(value.featureId),
+    firstSequence: Number(value.firstSequence),
+    lastSequence: Number(value.lastSequence),
+    ...value.previousSegmentSha256 !== void 0 ? { previousSegmentSha256: String(value.previousSegmentSha256) } : {},
+    recordCount: Number(value.recordCount),
+    codec: "jsonl",
+    records
+  };
+}
+function parseFeatureEventSegmentIndex(value) {
+  if (!isRecord6(value) || value.schemaVersion !== 1 || typeof value.featureId !== "string" || !value.featureId || !Array.isArray(value.entries)) {
+    throw new TypeError("invalid feature event segment index");
+  }
+  return {
+    schemaVersion: 1,
+    featureId: String(value.featureId),
+    entries: value.entries.map((entry) => {
+      if (!isRecord6(entry) || !Number.isInteger(entry.firstSequence) || !Number.isInteger(entry.lastSequence) || entry.previousSegmentSha256 !== void 0 && typeof entry.previousSegmentSha256 !== "string") {
+        throw new TypeError("invalid feature event segment index entry");
+      }
+      return {
+        ref: parseEvidenceObjectRef(entry.ref),
+        firstSequence: Number(entry.firstSequence),
+        lastSequence: Number(entry.lastSequence),
+        ...entry.previousSegmentSha256 !== void 0 ? { previousSegmentSha256: String(entry.previousSegmentSha256) } : {}
+      };
+    })
+  };
+}
+var init_event_segment = __esm({
+  "plugins/dev-flow/src/policy/event-segment.ts"() {
+    "use strict";
+    init_evidence_store();
+  }
+});
+
+// plugins/dev-flow/src/core/evidence-pack.ts
+import { createHash as createHash6, randomUUID as randomUUID3 } from "node:crypto";
+import { mkdir as mkdir3, open as open3, readFile as readFile5, rename as rename3 } from "node:fs/promises";
+import { gunzipSync, gzipSync } from "node:zlib";
+import path7 from "node:path";
+function sha256(bytes) {
+  return createHash6("sha256").update(bytes).digest("hex");
+}
+async function fsyncDirectory(directory) {
+  const handle = await open3(directory, "r");
   try {
-    const metadata = await lstat2(target);
-    const bytes = metadata.isSymbolicLink() ? Buffer.from(await readlink2(target)) : await readFile4(target);
-    return `${metadata.isSymbolicLink() ? "symlink" : "file"}:${createHash6("sha256").update(bytes).digest("hex")}`;
+    await handle.sync();
+  } finally {
+    await handle.close();
+  }
+}
+async function writeFileAtomic(target, bytes) {
+  await mkdir3(path7.dirname(target), { recursive: true });
+  const temporary = path7.join(path7.dirname(target), `.${path7.basename(target)}.${randomUUID3()}.tmp`);
+  const handle = await open3(temporary, "wx");
+  try {
+    await handle.writeFile(bytes);
+    await handle.sync();
+  } finally {
+    await handle.close();
+  }
+  await rename3(temporary, target);
+  await fsyncDirectory(path7.dirname(target));
+}
+function encodeEvidencePack(inputs) {
+  if (inputs.length === 0) throw new TypeError("evidence pack requires at least one object");
+  const chunks = [];
+  const entries = [];
+  let offset = 0;
+  for (const input of inputs) {
+    if (input.bytes.length === 0) throw new TypeError("evidence pack rejects empty objects");
+    const framed = Buffer.concat([Buffer.from(`${input.kind}\0`, "utf8"), input.bytes]);
+    const compressed = gzipSync(framed);
+    chunks.push(Buffer.alloc(4));
+    chunks[chunks.length - 1].writeUInt32BE(compressed.length, 0);
+    chunks.push(compressed);
+    entries.push({
+      sha256: sha256(input.bytes),
+      kind: input.kind,
+      size: input.bytes.length,
+      offset: offset + 4,
+      compressedLength: compressed.length
+    });
+    offset += 4 + compressed.length;
+  }
+  return { pack: Buffer.concat(chunks), entries };
+}
+function decodeEvidencePackEntry(pack, entry) {
+  if (entry.offset < 0 || entry.compressedLength <= 0 || entry.offset + entry.compressedLength > pack.length) {
+    throw new TypeError("evidence pack index entry is outside pack bounds");
+  }
+  if (entry.offset < 4) throw new TypeError("evidence pack index entry overlaps the length prefix");
+  const compressed = pack.subarray(entry.offset, entry.offset + entry.compressedLength);
+  let framed;
+  try {
+    framed = gunzipSync(compressed);
+  } catch {
+    throw new TypeError("evidence pack entry cannot be decompressed");
+  }
+  const separator = framed.indexOf(0);
+  if (separator <= 0 || framed.subarray(0, separator).toString("utf8") !== entry.kind) {
+    throw new TypeError("evidence pack entry kind does not match its index");
+  }
+  const bytes = framed.subarray(separator + 1);
+  if (bytes.length !== entry.size || sha256(bytes) !== entry.sha256) {
+    throw new TypeError("evidence pack entry does not match its content address");
+  }
+  return bytes;
+}
+function canonicalPackIndexJson(index) {
+  return `${JSON.stringify({
+    schemaVersion: 1,
+    packSha256: index.packSha256,
+    objects: index.objects.map((entry) => ({ ...entry })).sort((left, right) => left.offset - right.offset || left.kind.localeCompare(right.kind) || left.sha256.localeCompare(right.sha256))
+  }, null, 2)}
+`;
+}
+function readPackIndexJson(contents, expectedPackSha256) {
+  let value;
+  try {
+    value = JSON.parse(contents);
+  } catch {
+    throw new TypeError("evidence pack index is not valid JSON");
+  }
+  const index = value;
+  if (!index || typeof index !== "object" || index.schemaVersion !== 1 || index.packSha256 !== expectedPackSha256 || !Array.isArray(index.objects) || index.objects.length === 0) {
+    throw new TypeError("evidence pack index has an invalid shape");
+  }
+  const entries = index.objects.map((entry) => {
+    if (!entry || typeof entry !== "object") throw new TypeError("evidence pack index entry is invalid");
+    return entry;
+  });
+  const sorted = [...entries].sort((left, right) => left.offset - right.offset);
+  for (const [position, entry] of sorted.entries()) {
+    if (typeof entry.sha256 !== "string" || !/^[a-f0-9]{64}$/.test(entry.sha256) || typeof entry.kind !== "string" || !Number.isInteger(entry.size) || entry.size <= 0 || !Number.isInteger(entry.offset) || entry.offset < 4 || !Number.isInteger(entry.compressedLength) || entry.compressedLength <= 0) {
+      throw new TypeError("evidence pack index entry is invalid");
+    }
+    const previous = sorted[position - 1];
+    if (previous && entry.offset < previous.offset + previous.compressedLength + 4) {
+      throw new TypeError("evidence pack index entries overlap");
+    }
+  }
+  return {
+    schemaVersion: 1,
+    packSha256: index.packSha256,
+    objects: entries
+  };
+}
+async function writeEvidencePack(directory, inputs, options = {}) {
+  const { pack, entries } = encodeEvidencePack(inputs);
+  const packSha256 = sha256(pack);
+  const index = { schemaVersion: 1, packSha256, objects: entries };
+  const indexJson = canonicalPackIndexJson(index);
+  const indexSha256 = sha256(Buffer.from(indexJson));
+  const packPath = path7.join(directory, `${packSha256}.pack`);
+  const indexPath = path7.join(directory, `${packSha256}.index.json`);
+  await mkdir3(directory, { recursive: true });
+  try {
+    const existingPack = await readFile5(packPath);
+    if (!existingPack.equals(pack)) throw new TypeError("evidence pack path is occupied by different bytes");
   } catch (error) {
-    if (error.code === "ENOENT") return "missing";
+    if (error.code !== "ENOENT") throw error;
+    await options.fault?.("before-pack-write");
+    const packTemporary = path7.join(directory, `.${packSha256}.${randomUUID3()}.tmp`);
+    const handle = await open3(packTemporary, "wx");
+    try {
+      await handle.writeFile(pack);
+      await handle.sync();
+    } finally {
+      await handle.close();
+    }
+    await options.fault?.("after-pack-fsync");
+    try {
+      await rename3(packTemporary, packPath);
+    } catch (renameError) {
+      if (renameError.code !== "EEXIST") throw renameError;
+      const existingPack = await readFile5(packPath);
+      if (!existingPack.equals(pack)) throw new TypeError("evidence pack path is occupied by different bytes");
+    }
+    await options.fault?.("before-pack-rename");
+    await fsyncDirectory(directory);
+  }
+  try {
+    const existingIndex = await readFile5(indexPath, "utf8");
+    if (existingIndex !== indexJson) throw new TypeError("evidence pack index path is occupied by different bytes");
+  } catch (error) {
+    if (error.code !== "ENOENT") throw error;
+    await options.fault?.("before-index-write");
+    await writeFileAtomic(indexPath, Buffer.from(indexJson));
+    await options.fault?.("after-index-fsync");
+    await options.fault?.("before-index-rename");
+  }
+  return { packSha256, indexSha256, packBytes: pack.length, entries };
+}
+async function readEvidencePackEntry(directory, packSha256, entry) {
+  const pack = await readFile5(path7.join(directory, `${packSha256}.pack`));
+  if (sha256(pack) !== packSha256) throw new TypeError("evidence pack digest does not match its name");
+  return decodeEvidencePackEntry(pack, entry);
+}
+var init_evidence_pack = __esm({
+  "plugins/dev-flow/src/core/evidence-pack.ts"() {
+    "use strict";
+  }
+});
+
+// plugins/dev-flow/src/core/evidence-store.ts
+import { createHash as createHash7, randomUUID as randomUUID4 } from "node:crypto";
+import { copyFile, mkdir as mkdir4, open as open4, readFile as readFile6, readdir as readdir4, rename as rename4, stat, unlink } from "node:fs/promises";
+import path8 from "node:path";
+function evidenceDirectory(root, featureId) {
+  return path8.join(root, ".dev-flow", "features", featureId, "evidence");
+}
+function hotDirectory(root, featureId) {
+  return path8.join(evidenceDirectory(root, featureId), "packs", "hot");
+}
+function coldDirectory(root, featureId) {
+  return path8.join(evidenceDirectory(root, featureId), "packs", "cold");
+}
+function catalogPath(root, featureId) {
+  return path8.join(evidenceDirectory(root, featureId), "catalog.json");
+}
+function packDirectory(root, featureId, descriptor) {
+  return descriptor.location === "cold" ? coldDirectory(root, featureId) : hotDirectory(root, featureId);
+}
+function emptyCatalog(featureId) {
+  return { schemaVersion: 1, featureId, revision: 0, objects: [], packs: [] };
+}
+function digest3(contents) {
+  return createHash7("sha256").update(contents).digest("hex");
+}
+function canonicalCatalogJson(catalog) {
+  return `${stableJson(catalog)}
+`;
+}
+function integrity3(message, details = {}) {
+  throw new DevFlowError("EVIDENCE_STORE_INTEGRITY_FAILED", message, {
+    recoveryKind: "repair",
+    recoveryInstruction: "\u8FD0\u884C doctor \u68C0\u67E5 evidence store\uFF1B\u4E0D\u8981\u624B\u52A8\u4FEE\u6539 .dev-flow \u63A7\u5236\u6587\u4EF6\u3002",
+    ...details
+  });
+}
+async function fsyncDirectory2(directory) {
+  const handle = await open4(directory, "r");
+  try {
+    await handle.sync();
+  } finally {
+    await handle.close();
+  }
+}
+async function writeFileAtomic2(target, contents) {
+  await mkdir4(path8.dirname(target), { recursive: true });
+  const temporary = path8.join(path8.dirname(target), `.${path8.basename(target)}.${randomUUID4()}.tmp`);
+  const handle = await open4(temporary, "wx");
+  try {
+    await handle.writeFile(contents);
+    await handle.sync();
+  } finally {
+    await handle.close();
+  }
+  await rename4(temporary, target);
+  await fsyncDirectory2(path8.dirname(target));
+}
+async function readEvidenceStoreCatalog(root, featureId) {
+  let contents;
+  try {
+    contents = await readFile6(catalogPath(root, featureId), "utf8");
+  } catch (error) {
+    if (error.code === "ENOENT") return emptyCatalog(featureId);
+    throw error;
+  }
+  let catalog;
+  try {
+    catalog = parseEvidenceStoreCatalog(JSON.parse(contents));
+  } catch (error) {
+    integrity3("evidence catalog is invalid", { featureId, cause: error instanceof Error ? error.message : String(error) });
+  }
+  if (catalog.featureId !== featureId) integrity3("evidence catalog featureId mismatch", { featureId, catalogFeatureId: catalog.featureId });
+  return catalog;
+}
+async function writeEvidenceStoreCatalog(root, featureId, catalog, options = {}) {
+  const contents = canonicalCatalogJson(catalog);
+  const sha2564 = digest3(contents);
+  await mkdir4(evidenceDirectory(root, featureId), { recursive: true });
+  await options.fault?.("before-catalog-write");
+  await writeFileAtomic2(catalogPath(root, featureId), contents);
+  await options.fault?.("after-catalog-write");
+  return { catalog, sha256: sha2564 };
+}
+function evidenceStorePointer(catalog, catalogSha256) {
+  return {
+    catalogSha256,
+    objectCount: catalog.objects.length,
+    packCount: catalog.packs.length
+  };
+}
+function objectKey(ref) {
+  return `${ref.kind}\0${ref.sha256}`;
+}
+async function putEvidenceObjects(root, featureId, inputs, options = {}) {
+  if (inputs.length === 0) throw new TypeError("at least one evidence object is required");
+  const normalized = [];
+  const seen = /* @__PURE__ */ new Set();
+  for (const input of inputs) {
+    if (!Buffer.isBuffer(input.bytes)) throw new TypeError("evidence object bytes must be a Buffer");
+    const sha2564 = digest3(input.bytes);
+    const key = objectKey({ kind: input.kind, sha256: sha2564 });
+    if (seen.has(key)) throw new TypeError("duplicate evidence object in one pack");
+    seen.add(key);
+    normalized.push({ kind: input.kind, bytes: Buffer.from(input.bytes) });
+  }
+  const current = await readEvidenceStoreCatalog(root, featureId);
+  const existingByKey = new Map(current.objects.map((entry) => [objectKey(entry), entry]));
+  const missing = normalized.filter((input) => !existingByKey.has(objectKey({ kind: input.kind, sha256: digest3(input.bytes) })));
+  const refs = normalized.map((input) => {
+    const sha2564 = digest3(input.bytes);
+    return { kind: input.kind, sha256: sha2564, size: input.bytes.length };
+  });
+  if (missing.length === 0) {
+    const sha2564 = digest3(canonicalCatalogJson(current));
+    return { refs, pointer: evidenceStorePointer(current, sha2564), catalog: current };
+  }
+  const pack = await writeEvidencePack(hotDirectory(root, featureId), missing, options);
+  const descriptor = {
+    packSha256: pack.packSha256,
+    indexSha256: pack.indexSha256,
+    location: "hot",
+    objectCount: pack.entries.length,
+    totalRawSize: pack.entries.reduce((total, entry) => total + entry.size, 0)
+  };
+  const entries = pack.entries.map((entry) => ({
+    ...entry,
+    packSha256: pack.packSha256
+  }));
+  const next = {
+    ...current,
+    revision: current.revision + 1,
+    packs: [
+      ...current.packs.filter((candidate) => candidate.packSha256 !== descriptor.packSha256),
+      descriptor
+    ],
+    objects: [
+      ...current.objects.filter((entry) => entry.packSha256 !== descriptor.packSha256),
+      ...entries
+    ]
+  };
+  next.objects.sort((left, right) => left.kind.localeCompare(right.kind) || left.sha256.localeCompare(right.sha256));
+  next.packs.sort((left, right) => left.packSha256.localeCompare(right.packSha256));
+  const written = await writeEvidenceStoreCatalog(root, featureId, next, options);
+  return { refs, pointer: evidenceStorePointer(written.catalog, written.sha256), catalog: written.catalog };
+}
+async function putEvidenceObject(root, featureId, kind, canonicalBytes, options = {}) {
+  const bytes = Buffer.isBuffer(canonicalBytes) ? canonicalBytes : Buffer.from(canonicalBytes, "utf8");
+  const result = await putEvidenceObjects(root, featureId, [{ kind, bytes }], options);
+  return { ref: result.refs[0], ...result };
+}
+async function readEvidenceObject(root, featureId, ref) {
+  parseEvidenceObjectRef(ref);
+  const catalog = await readEvidenceStoreCatalog(root, featureId);
+  const entry = catalog.objects.find((candidate) => objectKey(candidate) === objectKey(ref));
+  if (!entry) integrity3("evidence object is missing from catalog", { featureId, ...ref });
+  if (entry.size !== ref.size) integrity3("evidence object size does not match its ref", { featureId, expected: ref.size, actual: entry.size });
+  const descriptor = catalog.packs.find((candidate) => candidate.packSha256 === entry.packSha256);
+  if (!descriptor) integrity3("evidence object pack descriptor is missing", { featureId, packSha256: entry.packSha256 });
+  const directory = packDirectory(root, featureId, descriptor);
+  let indexJson;
+  try {
+    indexJson = await readFile6(path8.join(directory, `${descriptor.packSha256}.index.json`), "utf8");
+  } catch {
+    integrity3("evidence pack index cannot be read", { featureId, packSha256: descriptor.packSha256, location: descriptor.location });
+  }
+  const index = readPackIndexJson(indexJson, descriptor.packSha256);
+  if (digest3(indexJson) !== descriptor.indexSha256) integrity3("evidence pack index digest does not match catalog", { featureId, packSha256: descriptor.packSha256 });
+  const indexed = index.objects.find((candidate) => candidate.kind === entry.kind && candidate.sha256 === entry.sha256);
+  if (!indexed || indexed.size !== entry.size || indexed.offset !== entry.offset || indexed.compressedLength !== entry.compressedLength) {
+    integrity3("evidence catalog entry does not match pack index", { featureId, ...ref });
+  }
+  try {
+    return await readEvidencePackEntry(directory, descriptor.packSha256, entry);
+  } catch (error) {
+    integrity3("evidence object cannot be read or verified", { featureId, cause: error instanceof Error ? error.message : String(error), ...ref });
+  }
+}
+function packFileSha(packFile) {
+  const match = /^([a-f0-9]{64})\.(?:pack|index\.json)$/.exec(packFile);
+  return match?.[1];
+}
+async function deleteFileIfExists(file) {
+  try {
+    await unlink(file);
+    return true;
+  } catch (error) {
+    if (error.code === "ENOENT") return false;
     throw error;
   }
 }
+async function collectEvidenceOrphans(root, featureId, rootSet, options = {}) {
+  const current = await readEvidenceStoreCatalog(root, featureId);
+  const known = new Map(current.objects.map((entry) => [objectKey(entry), entry]));
+  for (const ref of rootSet) {
+    const parsed = parseEvidenceObjectRef(ref);
+    if (!known.has(objectKey(parsed))) integrity3("GC root set references an object missing from catalog", { featureId, ...parsed });
+  }
+  const rootPackShas = new Set(rootSet.map((ref) => known.get(objectKey(ref)).packSha256));
+  const orphanPacks = current.packs.filter((pack) => !rootPackShas.has(pack.packSha256)).sort((left, right) => left.packSha256.localeCompare(right.packSha256));
+  const packBudget = options.packBudget ?? DEFAULT_GC_PACK_BUDGET;
+  const byteBudget = options.byteBudget ?? DEFAULT_GC_BYTE_BUDGET;
+  const selected = [];
+  let selectedBytes = 0;
+  for (const pack of orphanPacks) {
+    if (selected.length >= packBudget || selectedBytes >= byteBudget) break;
+    selected.push(pack);
+    selectedBytes += pack.totalRawSize;
+  }
+  const selectedShas = new Set(selected.map((pack) => pack.packSha256));
+  let next = current;
+  if (selected.length > 0) {
+    next = {
+      ...current,
+      revision: current.revision + 1,
+      objects: current.objects.filter((entry) => !selectedShas.has(entry.packSha256)),
+      packs: current.packs.filter((pack) => !selectedShas.has(pack.packSha256))
+    };
+    await writeEvidenceStoreCatalog(root, featureId, next, options);
+  }
+  let deletedFiles = 0;
+  let deletedBytes = 0;
+  for (const pack of selected) {
+    const directory = packDirectory(root, featureId, pack);
+    for (const suffix of [`${pack.packSha256}.pack`, `${pack.packSha256}.index.json`]) {
+      const file = path8.join(directory, suffix);
+      const before = await stat(file).then((value) => value.size, () => 0);
+      if (await deleteFileIfExists(file)) {
+        deletedFiles += 1;
+        deletedBytes += before;
+      }
+    }
+  }
+  const descriptors = new Set(next.packs.map((pack) => pack.packSha256));
+  for (const directory of [hotDirectory(root, featureId), coldDirectory(root, featureId)]) {
+    let files;
+    try {
+      files = await readdir4(directory);
+    } catch (error) {
+      if (error.code === "ENOENT") continue;
+      throw error;
+    }
+    for (const file of files) {
+      const sha = packFileSha(file);
+      if (!sha || descriptors.has(sha)) continue;
+      const absolute = path8.join(directory, file);
+      const before = await stat(absolute).then((value) => value.size, () => 0);
+      if (await deleteFileIfExists(absolute)) {
+        deletedFiles += 1;
+        deletedBytes += before;
+      }
+    }
+  }
+  return { deletedPacks: selected.length, deletedFiles, deletedBytes, catalog: next };
+}
+var DEFAULT_GC_PACK_BUDGET, DEFAULT_GC_BYTE_BUDGET;
+var init_evidence_store2 = __esm({
+  "plugins/dev-flow/src/core/evidence-store.ts"() {
+    "use strict";
+    init_stable_json();
+    init_evidence_store();
+    init_errors();
+    init_evidence_pack();
+    DEFAULT_GC_PACK_BUDGET = 8;
+    DEFAULT_GC_BYTE_BUDGET = 32 * 1024 * 1024;
+  }
+});
 
-// plugins/dev-flow/src/core/review-projection.ts
-import { createHash as createHash7, randomUUID as randomUUID3 } from "node:crypto";
-import { mkdir as mkdir3, open as open3, readFile as readFile5, rename as rename3 } from "node:fs/promises";
-import path7 from "node:path";
+// plugins/dev-flow/src/core/event-segments.ts
+import { mkdir as mkdir5, open as open5, readFile as readFile7, rename as rename5, writeFile } from "node:fs/promises";
+import path9 from "node:path";
+async function readIndex(root, featureId) {
+  try {
+    const raw = await readFile7(segmentIndexPath(root, featureId), "utf8");
+    return parseFeatureEventSegmentIndex(JSON.parse(raw));
+  } catch (error) {
+    if (error.code === "ENOENT") return { schemaVersion: 1, featureId, entries: [] };
+    throw error;
+  }
+}
+async function readHotRecords(root, featureId, options = {}) {
+  let raw;
+  try {
+    raw = await readFile7(hotPath(root, featureId), "utf8");
+  } catch (error) {
+    if (error.code === "ENOENT") return [];
+    throw error;
+  }
+  const startSequence = options.startSequence ?? 0;
+  return raw.split("\n").filter(Boolean).map((line, index) => {
+    const record = JSON.parse(line);
+    if (typeof record.type !== "string" || typeof record.at !== "string") throw new TypeError("invalid hot event record");
+    return {
+      eventSequence: Number.isInteger(record.eventSequence) ? Number(record.eventSequence) : startSequence + index + 1,
+      revision: Number.isInteger(record.revision) ? Number(record.revision) : 0,
+      type: record.type,
+      at: record.at,
+      data: record.data
+    };
+  });
+}
+async function nextFeatureEventSequence(root, featureId) {
+  const index = await readIndex(root, featureId);
+  const previous = index.entries.at(-1)?.lastSequence ?? 0;
+  const hot = await readHotRecords(root, featureId, { startSequence: previous });
+  return (hot.at(-1)?.eventSequence ?? previous) + 1;
+}
+async function readSegmentedFeatureEvents(root, featureId, options = {}) {
+  const index = await readIndex(root, featureId);
+  const records = [];
+  for (const entry of index.entries) {
+    if (entry.lastSequence <= (options.afterSequence ?? 0)) continue;
+    const bytes = await readEvidenceObject(root, featureId, entry.ref);
+    const segment = parseFeatureEventSegment(JSON.parse(bytes.toString("utf8")));
+    records.push(...segment.records);
+  }
+  const base = records.at(-1)?.eventSequence ?? (options.afterSequence ?? 0);
+  const hot = await readHotRecords(root, featureId, { startSequence: base });
+  records.push(...hot);
+  const filtered = records.filter((record) => record.eventSequence > (options.afterSequence ?? 0));
+  filtered.sort((left, right) => left.eventSequence - right.eventSequence);
+  return { records: filtered, sealedSegments: index.entries.length };
+}
+async function eventSegmentRootRefs(root, featureId) {
+  const index = await readIndex(root, featureId);
+  return index.entries.map((entry) => entry.ref);
+}
+var featureDirectory, hotPath, segmentIndexPath;
+var init_event_segments = __esm({
+  "plugins/dev-flow/src/core/event-segments.ts"() {
+    "use strict";
+    init_stable_json();
+    init_event_segment();
+    init_evidence_store2();
+    featureDirectory = (root, id) => path9.join(root, ".dev-flow", "features", id);
+    hotPath = (root, id) => path9.join(featureDirectory(root, id), "events.jsonl");
+    segmentIndexPath = (root, id) => path9.join(featureDirectory(root, id), "events", "segment-index.json");
+  }
+});
+
+// plugins/dev-flow/src/policy/state-archive.ts
+function isRecord7(value) {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+function parseFeatureStateArchivePointers(value) {
+  if (!isRecord7(value) || value.schemaVersion !== 1 || typeof value.featureId !== "string" || !value.featureId) {
+    throw new TypeError("invalid FeatureState archive pointers");
+  }
+  const parsed = {
+    schemaVersion: 1,
+    featureId: value.featureId,
+    pointer: parseEvidenceStorePointer(value.pointer)
+  };
+  for (const key of ["workspaceLineage", "interactionLedger", "governanceLedger", "verificationLedger", "repairLedger"]) {
+    if (value[key] === void 0) continue;
+    parsed[key] = parseEvidenceObjectRef(value[key]);
+  }
+  return parsed;
+}
+function parseStringRecord(value, label) {
+  if (!isRecord7(value) || Object.values(value).some((item) => typeof item !== "string")) {
+    throw new TypeError(`${label} must be a string map`);
+  }
+  return value;
+}
+function parseWorkspaceLineage(value) {
+  if (!isRecord7(value) || typeof value.baseHead !== "string" || typeof value.baseBranch !== "string" || typeof value.observedHead !== "string" || typeof value.lastWorkspaceFingerprint !== "string" || value.reconciliationStatus !== "current" && value.reconciliationStatus !== "required" && value.reconciliationStatus !== "blocked" || !isRecord7(value.startedDirty) || !isRecord7(value.ownership) || !isRecord7(value.ownershipSource) || !isRecord7(value.observedPathFingerprints) || !Array.isArray(value.observedCommits) || value.unownedPaths !== void 0 && (!Array.isArray(value.unownedPaths) || value.unownedPaths.some((item) => typeof item !== "string"))) {
+    throw new TypeError("invalid workspace lineage archive");
+  }
+  return {
+    baseHead: value.baseHead,
+    baseBranch: value.baseBranch,
+    observedHead: value.observedHead,
+    startedDirty: value.startedDirty,
+    ownership: parseStringRecord(value.ownership, "workspace.ownership"),
+    ownershipSource: parseStringRecord(value.ownershipSource, "workspace.ownershipSource"),
+    observedCommits: value.observedCommits,
+    observedPathFingerprints: parseStringRecord(value.observedPathFingerprints, "workspace.observedPathFingerprints"),
+    lastWorkspaceFingerprint: value.lastWorkspaceFingerprint,
+    reconciliationStatus: value.reconciliationStatus,
+    ...value.unownedPaths ? { unownedPaths: value.unownedPaths } : {}
+  };
+}
+function parseGovernanceLedger(value) {
+  if (!isRecord7(value) || !Array.isArray(value.decisions) || !Array.isArray(value.claims) || !Array.isArray(value.authorizations) || !Array.isArray(value.credentials) || !Array.isArray(value.repositoryFacts)) {
+    throw new TypeError("invalid governance ledger archive");
+  }
+  return {
+    decisions: value.decisions,
+    claims: value.claims,
+    authorizations: value.authorizations,
+    credentials: value.credentials,
+    repositoryFacts: value.repositoryFacts
+  };
+}
+function parseInteractionLedger(value) {
+  if (!isRecord7(value)) throw new TypeError("invalid interaction ledger archive");
+  const parsed = {};
+  for (const [id, item] of Object.entries(value)) {
+    if (!isRecord7(item) || typeof item.id !== "string" || typeof item.status !== "string") {
+      throw new TypeError("invalid interaction ledger entry");
+    }
+    parsed[id] = item;
+  }
+  return parsed;
+}
+function parseAttemptLog(value, label) {
+  if (!Array.isArray(value)) throw new TypeError(`invalid ${label} archive`);
+  return value;
+}
+var init_state_archive = __esm({
+  "plugins/dev-flow/src/policy/state-archive.ts"() {
+    "use strict";
+    init_evidence_store();
+  }
+});
+
+// plugins/dev-flow/src/core/state-archive.ts
+function hasEntries(value) {
+  if (Array.isArray(value)) return value.length > 0;
+  if (value && typeof value === "object") return Object.keys(value).length > 0;
+  return Boolean(value);
+}
+async function archiveLargeStateCollections(root, state) {
+  let pointer = { catalogSha256: "0".repeat(64), objectCount: 0, packCount: 0 };
+  const result = { schemaVersion: 1, featureId: state.featureId, pointer };
+  const put = async (kind, value) => {
+    const stored = await putEvidenceObject(
+      root,
+      state.featureId,
+      kind,
+      Buffer.from(`${stableJson(value)}
+`, "utf8")
+    );
+    pointer = stored.pointer;
+    return stored.ref;
+  };
+  if (hasEntries(state.workspace)) result.workspaceLineage = await put("workspace-lineage", state.workspace);
+  const resolvedInteractions = Object.fromEntries(
+    Object.entries(state.interactions ?? {}).filter(([, interaction]) => interaction.status === "resolved")
+  );
+  if (hasEntries(resolvedInteractions)) result.interactionLedger = await put("interaction-ledger", resolvedInteractions);
+  if (hasEntries(state.governance)) result.governanceLedger = await put("governance-ledger", state.governance);
+  if (hasEntries(state.verification.attempts)) result.verificationLedger = await put("verification-log", state.verification.attempts);
+  const repairAttempts = state.repair?.attempts;
+  if (hasEntries(repairAttempts)) result.repairLedger = await put("repair-log", repairAttempts);
+  result.pointer = pointer;
+  return result;
+}
+async function readArchivedJson(root, featureId, ref) {
+  if (ref === void 0) return void 0;
+  return JSON.parse((await readEvidenceObject(root, featureId, ref)).toString("utf8"));
+}
+async function hydrateFeatureState(root, raw) {
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
+    throw new TypeError("persisted state is invalid");
+  }
+  const persisted = raw;
+  if (typeof persisted.featureId !== "string") throw new TypeError("persisted state featureId is invalid");
+  const featureId = persisted.featureId;
+  if (persisted.archivedCollections === void 0) {
+    throw new TypeError("v6 persisted state is missing archivedCollections");
+  }
+  const pointers = parseFeatureStateArchivePointers(persisted.archivedCollections);
+  if (pointers.featureId !== featureId) throw new TypeError("persisted archive featureId does not match state");
+  const state = { ...persisted, schemaVersion: 6, archivedCollections: pointers };
+  if (pointers.workspaceLineage) {
+    state.workspace = parseWorkspaceLineage(await readArchivedJson(root, featureId, pointers.workspaceLineage));
+  }
+  if (pointers.governanceLedger) {
+    state.governance = parseGovernanceLedger(await readArchivedJson(root, featureId, pointers.governanceLedger));
+  }
+  if (pointers.interactionLedger) {
+    const resolvedInteractions = parseInteractionLedger(await readArchivedJson(root, featureId, pointers.interactionLedger));
+    state.interactions = { ...state.interactions ?? {}, ...resolvedInteractions };
+  }
+  const verificationLedger = pointers.verificationLedger ? parseAttemptLog(await readArchivedJson(root, featureId, pointers.verificationLedger), "verification") : void 0;
+  state.verification = {
+    ...state.verification ?? { attempts: [] },
+    attempts: verificationLedger ? verificationLedger : state.verification?.attempts ?? []
+  };
+  if (pointers.repairLedger) {
+    const repairLedger = parseAttemptLog(await readArchivedJson(root, featureId, pointers.repairLedger), "repair");
+    state.repair = { ...state.repair ?? { status: "completed", maxAttempts: 3 }, attempts: repairLedger };
+  }
+  return state;
+}
+async function persistableFeatureState(root, state) {
+  const pointers = await archiveLargeStateCollections(root, state);
+  const persisted = { ...state, schemaVersion: 6, archivedCollections: pointers };
+  persisted.interactions = Object.fromEntries(Object.entries(state.interactions ?? {}).filter(([, interaction]) => interaction.status === "pending"));
+  persisted.verification = { ...state.verification };
+  delete persisted.verification.attempts;
+  if (state.repair) {
+    persisted.repair = { ...state.repair };
+    delete persisted.repair.attempts;
+  }
+  delete persisted.workspace;
+  delete persisted.governance;
+  return persisted;
+}
+var init_state_archive2 = __esm({
+  "plugins/dev-flow/src/core/state-archive.ts"() {
+    "use strict";
+    init_stable_json();
+    init_state_archive();
+    init_evidence_store2();
+  }
+});
+
+// plugins/dev-flow/src/core/checkpoint-store.ts
+import { readFile as readFile8, readdir as readdir5 } from "node:fs/promises";
+import path10 from "node:path";
+async function readCheckpointManifest(root, featureId, checkpointId) {
+  const file = path10.join(root, ".dev-flow", "features", featureId, "checkpoints", "manifests", `${checkpointId}.json`);
+  let raw;
+  try {
+    raw = await readFile8(file, "utf8");
+  } catch {
+    throw new DevFlowError("CHECKPOINT_NOT_FOUND", "checkpoint manifest does not exist", { checkpointId });
+  }
+  try {
+    const manifest = parseCheckpointManifest(JSON.parse(raw));
+    if (manifest.checkpointId !== checkpointId) {
+      throw new DevFlowError("CHECKPOINT_INTEGRITY_FAILED", "checkpoint manifest id does not match its path", { checkpointId });
+    }
+    return manifest;
+  } catch (error) {
+    if (error instanceof DevFlowError) throw error;
+    if (error instanceof RollbackProtocolError && error.code === "UNSUPPORTED_CHECKPOINT_SCHEMA") {
+      throw new DevFlowError("UNSUPPORTED_CHECKPOINT_SCHEMA", "\u68C0\u6D4B\u5230 Dev Flow 4.x checkpoint manifest schema v1\u3002", {
+        checkpointId,
+        recoveryHint: "\u56DE\u5230 4.x \u5B8C\u6210\u6216\u653E\u5F03\u8BE5 feature\uFF0C\u5907\u4EFD .dev-flow \u540E\u7528 5.0 \u91CD\u65B0\u521D\u59CB\u5316"
+      });
+    }
+    throw new DevFlowError("CHECKPOINT_INTEGRITY_FAILED", "checkpoint manifest is unreadable", { checkpointId });
+  }
+}
+async function checkpointManifestRootRefs(root, featureId) {
+  const directory = path10.join(root, ".dev-flow", "features", featureId, "checkpoints", "manifests");
+  let files;
+  try {
+    files = (await readdir5(directory)).filter((file) => file.endsWith(".json"));
+  } catch (error) {
+    if (error.code === "ENOENT") return [];
+    throw error;
+  }
+  const refs = [];
+  for (const file of files) {
+    const checkpointId = file.slice(0, -".json".length);
+    const manifest = await readCheckpointManifest(root, featureId, checkpointId);
+    for (const ref of Object.values(manifest.blobRefs ?? {})) {
+      if (refs.some((candidate) => candidate.kind === ref.kind && candidate.sha256 === ref.sha256)) continue;
+      refs.push(ref);
+    }
+  }
+  return refs;
+}
+var init_checkpoint_store = __esm({
+  "plugins/dev-flow/src/core/checkpoint-store.ts"() {
+    "use strict";
+    init_rollback();
+    init_errors();
+  }
+});
+
+// plugins/dev-flow/src/policy/review-execution.ts
+function isRecord8(value) {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+function isSha2563(value) {
+  return typeof value === "string" && /^[a-f0-9]{64}$/.test(value);
+}
+function validRole(value) {
+  const roles = [
+    "code-quality",
+    "requirement-fidelity",
+    "requirements-coverage",
+    "architecture-testability",
+    "rollback-operability",
+    "security",
+    "data-irreversibility",
+    "money-safety",
+    "contract-failure",
+    "recovery-observability",
+    "critical-correctness"
+  ];
+  if (typeof value !== "string" || !roles.includes(value)) throw new TypeError("invalid review role");
+  return value;
+}
+function validDate(value) {
+  if (typeof value !== "string" || Number.isNaN(Date.parse(value))) throw new TypeError("invalid review execution date");
+  return value;
+}
+function parseReviewResultEnvelope(value) {
+  if (!isRecord8(value) || value.schemaVersion !== 1 || typeof value.featureId !== "string" || !value.featureId || typeof value.batchId !== "string" || typeof value.jobId !== "string" || !isSha2563(value.packageSha256) || !isSha2563(value.capabilityHash) || typeof value.executionRequestId !== "string" || !value.executionRequestId || !Number.isInteger(value.leaseGeneration) || value.leaseGeneration < 0 || value.source !== "claude-subagent" && value.source !== "server-sampling" || value.host !== "claude" && value.host !== "codex" || value.declarationId !== void 0 && (typeof value.declarationId !== "string" || !value.declarationId) || value.hostEventId !== void 0 && typeof value.hostEventId !== "string" || value.parentContext !== void 0 && typeof value.parentContext !== "string" || value.childContext !== void 0 && typeof value.childContext !== "string" || value.agentId !== void 0 && typeof value.agentId !== "string" || !isSha2563(value.rawResultSha256) || value.parsedCompletionSha256 !== void 0 && !isSha2563(value.parsedCompletionSha256)) {
+    throw new TypeError("invalid review result envelope");
+  }
+  const v = value;
+  return {
+    schemaVersion: 1,
+    featureId: String(v.featureId),
+    batchId: String(v.batchId),
+    jobId: String(v.jobId),
+    role: validRole(v.role),
+    packageSha256: String(v.packageSha256),
+    capabilityHash: String(v.capabilityHash),
+    executionRequestId: String(v.executionRequestId),
+    leaseGeneration: Number(v.leaseGeneration),
+    ...v.declarationId !== void 0 ? { declarationId: String(v.declarationId) } : {},
+    source: v.source,
+    host: v.host,
+    ...v.hostEventId !== void 0 ? { hostEventId: String(v.hostEventId) } : {},
+    ...v.parentContext !== void 0 ? { parentContext: String(v.parentContext) } : {},
+    ...v.childContext !== void 0 ? { childContext: String(v.childContext) } : {},
+    ...v.agentId !== void 0 ? { agentId: String(v.agentId) } : {},
+    startedAt: validDate(v.startedAt),
+    completedAt: validDate(v.completedAt),
+    rawResultSha256: String(v.rawResultSha256),
+    ...v.parsedCompletionSha256 !== void 0 ? { parsedCompletionSha256: String(v.parsedCompletionSha256) } : {},
+    rawResultRef: parseEvidenceObjectRef(v.rawResultRef)
+  };
+}
+function parseReviewExecutionRecord(value) {
+  if (!isRecord8(value) || value.schemaVersion !== 1 || typeof value.featureId !== "string" || !value.featureId || typeof value.batchId !== "string" || typeof value.executionRequestId !== "string" || value.source !== "claude-subagent" && value.source !== "server-sampling" || value.host !== "claude" && value.host !== "codex" || !Number.isInteger(value.generation) || value.generation < 0 || !Array.isArray(value.leases) || !Array.isArray(value.envelopes)) {
+    throw new TypeError("invalid review execution record");
+  }
+  const v = value;
+  const leases = v.leases.map((leaseValue) => {
+    const lease = leaseValue;
+    if (typeof lease.jobId !== "string" || typeof lease.capabilityHash !== "string" || typeof lease.packageSha256 !== "string" || !Number.isInteger(lease.leaseGeneration) || typeof lease.leasedAt !== "string" || typeof lease.leaseExpiresAt !== "string" || lease.state !== "pending" && lease.state !== "leased" && lease.state !== "envelope-captured" && lease.state !== "submitted" || lease.declarationId !== void 0 && typeof lease.declarationId !== "string") {
+      throw new TypeError("invalid review execution lease");
+    }
+    return {
+      jobId: String(lease.jobId),
+      role: validRole(lease.role),
+      capabilityHash: String(lease.capabilityHash),
+      ...lease.declarationId !== void 0 ? { declarationId: String(lease.declarationId) } : {},
+      packageSha256: String(lease.packageSha256),
+      leaseGeneration: Number(lease.leaseGeneration),
+      leasedAt: validDate(lease.leasedAt),
+      leaseExpiresAt: validDate(lease.leaseExpiresAt),
+      state: lease.state
+    };
+  });
+  return {
+    schemaVersion: 1,
+    featureId: String(v.featureId),
+    batchId: String(v.batchId),
+    executionRequestId: String(v.executionRequestId),
+    source: v.source,
+    host: v.host,
+    startedAt: validDate(v.startedAt),
+    leases,
+    envelopes: v.envelopes.map(parseEvidenceObjectRef),
+    generation: Number(v.generation)
+  };
+}
+var init_review_execution = __esm({
+  "plugins/dev-flow/src/policy/review-execution.ts"() {
+    "use strict";
+    init_evidence_store();
+  }
+});
+
+// plugins/dev-flow/src/policy/review-basis.ts
+var allPlanTraceKinds, REVIEW_ROLE_SEMANTIC_SPECS;
+var init_review_basis = __esm({
+  "plugins/dev-flow/src/policy/review-basis.ts"() {
+    "use strict";
+    allPlanTraceKinds = [
+      "requirement",
+      "acceptance-criterion",
+      "task",
+      "test",
+      "implementation-unit",
+      "recovery"
+    ];
+    REVIEW_ROLE_SEMANTIC_SPECS = {
+      "requirements-coverage": {
+        phase: "plan",
+        artifactKinds: ["requirements", "implementation-plan"],
+        traceKinds: ["requirement", "acceptance-criterion", "task", "test", "implementation-unit"],
+        bindReferencedCommandHashes: false,
+        bindNonBehaviorDispositions: true,
+        bindFeatureOwnedContent: false
+      },
+      "architecture-testability": {
+        phase: "plan",
+        artifactKinds: ["implementation-plan"],
+        traceKinds: ["task", "test", "implementation-unit"],
+        bindReferencedCommandHashes: true,
+        bindNonBehaviorDispositions: false,
+        bindFeatureOwnedContent: false
+      },
+      "rollback-operability": {
+        phase: "plan",
+        artifactKinds: ["implementation-plan"],
+        traceKinds: ["task", "implementation-unit", "recovery"],
+        bindReferencedCommandHashes: true,
+        bindNonBehaviorDispositions: false,
+        bindFeatureOwnedContent: false
+      },
+      security: {
+        phase: "plan",
+        artifactKinds: [],
+        traceKinds: allPlanTraceKinds,
+        riskLabels: ["security"],
+        bindReferencedCommandHashes: false,
+        bindNonBehaviorDispositions: false,
+        bindFeatureOwnedContent: false
+      },
+      "data-irreversibility": {
+        phase: "plan",
+        artifactKinds: [],
+        traceKinds: allPlanTraceKinds,
+        riskLabels: ["data", "irreversible_consequence"],
+        bindReferencedCommandHashes: false,
+        bindNonBehaviorDispositions: false,
+        bindFeatureOwnedContent: false
+      },
+      "money-safety": {
+        phase: "plan",
+        artifactKinds: [],
+        traceKinds: allPlanTraceKinds,
+        riskLabels: ["money"],
+        bindReferencedCommandHashes: false,
+        bindNonBehaviorDispositions: false,
+        bindFeatureOwnedContent: false
+      },
+      "contract-failure": {
+        phase: "plan",
+        artifactKinds: [],
+        traceKinds: allPlanTraceKinds,
+        riskLabels: ["external"],
+        bindReferencedCommandHashes: false,
+        bindNonBehaviorDispositions: false,
+        bindFeatureOwnedContent: false
+      },
+      "recovery-observability": {
+        phase: "plan",
+        artifactKinds: [],
+        traceKinds: allPlanTraceKinds,
+        riskLabels: ["availability"],
+        bindReferencedCommandHashes: false,
+        bindNonBehaviorDispositions: false,
+        bindFeatureOwnedContent: false
+      },
+      "critical-correctness": {
+        phase: "plan",
+        artifactKinds: [],
+        traceKinds: allPlanTraceKinds,
+        riskLabels: ["critical_correctness"],
+        bindReferencedCommandHashes: false,
+        bindNonBehaviorDispositions: false,
+        bindFeatureOwnedContent: false
+      },
+      "code-quality": {
+        phase: "code",
+        artifactKinds: ["requirements", "implementation-plan"],
+        traceKinds: allPlanTraceKinds,
+        bindReferencedCommandHashes: false,
+        bindNonBehaviorDispositions: false,
+        bindFeatureOwnedContent: true
+      },
+      "requirement-fidelity": {
+        phase: "code",
+        artifactKinds: ["requirements", "implementation-plan"],
+        traceKinds: allPlanTraceKinds,
+        bindReferencedCommandHashes: false,
+        bindNonBehaviorDispositions: false,
+        bindFeatureOwnedContent: true
+      }
+    };
+  }
+});
+
+// plugins/dev-flow/src/core/artifact-templates.ts
+var init_artifact_templates = __esm({
+  "plugins/dev-flow/src/core/artifact-templates.ts"() {
+    "use strict";
+  }
+});
+
+// plugins/dev-flow/src/core/approval-basis.ts
+function approvalIds(state) {
+  return (state.obligations ?? []).filter((obligation) => obligation.kind === "approval").map((obligation) => obligation.id);
+}
+function confirmedApproval(state) {
+  for (const approvalId of approvalIds(state)) {
+    const record = state.humanGates[approvalId];
+    if (record?.status === "confirmed") return { approvalId, record };
+  }
+  return void 0;
+}
+var approvalBasisArtifacts;
+var init_approval_basis = __esm({
+  "plugins/dev-flow/src/core/approval-basis.ts"() {
+    "use strict";
+    approvalBasisArtifacts = [
+      "requirements",
+      "implementation-plan"
+    ];
+  }
+});
+
+// plugins/dev-flow/src/core/plan-compiler.ts
+var init_plan_compiler = __esm({
+  "plugins/dev-flow/src/core/plan-compiler.ts"() {
+    "use strict";
+    init_traceability();
+    init_errors();
+  }
+});
+
+// plugins/dev-flow/src/core/traceability-markdown.ts
+var init_traceability_markdown = __esm({
+  "plugins/dev-flow/src/core/traceability-markdown.ts"() {
+    "use strict";
+    init_traceability();
+  }
+});
+
+// plugins/dev-flow/src/core/plan-compile-context.ts
+var init_plan_compile_context = __esm({
+  "plugins/dev-flow/src/core/plan-compile-context.ts"() {
+    "use strict";
+    init_stable_json();
+    init_errors();
+    init_plan_compiler();
+    init_path_normalization();
+    init_project_config();
+    init_state_store();
+    init_traceability_anchors();
+    init_traceability_markdown();
+    init_traceability_store();
+  }
+});
+
+// plugins/dev-flow/src/core/text-normalization.ts
+var init_text_normalization = __esm({
+  "plugins/dev-flow/src/core/text-normalization.ts"() {
+    "use strict";
+  }
+});
+
+// plugins/dev-flow/src/core/decision-language.ts
+var init_decision_language = __esm({
+  "plugins/dev-flow/src/core/decision-language.ts"() {
+    "use strict";
+    init_text_normalization();
+  }
+});
+
+// plugins/dev-flow/src/core/grill-interaction.ts
+function invalid3(message) {
+  throw new DevFlowError("GRILL_PRESENTATION_INVALID", message, {
+    userMessage: "\u5F53\u524D grill \u95EE\u9898\u4E0D\u7B26\u5408\u4EA4\u4E92\u5408\u540C\u3002",
+    recoveryKind: "repair",
+    recoveryInstruction: "\u63D0\u4F9B 2-3 \u4E2A\u5E26\u8BF4\u660E\u7684\u9009\u9879\uFF0C\u5E76\u660E\u786E\u4E00\u4E2A\u63A8\u8350\u9879\u53CA\u63A8\u8350\u7406\u7531\u3002",
+    retryOriginal: false
+  });
+}
+function buildGrillPresentation(input) {
+  const question = input.question.trim();
+  if (!question) invalid3("question must not be empty");
+  if (!Array.isArray(input.options) || input.options.length < 2 || input.options.length > 3) {
+    invalid3("grill must contain 2-3 options");
+  }
+  if (input.options.some((option) => option.id === "other" || !option.description?.trim())) {
+    invalid3("grill options require descriptions and cannot use the reserved other id");
+  }
+  const reason = input.recommendation.reason.trim();
+  if (!reason) invalid3("recommendation reason must not be empty");
+  const recommendedIndex = input.options.findIndex((option) => option.id === input.recommendation.optionId);
+  if (recommendedIndex < 0) invalid3("recommendation must reference one current option");
+  const drawback = input.recommendation.drawback?.trim();
+  const alternative = input.recommendation.alternative;
+  const hasReminder = drawback !== void 0 || alternative !== void 0;
+  if (hasReminder) {
+    if (!drawback || !alternative || !alternative.condition.trim()) {
+      invalid3("high-impact recommendation requires both a drawback and an alternative condition");
+    }
+    if (alternative.optionId === input.recommendation.optionId) {
+      invalid3("alternative must reference a non-recommended option");
+    }
+    const alternativeIndex = input.options.findIndex((option) => option.id === alternative.optionId);
+    if (alternativeIndex < 0) invalid3("alternative must reference one current option");
+  }
+  const options = input.options.map((option, index) => ({
+    ...option,
+    answerCode: answerCodes[index],
+    recommended: index === recommendedIndex
+  }));
+  const lines = [question];
+  for (const option of options) {
+    lines.push("");
+    lines.push(`${option.answerCode}. ${option.label}${option.recommended ? "\uFF08\u63A8\u8350\uFF09" : ""}`);
+    lines.push(`   ${option.recommended ? reason : option.description.trim()}`);
+  }
+  if (hasReminder) {
+    const alternativeOption = options.find((option) => option.id === alternative.optionId);
+    lines.push("");
+    lines.push(`\u63D0\u9192\uFF1A\u63A8\u8350\u65B9\u6848\u7684\u4E3B\u8981\u7F3A\u70B9\u662F ${drawback}\u3002`);
+    lines.push(`\u5982\u679C ${alternative.condition.trim()}\uFF0C\u9009\u9879 ${alternativeOption.answerCode}\uFF08${alternativeOption.label}\uFF09\u53EF\u80FD\u66F4\u5408\u9002\u3002`);
+  }
+  lines.push("");
+  const codes = options.map((option) => option.answerCode);
+  lines.push(`\u8BF7\u56DE\u590D ${codes.slice(0, -1).join("\u3001")} \u6216 ${codes.at(-1)}\u3002`);
+  lines.push("\u5982\u679C\u90FD\u4E0D\u5408\u9002\uFF0C\u8BF7\u56DE\u590D\u201C\u5176\u4ED6\uFF1A<\u4F60\u7684\u65B9\u6848\u548C\u7406\u7531>\u201D\u3002");
+  return {
+    question,
+    options,
+    recommendation: { optionId: input.recommendation.optionId, reason },
+    text: lines.join("\n")
+  };
+}
+var answerCodes;
+var init_grill_interaction = __esm({
+  "plugins/dev-flow/src/core/grill-interaction.ts"() {
+    "use strict";
+    init_errors();
+    answerCodes = ["A", "B", "C"];
+  }
+});
+
+// plugins/dev-flow/src/core/user-interactions.ts
+import { randomUUID as randomUUID5 } from "node:crypto";
+function interactions(state) {
+  if (!state.interactions) state.interactions = {};
+  return state.interactions;
+}
+function validateOptions(options) {
+  if (!Array.isArray(options) || options.length < 2 || options.length > 3) {
+    throw new DevFlowError("INTERACTION_OPTIONS_INVALID", "\u6BCF\u4E2A\u7528\u6237\u95EE\u9898\u5FC5\u987B\u53EA\u6709 2-3 \u4E2A\u9009\u9879\u3002", { userMessage: "\u5F53\u524D\u95EE\u9898\u7684\u9009\u9879\u6570\u91CF\u4E0D\u7B26\u5408\u4EA4\u4E92\u5408\u540C\u3002", recoveryKind: "repair", recoveryInstruction: "\u5C06\u9009\u9879\u6536\u655B\u4E3A 2-3 \u4E2A\u7B80\u660E\u9009\u62E9\uFF0C\u5E76\u4FDD\u7559\u4E00\u4E2A\u63A8\u8350\u7B54\u6848\u3002", retryOriginal: false });
+  }
+  const seen = /* @__PURE__ */ new Set();
+  const seenLabels = /* @__PURE__ */ new Set();
+  const invalidIds = [];
+  const duplicateLabels = [];
+  for (const option of options) {
+    if (!option || !/^[a-z][a-z0-9-]{0,63}$/.test(option.id)) invalidIds.push(option?.id ?? "<missing>");
+    const normalizedLabel = option?.label?.trim() ?? "";
+    if (!option || !normalizedLabel || seen.has(option.id)) {
+      throw new DevFlowError("INTERACTION_OPTIONS_INVALID", "option ids must be unique lowercase action ids with labels", {
+        pattern: "^[a-z][a-z0-9-]{0,63}$",
+        examples: ["document-only", "inject-signal"],
+        invalidIds,
+        guidance: "A/B \u662F Core \u5206\u914D\u7684 answerCode\uFF0C\u4E0D\u662F\u8F93\u5165 option id\u3002",
+        recoveryHint: "\u4E3A\u6BCF\u4E2A\u9009\u9879\u63D0\u4F9B\u552F\u4E00\u7684\u3001\u5339\u914D\u4E0A\u8FF0\u6B63\u5219\u7684 action id \u4E0E\u975E\u7A7A label\u3002"
+      });
+    }
+    if (seenLabels.has(normalizedLabel)) duplicateLabels.push(option.label.trim());
+    seen.add(option.id);
+    seenLabels.add(normalizedLabel);
+  }
+  if (duplicateLabels.length > 0) {
+    throw new DevFlowError("INTERACTION_OPTIONS_INVALID", "option labels must be unique after trimming", {
+      duplicateLabels,
+      recoveryHint: "\u4E3A\u6BCF\u4E2A\u9009\u9879\u63D0\u4F9B\u53EF\u533A\u5206\u3001\u53BB\u7A7A\u683C\u540E\u4E92\u4E0D\u76F8\u540C\u7684 label\uFF0C\u907F\u514D\u56DE\u7B54\u5339\u914D\u6B67\u4E49\u3002"
+    });
+  }
+}
+function createInteraction(state, input) {
+  validateOptions(input.options);
+  if (input.kind === "grill") {
+    if (!input.recommendation) throw new DevFlowError("GRILL_RECOMMENDATION_REQUIRED", "grill requires one explicit recommendation");
+    buildGrillPresentation({ question: input.question ?? "", options: input.options, recommendation: input.recommendation });
+  }
+  const pending = Object.values(state.interactions ?? {}).filter((value) => value.status === "pending");
+  if (pending.length) throw new DevFlowError("MULTIPLE_PENDING_DECISIONS", "\u540C\u4E00 feature \u53EA\u80FD\u5B58\u5728\u4E00\u4E2A\u5F85\u51B3\u95EE\u9898\u3002", { userMessage: "\u5F53\u524D\u5DF2\u6709\u4E00\u4E2A\u95EE\u9898\u7B49\u5F85\u56DE\u7B54\u3002", cause: "\u7CFB\u7EDF\u62D2\u7EDD\u5E76\u884C\u521B\u5EFA\u7B2C\u4E8C\u4E2A pending decision\u3002", impact: "\u65B0\u95EE\u9898\u6CA1\u6709\u88AB\u521B\u5EFA\uFF0C\u539F\u95EE\u9898\u4ECD\u7B49\u5F85\u56DE\u7B54\u3002", recoveryKind: "refresh", recoveryInstruction: "\u5148\u56DE\u7B54\u5F53\u524D\u95EE\u9898\uFF0C\u4E0B\u4E00\u56DE\u5408\u518D\u5904\u7406\u65B0\u95EE\u9898\u3002", retryOriginal: false });
+  const current = findInteractionForTarget(state, input.target);
+  if (current?.status === "pending") {
+    throw new DevFlowError("INTERACTION_ALREADY_PENDING", input.target, { interactionId: current.id });
+  }
+  const interaction = {
+    id: randomUUID5(),
+    kind: input.kind,
+    target: input.target,
+    basisHash: input.basisHash,
+    ...input.binding ? {
+      binding: {
+        batchId: input.binding.batchId,
+        findingIds: [...input.binding.findingIds],
+        findingSetHash: input.binding.findingSetHash
+      }
+    } : {},
+    question: input.question,
+    options: input.options.map((option) => ({ ...option })),
+    ...input.recommendation ? { recommendation: { ...input.recommendation } } : {},
+    presentedAt: (/* @__PURE__ */ new Date()).toISOString(),
+    presentedRevision: state.revision,
+    ...input.presentationEventSequence !== void 0 ? { presentationEventSequence: input.presentationEventSequence } : {},
+    presentationEventId: input.presentationEventId ?? randomUUID5(),
+    ...input.workspacePaths ? { workspacePaths: [...input.workspacePaths] } : {},
+    ...input.workspaceBatchPaths ? { workspaceBatchPaths: [...input.workspaceBatchPaths] } : {},
+    ...input.workspaceRemainingPaths ? { workspaceRemainingPaths: [...input.workspaceRemainingPaths] } : {},
+    ...input.ratification ? { ratification: { ...input.ratification, factRefs: [...input.ratification.factRefs] } } : {},
+    ...input.revision ? { revision: { ...input.revision, affected: [...input.revision.affected] } } : {},
+    ...input.planRevision ? { planRevision: { ...input.planRevision, affectedUnits: [...input.planRevision.affectedUnits], redoUnits: [...input.planRevision.redoUnits], sideEffectUnits: [...input.planRevision.sideEffectUnits] } } : {},
+    ...input.planRevisionBasis ? { planRevisionBasis: { ...input.planRevisionBasis } } : {},
+    ...input.planRevisionProposal ? { planRevisionProposal: { ...input.planRevisionProposal } } : {},
+    ...input.sideEffectRerun ? { sideEffectRerun: { units: [...input.sideEffectRerun.units] } } : {},
+    ...input.acceptanceConfirmation ? { acceptanceConfirmation: { ...input.acceptanceConfirmation, acceptanceCriterionIds: [...input.acceptanceConfirmation.acceptanceCriterionIds] } } : {},
+    status: "pending"
+  };
+  interactions(state)[interaction.id] = interaction;
+  return interaction;
+}
+function findInteractionForTarget(state, target) {
+  return Object.values(state.interactions ?? {}).find(
+    (interaction) => interaction.target === target && interaction.status === "pending"
+  );
+}
+var init_user_interactions = __esm({
+  "plugins/dev-flow/src/core/user-interactions.ts"() {
+    "use strict";
+    init_decision_language();
+    init_errors();
+    init_grill_interaction();
+    init_text_normalization();
+  }
+});
+
+// plugins/dev-flow/src/policy/rollback-warnings.ts
+var init_rollback_warnings = __esm({
+  "plugins/dev-flow/src/policy/rollback-warnings.ts"() {
+    "use strict";
+  }
+});
+
+// plugins/dev-flow/src/core/plan-graph.ts
+function parsePlanBlocks(markdown) {
+  TRACE_ANCHOR2.lastIndex = 0;
+  const anchors = [];
+  let match;
+  while ((match = TRACE_ANCHOR2.exec(markdown)) !== null) {
+    const [, prefix, suffix, kind] = match;
+    anchors.push({ id: `${prefix}-${suffix}`, kind, index: match.index });
+  }
+  const blocks = /* @__PURE__ */ new Map();
+  for (let index = 0; index < anchors.length; index += 1) {
+    const anchor = anchors[index];
+    const end = anchors[index + 1]?.index ?? markdown.length;
+    blocks.set(anchor.id, { kind: anchor.kind, text: markdown.slice(anchor.index, end) });
+  }
+  return blocks;
+}
+var TRACE_ANCHOR2;
+var init_plan_graph = __esm({
+  "plugins/dev-flow/src/core/plan-graph.ts"() {
+    "use strict";
+    TRACE_ANCHOR2 = /<!-- dev-flow:id=(REQ|AC|TASK|TEST|UNIT)-([0-9]{3,}) kind=(requirement|acceptance-criterion|task|test|implementation-unit) -->/g;
+  }
+});
+
+// plugins/dev-flow/src/core/artifacts.ts
+import { createHash as createHash8 } from "node:crypto";
+import { readFile as readFile9, writeFile as writeFile2 } from "node:fs/promises";
+import path11 from "node:path";
+async function assertArtifactCurrent(root, id, state, kind) {
+  const artifact = state.artifacts[kind];
+  if (!artifact) throw new DevFlowError("MISSING_REQUIRED_ARTIFACT", kind);
+  const contents = await readFile9(path11.join(featureDirectory2(root, id), normalizeUnicode(artifact.path)), "utf8");
+  if (hash(contents) !== artifact.sha256) throw new DevFlowError("ARTIFACT_INTEGRITY_FAILED", kind);
+  return contents;
+}
+var hash, featureDirectory2;
+var init_artifacts = __esm({
+  "plugins/dev-flow/src/core/artifacts.ts"() {
+    "use strict";
+    init_contract2();
+    init_artifact_templates();
+    init_errors();
+    init_approval_basis();
+    init_state_store();
+    init_step_order();
+    init_plan_compile_context();
+    init_traceability_store();
+    init_user_interactions();
+    init_review_store();
+    init_obligations();
+    init_path_normalization();
+    init_rollback_warnings();
+    init_plan_graph();
+    init_project_config();
+    hash = (value) => createHash8("sha256").update(value).digest("hex");
+    featureDirectory2 = (root, id) => path11.join(root, ".dev-flow", "features", id);
+  }
+});
 
 // plugins/dev-flow/src/core/review-findings.ts
 function eventsFor(ledger, findingId) {
@@ -1474,16 +3248,25 @@ function unresolvedBlockingFindings(ledger, currentBasisHash) {
   const ids = new Set((ledger.findingEvents ?? []).filter((event) => event.type === "origin" && event.finding.severity === "blocking").map((event) => event.finding.findingId));
   return [...ids].map((findingId) => effectiveFindingState(ledger, findingId, currentBasisHash)).filter((state) => Boolean(state?.blocking)).map((state) => state.origin.finding);
 }
+var init_review_findings = __esm({
+  "plugins/dev-flow/src/core/review-findings.ts"() {
+    "use strict";
+  }
+});
 
 // plugins/dev-flow/src/core/review-projection.ts
-var digest3 = (contents) => createHash7("sha256").update(contents).digest("hex");
+import { createHash as createHash9, randomUUID as randomUUID6 } from "node:crypto";
+import { mkdir as mkdir6, open as open6, readFile as readFile10, rename as rename6 } from "node:fs/promises";
+import path12 from "node:path";
 function projectionError(message, details = {}) {
   throw new DevFlowError("REVIEW_PROJECTION_INVALID", message, details);
 }
-function currentBatch(ledger) {
-  const batches = ledger.batches.filter((batch) => batch.validity === "current");
-  if (batches.length > 1) projectionError("review ledger has more than one current batch");
-  return batches[0];
+function currentBatch(ledger, state) {
+  const current = ledger.batches.filter((batch) => batch.validity === "current");
+  if (current.length === 0) return void 0;
+  if (current.length === 1) return current[0];
+  const phase = currentOpenStep(state) === "code_review" ? "code" : "plan";
+  return current.find((batch) => (batch.phase ?? "plan") === phase) ?? current[0];
 }
 function publicJob(job) {
   return { jobId: job.jobId, role: job.role, reviewDepth: job.reviewDepth, status: job.status };
@@ -1523,14 +3306,27 @@ function supersededReusedFindingIds(ledger, batch) {
   return [...ids].sort();
 }
 function reviewProjectionModel(state, ledger) {
-  const batch = currentBatch(ledger);
+  const batch = currentBatch(ledger, state);
+  function phaseBatch(ledger2, phase) {
+    return ledger2.batches.find((batch2) => batch2.validity === "current" && (batch2.phase ?? "plan") === phase);
+  }
+  function phaseSummary(state2, ledger2, phase, batch2) {
+    const requiredRoles2 = batch2 ? batch2.jobs.map((job) => ({ role: job.role, reviewDepth: job.reviewDepth })) : deriveReviewJobRequirements(state2.route, state2.classification.riskLabels, state2.classification.controls.reviewRoles, phase).map((requirement) => ({ role: requirement.role, reviewDepth: requirement.reviewDepth }));
+    return {
+      status: batch2 ? batch2.validity : "not-created",
+      ...batch2 ? { batchId: batch2.batchId, basisHash: batch2.basisHash, progress: batch2.progress, executionMode: batch2.executionMode } : {},
+      requiredRoles: requiredRoles2,
+      jobs: batch2 ? batch2.jobs.map(publicJob) : [],
+      visibility: batch2?.progress === "complete" ? "complete" : "coarse"
+    };
+  }
   const staleBatches = ledger.batches.filter((candidate) => candidate.validity === "stale").map((candidate) => ({ batchId: candidate.batchId, basisHash: candidate.basisHash, progress: candidate.progress }));
   const requiredRoles = batch ? batch.jobs.map((job) => ({ role: job.role, reviewDepth: job.reviewDepth })) : deriveReviewJobRequirements(state.route, state.classification.riskLabels).map((requirement) => ({ role: requirement.role, reviewDepth: requirement.reviewDepth }));
   const complete = batch?.progress === "complete";
   const findings = complete ? batch.jobs.flatMap((job) => job.submission?.findings ?? []).map(publicFinding) : void 0;
   const supersededFindingIds = complete ? supersededReusedFindingIds(ledger, batch) : void 0;
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
     featureId: state.featureId,
     route: state.route,
     reviewPointer: {
@@ -1561,6 +3357,10 @@ function reviewProjectionModel(state, ledger) {
         unresolvedBlockingFindingIds: unresolvedBlockingFindingIds(ledger)
       } : {}
     },
+    phases: {
+      plan: phaseSummary(state, ledger, "plan", phaseBatch(ledger, "plan")),
+      code: phaseSummary(state, ledger, "code", phaseBatch(ledger, "code"))
+    },
     staleBatches
   };
 }
@@ -1569,7 +3369,7 @@ function renderReviewProjection(model) {
   const lines = [
     "---",
     "dev_flow:",
-    "  schema_version: 1",
+    "  schema_version: 2",
     `  feature_id: ${model.featureId}`,
     `  route: ${model.route}`,
     "  kind: plan-review",
@@ -1583,6 +3383,8 @@ function renderReviewProjection(model) {
     `- Pointer: ${model.reviewPointer.path}`,
     `- Revision: ${model.reviewPointer.revision}`,
     `- Batch status: ${batch.status}`,
+    `- Plan phase: ${model.phases.plan.status}${model.phases.plan.batchId ? ` (${model.phases.plan.batchId}, ${model.phases.plan.progress ?? "unknown"})` : ""}`,
+    `- Code phase: ${model.phases.code.status}${model.phases.code.batchId ? ` (${model.phases.code.batchId}, ${model.phases.code.progress ?? "unknown"})` : ""}`,
     `- Evidence type: ${model.assurance.evidenceType}`,
     ...model.assurance.level ? [`- Assurance: ${model.assurance.level}`] : [],
     ...model.assurance.evidenceSources.length ? [`- Evidence sources: ${model.assurance.evidenceSources.join(", ")}`] : [],
@@ -1635,10 +3437,10 @@ function renderReviewProjection(model) {
 `;
 }
 function projectionDirectory(root, featureId) {
-  return path7.join(root, ".dev-flow", "features", featureId, "review", "projections");
+  return path12.join(root, ".dev-flow", "features", featureId, "review", "projections");
 }
-async function fsyncDirectory(directory) {
-  const handle = await open3(directory, "r");
+async function fsyncDirectory3(directory) {
+  const handle = await open6(directory, "r");
   try {
     await handle.sync();
   } finally {
@@ -1646,17 +3448,17 @@ async function fsyncDirectory(directory) {
   }
 }
 async function writeProjection(root, featureId, markdown) {
-  const sha256 = digest3(markdown);
+  const sha2564 = digest4(markdown);
   const directory = projectionDirectory(root, featureId);
-  const target = path7.join(directory, `${sha256}.md`);
-  await mkdir3(directory, { recursive: true });
+  const target = path12.join(directory, `${sha2564}.md`);
+  await mkdir6(directory, { recursive: true });
   try {
-    const existing = await readFile5(target, "utf8");
+    const existing = await readFile10(target, "utf8");
     if (existing !== markdown) projectionError("existing review projection does not match its content address");
   } catch (error) {
     if (error.code !== "ENOENT") throw error;
-    const temporary = path7.join(directory, `.${sha256}.${randomUUID3()}.tmp`);
-    const handle = await open3(temporary, "wx");
+    const temporary = path12.join(directory, `.${sha2564}.${randomUUID6()}.tmp`);
+    const handle = await open6(temporary, "wx");
     try {
       await handle.writeFile(markdown);
       await handle.sync();
@@ -1664,14 +3466,14 @@ async function writeProjection(root, featureId, markdown) {
       await handle.close();
     }
     try {
-      await rename3(temporary, target);
+      await rename6(temporary, target);
     } catch (renameError) {
       if (renameError.code !== "EEXIST") throw renameError;
-      if (await readFile5(target, "utf8") !== markdown) projectionError("concurrent review projection does not match its content address");
+      if (await readFile10(target, "utf8") !== markdown) projectionError("concurrent review projection does not match its content address");
     }
-    await fsyncDirectory(directory);
+    await fsyncDirectory3(directory);
   }
-  return { path: `review/projections/${sha256}.md`, sha256 };
+  return { path: `review/projections/${sha2564}.md`, sha256: sha2564 };
 }
 async function prepareReviewProjection(root, state) {
   if (state.mode !== "routed" || !state.route || !state.classification) return;
@@ -1692,11 +3494,11 @@ async function readReviewProjection(root, state) {
   if (!validProjectionArtifact(artifact)) projectionError("review projection artifact pointer is missing or invalid", { featureId: state.featureId });
   let markdown;
   try {
-    markdown = await readFile5(path7.join(root, ".dev-flow", "features", state.featureId, artifact.path), "utf8");
+    markdown = await readFile10(path12.join(root, ".dev-flow", "features", state.featureId, artifact.path), "utf8");
   } catch {
     projectionError("review projection artifact cannot be read", { featureId: state.featureId, path: artifact.path });
   }
-  if (digest3(markdown) !== artifact.sha256) projectionError("review projection digest does not match artifact pointer", { featureId: state.featureId });
+  if (digest4(markdown) !== artifact.sha256) projectionError("review projection digest does not match artifact pointer", { featureId: state.featureId });
   const ledger = await readReviewLedger(root, state);
   const model = reviewProjectionModel(state, ledger);
   const expected = renderReviewProjection(model);
@@ -1706,14 +3508,820 @@ async function readReviewProjection(root, state) {
 async function assertCurrentReviewProjection(root, state) {
   await readReviewProjection(root, state);
 }
+var digest4;
+var init_review_projection = __esm({
+  "plugins/dev-flow/src/core/review-projection.ts"() {
+    "use strict";
+    init_contract2();
+    init_review();
+    init_errors();
+    init_review_store();
+    init_step_order();
+    init_review_findings();
+    digest4 = (contents) => createHash9("sha256").update(contents).digest("hex");
+  }
+});
+
+// plugins/dev-flow/src/policy/evidence-baseline.ts
+function isRecord9(value) {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+function isSha2564(value) {
+  return typeof value === "string" && /^[a-f0-9]{64}$/.test(value);
+}
+function parseEvidenceBaselineManifest(value) {
+  if (!isRecord9(value) || value.schemaVersion !== 1 || typeof value.featureId !== "string" || !value.featureId || typeof value.capturedAt !== "string" || Number.isNaN(Date.parse(value.capturedAt)) || !isSha2564(value.contentFingerprint) || !isSha2564(value.governedScopeHash) || !isSha2564(value.ownershipHash) || !isSha2564(value.planExecutionBasisHash) || !Array.isArray(value.checkpointIds) || value.checkpointIds.some((id) => typeof id !== "string") || !Array.isArray(value.fileToUnits) || !isRecord9(value.snapshotRef) || !isRecord9(value.origin) || value.origin.kind !== "review-complete" && value.origin.kind !== "verification-current" && value.origin.kind !== "risk-acceptance" || typeof value.origin.target !== "string" || typeof value.origin.recordId !== "string" || typeof value.origin.at !== "string") {
+    throw new TypeError("invalid evidence baseline manifest");
+  }
+  const fileToUnits = value.fileToUnits.map((mapping) => {
+    if (!isRecord9(mapping) || typeof mapping.path !== "string" || !mapping.path || !Array.isArray(mapping.unitIds) || mapping.unitIds.some((id) => typeof id !== "string")) {
+      throw new TypeError("invalid evidence baseline file-unit mapping");
+    }
+    return { path: mapping.path, unitIds: [...new Set(mapping.unitIds)].sort() };
+  });
+  return {
+    schemaVersion: 1,
+    featureId: String(value.featureId),
+    capturedAt: String(value.capturedAt),
+    contentFingerprint: String(value.contentFingerprint),
+    governedScopeHash: String(value.governedScopeHash),
+    ownershipHash: String(value.ownershipHash),
+    planExecutionBasisHash: String(value.planExecutionBasisHash),
+    checkpointIds: [...new Set(value.checkpointIds)].sort(),
+    fileToUnits,
+    snapshotRef: parseEvidenceObjectRef(value.snapshotRef),
+    origin: {
+      kind: value.origin.kind,
+      target: String(value.origin.target),
+      recordId: String(value.origin.recordId),
+      at: String(value.origin.at)
+    }
+  };
+}
+var init_evidence_baseline = __esm({
+  "plugins/dev-flow/src/policy/evidence-baseline.ts"() {
+    "use strict";
+    init_evidence_store();
+  }
+});
+
+// plugins/dev-flow/src/core/workspace-snapshot.ts
+var init_workspace_snapshot = __esm({
+  "plugins/dev-flow/src/core/workspace-snapshot.ts"() {
+    "use strict";
+    init_stable_json();
+    init_evidence_store();
+    init_evidence_store2();
+    init_fingerprint();
+  }
+});
+
+// plugins/dev-flow/src/core/evidence-baseline.ts
+import { createHash as createHash10 } from "node:crypto";
+function featureOwnedSnapshotHash(files, ownership) {
+  return sha2562(stableJson({ files: files.filter((file) => ownership[file.path] === "feature") }));
+}
+var sha2562;
+var init_evidence_baseline2 = __esm({
+  "plugins/dev-flow/src/core/evidence-baseline.ts"() {
+    "use strict";
+    init_stable_json();
+    init_evidence_baseline();
+    init_evidence_store2();
+    init_checkpoint_store();
+    init_workspace_snapshot();
+    sha2562 = (value) => createHash10("sha256").update(value).digest("hex");
+  }
+});
+
+// plugins/dev-flow/src/core/basis-state.ts
+function basisIsCurrent(basis, current) {
+  switch (basis.kind) {
+    case "content":
+      return current.contentFingerprint !== void 0 && basis.sha256 === current.contentFingerprint;
+    case "event":
+      return current.eventIds?.has(basis.eventId) ?? false;
+    case "slice": {
+      return current.sliceBases?.[basis.sliceKey] === basis.sliceHash;
+    }
+  }
+}
+function deriveCurrency(record, current) {
+  const basis = record.basis;
+  if (!basis) return "unconfirmed";
+  if (!basisIsCurrent(basis, current)) return currentKnown(basis, current) ? "stale" : "unconfirmed";
+  return "current";
+}
+function currentKnown(basis, current) {
+  switch (basis.kind) {
+    case "content":
+      return current.contentFingerprint !== void 0;
+    case "event":
+      return basis.eventId !== void 0;
+    case "slice":
+      return current.sliceBases?.[basis.sliceKey] !== void 0;
+  }
+}
+var init_basis_state = __esm({
+  "plugins/dev-flow/src/core/basis-state.ts"() {
+    "use strict";
+  }
+});
+
+// plugins/dev-flow/src/core/governance-state.ts
+function governanceLedger(state) {
+  return state.governance ?? EMPTY_GOVERNANCE_LEDGER;
+}
+function currentRiskAuthorizations(state, basis) {
+  return governanceLedger(state).authorizations.filter((authorization) => authorization.authorizationType === "risk-acceptance" && deriveCurrency(authorization, basis) === "current");
+}
+var init_governance_state = __esm({
+  "plugins/dev-flow/src/core/governance-state.ts"() {
+    "use strict";
+    init_basis_state();
+    init_governance_records();
+  }
+});
+
+// plugins/dev-flow/src/core/quality-exceptions.ts
+function hasCurrentQualityException(state, kind) {
+  const invalidatedAt = state.lastInvalidation?.at ? Date.parse(state.lastInvalidation.at) : Number.NaN;
+  const authorization = currentRiskAuthorizations(state, { contentFingerprint: state.businessFingerprint }).some((item) => item.target === kind && (!Number.isFinite(invalidatedAt) || !item.recordedAt || Date.parse(item.recordedAt) >= invalidatedAt));
+  return authorization;
+}
+var init_quality_exceptions = __esm({
+  "plugins/dev-flow/src/core/quality-exceptions.ts"() {
+    "use strict";
+    init_errors();
+    init_state_store();
+    init_evidence_baseline2();
+    init_fingerprint();
+    init_governance_records();
+    init_user_interactions();
+    init_obligations();
+    init_governance_state();
+  }
+});
+
+// plugins/dev-flow/src/core/review-jobs.ts
+import { createHash as createHash11, randomUUID as randomUUID7 } from "node:crypto";
+function nonBehaviorDispositions(trace) {
+  const nodes = Object.values(trace?.nodes ?? {}).filter((node) => node.status !== "tombstoned");
+  const coveredBy = /* @__PURE__ */ new Map();
+  for (const node of nodes) {
+    if (node.kind !== "task") continue;
+    for (const covered of node.covers) {
+      if (!covered.startsWith("AC-")) continue;
+      const list = coveredBy.get(covered) ?? [];
+      list.push({ taskId: node.id, ...node.tdd ? { tdd: node.tdd } : {} });
+      coveredBy.set(covered, list);
+    }
+  }
+  return nodes.filter((node) => node.kind === "acceptance-criterion" && node.verificationDisposition !== void 0 && node.verificationDisposition.kind !== "behavior-test").map((node) => ({
+    criterionId: node.id,
+    dispositionKind: node.verificationDisposition.kind,
+    ...node.verificationDisposition.reason ? { reason: node.verificationDisposition.reason } : {},
+    ...node.verificationDisposition.target ? { target: node.verificationDisposition.target } : {},
+    coveredBy: (coveredBy.get(node.id) ?? []).sort((left, right) => left.taskId.localeCompare(right.taskId))
+  })).sort((left, right) => left.criterionId.localeCompare(right.criterionId));
+}
+function invalid4(code, message, details = {}) {
+  throw new DevFlowError(code, message, details);
+}
+function reviewArtifactKinds(state) {
+  return basisArtifactKinds.filter((kind) => Boolean(state.artifacts[kind]));
+}
+async function deriveReviewInput(root, state) {
+  const trace = state.traceability ? await readTraceability(root, state) : void 0;
+  const { config, sha256: projectConfigSha256 } = await readProjectConfigSnapshot(root);
+  const frozenArtifacts = await Promise.all(reviewArtifactKinds(state).map(async (kind) => {
+    const artifact = state.artifacts[kind];
+    if (!artifact) invalid4("REVIEW_BASIS_ARTIFACT_MISSING", `review basis artifact is missing: ${kind}`, { kind });
+    let contents;
+    try {
+      contents = await assertArtifactCurrent(root, state.featureId, state, kind);
+    } catch (error) {
+      if (error instanceof DevFlowError && error.code === "ARTIFACT_INTEGRITY_FAILED") throw error;
+      invalid4("REVIEW_BASIS_ARTIFACT_MISSING", `review basis artifact cannot be read: ${kind}`, { kind });
+    }
+    if (digest5(contents) !== artifact.sha256) {
+      invalid4("ARTIFACT_INTEGRITY_FAILED", `review basis artifact was edited without registration: ${kind}`, {
+        kind,
+        recoveryHint: `Re-register the edited ${kind} artifact with the latest feature revision known before the edit.`
+      });
+    }
+    return { kind, path: artifact.path, sha256: artifact.sha256, contents };
+  }));
+  const projectContents = (await readProjectConfigSnapshot(root)).contents;
+  if (digest5(projectContents) !== projectConfigSha256) {
+    invalid4("REVIEW_BASIS_UNAVAILABLE", "project configuration changed while review basis was being captured");
+  }
+  const scopeManifest = {
+    inScope: [...state.scope.inScope].sort(),
+    outOfScope: [...state.scope.outOfScope].sort(),
+    governedRoots: [...config.governedRoots].sort(),
+    rollbackFileScopes: Object.values(trace?.nodes ?? {}).reduce((scopes, node) => {
+      if ((node.kind === "implementation-unit" || node.kind === "rollback") && node.status === "current") {
+        scopes.push({ id: node.id, fileScope: [...node.fileScope].sort() });
+      }
+      return scopes;
+    }, []).sort((left, right) => left.id.localeCompare(right.id))
+  };
+  const governedRootsFingerprint = await fingerprintGovernedRoots(root, config);
+  const featureOwnedFingerprint = await fingerprintFeatureOwned(root, config, state.workspace.ownership);
+  const basis = {
+    featureId: state.featureId,
+    route: state.route,
+    workflowCapabilities: { ...state.workflowCapabilities ?? { trace: 0, review: 0, checkpoints: 0, rollbackExecution: 0 } },
+    classification: {
+      level: state.classification.level,
+      topology: state.classification.topology,
+      ...state.classification.requirements ? { requirements: state.classification.requirements } : {},
+      riskLabels: [...state.classification.riskLabels].sort()
+    },
+    artifacts: frozenArtifacts.map(({ kind, path: artifactPath, sha256: sha2564 }) => ({ kind, path: artifactPath, sha256: sha2564 })),
+    ...state.traceability && trace ? { traceability: { path: state.traceability.path, sha256: state.traceability.sha256, revision: trace.revision } } : {},
+    projectConfigSha256,
+    verificationCommandHashes: verificationCommandHashes(config),
+    scopeManifestSha256: digest5(canonicalReviewValueJson(scopeManifest)),
+    governedRootsFingerprint,
+    featureOwnedFingerprint
+  };
+  const fallbackRoles = ["requirements-coverage", "architecture-testability", "rollback-operability"];
+  const baseRoles = state.classification.controls.reviewRoles.length ? state.classification.controls.reviewRoles : fallbackRoles;
+  const roles = [.../* @__PURE__ */ new Set([
+    ...baseRoles,
+    ...state.classification.controls.codeReview !== "none" ? ["code-quality", "requirement-fidelity"] : []
+  ])];
+  const roleBasisHashes = Object.fromEntries(
+    roles.map((role) => [role, roleBasisHash(basis, frozenArtifacts, trace, role)])
+  );
+  return {
+    basis,
+    roleBasisHashes,
+    frozenArtifacts,
+    projectConfig: { sha256: projectConfigSha256, contents: projectContents },
+    scopeManifest: {
+      governedRoots: scopeManifest.governedRoots,
+      rollbackFileScopes: scopeManifest.rollbackFileScopes.flatMap((item) => item.fileScope),
+      traceIds: Object.values(trace?.nodes ?? {}).filter((node) => node.status === "current").map((node) => node.id).sort(),
+      frozenArtifactPaths: frozenArtifacts.map((artifact) => artifact.path).sort()
+    },
+    nonBehaviorDispositions: nonBehaviorDispositions(trace)
+  };
+}
+function basisHash(basis) {
+  return semanticReviewBasisHash(basis);
+}
+function roleBasisHash(basis, frozenArtifacts, trace, role) {
+  const spec = REVIEW_ROLE_SEMANTIC_SPECS[role];
+  const artifacts = frozenArtifacts.filter((artifact) => spec.artifactKinds.includes(artifact.kind)).map(({ kind, path: artifactPath, sha256: sha2564 }) => ({ kind, path: artifactPath, sha256: sha2564 }));
+  const traceSlice = Object.values(trace?.nodes ?? {}).filter((node) => node.status !== "tombstoned" && spec.traceKinds.includes(node.kind)).sort((left, right) => left.id.localeCompare(right.id)).map(({ sourceArtifact: _sourceArtifact, sourceSha256: _sourceSha256, sourceAnchor: _sourceAnchor, sourceBlockSha256: _sourceBlockSha256, status: _status, ...semantic }) => semantic);
+  if (spec.riskLabels) {
+    return digest5(canonicalReviewValueJson({
+      role,
+      route: basis.route,
+      level: basis.classification.level,
+      riskLabels: basis.classification.riskLabels.filter((label) => spec.riskLabels.includes(label)),
+      traceSlice
+    }));
+  }
+  const referencedCommandIds = spec.bindReferencedCommandHashes ? traceSlice.flatMap((node) => node.kind === "implementation-unit" ? node.forwardVerification : []).filter((reference) => typeof reference === "string") : [];
+  const referencedCommandHashes = Object.fromEntries([...new Set(referencedCommandIds)].sort().filter((id) => basis.verificationCommandHashes?.[id] !== void 0).map((id) => [id, basis.verificationCommandHashes[id]]));
+  return digest5(canonicalReviewValueJson({
+    role,
+    route: basis.route,
+    level: basis.classification.level,
+    ...role === "architecture-testability" ? { topology: basis.classification.topology } : {},
+    ...artifacts.length ? { artifacts } : {},
+    traceSlice,
+    ...spec.bindFeatureOwnedContent ? { featureOwnedFingerprint: basis.featureOwnedFingerprint ?? "" } : {},
+    ...spec.bindNonBehaviorDispositions ? { nonBehaviorDispositions: nonBehaviorDispositions(trace) } : {},
+    ...spec.bindReferencedCommandHashes ? { verificationCommandHashes: referencedCommandHashes } : {}
+  }));
+}
+function codeReviewIsolationRequired(state) {
+  return state.classification.controls.codeReview === "independent" || state.classification.controls.codeReview === "full";
+}
+function submittedSourceForJob(ledger, job, visited = /* @__PURE__ */ new Set()) {
+  if (job.status === "submitted") return job;
+  if (job.status !== "reused" || !job.reusedFrom) return void 0;
+  const key = `${job.reusedFrom.batchId}:${job.reusedFrom.jobId}`;
+  if (visited.has(key)) return void 0;
+  visited.add(key);
+  const sourceBatch = ledger.batches.find((candidate) => candidate.batchId === job.reusedFrom.batchId);
+  const sourceJob = sourceBatch?.jobs.find((candidate) => candidate.jobId === job.reusedFrom.jobId);
+  return sourceJob ? submittedSourceForJob(ledger, sourceJob, visited) : void 0;
+}
+function jobHasEffectiveIsolationProof(ledger, job) {
+  const source = submittedSourceForJob(ledger, job);
+  return Boolean(source?.submission?.isolationProof);
+}
+function submittedFindings(ledger) {
+  return ledger.batches.flatMap((batch) => batch.jobs.flatMap((job) => (job.submission?.findings ?? []).map((finding) => ({ batch, job, finding }))));
+}
+function sortedFindingIds(findingIds) {
+  if (!Array.isArray(findingIds) || !findingIds.length || findingIds.some((id) => typeof id !== "string" || !id)) {
+    invalid4("REVIEW_RISK_ACCEPTANCE_INVALID", "risk acceptance requires one or more finding ids");
+  }
+  const sorted = [...findingIds].sort();
+  if (new Set(sorted).size !== sorted.length) {
+    invalid4("REVIEW_RISK_ACCEPTANCE_INVALID", "risk acceptance finding ids must be unique");
+  }
+  return sorted;
+}
+function findingSetHash(batch, findings) {
+  const items = findings.map((finding) => ({ findingId: finding.findingId, sha256: digest5(canonicalReviewValueJson(finding)) })).sort((left, right) => left.findingId.localeCompare(right.findingId));
+  return digest5(canonicalReviewValueJson({ batchId: batch.batchId, basisHash: batch.basisHash, findings: items }));
+}
+function riskBinding(interaction) {
+  const binding = interaction.binding;
+  if (interaction.kind !== "risk-acceptance" || !binding || typeof binding.batchId !== "string" || typeof binding.findingSetHash !== "string" || !Array.isArray(binding.findingIds)) {
+    invalid4("REVIEW_RISK_ACCEPTANCE_INVALID", "interaction is not a valid review risk-acceptance decision", { interactionId: interaction.id });
+  }
+  return { batchId: binding.batchId, findingIds: sortedFindingIds(binding.findingIds), findingSetHash: binding.findingSetHash };
+}
+function planReviewBoundToBatch(state, batch) {
+  const evidence = state.steps.planning?.evidence;
+  return state.steps.planning?.status === "satisfied" && evidence?.batchId === batch.batchId && evidence?.basisHash === batch.basisHash;
+}
+function currentUnresolvedBlocking(ledger, batch, state) {
+  if (ledger.findingEvents?.length) {
+    const roleBasis = (origin) => batch.jobs.find((job) => job.role === origin.role)?.roleBasisHash;
+    return unresolvedBlockingFindings(ledger, roleBasis);
+  }
+  const jobs = ledger.batches.flatMap((candidate) => candidate.jobs);
+  const dispositions = Object.assign({}, ...ledger.batches.map((candidate) => candidate.dispositions ?? {}));
+  return jobs.flatMap((job) => job.submission?.findings ?? []).filter((finding) => {
+    if (finding.severity !== "blocking") return false;
+    const disposition = dispositions[finding.findingId];
+    if (!disposition) return true;
+    if (disposition.kind === "risk-accepted") {
+      if (disposition.batchId !== batch.batchId || disposition.basisHash !== batch.basisHash) return true;
+      const interaction = state.interactions?.[disposition.interactionId];
+      if (!interaction || interaction.kind !== "risk-acceptance" || interaction.status !== "resolved" || interaction.response?.action !== "accept" || interaction.basisHash !== batch.basisHash) return true;
+      let binding;
+      try {
+        binding = riskBinding(interaction);
+      } catch {
+        return true;
+      }
+      if (binding.batchId !== batch.batchId || binding.findingSetHash !== disposition.findingSetHash || binding.findingIds.join("\n") !== [...disposition.findingIds].sort().join("\n") || !binding.findingIds.includes(finding.findingId)) return true;
+      const acceptedFindings = submittedFindings(ledger).filter(({ batch: source, finding: candidate }) => source.batchId === batch.batchId && binding.findingIds.includes(candidate.findingId)).map(({ finding: candidate }) => candidate);
+      if (acceptedFindings.length !== binding.findingIds.length || acceptedFindings.some((candidate) => candidate.severity !== "blocking") || findingSetHash(batch, acceptedFindings) !== binding.findingSetHash) return true;
+      return false;
+    }
+    const successor = ledger.batches.find((candidate) => candidate.batchId === disposition.successorBatchId);
+    const resolutionJob = successor?.jobs.find((candidate) => candidate.jobId === disposition.resolutionJobId);
+    const sourceJob = jobs.find((candidate) => candidate.jobId === finding.jobId);
+    return !successor || !resolutionJob || !sourceJob || resolutionJob.role !== sourceJob.role || !resolutionJob.submission?.resolutions.some((resolution) => resolution.findingId === finding.findingId);
+  });
+}
+function reviewObligation(state, phase) {
+  if (state.mode !== "routed") return false;
+  if (phase === "code") return state.classification.controls.codeReview !== "none";
+  return reviewEnforcementRequired(state.route, state.classification.controls);
+}
+async function reviewBasisStale(root, state, batch, phase) {
+  const requireLiveBasis = !planReviewBoundToBatch(state, batch);
+  const reviewInput = await deriveReviewInput(root, state);
+  if (requireLiveBasis && basisHash(reviewInput.basis) !== batch.basisHash) return true;
+  const requirements = deriveReviewJobRequirements(state.route, state.classification.riskLabels, state.classification.controls.reviewRoles, phase);
+  for (const requirement of requirements) {
+    const job = batch.jobs.find((candidate) => candidate.role === requirement.role);
+    if (!job || job.roleBasisHash !== reviewInput.roleBasisHashes[requirement.role]) return true;
+  }
+  return false;
+}
+function reviewJobsSummary(batch) {
+  return batch.jobs.map(({ jobId, role, reviewDepth, status }) => ({ jobId, role, reviewDepth, status }));
+}
+async function reviewGate(root, state, query) {
+  const phase = query?.phase ?? (currentOpenStep(state) === "code_review" ? "code" : "plan");
+  if (!reviewObligation(state, phase)) return { status: "ready" };
+  const ledger = await readReviewLedger(root, state);
+  const batch = ledger.batches.find((candidate) => candidate.validity === "current" && (candidate.phase ?? "plan") === phase);
+  if (!batch) {
+    const otherPhase = ledger.batches.find((candidate) => candidate.validity === "current");
+    return otherPhase ? { status: "need-batch", cause: "phase", batchId: otherPhase.batchId } : { status: "need-batch", cause: "missing" };
+  }
+  if (await reviewBasisStale(root, state, batch, phase)) return { status: "need-batch", cause: "stale", batchId: batch.batchId };
+  if (batch.progress !== "complete") return { status: "jobs-open", batchId: batch.batchId, jobs: reviewJobsSummary(batch) };
+  if (phase === "code") {
+    const requiresIsolation = codeReviewIsolationRequired(state);
+    if (requiresIsolation && !hasCurrentQualityException(state, "review")) {
+      const requirements = deriveReviewJobRequirements(state.route, state.classification.riskLabels, state.classification.controls.reviewRoles, phase);
+      const missingIsolation = requirements.map((requirement) => batch.jobs.find((job) => job.role === requirement.role)).filter((job) => job !== void 0 && !jobHasEffectiveIsolationProof(ledger, job)).map((job) => job.jobId);
+      if (missingIsolation.length) return { status: "isolation", batchId: batch.batchId, jobIds: missingIsolation };
+    }
+  }
+  const unresolved = currentUnresolvedBlocking(ledger, batch, state);
+  if (unresolved.length && !hasCurrentQualityException(state, "review")) {
+    return { status: "blocking", batchId: batch.batchId, findingIds: unresolved.map((finding) => finding.findingId) };
+  }
+  if (reviewEnforcementRequired(state.route, state.classification.controls)) {
+    await assertCurrentReviewProjection(root, state);
+  }
+  return { status: "ready", stamp: { batchId: batch.batchId, basisHash: batch.basisHash, assuranceLevel: batch.assuranceLevel } };
+}
+function reviewGateError(gate, phase) {
+  switch (gate.status) {
+    case "need-batch": {
+      if (gate.cause === "stale") {
+        return new DevFlowError("REVIEW_BASIS_STALE", "review batch basis no longer matches current feature state", {
+          batchId: gate.batchId,
+          recoveryHint: "\u91CD\u5EFA\u6279\u6B21\u2192\u91CD\u4EA4 jobs\u2192re-record planning"
+        });
+      }
+      return new DevFlowError("REVIEW_BATCH_REQUIRED", `a current ${phase} review batch is required`, { expectedPhase: phase });
+    }
+    case "jobs-open":
+      return new DevFlowError("REVIEW_BATCH_INCOMPLETE", "all required review jobs must be submitted", { batchId: gate.batchId });
+    case "isolation":
+      return new DevFlowError("REVIEW_ISOLATION_REQUIRED", "\u72EC\u7ACB\u4EE3\u7801\u5BA1\u67E5\u8981\u6C42\u5BA1\u67E5\u5728\u4E0E\u5B9E\u73B0\u9694\u79BB\u7684\u65B0\u4E0A\u4E0B\u6587\u4E2D\u5B8C\u6210\uFF0C\u5F53\u524D\u6279\u6B21\u7F3A\u5C11\u9694\u79BB\u8BC1\u660E\u3002", {
+        jobIds: gate.jobIds,
+        batchId: gate.batchId,
+        recoveryHint: "\u5728\u4E0E\u5B9E\u73B0\u9694\u79BB\u7684\u4E0A\u4E0B\u6587\u4E2D\u91CD\u65B0\u5B8C\u6210\u8FD9\u4E9B\u5BA1\u67E5 job \u5E76\u8BB0\u5F55 review-execution \u4E8B\u4EF6\uFF0C\u6216\u901A\u8FC7\u670D\u52A1\u7AEF\u91C7\u6837\u5B8C\u6210 job\uFF1B\u590D\u7528\u6279\u6B21\u540C\u6837\u9700\u8981\u9694\u79BB\u8BC1\u660E\uFF0C\u53EF\u5728\u9694\u79BB\u5B50\u4EE3\u7406\u4E2D\u91CD\u505A job \u6216\u7ECF\u8D28\u91CF\u4F8B\u5916\u63A5\u53D7\u98CE\u9669\u3002",
+        retryOriginal: true
+      });
+    case "blocking":
+      return new DevFlowError("REVIEW_BLOCKING_FINDINGS", "review ledger has unresolved blocking findings", {
+        batchId: gate.batchId,
+        findingIds: gate.findingIds
+      });
+  }
+}
+async function requireReviewReady(root, state, query) {
+  const phase = query?.phase ?? (currentOpenStep(state) === "code_review" ? "code" : "plan");
+  const gate = await reviewGate(root, state, query);
+  if (gate.status === "ready") return gate.stamp;
+  throw reviewGateError(gate, phase);
+}
+var digest5, leaseMilliseconds, samplingLeaseMilliseconds, basisArtifactKinds;
+var init_review_jobs = __esm({
+  "plugins/dev-flow/src/core/review-jobs.ts"() {
+    "use strict";
+    init_review();
+    init_rollback();
+    init_review_basis();
+    init_review();
+    init_errors();
+    init_path_normalization();
+    init_fingerprint();
+    init_state_store();
+    init_artifacts();
+    init_review_store();
+    init_traceability_store();
+    init_review_projection();
+    init_obligations();
+    init_traceability_gates();
+    init_user_interactions();
+    init_review_findings();
+    init_review_findings();
+    init_quality_exceptions();
+    init_project_config();
+    init_step_order();
+    init_contract2();
+    digest5 = (value) => createHash11("sha256").update(value).digest("hex");
+    leaseMilliseconds = 60 * 60 * 1e3;
+    samplingLeaseMilliseconds = 120 * 1e3;
+    basisArtifactKinds = ["requirements", "implementation-plan"];
+  }
+});
+
+// plugins/dev-flow/src/core/review-execution.ts
+import { createHash as createHash12, randomUUID as randomUUID8 } from "node:crypto";
+import { mkdir as mkdir7, open as open7, readFile as readFile11, rename as rename7 } from "node:fs/promises";
+import path13 from "node:path";
+async function captureHostReviewEnvelope(root, input) {
+  if (input.rawResult === void 0 || input.rawResult === null) throw new TypeError("review envelope rawResult is required");
+  const rawBytes = Buffer.isBuffer(input.rawResult) ? input.rawResult : Buffer.from(input.rawResult, "utf8");
+  const rawStored = await putEvidenceObject(root, input.featureId, "review-result", rawBytes);
+  const envelope = {
+    schemaVersion: 1,
+    featureId: input.featureId,
+    batchId: input.batchId,
+    jobId: input.jobId,
+    role: input.role,
+    packageSha256: input.packageSha256,
+    capabilityHash: input.capabilityHash,
+    executionRequestId: input.executionRequestId,
+    leaseGeneration: input.leaseGeneration,
+    ...input.declarationId ? { declarationId: input.declarationId } : {},
+    source: input.source,
+    host: input.host,
+    ...input.hostEventId ? { hostEventId: input.hostEventId } : {},
+    ...input.parentContext ? { parentContext: input.parentContext } : {},
+    ...input.childContext ? { childContext: input.childContext } : {},
+    ...input.agentId ? { agentId: input.agentId } : {},
+    startedAt: input.startedAt,
+    completedAt: input.completedAt,
+    rawResultSha256: rawStored.ref.sha256,
+    ...input.parsedCompletion ? { parsedCompletionSha256: sha2563(Buffer.isBuffer(input.parsedCompletion) ? input.parsedCompletion : Buffer.from(input.parsedCompletion, "utf8")) } : {},
+    rawResultRef: rawStored.ref
+  };
+  const envelopeStored = await putEvidenceObject(root, input.featureId, "review-result", Buffer.from(`${stableJson(envelope)}
+`, "utf8"));
+  parseReviewResultEnvelope(envelope);
+  return { ref: envelopeStored.ref, envelope };
+}
+async function readHostReviewEnvelope(root, featureId, ref) {
+  const bytes = await readEvidenceObject(root, featureId, ref);
+  let envelope;
+  try {
+    envelope = parseReviewResultEnvelope(JSON.parse(bytes.toString("utf8")));
+  } catch (error) {
+    throw new DevFlowError("REVIEW_ENVELOPE_INVALID", "review result envelope is invalid", {
+      featureId,
+      cause: error instanceof Error ? error.message : String(error)
+    });
+  }
+  if (envelope.featureId !== featureId) throw new DevFlowError("REVIEW_ENVELOPE_INVALID", "envelope featureId mismatch", { featureId });
+  return envelope;
+}
+function executionDirectory(root, featureId) {
+  return path13.join(root, ".dev-flow", "features", featureId, "review", "executions");
+}
+function executionIndexPath(root, featureId) {
+  return path13.join(executionDirectory(root, featureId), "index.json");
+}
+async function readExecutionIndex(root, featureId) {
+  try {
+    const raw = await readFile11(executionIndexPath(root, featureId), "utf8");
+    const value = JSON.parse(raw);
+    if (!value || value.schemaVersion !== 1 || value.featureId !== featureId || !Array.isArray(value.entries)) {
+      throw new TypeError("invalid review execution index");
+    }
+    return value;
+  } catch (error) {
+    if (error.code === "ENOENT") return { schemaVersion: 1, featureId, entries: [] };
+    throw error;
+  }
+}
+async function writeExecutionIndex(root, featureId, index) {
+  const directory = executionDirectory(root, featureId);
+  await mkdir7(directory, { recursive: true });
+  const target = executionIndexPath(root, featureId);
+  const temporary = path13.join(directory, `.index.${randomUUID8()}.tmp`);
+  const handle = await open7(temporary, "wx");
+  try {
+    await handle.writeFile(`${stableJson(index)}
+`);
+    await handle.sync();
+  } finally {
+    await handle.close();
+  }
+  await rename7(temporary, target);
+}
+async function writeReviewExecutionRecord(root, featureId, record) {
+  const stored = await putEvidenceObject(root, featureId, "review-execution", Buffer.from(`${stableJson(record)}
+`, "utf8"));
+  return { ref: stored.ref, pointer: stored.pointer };
+}
+async function readReviewExecutionRecord(root, featureId, executionRequestId) {
+  const index = await readExecutionIndex(root, featureId);
+  const entry = index.entries.find((candidate) => candidate.executionRequestId === executionRequestId);
+  if (!entry) throw new DevFlowError("REVIEW_EXECUTION_NOT_FOUND", "review execution record not found", { executionRequestId });
+  const bytes = await readEvidenceObject(root, featureId, entry.ref);
+  return parseReviewExecutionRecord(JSON.parse(bytes.toString("utf8")));
+}
+async function recordCapturedEnvelope(root, featureId, executionRequestId, envelopeRef) {
+  const index = await readExecutionIndex(root, featureId);
+  const entry = index.entries.find((candidate) => candidate.executionRequestId === executionRequestId);
+  if (!entry) throw new DevFlowError("REVIEW_EXECUTION_NOT_FOUND", "review execution record not found", { executionRequestId });
+  const record = await readReviewExecutionRecord(root, featureId, executionRequestId);
+  if (record.envelopes.some((ref) => ref.sha256 === envelopeRef.sha256 && ref.kind === envelopeRef.kind)) return;
+  const updated = { ...record, envelopes: [...record.envelopes, envelopeRef] };
+  const stored = await writeReviewExecutionRecord(root, featureId, updated);
+  await writeExecutionIndex(root, featureId, {
+    ...index,
+    entries: index.entries.map((candidate) => candidate.executionRequestId === executionRequestId ? { ...candidate, ref: stored.ref } : candidate)
+  });
+}
+async function reviewExecutionEvidenceRoots(root, featureId) {
+  const index = await readExecutionIndex(root, featureId);
+  const refs = [];
+  for (const entry of index.entries) {
+    if (refs.some((candidate) => candidate.kind === entry.ref.kind && candidate.sha256 === entry.ref.sha256)) continue;
+    refs.push(entry.ref);
+    const record = await readReviewExecutionRecord(root, featureId, entry.executionRequestId);
+    for (const envelopeRef of record.envelopes) {
+      if (!refs.some((candidate) => candidate.kind === envelopeRef.kind && candidate.sha256 === envelopeRef.sha256)) refs.push(envelopeRef);
+      const envelope = await readHostReviewEnvelope(root, featureId, envelopeRef);
+      if (!refs.some((candidate) => candidate.kind === envelope.rawResultRef.kind && candidate.sha256 === envelope.rawResultRef.sha256)) refs.push(envelope.rawResultRef);
+    }
+  }
+  return refs;
+}
+var sha2563, leaseMilliseconds2;
+var init_review_execution2 = __esm({
+  "plugins/dev-flow/src/core/review-execution.ts"() {
+    "use strict";
+    init_stable_json();
+    init_review_execution();
+    init_review();
+    init_evidence_store2();
+    init_errors();
+    init_review_store();
+    init_review_jobs();
+    init_state_store();
+    init_obligations();
+    sha2563 = (bytes) => createHash12("sha256").update(bytes).digest("hex");
+    leaseMilliseconds2 = 60 * 60 * 1e3;
+  }
+});
+
+// plugins/dev-flow/src/policy/plan-revision.ts
+function isRecord10(value) {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+function isSha2565(value) {
+  return typeof value === "string" && /^[a-f0-9]{64}$/.test(value);
+}
+function stringArray(value, allowEmpty = false) {
+  return Array.isArray(value) && (allowEmpty || value.length > 0) && value.every((item) => typeof item === "string" && item.length > 0);
+}
+function parseImplementationRuntimeProjection(value) {
+  if (!isRecord10(value) || !Array.isArray(value.units) || !Array.isArray(value.recoveryArrangements)) {
+    throw new TypeError("invalid implementation runtime projection");
+  }
+  const units = value.units.map((unit) => {
+    if (!isRecord10(unit) || typeof unit.unitId !== "string" || !/^UNIT-[0-9]{3,}$/.test(unit.unitId) || !stringArray(unit.tasks) || !stringArray(unit.dependsOn, true) || !stringArray(unit.fileScope) || !stringArray(unit.forwardVerification)) {
+      throw new TypeError("invalid implementation runtime projection unit");
+    }
+    return {
+      unitId: unit.unitId,
+      tasks: unit.tasks,
+      dependsOn: unit.dependsOn,
+      fileScope: unit.fileScope,
+      forwardVerification: unit.forwardVerification
+    };
+  });
+  const recoveryArrangements = value.recoveryArrangements.map((recovery) => {
+    if (!isRecord10(recovery) || typeof recovery.arrangementId !== "string" || typeof recovery.stepRef !== "string" || !/^(?:UNIT|TASK)-[0-9]{3,}$/.test(recovery.stepRef) || recovery.recoveryKind !== "rollback" && recovery.recoveryKind !== "compensation" || typeof recovery.method !== "string" || !recovery.method.trim() || typeof recovery.riskRef !== "string" || !recovery.riskRef.trim()) {
+      throw new TypeError("invalid implementation runtime projection recovery");
+    }
+    return {
+      arrangementId: recovery.arrangementId,
+      stepRef: recovery.stepRef,
+      recoveryKind: recovery.recoveryKind,
+      method: recovery.method,
+      riskRef: recovery.riskRef
+    };
+  });
+  return { units, recoveryArrangements };
+}
+function parsePlanRevisionProposal(value) {
+  if (!isRecord10(value) || value.schemaVersion !== 1 || typeof value.featureId !== "string" || !value.featureId || !isRecord10(value.artifact) || typeof value.artifact.path !== "string" || !value.artifact.path || !isSha2565(value.artifact.rawSha256) || !isSha2565(value.artifact.semanticSha256) || !isRecord10(value.basis) || !Number.isInteger(value.basis.stateRevision) || !isSha2565(value.basis.currentTraceSha256) || !isSha2565(value.basis.requirementsArtifactSha256) || !isSha2565(value.basis.requirementsSemanticSha256) || !isSha2565(value.basis.requirementsSliceSha256) || !isSha2565(value.basis.projectConfigSha256) || value.basis.executionSemanticBasisHash !== void 0 && !isSha2565(value.basis.executionSemanticBasisHash) || !isRecord10(value.compiledTrace) || !isSha2565(value.compiledTrace.sha256) || !Number.isInteger(value.compiledTrace.size) || !isRecord10(value.impact) || !Array.isArray(value.impact.affectedUnits) || !Array.isArray(value.impact.redoUnits) || !Array.isArray(value.impact.sideEffectUnits) || !Array.isArray(value.impact.invalidatedPhases)) {
+    throw new TypeError("invalid plan revision proposal");
+  }
+  return {
+    schemaVersion: 1,
+    featureId: value.featureId,
+    artifact: {
+      path: value.artifact.path,
+      rawSha256: value.artifact.rawSha256,
+      semanticSha256: value.artifact.semanticSha256
+    },
+    basis: {
+      stateRevision: value.basis.stateRevision,
+      currentTraceSha256: value.basis.currentTraceSha256,
+      requirementsArtifactSha256: value.basis.requirementsArtifactSha256,
+      requirementsSemanticSha256: value.basis.requirementsSemanticSha256,
+      requirementsSliceSha256: value.basis.requirementsSliceSha256,
+      projectConfigSha256: value.basis.projectConfigSha256,
+      ...value.basis.executionSemanticBasisHash !== void 0 ? { executionSemanticBasisHash: value.basis.executionSemanticBasisHash } : {}
+    },
+    compiledTrace: parseEvidenceObjectRef(value.compiledTrace),
+    implementationProjection: parseImplementationRuntimeProjection(value.implementationProjection),
+    impact: {
+      affectedUnits: value.impact.affectedUnits,
+      redoUnits: value.impact.redoUnits,
+      sideEffectUnits: value.impact.sideEffectUnits,
+      invalidatedPhases: value.impact.invalidatedPhases
+    }
+  };
+}
+var init_plan_revision = __esm({
+  "plugins/dev-flow/src/policy/plan-revision.ts"() {
+    "use strict";
+    init_evidence_store();
+  }
+});
+
+// plugins/dev-flow/src/core/evidence-maintenance.ts
+function addRef(refs, value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return;
+  try {
+    const parsed = parseEvidenceObjectRef(value);
+    const key = `${parsed.kind}:${parsed.sha256}`;
+    if (!refs.some((ref) => `${ref.kind}:${ref.sha256}` === key)) refs.push(parsed);
+  } catch {
+  }
+}
+function evidenceRootSet(state) {
+  const refs = [];
+  const archived = state.archivedCollections;
+  if (archived) {
+    addRef(refs, archived.workspaceLineage);
+    addRef(refs, archived.interactionLedger);
+    addRef(refs, archived.governanceLedger);
+    addRef(refs, archived.verificationLedger);
+    addRef(refs, archived.repairLedger);
+  }
+  for (const claim of state.governance?.claims ?? []) addRef(refs, claim.baselineRef);
+  for (const authorization of state.governance?.authorizations ?? []) addRef(refs, authorization.baselineRef);
+  for (const interaction of Object.values(state.interactions ?? {})) addRef(refs, interaction.planRevisionProposal);
+  return refs;
+}
+async function collectEvidenceRootSet(root, featureId, state) {
+  const refs = evidenceRootSet(state);
+  const pushUnique = (ref) => {
+    if (!ref) return;
+    const key = `${ref.kind}:${ref.sha256}`;
+    if (refs.some((candidate) => `${candidate.kind}:${candidate.sha256}` === key)) return;
+    refs.push(ref);
+  };
+  for (const ref of await eventSegmentRootRefs(root, featureId)) pushUnique(ref);
+  for (const ref of await checkpointManifestRootRefs(root, featureId)) pushUnique(ref);
+  for (const ref of await reviewExecutionEvidenceRoots(root, featureId)) pushUnique(ref);
+  for (const claim of state.governance?.claims ?? []) {
+    if (!claim.baselineRef) continue;
+    try {
+      const manifestBytes = await readEvidenceObject(root, featureId, claim.baselineRef);
+      const manifest = parseEvidenceBaselineManifest(JSON.parse(manifestBytes.toString("utf8")));
+      pushUnique(manifest.snapshotRef);
+    } catch {
+    }
+  }
+  for (const authorization of state.governance?.authorizations ?? []) {
+    if (!authorization.baselineRef) continue;
+    try {
+      const manifestBytes = await readEvidenceObject(root, featureId, authorization.baselineRef);
+      const manifest = parseEvidenceBaselineManifest(JSON.parse(manifestBytes.toString("utf8")));
+      pushUnique(manifest.snapshotRef);
+    } catch {
+    }
+  }
+  for (const interaction of Object.values(state.interactions ?? {})) {
+    if (!interaction.planRevisionProposal) continue;
+    try {
+      const proposalBytes = await readEvidenceObject(root, featureId, interaction.planRevisionProposal);
+      const proposal = parsePlanRevisionProposal(JSON.parse(proposalBytes.toString("utf8")));
+      pushUnique(proposal.compiledTrace);
+    } catch {
+    }
+  }
+  return refs;
+}
+async function runBoundedEvidenceMaintenance(root, featureId, state, options = {}) {
+  const roots = await collectEvidenceRootSet(root, featureId, state);
+  const result = await collectEvidenceOrphans(root, featureId, roots, {
+    packBudget: options.packBudget ?? DEFAULT_GC_PACK_BUDGET,
+    byteBudget: options.byteBudget ?? DEFAULT_GC_BYTE_BUDGET
+  });
+  return { roots: roots.length, deletedPacks: result.deletedPacks, deletedFiles: result.deletedFiles, deletedBytes: result.deletedBytes };
+}
+var init_evidence_maintenance = __esm({
+  "plugins/dev-flow/src/core/evidence-maintenance.ts"() {
+    "use strict";
+    init_evidence_store();
+    init_evidence_store2();
+    init_event_segments();
+    init_checkpoint_store();
+    init_review_execution2();
+    init_evidence_baseline();
+    init_plan_revision();
+  }
+});
+
+// plugins/dev-flow/src/core/workspace-store.ts
+import { lstat as lstat2, readFile as readFile12, readlink as readlink2 } from "node:fs/promises";
+import path14 from "node:path";
+import { createHash as createHash13 } from "node:crypto";
+async function trustedWriteSummary(root, file) {
+  const target = path14.join(root, file);
+  try {
+    const metadata = await lstat2(target);
+    const bytes = metadata.isSymbolicLink() ? Buffer.from(await readlink2(target)) : await readFile12(target);
+    return `${metadata.isSymbolicLink() ? "symlink" : "file"}:${createHash13("sha256").update(bytes).digest("hex")}`;
+  } catch (error) {
+    if (error.code === "ENOENT") return "missing";
+    throw error;
+  }
+}
+var init_workspace_store = __esm({
+  "plugins/dev-flow/src/core/workspace-store.ts"() {
+    "use strict";
+  }
+});
 
 // plugins/dev-flow/src/core/git-reconciliation.ts
 import { execFile as execFile2 } from "node:child_process";
-import { createHash as createHash8 } from "node:crypto";
-import { lstat as lstat3, readFile as readFile6 } from "node:fs/promises";
-import path8 from "node:path";
+import { createHash as createHash14 } from "node:crypto";
+import { lstat as lstat3, readFile as readFile13 } from "node:fs/promises";
+import path15 from "node:path";
 import { promisify as promisify2 } from "node:util";
-var run = promisify2(execFile2);
 async function git(root, args, allowExitOne = false) {
   try {
     const result = await run("git", args, { cwd: root, encoding: "buffer", maxBuffer: 8 * 1024 * 1024 });
@@ -1746,9 +4354,9 @@ function statusKind(code) {
 }
 async function contentHash(root, relative) {
   try {
-    const metadata = await lstat3(path8.join(root, relative));
+    const metadata = await lstat3(path15.join(root, relative));
     if (!metadata.isFile()) return void 0;
-    return createHash8("sha256").update(await readFile6(path8.join(root, relative))).digest("hex");
+    return createHash14("sha256").update(await readFile13(path15.join(root, relative))).digest("hex");
   } catch {
     return void 0;
   }
@@ -1892,159 +4500,34 @@ async function reconcileWorkspaceForFeature(root, state, config) {
     ...state.workspace.unownedPaths ?? [],
     ...Object.keys(state.workspace.startedDirty).filter((file) => state.workspace.ownership[file] === void 0)
   ]);
-  const changedPaths = [...candidates].filter(
+  const changedPaths2 = [...candidates].filter(
     (file) => previousPaths[file] !== currentPaths[file] || knownUnowned.has(file)
   ).sort();
-  const unownedPaths = [.../* @__PURE__ */ new Set([...state.workspace.unownedPaths ?? [], ...changedPaths])].filter((file) => workspace.ownership[file] === void 0).sort();
+  const unownedPaths = [.../* @__PURE__ */ new Set([...state.workspace.unownedPaths ?? [], ...changedPaths2])].filter((file) => workspace.ownership[file] === void 0).sort();
   return {
     workspace: { ...workspace, unownedPaths },
-    contentChanged: changedPaths.length > 0,
-    changedPaths
+    contentChanged: changedPaths2.length > 0,
+    changedPaths: changedPaths2
   };
 }
+var run;
+var init_git_reconciliation = __esm({
+  "plugins/dev-flow/src/core/git-reconciliation.ts"() {
+    "use strict";
+    init_errors();
+    init_path_normalization();
+    init_fingerprint();
+    run = promisify2(execFile2);
+  }
+});
 
-// plugins/dev-flow/src/core/user-interactions.ts
-import { randomUUID as randomUUID4 } from "node:crypto";
-
-// plugins/dev-flow/src/core/grill-interaction.ts
-var answerCodes = ["A", "B", "C"];
-function invalid2(message) {
-  throw new DevFlowError("GRILL_PRESENTATION_INVALID", message, {
-    userMessage: "\u5F53\u524D grill \u95EE\u9898\u4E0D\u7B26\u5408\u4EA4\u4E92\u5408\u540C\u3002",
-    recoveryKind: "repair",
-    recoveryInstruction: "\u63D0\u4F9B 2-3 \u4E2A\u5E26\u8BF4\u660E\u7684\u9009\u9879\uFF0C\u5E76\u660E\u786E\u4E00\u4E2A\u63A8\u8350\u9879\u53CA\u63A8\u8350\u7406\u7531\u3002",
-    retryOriginal: false
-  });
-}
-function buildGrillPresentation(input) {
-  const question = input.question.trim();
-  if (!question) invalid2("question must not be empty");
-  if (!Array.isArray(input.options) || input.options.length < 2 || input.options.length > 3) {
-    invalid2("grill must contain 2-3 options");
+// plugins/dev-flow/src/core/approval.ts
+var init_approval = __esm({
+  "plugins/dev-flow/src/core/approval.ts"() {
+    "use strict";
+    init_user_interactions();
   }
-  if (input.options.some((option) => option.id === "other" || !option.description?.trim())) {
-    invalid2("grill options require descriptions and cannot use the reserved other id");
-  }
-  const reason = input.recommendation.reason.trim();
-  if (!reason) invalid2("recommendation reason must not be empty");
-  const recommendedIndex = input.options.findIndex((option) => option.id === input.recommendation.optionId);
-  if (recommendedIndex < 0) invalid2("recommendation must reference one current option");
-  const drawback = input.recommendation.drawback?.trim();
-  const alternative = input.recommendation.alternative;
-  const hasReminder = drawback !== void 0 || alternative !== void 0;
-  if (hasReminder) {
-    if (!drawback || !alternative || !alternative.condition.trim()) {
-      invalid2("high-impact recommendation requires both a drawback and an alternative condition");
-    }
-    if (alternative.optionId === input.recommendation.optionId) {
-      invalid2("alternative must reference a non-recommended option");
-    }
-    const alternativeIndex = input.options.findIndex((option) => option.id === alternative.optionId);
-    if (alternativeIndex < 0) invalid2("alternative must reference one current option");
-  }
-  const options = input.options.map((option, index) => ({
-    ...option,
-    answerCode: answerCodes[index],
-    recommended: index === recommendedIndex
-  }));
-  const lines = [question];
-  for (const option of options) {
-    lines.push("");
-    lines.push(`${option.answerCode}. ${option.label}${option.recommended ? "\uFF08\u63A8\u8350\uFF09" : ""}`);
-    lines.push(`   ${option.recommended ? reason : option.description.trim()}`);
-  }
-  if (hasReminder) {
-    const alternativeOption = options.find((option) => option.id === alternative.optionId);
-    lines.push("");
-    lines.push(`\u63D0\u9192\uFF1A\u63A8\u8350\u65B9\u6848\u7684\u4E3B\u8981\u7F3A\u70B9\u662F ${drawback}\u3002`);
-    lines.push(`\u5982\u679C ${alternative.condition.trim()}\uFF0C\u9009\u9879 ${alternativeOption.answerCode}\uFF08${alternativeOption.label}\uFF09\u53EF\u80FD\u66F4\u5408\u9002\u3002`);
-  }
-  lines.push("");
-  const codes = options.map((option) => option.answerCode);
-  lines.push(`\u8BF7\u56DE\u590D ${codes.slice(0, -1).join("\u3001")} \u6216 ${codes.at(-1)}\u3002`);
-  lines.push("\u5982\u679C\u90FD\u4E0D\u5408\u9002\uFF0C\u8BF7\u56DE\u590D\u201C\u5176\u4ED6\uFF1A<\u4F60\u7684\u65B9\u6848\u548C\u7406\u7531>\u201D\u3002");
-  return {
-    question,
-    options,
-    recommendation: { optionId: input.recommendation.optionId, reason },
-    text: lines.join("\n")
-  };
-}
-
-// plugins/dev-flow/src/core/user-interactions.ts
-function interactions(state) {
-  if (!state.interactions) state.interactions = {};
-  return state.interactions;
-}
-function validateOptions(options) {
-  if (!Array.isArray(options) || options.length < 2 || options.length > 3) {
-    throw new DevFlowError("INTERACTION_OPTIONS_INVALID", "\u6BCF\u4E2A\u7528\u6237\u95EE\u9898\u5FC5\u987B\u53EA\u6709 2-3 \u4E2A\u9009\u9879\u3002", { userMessage: "\u5F53\u524D\u95EE\u9898\u7684\u9009\u9879\u6570\u91CF\u4E0D\u7B26\u5408\u4EA4\u4E92\u5408\u540C\u3002", recoveryKind: "repair", recoveryInstruction: "\u5C06\u9009\u9879\u6536\u655B\u4E3A 2-3 \u4E2A\u7B80\u660E\u9009\u62E9\uFF0C\u5E76\u4FDD\u7559\u4E00\u4E2A\u63A8\u8350\u7B54\u6848\u3002", retryOriginal: false });
-  }
-  const seen = /* @__PURE__ */ new Set();
-  const invalidIds = [];
-  for (const option of options) {
-    if (!option || !/^[a-z][a-z0-9-]{0,63}$/.test(option.id)) invalidIds.push(option?.id ?? "<missing>");
-    if (!option || !option.label.trim() || seen.has(option.id)) {
-      throw new DevFlowError("INTERACTION_OPTIONS_INVALID", "option ids must be unique lowercase action ids with labels", {
-        pattern: "^[a-z][a-z0-9-]{0,63}$",
-        examples: ["document-only", "inject-signal"],
-        invalidIds,
-        guidance: "A/B \u662F Core \u5206\u914D\u7684 answerCode\uFF0C\u4E0D\u662F\u8F93\u5165 option id\u3002",
-        recoveryHint: "\u4E3A\u6BCF\u4E2A\u9009\u9879\u63D0\u4F9B\u552F\u4E00\u7684\u3001\u5339\u914D\u4E0A\u8FF0\u6B63\u5219\u7684 action id \u4E0E\u975E\u7A7A label\u3002"
-      });
-    }
-    seen.add(option.id);
-  }
-}
-function createInteraction(state, input) {
-  validateOptions(input.options);
-  if (input.kind === "grill") {
-    if (!input.recommendation) throw new DevFlowError("GRILL_RECOMMENDATION_REQUIRED", "grill requires one explicit recommendation");
-    buildGrillPresentation({ question: input.question ?? "", options: input.options, recommendation: input.recommendation });
-  }
-  const pending = Object.values(state.interactions ?? {}).filter((value) => value.status === "pending");
-  if (pending.length) throw new DevFlowError("MULTIPLE_PENDING_DECISIONS", "\u540C\u4E00 feature \u53EA\u80FD\u5B58\u5728\u4E00\u4E2A\u5F85\u51B3\u95EE\u9898\u3002", { userMessage: "\u5F53\u524D\u5DF2\u6709\u4E00\u4E2A\u95EE\u9898\u7B49\u5F85\u56DE\u7B54\u3002", cause: "\u7CFB\u7EDF\u62D2\u7EDD\u5E76\u884C\u521B\u5EFA\u7B2C\u4E8C\u4E2A pending decision\u3002", impact: "\u65B0\u95EE\u9898\u6CA1\u6709\u88AB\u521B\u5EFA\uFF0C\u539F\u95EE\u9898\u4ECD\u7B49\u5F85\u56DE\u7B54\u3002", recoveryKind: "refresh", recoveryInstruction: "\u5148\u56DE\u7B54\u5F53\u524D\u95EE\u9898\uFF0C\u4E0B\u4E00\u56DE\u5408\u518D\u5904\u7406\u65B0\u95EE\u9898\u3002", retryOriginal: false });
-  const current = findInteractionForTarget(state, input.target);
-  if (current?.status === "pending") {
-    throw new DevFlowError("INTERACTION_ALREADY_PENDING", input.target, { interactionId: current.id });
-  }
-  const interaction = {
-    id: randomUUID4(),
-    kind: input.kind,
-    target: input.target,
-    basisHash: input.basisHash,
-    ...input.binding ? {
-      binding: {
-        batchId: input.binding.batchId,
-        findingIds: [...input.binding.findingIds],
-        findingSetHash: input.binding.findingSetHash
-      }
-    } : {},
-    question: input.question,
-    options: input.options.map((option) => ({ ...option })),
-    ...input.recommendation ? { recommendation: { ...input.recommendation } } : {},
-    presentedAt: (/* @__PURE__ */ new Date()).toISOString(),
-    presentedRevision: state.revision,
-    presentationEventId: input.presentationEventId ?? randomUUID4(),
-    ...input.workspacePaths ? { workspacePaths: [...input.workspacePaths] } : {},
-    ...input.workspaceBatchPaths ? { workspaceBatchPaths: [...input.workspaceBatchPaths] } : {},
-    ...input.workspaceRemainingPaths ? { workspaceRemainingPaths: [...input.workspaceRemainingPaths] } : {},
-    ...input.ratification ? { ratification: { ...input.ratification, factRefs: [...input.ratification.factRefs] } } : {},
-    ...input.revision ? { revision: { ...input.revision, affected: [...input.revision.affected] } } : {},
-    ...input.planRevision ? { planRevision: { ...input.planRevision, affectedUnits: [...input.planRevision.affectedUnits], redoUnits: [...input.planRevision.redoUnits], sideEffectUnits: [...input.planRevision.sideEffectUnits] } } : {},
-    ...input.planRevisionBasis ? { planRevisionBasis: { ...input.planRevisionBasis } } : {},
-    ...input.sideEffectRerun ? { sideEffectRerun: { units: [...input.sideEffectRerun.units] } } : {},
-    ...input.acceptanceConfirmation ? { acceptanceConfirmation: { ...input.acceptanceConfirmation, acceptanceCriterionIds: [...input.acceptanceConfirmation.acceptanceCriterionIds] } } : {},
-    status: "pending"
-  };
-  interactions(state)[interaction.id] = interaction;
-  return interaction;
-}
-function findInteractionForTarget(state, target) {
-  return Object.values(state.interactions ?? {}).find(
-    (interaction) => interaction.target === target && interaction.status === "pending"
-  );
-}
+});
 
 // plugins/dev-flow/src/core/decision-interactions.ts
 function pendingInteraction(state) {
@@ -2082,19 +4565,31 @@ function pendingDecisionForState(state) {
   if (state.pendingDecision?.kind === "grill") rejectLegacyGrill();
   return state.pendingDecision;
 }
+var init_decision_interactions = __esm({
+  "plugins/dev-flow/src/core/decision-interactions.ts"() {
+    "use strict";
+    init_approval();
+    init_decision_language();
+    init_errors();
+    init_grill_interaction();
+    init_user_interactions();
+  }
+});
 
 // plugins/dev-flow/src/core/host-health.ts
-import { mkdir as mkdir4, open as open4, readFile as readFile7 } from "node:fs/promises";
-import path9 from "node:path";
-var healthWindowMs = 15 * 60 * 1e3;
-var hostHealthPath = (root) => path9.join(root, ".dev-flow", "host-health.jsonl");
+import { mkdir as mkdir8, open as open8, readFile as readFile14 } from "node:fs/promises";
+import path16 from "node:path";
 async function readHostHealth(root) {
   try {
-    const raw = await readFile7(hostHealthPath(root), "utf8");
+    const raw = await readFile14(hostHealthPath(root), "utf8");
     return raw.split("\n").filter(Boolean).flatMap((line) => {
       try {
         const signal = JSON.parse(line);
-        return (signal.host === "claude" || signal.host === "codex") && typeof signal.kind === "string" && typeof signal.eventId === "string" && typeof signal.at === "string" ? [signal] : [];
+        return (signal.host === "claude" || signal.host === "codex") && typeof signal.kind === "string" && typeof signal.eventId === "string" && typeof signal.at === "string" ? [{
+          ...signal,
+          ...signal.adapterVersion !== void 0 ? { adapterVersion: String(signal.adapterVersion) } : {},
+          ...Array.isArray(signal.capabilities) ? { capabilities: signal.capabilities.filter((value) => typeof value === "string") } : {}
+        }] : [];
       } catch {
         return [];
       }
@@ -2108,8 +4603,8 @@ async function recordHostHealth(root, signal) {
   const before = await readHostHealth(root);
   const latest = [...before].reverse().find((entry) => entry.host === signal.host);
   const now = signal.at ?? (/* @__PURE__ */ new Date()).toISOString();
-  await mkdir4(path9.dirname(hostHealthPath(root)), { recursive: true });
-  const handle = await open4(hostHealthPath(root), "a");
+  await mkdir8(path16.dirname(hostHealthPath(root)), { recursive: true });
+  const handle = await open8(hostHealthPath(root), "a");
   try {
     await handle.writeFile(`${JSON.stringify({ ...signal, at: now })}
 `);
@@ -2149,63 +4644,28 @@ async function assertHostHealth(root, host, operation) {
   }
   return latest;
 }
-
-// plugins/dev-flow/src/core/artifacts.ts
-import { createHash as createHash9 } from "node:crypto";
-import { readFile as readFile8, writeFile } from "node:fs/promises";
-import path10 from "node:path";
-
-// plugins/dev-flow/src/core/approval-basis.ts
-var approvalBasisArtifacts = [
-  "requirements",
-  "implementation-plan"
-];
-function approvalIds(state) {
-  return (state.obligations ?? []).filter((obligation) => obligation.kind === "approval").map((obligation) => obligation.id);
-}
-function confirmedApproval(state) {
-  for (const approvalId of approvalIds(state)) {
-    const record = state.humanGates[approvalId];
-    if (record?.status === "confirmed") return { approvalId, record };
+var healthWindowMs, hostHealthPath;
+var init_host_health = __esm({
+  "plugins/dev-flow/src/core/host-health.ts"() {
+    "use strict";
+    init_errors();
+    healthWindowMs = 15 * 60 * 1e3;
+    hostHealthPath = (root) => path16.join(root, ".dev-flow", "host-health.jsonl");
   }
-  return void 0;
-}
+});
 
-// plugins/dev-flow/src/core/plan-graph.ts
-var TRACE_ANCHOR = /<!-- dev-flow:id=(REQ|AC|TASK|TEST|UNIT)-([0-9]{3,}) kind=(requirement|acceptance-criterion|task|test|implementation-unit) -->/g;
-function parsePlanBlocks(markdown) {
-  TRACE_ANCHOR.lastIndex = 0;
-  const anchors = [];
-  let match;
-  while ((match = TRACE_ANCHOR.exec(markdown)) !== null) {
-    const [, prefix, suffix, kind] = match;
-    anchors.push({ id: `${prefix}-${suffix}`, kind, index: match.index });
+// plugins/dev-flow/src/core/project-config-impact.ts
+var init_project_config_impact = __esm({
+  "plugins/dev-flow/src/core/project-config-impact.ts"() {
+    "use strict";
+    init_traceability_store();
+    init_checkpoint_store();
   }
-  const blocks = /* @__PURE__ */ new Map();
-  for (let index = 0; index < anchors.length; index += 1) {
-    const anchor = anchors[index];
-    const end = anchors[index + 1]?.index ?? markdown.length;
-    blocks.set(anchor.id, { kind: anchor.kind, text: markdown.slice(anchor.index, end) });
-  }
-  return blocks;
-}
-
-// plugins/dev-flow/src/core/artifacts.ts
-var hash = (value) => createHash9("sha256").update(value).digest("hex");
-var featureDirectory = (root, id) => path10.join(root, ".dev-flow", "features", id);
-async function assertArtifactCurrent(root, id, state, kind) {
-  const artifact = state.artifacts[kind];
-  if (!artifact) throw new DevFlowError("MISSING_REQUIRED_ARTIFACT", kind);
-  const contents = await readFile8(path10.join(featureDirectory(root, id), normalizeUnicode(artifact.path)), "utf8");
-  if (hash(contents) !== artifact.sha256) throw new DevFlowError("ARTIFACT_INTEGRITY_FAILED", kind);
-  return contents;
-}
+});
 
 // plugins/dev-flow/src/core/requirements-grill.ts
-import { readFile as readFile9 } from "node:fs/promises";
-import path11 from "node:path";
-var EMPTY_OPEN_QUESTION_MARKERS = /* @__PURE__ */ new Set(["\u65E0", "\u65E0\u3002", "\u6682\u65E0", "\u6682\u65E0\u3002", "\u6CA1\u6709", "\u6CA1\u6709\u3002", "n/a", "N/A", "na", "-", "\u2014"]);
-var OPEN_QUESTION_HEADING = /^##\s*开放问题\s*$/;
+import { readFile as readFile15 } from "node:fs/promises";
+import path17 from "node:path";
 function openQuestionItems(markdown) {
   const lines = markdown.split("\n");
   const start = lines.findIndex((line) => OPEN_QUESTION_HEADING.test(line.trim()));
@@ -2237,8 +4697,8 @@ async function openQuestionsAdvisory(root, state) {
       const decision = pendingDecisionForState(state);
       if (decision?.kind === "grill") return void 0;
     }
-    const contents = await readFile9(
-      path11.join(root, ".dev-flow", "features", state.featureId, normalizeUnicode(artifact.path)),
+    const contents = await readFile15(
+      path17.join(root, ".dev-flow", "features", state.featureId, normalizeUnicode(artifact.path)),
       "utf8"
     );
     const items = openQuestionItems(contents);
@@ -2247,9 +4707,268 @@ async function openQuestionsAdvisory(root, state) {
     return void 0;
   }
 }
+var EMPTY_OPEN_QUESTION_MARKERS, OPEN_QUESTION_HEADING;
+var init_requirements_grill = __esm({
+  "plugins/dev-flow/src/core/requirements-grill.ts"() {
+    "use strict";
+    init_artifacts();
+    init_errors();
+    init_state_store();
+    init_obligations();
+    init_decision_interactions();
+    init_governance_records();
+    init_path_normalization();
+    init_user_interactions();
+    EMPTY_OPEN_QUESTION_MARKERS = /* @__PURE__ */ new Set(["\u65E0", "\u65E0\u3002", "\u6682\u65E0", "\u6682\u65E0\u3002", "\u6CA1\u6709", "\u6CA1\u6709\u3002", "n/a", "N/A", "na", "-", "\u2014"]);
+    OPEN_QUESTION_HEADING = /^##\s*开放问题\s*$/;
+  }
+});
+
+// plugins/dev-flow/src/core/evidence-snapshot-store.ts
+import { mkdir as mkdir9, readFile as readFile16, writeFile as writeFile3 } from "node:fs/promises";
+import path18 from "node:path";
+function featureDirectory3(root, id) {
+  return path18.join(root, ".dev-flow", "features", id);
+}
+async function readEvidenceSnapshot(root, id, snapshotPath) {
+  const raw = await readFile16(path18.join(featureDirectory3(root, id), snapshotPath), "utf8");
+  const parsed = JSON.parse(raw);
+  if (!Array.isArray(parsed)) throw new TypeError("evidence snapshot must be an array");
+  return parsed;
+}
+var init_evidence_snapshot_store = __esm({
+  "plugins/dev-flow/src/core/evidence-snapshot-store.ts"() {
+    "use strict";
+  }
+});
+
+// plugins/dev-flow/src/core/change-invalidation.ts
+async function baselineForRecord(root, state, kind, recordId, baselineRef, aggregateFingerprint) {
+  if (!baselineRef || typeof baselineRef !== "object" || baselineRef === null || Array.isArray(baselineRef)) {
+    return aggregateFingerprint ? { recordId, kind, fingerprint: aggregateFingerprint } : void 0;
+  }
+  const ref = baselineRef;
+  if (typeof ref.sha256 !== "string") return aggregateFingerprint ? { recordId, kind, fingerprint: aggregateFingerprint } : void 0;
+  try {
+    const manifestBytes = await readEvidenceObject(root, state.featureId, ref);
+    const manifest = parseEvidenceBaselineManifest(JSON.parse(manifestBytes.toString("utf8")));
+    const snapshotBytes = await readEvidenceObject(root, state.featureId, manifest.snapshotRef);
+    const snapshot = parseWorkspaceSnapshotManifest(JSON.parse(snapshotBytes.toString("utf8")));
+    return {
+      recordId,
+      kind,
+      fingerprint: manifest.contentFingerprint,
+      snapshotFiles: snapshot.files.map((file) => ({
+        path: file.path,
+        sha256: file.sha256,
+        mode: file.mode,
+        kind: file.kind,
+        ...file.linkTarget !== void 0 ? { linkTarget: file.linkTarget } : {}
+      }))
+    };
+  } catch {
+    return aggregateFingerprint ? { recordId, kind, fingerprint: aggregateFingerprint } : void 0;
+  }
+}
+async function contentBoundBaselines(root, state) {
+  const records = [];
+  const invalidatedAt = state.lastInvalidation?.at ? Date.parse(state.lastInvalidation.at) : Number.NaN;
+  for (const claim of state.governance?.claims ?? []) {
+    if (claim.supersededBy !== void 0) continue;
+    if (claim.claimType !== "review-complete" && claim.claimType !== "verification-current") continue;
+    const basis = claim.basis?.kind === "content" ? claim.basis.sha256 : void 0;
+    if (basis === void 0) continue;
+    const live = claim.claimType === "review-complete" ? state.steps.code_review?.evidence?.fingerprint === basis : state.verification.verifiedFingerprint === basis;
+    if (!live) continue;
+    const record = await baselineForRecord(root, state, "claim", claim.recordId, claim.baselineRef, basis);
+    if (record) records.push(record);
+  }
+  for (const authorization of state.governance?.authorizations ?? []) {
+    if (authorization.supersededBy !== void 0) continue;
+    if (authorization.authorizationType !== "risk-acceptance") continue;
+    const basis = authorization.basis?.kind === "content" ? authorization.basis.sha256 : void 0;
+    if (basis === void 0) continue;
+    if (Number.isFinite(invalidatedAt) && authorization.recordedAt && Date.parse(authorization.recordedAt) < invalidatedAt) continue;
+    const record = await baselineForRecord(root, state, "authorization", authorization.recordId, authorization.baselineRef, basis);
+    if (record) records.push(record);
+  }
+  if (records.length > 0) return records;
+  const verificationEvidence = state.steps.verification?.evidence;
+  if (state.verification.verifiedFingerprint) {
+    return [{ recordId: "", kind: "legacy", fingerprint: state.verification.verifiedFingerprint, snapshotPath: verificationEvidence?.snapshotPath }];
+  }
+  const reviewEvidence = state.steps.code_review?.evidence;
+  if (typeof reviewEvidence?.fingerprint === "string") {
+    return [{ recordId: "", kind: "legacy", fingerprint: reviewEvidence.fingerprint, snapshotPath: reviewEvidence.snapshotPath }];
+  }
+  const accepted = (state.governance?.authorizations ?? []).find((authorization) => authorization.authorizationType === "risk-acceptance" && authorization.supersededBy === void 0 && authorization.basis?.kind === "content" && (!Number.isFinite(invalidatedAt) || !authorization.recordedAt || Date.parse(authorization.recordedAt) >= invalidatedAt));
+  if (accepted?.basis?.kind !== "content") return [];
+  return baselineForRecord(root, state, "authorization", accepted.recordId, accepted.baselineRef, accepted.basis.sha256).then((record) => record ? [record] : []);
+}
+function changedPaths(before, after) {
+  const beforeMap = new Map(before.map((file) => [file.path, file]));
+  const afterMap = new Map(after.map((file) => [file.path, file]));
+  const changed = /* @__PURE__ */ new Set();
+  for (const [filePath, beforeFile] of beforeMap) {
+    const afterFile = afterMap.get(filePath);
+    if (!afterFile) changed.add(filePath);
+    else if (afterFile.sha256 !== beforeFile.sha256 || afterFile.mode !== beforeFile.mode) changed.add(filePath);
+  }
+  for (const [filePath] of afterMap) {
+    if (!beforeMap.has(filePath)) changed.add(filePath);
+  }
+  return [...changed].sort();
+}
+async function invalidateAffectedClaims(root, id, expectedRevision) {
+  const state = await readState(root, id);
+  if (state.lifecycle !== "active") return void 0;
+  const baselines = await contentBoundBaselines(root, state);
+  if (!baselines.length) return void 0;
+  const config = await readProjectConfig(root);
+  const current = await fingerprintFeatureOwned(root, config, state.workspace.ownership);
+  let changedFiles;
+  let afterFiles;
+  const hasSnapshot = baselines.some((baseline) => Boolean(baseline.snapshotFiles || baseline.snapshotPath));
+  const unionChanged = /* @__PURE__ */ new Set();
+  let anyPerRecordFingerprintMismatch = false;
+  for (const baseline of baselines) {
+    let recordChanged;
+    if (baseline.snapshotFiles) {
+      afterFiles ??= (await snapshotGovernedRoots(root, config)).filter((file) => state.workspace.ownership[file.path] !== "excluded");
+      recordChanged = changedPaths(
+        baseline.snapshotFiles.filter((file) => state.workspace.ownership[file.path] !== "excluded"),
+        afterFiles
+      );
+      if (featureOwnedSnapshotHash(afterFiles, state.workspace.ownership) !== baseline.fingerprint) anyPerRecordFingerprintMismatch = true;
+    } else if (baseline.snapshotPath) {
+      try {
+        const before = (await readEvidenceSnapshot(root, id, baseline.snapshotPath)).filter((file) => state.workspace.ownership[file.path] !== "excluded");
+        afterFiles ??= (await snapshotGovernedRoots(root, config)).filter((file) => state.workspace.ownership[file.path] !== "excluded");
+        recordChanged = changedPaths(before, afterFiles);
+      } catch {
+        recordChanged = void 0;
+      }
+    }
+    if (recordChanged === void 0) {
+      changedFiles = void 0;
+      break;
+    }
+    for (const file of recordChanged) unionChanged.add(file);
+  }
+  changedFiles = unionChanged.size > 0 ? [...unionChanged].sort() : [];
+  const unownedDeliveryChange = changedFiles?.some((file) => state.workspace.ownership[file] === void 0) ?? true;
+  const invalidatedAt = state.lastInvalidation?.at ? Date.parse(state.lastInvalidation.at) : Number.NaN;
+  const fullDrift = hasSnapshot ? unownedDeliveryChange : true;
+  const firstBaseline = baselines[0];
+  const comparableCurrent = firstBaseline.snapshotFiles && afterFiles ? featureOwnedSnapshotHash(afterFiles, state.workspace.ownership) : current;
+  const recordMismatch = anyPerRecordFingerprintMismatch || baselines.some((baseline) => baseline.fingerprint !== comparableCurrent);
+  if (!recordMismatch && !fullDrift) return void 0;
+  const reviewEvidence = state.steps.code_review?.evidence;
+  const reviewReopened = state.steps.code_review !== void 0 && (fullDrift || typeof reviewEvidence?.fingerprint !== "string" || reviewEvidence.fingerprint !== current);
+  const verificationReopened = state.verification.verifiedFingerprint !== void 0 && (fullDrift || state.verification.verifiedFingerprint !== current);
+  const liveAuthorizations = (state.governance?.authorizations ?? []).filter((authorization) => authorization.authorizationType === "risk-acceptance" && authorization.supersededBy === void 0 && authorization.basis?.kind === "content" && (!Number.isFinite(invalidatedAt) || !authorization.recordedAt || Date.parse(authorization.recordedAt) >= invalidatedAt));
+  const authorizationBound = liveAuthorizations.some((authorization) => {
+    const basis = authorization.basis;
+    return basis?.kind === "content" && basis.sha256 !== current;
+  });
+  let exceptionBound = authorizationBound;
+  if (!hasSnapshot) {
+    changedFiles = void 0;
+    exceptionBound = true;
+  }
+  if ((changedFiles?.length ?? 0) > 0 && liveAuthorizations.length > 0) {
+    exceptionBound = true;
+  }
+  const checkpointed = (state.implementationUnits ?? []).filter((unit) => unit.status === "checkpointed");
+  let reopenedUnits = [];
+  let fallback = false;
+  let reason = "";
+  if (!changedFiles) {
+    reopenedUnits = checkpointed.map((unit) => unit.unitId);
+    fallback = reopenedUnits.length > 0;
+    reason = reopenedUnits.length ? "\u65E0\u6CD5\u5B9A\u4F4D\u53D8\u5316\u5F71\u54CD\uFF1A\u7F3A\u5C11\u9010\u6587\u4EF6\u57FA\u51C6\u5FEB\u7167\uFF0C\u56DE\u9000\u5230\u5B8C\u6574\u5B9E\u73B0\u91CD\u505A" : "\u65E0\u5B9E\u73B0\u5355\u5143\u8BB0\u5F55\uFF0C\u8DF3\u8FC7\u5355\u5143\u91CD\u5F00";
+  } else if (changedFiles.length > 0) {
+    const matched = /* @__PURE__ */ new Set();
+    for (const unit of checkpointed) {
+      const manifest = await readCheckpointManifest(root, id, unit.checkpointId);
+      const unitFiles = new Set(manifest.files.map((record) => record.path));
+      if (changedFiles.some((file) => unitFiles.has(file))) matched.add(unit.unitId);
+    }
+    reopenedUnits = [...matched].sort();
+    if (reopenedUnits.length === 0) {
+      reopenedUnits = checkpointed.map((unit) => unit.unitId);
+      fallback = reopenedUnits.length > 0;
+      reason = reopenedUnits.length ? "\u65E0\u6CD5\u5B9A\u4F4D\u53D8\u5316\u5F71\u54CD\uFF1A\u53D8\u5316\u6587\u4EF6\u672A\u547D\u4E2D\u4EFB\u4F55\u5B9E\u73B0\u5355\u5143\u7684\u5B9E\u9645\u5199\u5165\u8303\u56F4\uFF0C\u56DE\u9000\u5230\u5B8C\u6574\u5B9E\u73B0\u91CD\u505A" : "\u53D8\u5316\u672A\u547D\u4E2D\u4EFB\u4F55\u5B9E\u73B0\u5355\u5143";
+    } else {
+      reason = "\u53D7\u5F71\u54CD\u5B9E\u73B0\u5355\u5143\u5DF2\u91CD\u5F00";
+    }
+  } else {
+    reason = "\u65E0\u6587\u4EF6\u7EA7\u53D8\u5316\uFF08\u4EC5\u5143\u6570\u636E\u6F02\u79FB\uFF09\uFF0C\u8DF3\u8FC7\u5355\u5143\u91CD\u5F00";
+  }
+  if (reopenedUnits.length === 0 && !reviewReopened && !verificationReopened && !exceptionBound) return void 0;
+  const invalidated = {
+    changedFiles,
+    reopenedUnits,
+    reviewReopened,
+    verificationReopened,
+    fallback,
+    reason
+  };
+  await mutate(root, id, expectedRevision, "claims-invalidated", (draft) => {
+    for (const unitId of reopenedUnits) {
+      const unit = (draft.implementationUnits ?? []).find((candidate) => candidate.unitId === unitId);
+      if (!unit || unit.status !== "checkpointed") continue;
+      reopenImplementationUnit(unit);
+    }
+    const liveReview = draft.steps.code_review?.evidence;
+    if (draft.steps.code_review !== void 0 && (fullDrift || typeof liveReview?.fingerprint !== "string" || liveReview.fingerprint !== current)) {
+      delete draft.steps.code_review;
+    }
+    if (verificationReopened) {
+      delete draft.verification.satisfiedByAttemptId;
+      delete draft.verification.verifiedFingerprint;
+      draft.steps.verification = { status: "pending", evidence: { reason: "governed-files-changed", current } };
+    }
+    if (reopenedUnits.length > 0) delete draft.steps.implementation;
+    if (draft.acceptance) {
+      draft.acceptance.dispositions = draft.acceptance.dispositions.map((disposition) => ({
+        ...disposition,
+        status: "stale"
+      }));
+    }
+    draft.logicComplete = false;
+    delete draft.steps.finalize;
+    draft.lastInvalidation = {
+      at: (/* @__PURE__ */ new Date()).toISOString(),
+      ...changedFiles ? { changedFiles } : {},
+      reopenedUnits,
+      reviewReopened,
+      verificationReopened,
+      fallback,
+      reason
+    };
+    draft.lastUpdatedBy = { host: state.lastUpdatedBy.host, pluginVersion: "6.0.0" };
+  }, { changedFiles, reopenedUnits, reviewReopened, verificationReopened, fallback, reason });
+  return invalidated;
+}
+var init_change_invalidation = __esm({
+  "plugins/dev-flow/src/core/change-invalidation.ts"() {
+    "use strict";
+    init_fingerprint();
+    init_errors();
+    init_state_store();
+    init_checkpoint_store();
+    init_evidence_snapshot_store();
+    init_evidence_store2();
+    init_evidence_baseline2();
+    init_evidence_baseline();
+    init_evidence_store();
+    init_rollback();
+  }
+});
 
 // plugins/dev-flow/src/core/ownership-workflow.ts
-import { createHash as createHash10, randomUUID as randomUUID5 } from "node:crypto";
+import { createHash as createHash15, randomUUID as randomUUID9 } from "node:crypto";
 function unknownOwnershipPaths(state) {
   const candidates = new Set(state.workspace.unownedPaths ?? Object.keys(state.workspace.startedDirty));
   return [...candidates].filter((file) => state.workspace.ownership[file] === void 0).sort();
@@ -2264,11 +4983,11 @@ function presentWorkspaceOwnership(state, paths, options = {}) {
   const currentPaths = [...new Set(paths)].sort();
   const batchPaths = [...new Set(options.batchPaths ?? currentPaths)].sort();
   const single = options.single ?? currentPaths.length === 1;
-  const presentationEventId = options.presentationEventId ?? randomUUID5();
-  const basisHash2 = createHash10("sha256").update(JSON.stringify({ kind: "workspace-ownership", paths: batchPaths, fingerprint: state.workspace.lastWorkspaceFingerprint })).digest("hex");
+  const presentationEventId = options.presentationEventId ?? randomUUID9();
+  const basisHash2 = createHash15("sha256").update(JSON.stringify({ kind: "workspace-ownership", paths: batchPaths, fingerprint: state.workspace.lastWorkspaceFingerprint })).digest("hex");
   const interaction = createInteraction(state, {
     kind: "workspace-ownership",
-    target: `workspace:${createHash10("sha256").update(batchPaths.join("\n")).digest("hex").slice(0, 16)}:${currentPaths[0] ?? "batch"}`,
+    target: `workspace:${createHash15("sha256").update(batchPaths.join("\n")).digest("hex").slice(0, 16)}:${currentPaths[0] ?? "batch"}`,
     basisHash: basisHash2,
     question: workspaceOwnershipQuestion(currentPaths, single),
     options: single ? [
@@ -2287,26 +5006,27 @@ function presentWorkspaceOwnership(state, paths, options = {}) {
   return { interaction, presentationEventId };
 }
 async function reconcileWorkspace(root, id, expectedRevision, host) {
+  await invalidateAffectedClaims(root, id, expectedRevision);
   const state = await readState(root, id);
   const config = await readProjectConfig(root);
-  const { workspace, contentChanged, changedPaths } = await reconcileWorkspaceForFeature(root, state, config);
-  const legalCheckpointPaths = contentChanged ? await legalActiveUnitChanges(root, state, changedPaths) : /* @__PURE__ */ new Set();
+  const { workspace, contentChanged, changedPaths: changedPaths2 } = await reconcileWorkspaceForFeature(root, state, config);
+  const legalCheckpointPaths = contentChanged ? await legalActiveUnitChanges(root, state, changedPaths2) : /* @__PURE__ */ new Set();
   const active = state.lifecycle === "finalized" && contentChanged ? await readActive(root) : void 0;
   const reopenedLifecycle = state.lifecycle === "finalized" && contentChanged ? !active || active.featureId === id ? "active" : "paused" : void 0;
-  const checkpointAffected = contentChanged ? checkpointAffectedByPaths(state, changedPaths, legalCheckpointPaths) : false;
+  const checkpointAffected = contentChanged ? checkpointAffectedByPaths(state, changedPaths2, legalCheckpointPaths) : false;
   let presentationEventId;
-  return mutate(root, id, expectedRevision, "workspace-reconciled", (draft) => {
+  return mutate(root, id, state.revision, "workspace-reconciled", (draft) => {
     draft.workspace = workspace;
-    if (contentChanged) markAffectedEvidenceStale(draft, changedPaths, reopenedLifecycle, legalCheckpointPaths);
+    if (contentChanged) markAffectedEvidenceStale(draft, changedPaths2, reopenedLifecycle, legalCheckpointPaths);
     presentationEventId = queueNextOwnershipDecision(draft);
-    draft.lastUpdatedBy = { host, pluginVersion: "5.1.4" };
+    draft.lastUpdatedBy = { host, pluginVersion: "6.0.0" };
   }, () => ({
     observedHead: workspace.observedHead,
     commitCount: workspace.observedCommits.length,
     contentChanged,
     checkpointAffected,
     reopenedLifecycle,
-    unresolvedOwnership: changedPaths.filter((file) => workspace.ownership[file] === void 0),
+    unresolvedOwnership: changedPaths2.filter((file) => workspace.ownership[file] === void 0),
     ...presentationEventId ? { presentationEventId } : {}
   }));
 }
@@ -2316,8 +5036,8 @@ function queueNextOwnershipDecision(draft) {
   if (!paths.length) return void 0;
   return presentWorkspaceOwnership(draft, paths).presentationEventId;
 }
-function markAffectedEvidenceStale(draft, changedPaths, reopenedLifecycle, legalCheckpointPaths = /* @__PURE__ */ new Set()) {
-  const checkpointAffected = checkpointAffectedByPaths(draft, changedPaths, legalCheckpointPaths);
+function markAffectedEvidenceStale(draft, changedPaths2, reopenedLifecycle, legalCheckpointPaths = /* @__PURE__ */ new Set()) {
+  const checkpointAffected = checkpointAffectedByPaths(draft, changedPaths2, legalCheckpointPaths);
   draft.evidenceFreshness = {
     ...draft.evidenceFreshness,
     verification: draft.verification.satisfiedByAttemptId !== void 0 ? "stale" : draft.evidenceFreshness.verification,
@@ -2345,11 +5065,11 @@ function markAffectedEvidenceStale(draft, changedPaths, reopenedLifecycle, legal
     "verification"
   ]);
 }
-function checkpointAffectedByPaths(state, changedPaths, legalCheckpointPaths) {
-  const externallyChangedPaths = changedPaths.filter((file) => !legalCheckpointPaths.has(file));
+function checkpointAffectedByPaths(state, changedPaths2, legalCheckpointPaths) {
+  const externallyChangedPaths = changedPaths2.filter((file) => !legalCheckpointPaths.has(file));
   return state.checkpoints?.some((checkpoint) => checkpoint.files.some((file) => externallyChangedPaths.includes(file))) ?? false;
 }
-async function legalActiveUnitChanges(root, state, changedPaths) {
+async function legalActiveUnitChanges(root, state, changedPaths2) {
   const activeUnit = state.implementationUnits?.find((unit) => unit.status === "active" || unit.status === "verified");
   if (!activeUnit || !state.traceability || !state.checkpoints?.length) return /* @__PURE__ */ new Set();
   const trace = await readTraceability(root, state);
@@ -2364,7 +5084,7 @@ async function legalActiveUnitChanges(root, state, changedPaths) {
     }
   }
   const legal = /* @__PURE__ */ new Set();
-  for (const file of changedPaths) {
+  for (const file of changedPaths2) {
     if (!pathWithinFileScope(file, node.fileScope)) continue;
     let event;
     for (let index = events.length - 1; index > lastCheckpointEventIndex; index -= 1) {
@@ -2381,84 +5101,200 @@ async function legalActiveUnitChanges(root, state, changedPaths) {
   }
   return legal;
 }
-
-// plugins/dev-flow/src/core/basis-state.ts
-function basisIsCurrent(basis, current) {
-  switch (basis.kind) {
-    case "content":
-      return current.contentFingerprint !== void 0 && basis.sha256 === current.contentFingerprint;
-    case "event":
-      return current.eventIds?.has(basis.eventId) ?? false;
-    case "slice": {
-      return current.sliceBases?.[basis.sliceKey] === basis.sliceHash;
-    }
+var init_ownership_workflow = __esm({
+  "plugins/dev-flow/src/core/ownership-workflow.ts"() {
+    "use strict";
+    init_errors();
+    init_decision_interactions();
+    init_user_interactions();
+    init_state_store();
+    init_change_invalidation();
+    init_git_reconciliation();
+    init_obligations();
+    init_rollback();
+    init_traceability_store();
+    init_step_order();
+    init_workspace_store();
   }
-}
-function deriveCurrency(record, current) {
-  const basis = record.basis;
-  if (!basis) return "unconfirmed";
-  if (!basisIsCurrent(basis, current)) return currentKnown(basis, current) ? "stale" : "unconfirmed";
-  return "current";
-}
-function currentKnown(basis, current) {
-  switch (basis.kind) {
-    case "content":
-      return current.contentFingerprint !== void 0;
-    case "event":
-      return basis.eventId !== void 0;
-    case "slice":
-      return current.sliceBases?.[basis.sliceKey] !== void 0;
+});
+
+// plugins/dev-flow/src/core/route-workflow.ts
+var init_route_workflow = __esm({
+  "plugins/dev-flow/src/core/route-workflow.ts"() {
+    "use strict";
+    init_contract2();
+    init_route();
+    init_types();
+    init_errors();
+    init_repository_facts();
+    init_fingerprint();
+    init_project_config();
+    init_traceability();
+    init_traceability_store();
+    init_review_store();
+    init_basis_state();
+    init_user_interactions();
+    init_decision_interactions();
+    init_state_store();
   }
-}
+});
 
-// plugins/dev-flow/src/core/governance-state.ts
-function governanceLedger(state) {
-  return state.governance ?? EMPTY_GOVERNANCE_LEDGER;
-}
-function currentRiskAuthorizations(state, basis) {
-  return governanceLedger(state).authorizations.filter((authorization) => authorization.authorizationType === "risk-acceptance" && deriveCurrency(authorization, basis) === "current");
-}
+// plugins/dev-flow/src/core/decision-ledger.ts
+var init_decision_ledger = __esm({
+  "plugins/dev-flow/src/core/decision-ledger.ts"() {
+    "use strict";
+    init_errors();
+  }
+});
 
-// plugins/dev-flow/src/core/quality-exceptions.ts
-function hasCurrentQualityException(state, kind) {
-  const invalidatedAt = state.lastInvalidation?.at ? Date.parse(state.lastInvalidation.at) : Number.NaN;
-  const authorization = currentRiskAuthorizations(state, { contentFingerprint: state.businessFingerprint }).some((item) => item.target === kind && (!Number.isFinite(invalidatedAt) || !item.recordedAt || Date.parse(item.recordedAt) >= invalidatedAt));
-  return authorization;
-}
+// plugins/dev-flow/src/core/interaction-provenance.ts
+var init_interaction_provenance = __esm({
+  "plugins/dev-flow/src/core/interaction-provenance.ts"() {
+    "use strict";
+    init_user_interactions();
+    init_errors();
+  }
+});
 
-// plugins/dev-flow/src/core/checkpoints.ts
-import { randomUUID as randomUUID6, createHash as createHash11 } from "node:crypto";
-import { access, mkdir as mkdir5, open as open5, readFile as readFile10, readlink as readlink3, readdir as readdir4, rename as rename4 } from "node:fs/promises";
-import path12 from "node:path";
+// plugins/dev-flow/src/core/decision-workflow.ts
+var init_decision_workflow = __esm({
+  "plugins/dev-flow/src/core/decision-workflow.ts"() {
+    "use strict";
+    init_governance_records();
+    init_decision_ledger();
+    init_errors();
+    init_interaction_provenance();
+    init_decision_interactions();
+    init_text_normalization();
+    init_user_interactions();
+    init_state_store();
+  }
+});
+
+// plugins/dev-flow/src/core/plan-revision.ts
+var init_plan_revision2 = __esm({
+  "plugins/dev-flow/src/core/plan-revision.ts"() {
+    "use strict";
+    init_stable_json();
+    init_contract2();
+    init_plan_revision();
+    init_rollback();
+    init_errors();
+    init_artifacts();
+    init_plan_compile_context();
+    init_project_config();
+    init_evidence_store2();
+    init_traceability_store();
+    init_step_order();
+    init_user_interactions();
+    init_decision_interactions();
+    init_state_store();
+    init_review_store();
+  }
+});
+
+// plugins/dev-flow/src/core/approval-interactions.ts
+var init_approval_interactions = __esm({
+  "plugins/dev-flow/src/core/approval-interactions.ts"() {
+    "use strict";
+    init_contract2();
+    init_errors();
+    init_approval();
+    init_approval_basis();
+    init_requirements_grill();
+    init_state_store();
+    init_traceability_gates();
+    init_review_projection();
+    init_step_order();
+    init_obligations();
+    init_user_interactions();
+  }
+});
+
+// plugins/dev-flow/src/core/acceptance-store.ts
+var init_acceptance_store = __esm({
+  "plugins/dev-flow/src/core/acceptance-store.ts"() {
+    "use strict";
+    init_errors();
+  }
+});
+
+// plugins/dev-flow/src/core/acceptance.ts
+var init_acceptance = __esm({
+  "plugins/dev-flow/src/core/acceptance.ts"() {
+    "use strict";
+    init_fingerprint();
+    init_state_store();
+    init_traceability_store();
+    init_repository_fact_store();
+    init_acceptance_store();
+    init_errors();
+    init_user_interactions();
+  }
+});
+
+// plugins/dev-flow/src/core/repair-loop.ts
+var init_repair_loop = __esm({
+  "plugins/dev-flow/src/core/repair-loop.ts"() {
+    "use strict";
+  }
+});
 
 // plugins/dev-flow/src/core/verification-store.ts
 import { execFile as execFile3 } from "node:child_process";
 import { promisify as promisify3 } from "node:util";
-var run2 = promisify3(execFile3);
+var run2;
+var init_verification_store = __esm({
+  "plugins/dev-flow/src/core/verification-store.ts"() {
+    "use strict";
+    run2 = promisify3(execFile3);
+  }
+});
 
 // plugins/dev-flow/src/core/verification.ts
-var DEFAULT_COMMAND_MAX_OUTPUT_BYTES = 1024 * 1024;
+var DEFAULT_COMMAND_MAX_OUTPUT_BYTES;
+var init_verification = __esm({
+  "plugins/dev-flow/src/core/verification.ts"() {
+    "use strict";
+    init_governance_records();
+    init_errors();
+    init_fingerprint();
+    init_requirements_grill();
+    init_state_store();
+    init_project_config();
+    init_traceability_store();
+    init_step_order();
+    init_repair_loop();
+    init_obligations();
+    init_contract2();
+    init_change_invalidation();
+    init_evidence_baseline2();
+    init_verification_store();
+    DEFAULT_COMMAND_MAX_OUTPUT_BYTES = 1024 * 1024;
+  }
+});
 
 // plugins/dev-flow/src/core/checkpoints.ts
-var digest4 = (value) => createHash11("sha256").update(value).digest("hex");
-var featureDirectory2 = (root, featureId) => path12.join(root, ".dev-flow", "features", featureId);
-function blobPath(sha256) {
-  return `checkpoints/blobs/${sha256}`;
+import { randomUUID as randomUUID10, createHash as createHash16 } from "node:crypto";
+import { access, mkdir as mkdir10, open as open9, readFile as readFile17, readlink as readlink3, readdir as readdir6, rename as rename8 } from "node:fs/promises";
+import path19 from "node:path";
+function blobPath(sha2564) {
+  return `checkpoints/blobs/${sha2564}`;
 }
 function baselinePath(unitId) {
   return `checkpoints/baselines/${unitId}.json`;
 }
 async function writeAtomic(file, contents) {
-  const temp = `${file}.${randomUUID6()}.tmp`;
-  const handle = await open5(temp, "w");
+  const temp = `${file}.${randomUUID10()}.tmp`;
+  const handle = await open9(temp, "w");
   try {
     await handle.writeFile(contents);
     await handle.sync();
   } finally {
     await handle.close();
   }
-  await rename4(temp, file);
-  const directory = await open5(path12.dirname(file), "r");
+  await rename8(temp, file);
+  const directory = await open9(path19.dirname(file), "r");
   try {
     await directory.sync();
   } finally {
@@ -2474,17 +5310,17 @@ async function pathExists(file) {
   }
 }
 async function writeBlobIfAbsent(root, featureId, bytes) {
-  const sha256 = digest4(bytes);
-  const file = path12.join(featureDirectory2(root, featureId), blobPath(sha256));
-  if (await pathExists(file)) return sha256;
-  await mkdir5(path12.dirname(file), { recursive: true });
+  const sha2564 = digest6(bytes);
+  const file = path19.join(featureDirectory4(root, featureId), blobPath(sha2564));
+  if (await pathExists(file)) return sha2564;
+  await mkdir10(path19.dirname(file), { recursive: true });
   await writeAtomic(file, bytes);
-  return sha256;
+  return sha2564;
 }
 async function captureUnitBaseline(root, featureId, unitId, snapshot) {
   for (const file2 of snapshot) {
-    const bytes = file2.kind === "symlink" ? Buffer.from(await readlink3(path12.join(root, file2.path))) : await readFile10(path12.join(root, file2.path));
-    if (digest4(bytes) !== file2.sha256) {
+    const bytes = file2.kind === "symlink" ? Buffer.from(await readlink3(path19.join(root, file2.path))) : await readFile17(path19.join(root, file2.path));
+    if (digest6(bytes) !== file2.sha256) {
       throw new DevFlowError("CHECKPOINT_HASH_MISMATCH", "\u6355\u83B7\u5355\u5143\u57FA\u7EBF\u65F6 governed \u6587\u4EF6\u53D1\u751F\u53D8\u5316\u3002", { path: file2.path });
     }
     await writeBlobIfAbsent(root, featureId, bytes);
@@ -2496,335 +5332,37 @@ async function captureUnitBaseline(root, featureId, unitId, snapshot) {
     capturedAt: (/* @__PURE__ */ new Date()).toISOString(),
     files: snapshot
   };
-  const file = path12.join(featureDirectory2(root, featureId), baselinePath(unitId));
-  await mkdir5(path12.dirname(file), { recursive: true });
+  const file = path19.join(featureDirectory4(root, featureId), baselinePath(unitId));
+  await mkdir10(path19.dirname(file), { recursive: true });
   await writeAtomic(file, `${JSON.stringify(baseline, null, 2)}
 `);
 }
+var digest6, featureDirectory4;
+var init_checkpoints = __esm({
+  "plugins/dev-flow/src/core/checkpoints.ts"() {
+    "use strict";
+    init_contract2();
+    init_rollback();
+    init_errors();
+    init_fingerprint();
+    init_project_config();
+    init_review_store();
+    init_host_health();
+    init_obligations();
+    init_state_store();
+    init_step_order();
+    init_traceability_store();
+    init_verification();
+    init_checkpoint_store();
+    init_change_invalidation();
+    init_evidence_store2();
+    digest6 = (value) => createHash16("sha256").update(value).digest("hex");
+    featureDirectory4 = (root, featureId) => path19.join(root, ".dev-flow", "features", featureId);
+  }
+});
 
 // plugins/dev-flow/src/core/implementation-units.ts
-import { createHash as createHash13, randomUUID as randomUUID8 } from "node:crypto";
-
-// plugins/dev-flow/src/core/review-jobs.ts
-import { createHash as createHash12, randomUUID as randomUUID7 } from "node:crypto";
-var digest5 = (value) => createHash12("sha256").update(value).digest("hex");
-var leaseMilliseconds = 60 * 60 * 1e3;
-var samplingLeaseMilliseconds = 120 * 1e3;
-var basisArtifactKinds = ["requirements", "implementation-plan", "coverage-matrix", "rollback-units"];
-function nonBehaviorDispositions(trace) {
-  const nodes = Object.values(trace?.nodes ?? {}).filter((node) => node.status !== "tombstoned");
-  const coveredBy = /* @__PURE__ */ new Map();
-  for (const node of nodes) {
-    if (node.kind !== "task") continue;
-    for (const covered of node.covers) {
-      if (!covered.startsWith("AC-")) continue;
-      const list = coveredBy.get(covered) ?? [];
-      list.push({ taskId: node.id, ...node.tdd ? { tdd: node.tdd } : {} });
-      coveredBy.set(covered, list);
-    }
-  }
-  return nodes.filter((node) => node.kind === "acceptance-criterion" && node.verificationDisposition !== void 0 && node.verificationDisposition.kind !== "behavior-test").map((node) => ({
-    criterionId: node.id,
-    dispositionKind: node.verificationDisposition.kind,
-    ...node.verificationDisposition.reason ? { reason: node.verificationDisposition.reason } : {},
-    ...node.verificationDisposition.target ? { target: node.verificationDisposition.target } : {},
-    coveredBy: (coveredBy.get(node.id) ?? []).sort((left, right) => left.taskId.localeCompare(right.taskId))
-  })).sort((left, right) => left.criterionId.localeCompare(right.criterionId));
-}
-function invalid3(code, message, details = {}) {
-  throw new DevFlowError(code, message, details);
-}
-function reviewArtifactKinds(state) {
-  return basisArtifactKinds.filter((kind) => Boolean(state.artifacts[kind]));
-}
-async function deriveReviewInput(root, state) {
-  const trace = state.traceability ? await readTraceability(root, state) : void 0;
-  const { config, sha256: projectConfigSha256 } = await readProjectConfigSnapshot(root);
-  const frozenArtifacts = await Promise.all(reviewArtifactKinds(state).map(async (kind) => {
-    const artifact = state.artifacts[kind];
-    if (!artifact) invalid3("REVIEW_BASIS_ARTIFACT_MISSING", `review basis artifact is missing: ${kind}`, { kind });
-    let contents;
-    try {
-      contents = await assertArtifactCurrent(root, state.featureId, state, kind);
-    } catch (error) {
-      if (error instanceof DevFlowError && error.code === "ARTIFACT_INTEGRITY_FAILED") throw error;
-      invalid3("REVIEW_BASIS_ARTIFACT_MISSING", `review basis artifact cannot be read: ${kind}`, { kind });
-    }
-    if (digest5(contents) !== artifact.sha256) {
-      invalid3("ARTIFACT_INTEGRITY_FAILED", `review basis artifact was edited without registration: ${kind}`, {
-        kind,
-        recoveryHint: `Re-register the edited ${kind} artifact with the latest feature revision known before the edit.`
-      });
-    }
-    return { kind, path: artifact.path, sha256: artifact.sha256, contents };
-  }));
-  const projectContents = (await readProjectConfigSnapshot(root)).contents;
-  if (digest5(projectContents) !== projectConfigSha256) {
-    invalid3("REVIEW_BASIS_UNAVAILABLE", "project configuration changed while review basis was being captured");
-  }
-  const scopeManifest = {
-    inScope: [...state.scope.inScope].sort(),
-    outOfScope: [...state.scope.outOfScope].sort(),
-    governedRoots: [...config.governedRoots].sort(),
-    rollbackFileScopes: Object.values(trace?.nodes ?? {}).reduce((scopes, node) => {
-      if ((node.kind === "implementation-unit" || node.kind === "rollback") && node.status === "current") {
-        scopes.push({ id: node.id, fileScope: [...node.fileScope].sort() });
-      }
-      return scopes;
-    }, []).sort((left, right) => left.id.localeCompare(right.id))
-  };
-  const governedRootsFingerprint = await fingerprintGovernedRoots(root, config);
-  const featureOwnedFingerprint = await fingerprintFeatureOwned(root, config, state.workspace.ownership);
-  const basis = {
-    featureId: state.featureId,
-    route: state.route,
-    workflowCapabilities: { ...state.workflowCapabilities ?? { trace: 0, review: 0, checkpoints: 0, rollbackExecution: 0 } },
-    classification: {
-      level: state.classification.level,
-      topology: state.classification.topology,
-      ...state.classification.requirements ? { requirements: state.classification.requirements } : {},
-      riskLabels: [...state.classification.riskLabels].sort()
-    },
-    artifacts: frozenArtifacts.map(({ kind, path: artifactPath, sha256 }) => ({ kind, path: artifactPath, sha256 })),
-    ...state.traceability && trace ? { traceability: { path: state.traceability.path, sha256: state.traceability.sha256, revision: trace.revision } } : {},
-    projectConfigSha256,
-    verificationCommandHashes: verificationCommandHashes(config),
-    scopeManifestSha256: digest5(canonicalReviewValueJson(scopeManifest)),
-    governedRootsFingerprint,
-    featureOwnedFingerprint
-  };
-  const roles = [.../* @__PURE__ */ new Set([
-    ...state.classification.controls.reviewRoles,
-    ...state.classification.controls.codeReview !== "none" ? ["code-quality", "requirement-fidelity"] : []
-  ])];
-  const roleBasisHashes = Object.fromEntries(
-    roles.map((role) => [role, roleBasisHash(basis, frozenArtifacts, trace, role)])
-  );
-  return {
-    basis,
-    roleBasisHashes,
-    frozenArtifacts,
-    projectConfig: { sha256: projectConfigSha256, contents: projectContents },
-    scopeManifest: {
-      governedRoots: scopeManifest.governedRoots,
-      rollbackFileScopes: scopeManifest.rollbackFileScopes.flatMap((item) => item.fileScope),
-      traceIds: Object.values(trace?.nodes ?? {}).filter((node) => node.status === "current").map((node) => node.id).sort(),
-      frozenArtifactPaths: frozenArtifacts.map((artifact) => artifact.path).sort()
-    },
-    nonBehaviorDispositions: nonBehaviorDispositions(trace)
-  };
-}
-function basisHash(basis) {
-  return semanticReviewBasisHash(basis);
-}
-function roleBasisHash(basis, frozenArtifacts, trace, role) {
-  const artifacts = frozenArtifacts.filter((artifact) => {
-    if (role === "code-quality" || role === "requirement-fidelity") return true;
-    if (role === "requirements-coverage") return artifact.kind === "requirements" || artifact.kind === "implementation-plan";
-    if (role === "architecture-testability") return artifact.kind === "implementation-plan";
-    if (role === "rollback-operability") return artifact.kind === "implementation-plan" || artifact.kind === "rollback-units";
-    return artifact.kind === "requirements" || artifact.kind === "implementation-plan";
-  }).map(({ kind, path: artifactPath, sha256 }) => ({ kind, path: artifactPath, sha256 }));
-  const traceKinds = role === "requirements-coverage" || role === "requirement-fidelity" ? ["requirement", "acceptance-criterion", "task", "test", "implementation-unit"] : role === "architecture-testability" ? ["task", "test", "implementation-unit"] : role === "rollback-operability" ? ["task", "implementation-unit", "recovery", "rollback"] : ["requirement", "acceptance-criterion", "task", "test", "implementation-unit", "recovery", "rollback"];
-  const traceSlice = Object.values(trace?.nodes ?? {}).filter((node) => node.status !== "tombstoned" && traceKinds.includes(node.kind)).sort((left, right) => left.id.localeCompare(right.id)).map(({ sourceArtifact: _sourceArtifact, sourceSha256: _sourceSha256, sourceAnchor: _sourceAnchor, sourceBlockSha256: _sourceBlockSha256, status: _status, ...semantic }) => semantic);
-  const specialtyRisk = {
-    security: ["security"],
-    "data-irreversibility": ["data", "irreversible_consequence"],
-    "money-safety": ["money"],
-    "contract-failure": ["external"],
-    "recovery-observability": ["availability"],
-    "critical-correctness": ["critical_correctness"]
-  };
-  if (specialtyRisk[role]) {
-    return digest5(canonicalReviewValueJson({
-      role,
-      route: basis.route,
-      level: basis.classification.level,
-      riskLabels: basis.classification.riskLabels.filter((label) => specialtyRisk[role].includes(label)),
-      // Specialty roles follow structured execution semantics. Whole-document
-      // hashes would turn unrelated wording edits into a full risk re-review.
-      traceSlice
-    }));
-  }
-  const referencedCommandIds = traceSlice.flatMap((node) => {
-    if (node.kind === "implementation-unit") return node.forwardVerification;
-    if (node.kind === "rollback") return [...node.forwardVerification, ...node.rollbackVerification];
-    return [];
-  }).filter((reference) => typeof reference === "string");
-  const referencedCommandHashes = Object.fromEntries([...new Set(referencedCommandIds)].sort().filter((id) => basis.verificationCommandHashes?.[id] !== void 0).map((id) => [id, basis.verificationCommandHashes[id]]));
-  return digest5(canonicalReviewValueJson({
-    role,
-    route: basis.route,
-    level: basis.classification.level,
-    artifacts,
-    traceSlice,
-    // code review 必须绑定 feature-owned 内容：源码/测试变化后不得复用旧审查
-    // （audit-log 遗留偏差 1 的 role-basis 根因）。
-    ...role === "code-quality" || role === "requirement-fidelity" ? { featureOwnedFingerprint: basis.featureOwnedFingerprint ?? "" } : {},
-    // requirements-coverage 显式绑定非行为处置豁免清单：豁免变化必须使该角色
-    // basis 失效（traceSlice 已覆盖，这里把语义绑定写明，防止切片收窄后脱钩）。
-    ...role === "requirements-coverage" ? { nonBehaviorDispositions: nonBehaviorDispositions(trace) } : {},
-    ...role === "architecture-testability" || role === "rollback-operability" ? { verificationCommandHashes: referencedCommandHashes } : {}
-  }));
-}
-function codeReviewIsolationRequired(state) {
-  return state.classification.controls.codeReview === "independent" || state.classification.controls.codeReview === "full";
-}
-function submittedSourceForJob(ledger, job, visited = /* @__PURE__ */ new Set()) {
-  if (job.status === "submitted") return job;
-  if (job.status !== "reused" || !job.reusedFrom) return void 0;
-  const key = `${job.reusedFrom.batchId}:${job.reusedFrom.jobId}`;
-  if (visited.has(key)) return void 0;
-  visited.add(key);
-  const sourceBatch = ledger.batches.find((candidate) => candidate.batchId === job.reusedFrom.batchId);
-  const sourceJob = sourceBatch?.jobs.find((candidate) => candidate.jobId === job.reusedFrom.jobId);
-  return sourceJob ? submittedSourceForJob(ledger, sourceJob, visited) : void 0;
-}
-function jobHasEffectiveIsolationProof(ledger, job) {
-  const source = submittedSourceForJob(ledger, job);
-  return Boolean(source?.submission?.isolationProof);
-}
-function submittedFindings(ledger) {
-  return ledger.batches.flatMap((batch) => batch.jobs.flatMap((job) => (job.submission?.findings ?? []).map((finding) => ({ batch, job, finding }))));
-}
-function sortedFindingIds(findingIds) {
-  if (!Array.isArray(findingIds) || !findingIds.length || findingIds.some((id) => typeof id !== "string" || !id)) {
-    invalid3("REVIEW_RISK_ACCEPTANCE_INVALID", "risk acceptance requires one or more finding ids");
-  }
-  const sorted = [...findingIds].sort();
-  if (new Set(sorted).size !== sorted.length) {
-    invalid3("REVIEW_RISK_ACCEPTANCE_INVALID", "risk acceptance finding ids must be unique");
-  }
-  return sorted;
-}
-function findingSetHash(batch, findings) {
-  const items = findings.map((finding) => ({ findingId: finding.findingId, sha256: digest5(canonicalReviewValueJson(finding)) })).sort((left, right) => left.findingId.localeCompare(right.findingId));
-  return digest5(canonicalReviewValueJson({ batchId: batch.batchId, basisHash: batch.basisHash, findings: items }));
-}
-function riskBinding(interaction) {
-  const binding = interaction.binding;
-  if (interaction.kind !== "risk-acceptance" || !binding || typeof binding.batchId !== "string" || typeof binding.findingSetHash !== "string" || !Array.isArray(binding.findingIds)) {
-    invalid3("REVIEW_RISK_ACCEPTANCE_INVALID", "interaction is not a valid review risk-acceptance decision", { interactionId: interaction.id });
-  }
-  return { batchId: binding.batchId, findingIds: sortedFindingIds(binding.findingIds), findingSetHash: binding.findingSetHash };
-}
-function planReviewBoundToBatch(state, batch) {
-  const evidence = state.steps.planning?.evidence;
-  return state.steps.planning?.status === "satisfied" && evidence?.batchId === batch.batchId && evidence?.basisHash === batch.basisHash;
-}
-function currentUnresolvedBlocking(ledger, batch, state) {
-  if (ledger.findingEvents?.length) {
-    const roleBasis = (origin) => batch.jobs.find((job) => job.role === origin.role)?.roleBasisHash;
-    return unresolvedBlockingFindings(ledger, roleBasis);
-  }
-  const jobs = ledger.batches.flatMap((candidate) => candidate.jobs);
-  const dispositions = Object.assign({}, ...ledger.batches.map((candidate) => candidate.dispositions ?? {}));
-  return jobs.flatMap((job) => job.submission?.findings ?? []).filter((finding) => {
-    if (finding.severity !== "blocking") return false;
-    const disposition = dispositions[finding.findingId];
-    if (!disposition) return true;
-    if (disposition.kind === "risk-accepted") {
-      if (disposition.batchId !== batch.batchId || disposition.basisHash !== batch.basisHash) return true;
-      const interaction = state.interactions?.[disposition.interactionId];
-      if (!interaction || interaction.kind !== "risk-acceptance" || interaction.status !== "resolved" || interaction.response?.action !== "accept" || interaction.basisHash !== batch.basisHash) return true;
-      let binding;
-      try {
-        binding = riskBinding(interaction);
-      } catch {
-        return true;
-      }
-      if (binding.batchId !== batch.batchId || binding.findingSetHash !== disposition.findingSetHash || binding.findingIds.join("\n") !== [...disposition.findingIds].sort().join("\n") || !binding.findingIds.includes(finding.findingId)) return true;
-      const acceptedFindings = submittedFindings(ledger).filter(({ batch: source, finding: candidate }) => source.batchId === batch.batchId && binding.findingIds.includes(candidate.findingId)).map(({ finding: candidate }) => candidate);
-      if (acceptedFindings.length !== binding.findingIds.length || acceptedFindings.some((candidate) => candidate.severity !== "blocking") || findingSetHash(batch, acceptedFindings) !== binding.findingSetHash) return true;
-      return false;
-    }
-    const successor = ledger.batches.find((candidate) => candidate.batchId === disposition.successorBatchId);
-    const resolutionJob = successor?.jobs.find((candidate) => candidate.jobId === disposition.resolutionJobId);
-    const sourceJob = jobs.find((candidate) => candidate.jobId === finding.jobId);
-    return !successor || !resolutionJob || !sourceJob || resolutionJob.role !== sourceJob.role || !resolutionJob.submission?.resolutions.some((resolution) => resolution.findingId === finding.findingId);
-  });
-}
-function reviewObligation(state, phase) {
-  if (state.mode !== "routed") return false;
-  if (phase === "code") return state.classification.controls.codeReview !== "none";
-  return reviewEnforcementRequired(state.route, state.classification.controls);
-}
-async function reviewBasisStale(root, state, batch, phase) {
-  const requireLiveBasis = !planReviewBoundToBatch(state, batch);
-  const reviewInput = await deriveReviewInput(root, state);
-  if (requireLiveBasis && basisHash(reviewInput.basis) !== batch.basisHash) return true;
-  const requirements = deriveReviewJobRequirements(state.route, state.classification.riskLabels, state.classification.controls.reviewRoles, phase);
-  for (const requirement of requirements) {
-    const job = batch.jobs.find((candidate) => candidate.role === requirement.role);
-    if (!job || job.roleBasisHash !== reviewInput.roleBasisHashes[requirement.role]) return true;
-  }
-  return false;
-}
-function reviewJobsSummary(batch) {
-  return batch.jobs.map(({ jobId, role, reviewDepth, status }) => ({ jobId, role, reviewDepth, status }));
-}
-async function reviewGate(root, state, query) {
-  const phase = query?.phase ?? (currentOpenStep(state) === "code_review" ? "code" : "plan");
-  if (!reviewObligation(state, phase)) return { status: "ready" };
-  const ledger = await readReviewLedger(root, state);
-  const batch = ledger.batches.find((candidate) => candidate.validity === "current");
-  if (!batch) return { status: "need-batch", cause: "missing" };
-  if ((batch.phase ?? "plan") !== phase) return { status: "need-batch", cause: "phase", batchId: batch.batchId };
-  if (await reviewBasisStale(root, state, batch, phase)) return { status: "need-batch", cause: "stale", batchId: batch.batchId };
-  if (batch.progress !== "complete") return { status: "jobs-open", batchId: batch.batchId, jobs: reviewJobsSummary(batch) };
-  if (phase === "code") {
-    const requiresIsolation = codeReviewIsolationRequired(state);
-    if (requiresIsolation && !hasCurrentQualityException(state, "review")) {
-      const requirements = deriveReviewJobRequirements(state.route, state.classification.riskLabels, state.classification.controls.reviewRoles, phase);
-      const missingIsolation = requirements.map((requirement) => batch.jobs.find((job) => job.role === requirement.role)).filter((job) => job !== void 0 && !jobHasEffectiveIsolationProof(ledger, job)).map((job) => job.jobId);
-      if (missingIsolation.length) return { status: "isolation", batchId: batch.batchId, jobIds: missingIsolation };
-    }
-  }
-  const unresolved = currentUnresolvedBlocking(ledger, batch, state);
-  if (unresolved.length && !hasCurrentQualityException(state, "review")) {
-    return { status: "blocking", batchId: batch.batchId, findingIds: unresolved.map((finding) => finding.findingId) };
-  }
-  if (reviewEnforcementRequired(state.route, state.classification.controls)) {
-    await assertCurrentReviewProjection(root, state);
-  }
-  return { status: "ready", stamp: { batchId: batch.batchId, basisHash: batch.basisHash, assuranceLevel: batch.assuranceLevel } };
-}
-function reviewGateError(gate, phase) {
-  switch (gate.status) {
-    case "need-batch": {
-      if (gate.cause === "stale") {
-        return new DevFlowError("REVIEW_BASIS_STALE", "review batch basis no longer matches current feature state", {
-          batchId: gate.batchId,
-          recoveryHint: "\u91CD\u5EFA\u6279\u6B21\u2192\u91CD\u4EA4 jobs\u2192re-record planning"
-        });
-      }
-      return new DevFlowError("REVIEW_BATCH_REQUIRED", `a current ${phase} review batch is required`, { expectedPhase: phase });
-    }
-    case "jobs-open":
-      return new DevFlowError("REVIEW_BATCH_INCOMPLETE", "all required review jobs must be submitted", { batchId: gate.batchId });
-    case "isolation":
-      return new DevFlowError("REVIEW_ISOLATION_REQUIRED", "\u72EC\u7ACB\u4EE3\u7801\u5BA1\u67E5\u8981\u6C42\u5BA1\u67E5\u5728\u4E0E\u5B9E\u73B0\u9694\u79BB\u7684\u65B0\u4E0A\u4E0B\u6587\u4E2D\u5B8C\u6210\uFF0C\u5F53\u524D\u6279\u6B21\u7F3A\u5C11\u9694\u79BB\u8BC1\u660E\u3002", {
-        jobIds: gate.jobIds,
-        batchId: gate.batchId,
-        recoveryHint: "\u5728\u4E0E\u5B9E\u73B0\u9694\u79BB\u7684\u4E0A\u4E0B\u6587\u4E2D\u91CD\u65B0\u5B8C\u6210\u8FD9\u4E9B\u5BA1\u67E5 job \u5E76\u8BB0\u5F55 review-execution \u4E8B\u4EF6\uFF0C\u6216\u901A\u8FC7\u670D\u52A1\u7AEF\u91C7\u6837\u5B8C\u6210 job\uFF1B\u590D\u7528\u6279\u6B21\u540C\u6837\u9700\u8981\u9694\u79BB\u8BC1\u660E\uFF0C\u53EF\u5728\u9694\u79BB\u5B50\u4EE3\u7406\u4E2D\u91CD\u505A job \u6216\u7ECF\u8D28\u91CF\u4F8B\u5916\u63A5\u53D7\u98CE\u9669\u3002",
-        retryOriginal: true
-      });
-    case "blocking":
-      return new DevFlowError("REVIEW_BLOCKING_FINDINGS", "review ledger has unresolved blocking findings", {
-        batchId: gate.batchId,
-        findingIds: gate.findingIds
-      });
-  }
-}
-async function requireReviewReady(root, state, query) {
-  const phase = query?.phase ?? (currentOpenStep(state) === "code_review" ? "code" : "plan");
-  const gate = await reviewGate(root, state, query);
-  if (gate.status === "ready") return gate.stamp;
-  throw reviewGateError(gate, phase);
-}
-
-// plugins/dev-flow/src/core/implementation-units.ts
-var digest6 = (value) => createHash13("sha256").update(value).digest("hex");
+import { createHash as createHash17, randomUUID as randomUUID11 } from "node:crypto";
 function currentImplementationNodes(ledger) {
   return Object.values(ledger?.nodes ?? {}).filter((node) => node.kind === "implementation-unit" && node.status === "current");
 }
@@ -2950,7 +5488,7 @@ async function assessImplementationUnitBegin(root, id, state) {
   }
 }
 function implementationUnitBasisHash(state) {
-  return digest6(canonicalReviewValueJson({
+  return digest7(canonicalReviewValueJson({
     traceability: state.traceability,
     approval: confirmedApproval(state)?.record ?? null
   }));
@@ -2985,16 +5523,92 @@ async function beginImplementationUnit(root, id, expectedRevision, unitId) {
     const target = merged.find((unit) => unit.unitId === unitId);
     delete target.checkpointId;
     target.basisHash = basisHash2;
-    target.beginNonce = randomUUID8();
+    target.beginNonce = randomUUID11();
     target.status = "active";
     target.startedFingerprint = await fingerprintGovernedRoots(root, project);
     state.implementationUnits = merged;
   }, { unitId });
 }
+var digest7;
+var init_implementation_units = __esm({
+  "plugins/dev-flow/src/core/implementation-units.ts"() {
+    "use strict";
+    init_contract2();
+    init_review_store();
+    init_rollback();
+    init_errors();
+    init_artifacts();
+    init_checkpoints();
+    init_fingerprint();
+    init_review_jobs();
+    init_host_health();
+    init_state_store();
+    init_step_order();
+    init_traceability_gates();
+    init_approval_basis();
+    init_plan_graph();
+    digest7 = (value) => createHash17("sha256").update(value).digest("hex");
+  }
+});
+
+// plugins/dev-flow/src/core/rollback-journal.ts
+var init_rollback_journal = __esm({
+  "plugins/dev-flow/src/core/rollback-journal.ts"() {
+    "use strict";
+    init_errors();
+    init_state_store();
+  }
+});
+
+// plugins/dev-flow/src/core/rollback.ts
+var init_rollback2 = __esm({
+  "plugins/dev-flow/src/core/rollback.ts"() {
+    "use strict";
+    init_contract2();
+    init_review_store();
+    init_checkpoints();
+    init_errors();
+    init_fingerprint();
+    init_project_config();
+    init_rollback();
+    init_implementation_units();
+    init_state_store();
+    init_rollback_journal();
+    init_traceability_store();
+    init_verification();
+    init_approval_basis();
+    init_user_interactions();
+  }
+});
+
+// plugins/dev-flow/src/core/interaction-answer.ts
+var init_interaction_answer = __esm({
+  "plugins/dev-flow/src/core/interaction-answer.ts"() {
+    "use strict";
+    init_errors();
+    init_decision_interactions();
+    init_decision_workflow();
+    init_plan_revision2();
+    init_requirements_grill();
+    init_approval_interactions();
+    init_ownership_workflow();
+    init_route_workflow();
+    init_quality_exceptions();
+    init_acceptance();
+    init_rollback2();
+    init_review_jobs();
+    init_user_interactions();
+    init_state_store();
+    init_host_health();
+    init_interaction_provenance();
+  }
+});
 
 // plugins/dev-flow/src/core/state-store.ts
-var lifecycles = /* @__PURE__ */ new Set(["active", "paused", "finalized", "abandoned"]);
-var unitStatuses = /* @__PURE__ */ new Set(["pending", "active", "verified", "checkpointed", "rolled_back"]);
+import { randomUUID as randomUUID12, createHash as createHash18 } from "node:crypto";
+import { access as access2, mkdir as mkdir11, open as open10, readdir as readdir7, readFile as readFile18, rename as rename9, rm, writeFile as writeFile4 } from "node:fs/promises";
+import { hostname } from "node:os";
+import path20 from "node:path";
 function validateImplementationUnits(units) {
   if (!Array.isArray(units)) throw new DevFlowError("INVALID_STATE_SCHEMA", "implementationUnits must be an array");
   const ids = /* @__PURE__ */ new Set();
@@ -3040,34 +5654,50 @@ function validateAcceptanceState(value) {
     dispositionIds.add(disposition.acceptanceCriterionId);
   }
 }
-var interactionKinds = /* @__PURE__ */ new Set(["approval", "grill", "risk-acceptance", "rollback-confirmation", "quality-exception", "workspace-ownership", "route-confirmation", "task-switch", "decision-ratification", "decision-revision", "plan-revision", "side-effect-rerun", "acceptance-confirmation"]);
 function validateInteractionRecords(interactions2) {
   for (const value of Object.values(interactions2)) {
     const record = value;
-    if (!record || typeof record !== "object" || Array.isArray(record) || typeof record.id !== "string" || !record.id || typeof record.kind !== "string" || !interactionKinds.has(record.kind) || typeof record.target !== "string" || typeof record.basisHash !== "string" || !Array.isArray(record.options) || record.status !== "pending" && record.status !== "resolved") {
+    if (!record || typeof record !== "object" || Array.isArray(record) || typeof record.id !== "string" || !record.id || typeof record.kind !== "string" || !interactionKinds.has(record.kind) || typeof record.target !== "string" || typeof record.basisHash !== "string" || !Array.isArray(record.options) || record.status !== "pending" && record.status !== "resolved" || record.presentationEventSequence !== void 0 && (!Number.isInteger(record.presentationEventSequence) || record.presentationEventSequence < 1)) {
       throw new DevFlowError("INVALID_STATE_SCHEMA", "interaction record is invalid");
     }
   }
 }
 function validateFeatureState(value) {
   const state = value;
-  if ([1, 2, 3].includes(Number(state.schemaVersion))) throw new DevFlowError("UNSUPPORTED_FEATURE_SCHEMA", "\u68C0\u6D4B\u5230 Dev Flow 4.x \u6216\u66F4\u65E9\u7684 active state\u3002", { userMessage: "\u65E7 feature \u4E0D\u80FD\u5728 Dev Flow 5.0 \u4E2D\u7EE7\u7EED\u3002", cause: "5.0 \u4E0D\u8FC1\u79FB\u65E7 active state\u3002", impact: "\u7CFB\u7EDF\u4E0D\u4F1A\u8986\u76D6\u6216\u731C\u6D4B\u65E7\u5BA1\u8BA1\u72B6\u6001\u3002", recoveryKind: "repair", recoveryInstruction: "\u56DE\u5230 4.x \u5B8C\u6210\u6216\u653E\u5F03\u8BE5 feature\uFF0C\u5907\u4EFD .dev-flow \u540E\u91CD\u65B0\u521D\u59CB\u5316\u3002", retryOriginal: false, schemaVersion: state.schemaVersion });
+  if ([1, 2, 3].includes(Number(state.schemaVersion))) throw new DevFlowError("UNSUPPORTED_FEATURE_SCHEMA", "\u68C0\u6D4B\u5230 Dev Flow 4.x \u6216\u66F4\u65E9\u7684 active state\u3002", { userMessage: "\u65E7 feature \u4E0D\u80FD\u5728 Dev Flow 6.0 \u4E2D\u7EE7\u7EED\u3002", cause: "6.0 \u4E0D\u8FC1\u79FB\u65E7 active state\u3002", impact: "\u7CFB\u7EDF\u4E0D\u4F1A\u8986\u76D6\u6216\u731C\u6D4B\u65E7\u5BA1\u8BA1\u72B6\u6001\u3002", recoveryKind: "repair", recoveryInstruction: "\u7528\u4EA7\u751F\u8BE5\u72B6\u6001\u7684\u65E7\u63D2\u4EF6\u5B8C\u6210\u6216\u653E\u5F03\u8BE5 feature\uFF0C\u5907\u4EFD .dev-flow \u540E\u91CD\u65B0\u521D\u59CB\u5316\u3002", retryOriginal: false, schemaVersion: state.schemaVersion });
   const schemaVersion = Number(state.schemaVersion);
-  if (schemaVersion !== 4 && schemaVersion !== 5) throw new DevFlowError("UNSUPPORTED_FEATURE_SCHEMA", "\u5F53\u524D\u53EA\u652F\u6301 schema v4/v5 \u72B6\u6001\u3002", { recoveryHint: "\u4F7F\u7528 Dev Flow 5.0 \u91CD\u65B0\u521D\u59CB\u5316 feature" });
-  if (schemaVersion === 5) {
+  if (schemaVersion !== 6) throw new DevFlowError("UNSUPPORTED_FEATURE_SCHEMA", "\u5F53\u524D\u53EA\u652F\u6301 schema v6 \u72B6\u6001\u3002", { recoveryHint: "\u4F7F\u7528 Dev Flow 6.0 \u91CD\u65B0\u521D\u59CB\u5316 feature" });
+  if (schemaVersion === 6) {
     if (Object.keys(state).includes("decisionLedger") || Object.keys(state).includes("qualityExceptions")) {
-      throw new DevFlowError("INVALID_STATE_SCHEMA", "v5 \u8FD0\u884C\u6001\u4E0D\u80FD\u5305\u542B\u65E7 decisionLedger \u6216 qualityExceptions \u5B57\u6BB5\u3002", {
-        recoveryHint: "\u901A\u8FC7\u52A0\u8F7D\u5165\u53E3\u8F6C\u6362\u4E3A governance \u8D26\u672C\u540E\u91CD\u65B0\u5199\u5165 v5 state\u3002"
+      throw new DevFlowError("INVALID_STATE_SCHEMA", "v6 \u8FD0\u884C\u6001\u4E0D\u80FD\u5305\u542B\u65E7 decisionLedger \u6216 qualityExceptions \u5B57\u6BB5\u3002", {
+        recoveryHint: "\u7528\u4EA7\u751F\u8BE5\u72B6\u6001\u7684\u65E7\u63D2\u4EF6\u6536\u5C3E\uFF0C\u5907\u4EFD .dev-flow \u540E\u7528 6.0 \u91CD\u65B0\u521D\u59CB\u5316\u3002"
       });
     }
     validateGovernanceLedger(state.governance);
     if (state.acceptance !== void 0) validateAcceptanceState(state.acceptance);
   }
   if (state.mode !== "intake" && state.mode !== "routed") throw new DevFlowError("INVALID_STATE_SCHEMA", "state mode must be intake or routed");
-  if (typeof state.featureId !== "string" || !state.featureId || !Number.isInteger(state.revision) || (state.revision ?? -1) < 0 || !lifecycles.has(state.lifecycle) || !state.scope || !Array.isArray(state.scope.inScope) || !Array.isArray(state.scope.outOfScope) || !state.steps || !state.humanGates || !state.artifacts || !state.verification || !Array.isArray(state.verification.attempts) || state.interactions !== void 0 && (typeof state.interactions !== "object" || state.interactions === null || Array.isArray(state.interactions)) || !Array.isArray(state.blockingFindings) || typeof state.logicComplete !== "boolean" || !state.lastUpdatedBy || !state.workspace || !state.evidenceFreshness) {
-    throw new DevFlowError("INVALID_STATE_SCHEMA", "\u72B6\u6001\u4E0D\u662F\u5408\u6CD5\u7684 feature state\u3002");
+  const missingCoreFields = [
+    typeof state.featureId === "string" && state.featureId ? void 0 : "featureId",
+    Number.isInteger(state.revision) && (state.revision ?? -1) >= 0 ? void 0 : "revision",
+    lifecycles.has(state.lifecycle) ? void 0 : "lifecycle",
+    state.scope && Array.isArray(state.scope.inScope) && Array.isArray(state.scope.outOfScope) ? void 0 : "scope",
+    state.steps ? void 0 : "steps",
+    state.humanGates ? void 0 : "humanGates",
+    state.artifacts ? void 0 : "artifacts",
+    state.verification && Array.isArray(state.verification.attempts) ? void 0 : "verification.attempts",
+    state.interactions === void 0 || typeof state.interactions === "object" && state.interactions !== null && !Array.isArray(state.interactions) ? void 0 : "interactions",
+    Array.isArray(state.blockingFindings) ? void 0 : "blockingFindings",
+    typeof state.logicComplete === "boolean" ? void 0 : "logicComplete",
+    state.lastUpdatedBy ? void 0 : "lastUpdatedBy",
+    state.workspace ? void 0 : "workspace",
+    state.evidenceFreshness ? void 0 : "evidenceFreshness"
+  ].filter((field) => typeof field === "string");
+  if (missingCoreFields.length > 0) {
+    throw new DevFlowError("INVALID_STATE_SCHEMA", "\u72B6\u6001\u4E0D\u662F\u5408\u6CD5\u7684 feature state\u3002", { missingCoreFields });
   }
-  if (state.lastUpdatedBy.host !== "claude" && state.lastUpdatedBy.host !== "codex") throw new DevFlowError("INVALID_STATE_SCHEMA", "lastUpdatedBy host is invalid");
+  const lastUpdatedBy = state.lastUpdatedBy;
+  if (lastUpdatedBy?.host !== "claude" && lastUpdatedBy?.host !== "codex") throw new DevFlowError("INVALID_STATE_SCHEMA", "lastUpdatedBy host is invalid");
   if (state.interactions !== void 0) validateInteractionRecords(state.interactions);
   const pendingInteractions = Object.values(state.interactions ?? {}).filter((item) => item.status === "pending");
   if (pendingInteractions.length > 1) throw new DevFlowError("MULTIPLE_PENDING_DECISIONS", "schema v4 \u72B6\u6001\u5305\u542B\u591A\u4E2A\u5F85\u51B3\u95EE\u9898\u3002", { userMessage: "\u5F53\u524D\u72B6\u6001\u540C\u65F6\u5B58\u5728\u591A\u4E2A\u5F85\u51B3\u95EE\u9898\uFF0C\u6D41\u7A0B\u5DF2\u5B89\u5168\u505C\u6B62\u3002", cause: "\u51B3\u7B56\u8D26\u672C\u4E0D\u662F\u5355\u4E00\u5F85\u51B3\u95EE\u9898\u3002", impact: "\u7CFB\u7EDF\u4E0D\u4F1A\u4EFB\u9009\u4E00\u4E2A\u95EE\u9898\u6D88\u8D39\u3002", recoveryKind: "repair", recoveryInstruction: "\u8FD0\u884C doctor \u68C0\u67E5\u51B3\u7B56\u8D26\u672C\uFF0C\u7136\u540E\u901A\u8FC7\u516C\u5F00\u56DE\u7B54\u63A5\u53E3\u6062\u590D\u3002", retryOriginal: false });
@@ -3116,6 +5746,13 @@ function validateFeatureState(value) {
   }
   if (traceEnforcementRequired(state.route, state.classification.controls) && !state.traceability) {
     throw new DevFlowError("INVALID_STATE_SCHEMA", "\u542F\u7528 Trace \u63A7\u5236\u7684 feature \u5FC5\u987B\u5305\u542B traceability pointer\u3002");
+  }
+  if (state.evidenceStore !== void 0) {
+    try {
+      parseEvidenceStorePointer(state.evidenceStore);
+    } catch {
+      throw new DevFlowError("INVALID_STATE_SCHEMA", "evidenceStore pointer is invalid");
+    }
   }
   if (state.review !== void 0) {
     const pointer = state.review;
@@ -3247,17 +5884,9 @@ function validateGovernanceLedger(ledger) {
     }
   }
 }
-var delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-var devFlow = (root) => path13.join(root, ".dev-flow");
-var features = (root) => path13.join(devFlow(root), "features");
-var statePath = (root, id) => path13.join(features(root), id, "state.json");
-var eventPath = (root, id) => path13.join(features(root), id, "events.jsonl");
-var activePath = (root) => path13.join(devFlow(root), "active.json");
-var recoveryTxnPath = (root) => path13.join(devFlow(root), "recovery-transaction.json");
-var rollbackTxnPath = (root, featureId) => path13.join(features(root), featureId, "rollback-transaction.json");
 async function readProjectConfig(root) {
   try {
-    const raw = await readFile11(path13.join(devFlow(root), "project.json"), "utf8");
+    const raw = await readFile18(path20.join(devFlow(root), "project.json"), "utf8");
     const value = JSON.parse(raw);
     validateProjectConfig(value);
     return value;
@@ -3286,9 +5915,9 @@ async function readProjectConfig(root) {
   }
 }
 async function writeAtomic2(file, value) {
-  const temp = `${file}.${randomUUID9()}.tmp`;
-  const handle = await open6(temp, "w");
-  const payload = file.endsWith(`${path13.sep}state.json`) && value && typeof value === "object" && value.schemaVersion === 5 ? (() => {
+  const temp = `${file}.${randomUUID12()}.tmp`;
+  const handle = await open10(temp, "w");
+  const payload = file.endsWith(`${path20.sep}state.json`) && value && typeof value === "object" && value.schemaVersion === 6 ? (() => {
     const copy = { ...value };
     delete copy.decisionLedger;
     delete copy.qualityExceptions;
@@ -3301,8 +5930,8 @@ async function writeAtomic2(file, value) {
   } finally {
     await handle.close();
   }
-  await rename5(temp, file);
-  const directory = await open6(path13.dirname(file), "r");
+  await rename9(temp, file);
+  const directory = await open10(path20.dirname(file), "r");
   try {
     await directory.sync();
   } finally {
@@ -3331,10 +5960,10 @@ async function prepareStatusProjection(root, state, revision) {
       "",
       ...pending?.kind === "route-confirmation" ? ["## Pending", "", `- ${pending.question}`, ""] : []
     ].join("\n");
-    const file2 = path13.join(features(root), state.featureId, status.path);
-    state.artifacts.status = { ...status, sha256: createHash14("sha256").update(contents2).digest("hex") };
+    const file2 = path20.join(features(root), state.featureId, status.path);
+    state.artifacts.status = { ...status, sha256: createHash18("sha256").update(contents2).digest("hex") };
     return async () => {
-      await writeFile2(file2, contents2);
+      await writeFile4(file2, contents2);
     };
   }
   const trace = await inspectCurrentTrace(root, state);
@@ -3375,27 +6004,27 @@ async function prepareStatusProjection(root, state, revision) {
   ].join("\n");
   const contents = `${projection}
 `;
-  const file = path13.join(features(root), state.featureId, status.path);
-  state.artifacts.status = { ...status, sha256: createHash14("sha256").update(contents).digest("hex") };
+  const file = path20.join(features(root), state.featureId, status.path);
+  state.artifacts.status = { ...status, sha256: createHash18("sha256").update(contents).digest("hex") };
   return async () => {
-    await writeFile2(file, contents);
+    await writeFile4(file, contents);
   };
 }
 async function lock(root, featureId, operation) {
-  const directory = path13.join(devFlow(root), ".lock");
+  const directory = path20.join(devFlow(root), ".lock");
   const started = Date.now();
-  await mkdir6(devFlow(root), { recursive: true });
+  await mkdir11(devFlow(root), { recursive: true });
   while (true) {
     try {
-      await mkdir6(directory);
-      await writeFile2(path13.join(directory, "owner.json"), JSON.stringify({ pid: process.pid, hostname: hostname(), acquiredAt: (/* @__PURE__ */ new Date()).toISOString(), featureId, operation }));
+      await mkdir11(directory);
+      await writeFile4(path20.join(directory, "owner.json"), JSON.stringify({ pid: process.pid, hostname: hostname(), acquiredAt: (/* @__PURE__ */ new Date()).toISOString(), featureId, operation }));
       return async () => {
         await rm(directory, { recursive: true, force: true });
       };
     } catch (error) {
       if (error.code !== "EEXIST") throw error;
       try {
-        const owner = JSON.parse(await readFile11(path13.join(directory, "owner.json"), "utf8"));
+        const owner = JSON.parse(await readFile18(path20.join(directory, "owner.json"), "utf8"));
         const age = Date.now() - Date.parse(owner.acquiredAt);
         let live = owner.hostname === hostname();
         if (live) {
@@ -3418,9 +6047,12 @@ async function lock(root, featureId, operation) {
 }
 async function readState(root, featureId) {
   try {
-    const raw = JSON.parse(await readFile11(statePath(root, featureId), "utf8"));
-    validateFeatureState(raw);
-    const state = migrateFeatureState(raw);
+    const raw = JSON.parse(await readFile18(statePath(root, featureId), "utf8"));
+    const state = raw?.schemaVersion === 6 ? await hydrateFeatureState(root, raw) : (() => {
+      validateFeatureState(raw);
+      return raw;
+    })();
+    validateFeatureState(state);
     if (state.featureId !== featureId) throw new DevFlowError("INVALID_STATE_SCHEMA", "state feature id does not match its path");
     return state;
   } catch (error) {
@@ -3442,7 +6074,7 @@ async function readState(root, featureId) {
 async function readActive(root) {
   let raw;
   try {
-    raw = await readFile11(activePath(root), "utf8");
+    raw = await readFile18(activePath(root), "utf8");
   } catch (error) {
     if (error.code === "ENOENT") return void 0;
     throw new DevFlowError("ACTIVE_POINTER_UNREADABLE", "active.json cannot be read", { recoveryHint: "Run dev_flow_doctor and use recovery; do not start a new feature" });
@@ -3458,9 +6090,10 @@ async function readActive(root) {
   }
 }
 async function appendEvent(root, id, revision, type, data) {
-  const handle = await open6(eventPath(root, id), "a");
+  const eventSequence = await nextFeatureEventSequence(root, id);
+  const handle = await open10(eventPath(root, id), "a");
   try {
-    await handle.writeFile(`${JSON.stringify({ revision, type, at: (/* @__PURE__ */ new Date()).toISOString(), data })}
+    await handle.writeFile(`${JSON.stringify({ eventSequence, revision, type, at: (/* @__PURE__ */ new Date()).toISOString(), data })}
 `);
     await handle.sync();
   } finally {
@@ -3546,7 +6179,7 @@ async function recordTrustedWriteOwnership(root, paths, host, eventId2) {
       draft.workspace.ownershipSource[file] = "trusted-hook";
     }
     draft.workspace.unownedPaths = (draft.workspace.unownedPaths ?? []).filter((file) => !governed.includes(file));
-    draft.lastUpdatedBy = { host, pluginVersion: "5.1.4" };
+    draft.lastUpdatedBy = { host, pluginVersion: "6.0.0" };
   }, { eventId: eventId2, host, paths: governed, after });
 }
 async function recordHostAuthorizationEvent(root, type, record) {
@@ -3577,12 +6210,14 @@ async function readHostAuthorizationEvents(root, featureId) {
   });
 }
 async function readFeatureEvents(root, id) {
-  try {
-    return (await readFile11(eventPath(root, id), "utf8")).split("\n").filter(Boolean).map((line) => JSON.parse(line));
-  } catch (error) {
-    if (error.code === "ENOENT") return [];
-    throw error;
-  }
+  const result = await readSegmentedFeatureEvents(root, id);
+  return result.records.map((record) => ({
+    eventSequence: record.eventSequence,
+    revision: record.revision,
+    type: record.type,
+    at: record.at,
+    data: record.data
+  }));
 }
 async function mutate(root, id, expectedRevision, operation, mutator, eventData = {}) {
   return mutatePrepared(root, id, expectedRevision, operation, async () => ({ mutate: mutator, eventData }));
@@ -3599,15 +6234,24 @@ async function mutatePreparedLocked(root, id, expectedRevision, operation, prepa
   const state = await readState(root, id);
   await assertNoOpenRollbackTransaction(root, { featureId: id, transactionId: options.allowRollbackTransaction });
   if (state.revision !== expectedRevision) throw new DevFlowError("STATE_REVISION_CONFLICT", "state revision changed", { currentRevision: state.revision });
+  const presentedBefore = new Set(Object.values(state.interactions ?? {}).filter((interaction) => interaction.status === "pending").map((interaction) => interaction.id));
   const prepared = await prepare(state, state.revision + 1);
   if (prepared.unchanged) return state;
   await prepared.mutate(state);
   state.revision += 1;
+  const nextSequence = await nextFeatureEventSequence(root, id);
+  for (const interaction of Object.values(state.interactions ?? {})) {
+    if (interaction.status === "pending" && !presentedBefore.has(interaction.id) && interaction.presentationEventSequence === void 0) {
+      interaction.presentationEventSequence = nextSequence;
+    }
+  }
   await prepareReviewProjection(root, state);
   validateFeatureState(state);
   const writeStatus = await prepareStatusProjection(root, state, state.revision);
   await options.fault?.("before-state-commit");
-  await writeAtomic2(statePath(root, id), state);
+  const persisted = await persistableFeatureState(root, state);
+  await writeAtomic2(statePath(root, id), persisted);
+  state.archivedCollections = persisted.archivedCollections;
   const failures = [];
   try {
     await options.fault?.("after-state-commit");
@@ -3632,6 +6276,11 @@ async function mutatePreparedLocked(root, id, expectedRevision, operation, prepa
   } catch {
     failures.push("active");
   }
+  try {
+    await runBoundedEvidenceMaintenance(root, id, state);
+  } catch {
+    failures.push("evidence-maintenance");
+  }
   if (failures.length) {
     throw new DevFlowError("STATE_COMMITTED_PROJECTION_FAILED", "state commit succeeded but one or more projections failed", {
       committed: true,
@@ -3646,19 +6295,19 @@ function isRecoveryPhase(value) {
 }
 function validateRecoveryTransaction(value) {
   const transaction = value;
-  if (transaction?.schemaVersion !== 1 || typeof transaction.transactionId !== "string" || !transaction.transactionId || !isRecoveryPhase(transaction.phase) || typeof transaction.featureId !== "string" || !transaction.featureId || typeof transaction.stateSha256 !== "string" || !transaction.stateSha256 || typeof transaction.recoveredTo !== "string" || !path13.isAbsolute(transaction.recoveredTo) || typeof transaction.reason !== "string" || typeof transaction.userEvidence !== "string" || transaction.host !== "claude" && transaction.host !== "codex" || typeof transaction.at !== "string" || transaction.activeSha256 !== void 0 && typeof transaction.activeSha256 !== "string") {
+  if (transaction?.schemaVersion !== 1 || typeof transaction.transactionId !== "string" || !transaction.transactionId || !isRecoveryPhase(transaction.phase) || typeof transaction.featureId !== "string" || !transaction.featureId || typeof transaction.stateSha256 !== "string" || !transaction.stateSha256 || typeof transaction.recoveredTo !== "string" || !path20.isAbsolute(transaction.recoveredTo) || typeof transaction.reason !== "string" || typeof transaction.userEvidence !== "string" || transaction.host !== "claude" && transaction.host !== "codex" || typeof transaction.at !== "string" || transaction.activeSha256 !== void 0 && typeof transaction.activeSha256 !== "string") {
     throw new DevFlowError("RECOVERY_TRANSACTION_UNREADABLE", "recovery journal is invalid", {
       recoveryHint: "Run dev_flow_doctor; do not start a new feature or hand-edit .dev-flow"
     });
   }
-  if (path13.basename(transaction.featureId) !== transaction.featureId || transaction.featureId === "." || transaction.featureId === "..") {
+  if (path20.basename(transaction.featureId) !== transaction.featureId || transaction.featureId === "." || transaction.featureId === "..") {
     throw new DevFlowError("RECOVERY_TRANSACTION_UNREADABLE", "recovery journal has an unsafe feature id", { recoveryHint: "Run dev_flow_doctor; recovery remains fail-closed" });
   }
 }
 function validateRecoveryLocation(root, transaction) {
-  const recoveredRoot = path13.join(devFlow(root), "recovered");
-  const relative = path13.relative(recoveredRoot, transaction.recoveredTo);
-  if (!relative || relative.startsWith("..") || path13.isAbsolute(relative) || path13.basename(relative) !== relative) {
+  const recoveredRoot = path20.join(devFlow(root), "recovered");
+  const relative = path20.relative(recoveredRoot, transaction.recoveredTo);
+  if (!relative || relative.startsWith("..") || path20.isAbsolute(relative) || path20.basename(relative) !== relative) {
     throw new DevFlowError("RECOVERY_TRANSACTION_UNREADABLE", "recovery journal points outside the recovered directory", {
       recoveryHint: "Run dev_flow_doctor; do not start a new feature or hand-edit .dev-flow"
     });
@@ -3667,7 +6316,7 @@ function validateRecoveryLocation(root, transaction) {
 async function readRecoveryTransaction(root) {
   let raw;
   try {
-    raw = await readFile11(recoveryTxnPath(root), "utf8");
+    raw = await readFile18(recoveryTxnPath(root), "utf8");
   } catch (error) {
     if (error.code === "ENOENT") return void 0;
     throw new DevFlowError("RECOVERY_TRANSACTION_UNREADABLE", "recovery journal cannot be read", { recoveryHint: "Run dev_flow_doctor; do not start a new feature" });
@@ -3685,7 +6334,7 @@ async function readRecoveryTransaction(root) {
 async function readRollbackJournalPresence(root, featureId) {
   let raw;
   try {
-    raw = await readFile11(rollbackTxnPath(root, featureId), "utf8");
+    raw = await readFile18(rollbackTxnPath(root, featureId), "utf8");
   } catch (error) {
     if (error.code === "ENOENT") return void 0;
     throw new DevFlowError("ROLLBACK_TRANSACTION_UNREADABLE", "rollback transaction journal cannot be read", {
@@ -3717,7 +6366,7 @@ async function readRollbackJournalPresence(root, featureId) {
 async function assertNoOpenRollbackTransaction(root, allow) {
   let entries;
   try {
-    entries = await readdir5(features(root), { withFileTypes: true });
+    entries = await readdir7(features(root), { withFileTypes: true });
   } catch (error) {
     if (error.code === "ENOENT") return;
     throw error;
@@ -3738,6 +6387,55 @@ async function assertNoOpenRollbackTransaction(root, allow) {
 async function appendFeatureEvent(root, id, revision, type, data) {
   await appendEvent(root, id, revision, type, data);
 }
+var lifecycles, unitStatuses, interactionKinds, delay, devFlow, features, statePath, eventPath, activePath, recoveryTxnPath, rollbackTxnPath;
+var init_state_store = __esm({
+  "plugins/dev-flow/src/core/state-store.ts"() {
+    "use strict";
+    init_contract2();
+    init_types();
+    init_evidence_store();
+    init_errors();
+    init_step_order();
+    init_repository_facts();
+    init_fingerprint();
+    init_project_config();
+    init_traceability_gates();
+    init_review_store();
+    init_event_segments();
+    init_state_archive2();
+    init_evidence_maintenance();
+    init_workspace_store();
+    init_review_projection();
+    init_path_normalization();
+    init_git_reconciliation();
+    init_decision_interactions();
+    init_host_health();
+    init_project_config_impact();
+    init_requirements_grill();
+    init_ownership_workflow();
+    init_ownership_workflow();
+    init_ownership_workflow();
+    init_route_workflow();
+    init_decision_workflow();
+    init_plan_revision2();
+    init_interaction_answer();
+    init_host_health();
+    lifecycles = /* @__PURE__ */ new Set(["active", "paused", "finalized", "abandoned"]);
+    unitStatuses = /* @__PURE__ */ new Set(["pending", "active", "verified", "checkpointed", "rolled_back"]);
+    interactionKinds = /* @__PURE__ */ new Set(["approval", "grill", "risk-acceptance", "rollback-confirmation", "quality-exception", "workspace-ownership", "route-confirmation", "task-switch", "decision-ratification", "decision-revision", "plan-revision", "side-effect-rerun", "acceptance-confirmation"]);
+    delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+    devFlow = (root) => path20.join(root, ".dev-flow");
+    features = (root) => path20.join(devFlow(root), "features");
+    statePath = (root, id) => path20.join(features(root), id, "state.json");
+    eventPath = (root, id) => path20.join(features(root), id, "events.jsonl");
+    activePath = (root) => path20.join(devFlow(root), "active.json");
+    recoveryTxnPath = (root) => path20.join(devFlow(root), "recovery-transaction.json");
+    rollbackTxnPath = (root, featureId) => path20.join(features(root), featureId, "rollback-transaction.json");
+  }
+});
+
+// plugins/dev-flow/src/hosts/hook-adapter.ts
+init_state_store();
 
 // plugins/dev-flow/src/hosts/adapter-policy.ts
 import { execFile as execFile4 } from "node:child_process";
@@ -3784,7 +6482,13 @@ function classifyGitCommandKind(command) {
 var gitReadOnlyCommands = [...readOnly].sort();
 
 // plugins/dev-flow/src/core/write-gate.ts
-import path14 from "node:path";
+init_approval_basis();
+init_implementation_units();
+init_review_store();
+init_state_store();
+init_step_order();
+init_traceability_store();
+import path21 from "node:path";
 function block(code, paths, reason, detail) {
   return { decision: "block", block: { code, paths, reason, ...detail ? { detail } : {} } };
 }
@@ -3796,7 +6500,7 @@ function isControlPath(relative) {
   if (!isDevFlowPath(relative)) return false;
   if (/^\.dev-flow\/features\/[^/]+\/traceability(?:\/|$)/.test(relative)) return true;
   if (/^\.dev-flow\/features\/[^/]+\/review\/(?:snapshots|packages|projections)(?:\/|$)/.test(relative)) return true;
-  const base = path14.posix.basename(relative);
+  const base = path21.posix.basename(relative);
   if (controlFileNames.has(base)) return true;
   if (relative.includes("/.lock/") || relative.endsWith("/.lock")) return true;
   if (relative === ".dev-flow/active.json" || relative === ".dev-flow/project.json") return true;
@@ -3871,10 +6575,10 @@ async function loadActiveWorkflow(root) {
   for (const [kind, artifact] of Object.entries(state.artifacts ?? {})) {
     if (kind === "status" || !artifact?.path) continue;
     if (isGeneratedReviewProjectionPath(kind, artifact.path)) continue;
-    if (typeof artifact.path !== "string" || path14.posix.dirname(artifact.path) !== "." || !artifact.path.endsWith(".md")) {
+    if (typeof artifact.path !== "string" || path21.posix.dirname(artifact.path) !== "." || !artifact.path.endsWith(".md")) {
       return { kind: "unreadable", reason: "artifact path invalid", governedRoots: project.governedRoots, blockAllWrites: false };
     }
-    const relative = `.dev-flow/features/${active.featureId}/${artifact.path}`.split(path14.sep).join("/");
+    const relative = `.dev-flow/features/${active.featureId}/${artifact.path}`.split(path21.sep).join("/");
     allowedArtifacts.add(relative);
   }
   return {
@@ -4043,7 +6747,7 @@ function evaluateGitWrite(workflow, intent) {
 }
 
 // plugins/dev-flow/src/hosts/bash-syntax.ts
-import path15 from "node:path";
+import path22 from "node:path";
 var directWriteTools = /* @__PURE__ */ new Set(["write", "edit", "multiedit", "applypatch", "apply_patch", "patch"]);
 function toolName(event) {
   return String(event.tool_name ?? "").toLowerCase();
@@ -4053,10 +6757,10 @@ function isRelevantPreToolUse(event) {
   return name === "bash" || directWriteTools.has(name);
 }
 function projectRelative(root, target) {
-  const absolute = path15.resolve(root, target);
-  const relative = path15.relative(root, absolute);
-  if (relative === "" || relative.startsWith("..") || path15.isAbsolute(relative)) return void 0;
-  return relative.split(path15.sep).join("/").normalize("NFC");
+  const absolute = path22.resolve(root, target);
+  const relative = path22.relative(root, absolute);
+  if (relative === "" || relative.startsWith("..") || path22.isAbsolute(relative)) return void 0;
+  return relative.split(path22.sep).join("/").normalize("NFC");
 }
 function projectRelativePaths(root, targets) {
   const seen = /* @__PURE__ */ new Set();
@@ -4252,7 +6956,7 @@ function heredocConsumer(line, openerIndex) {
   const lastSegment = line.slice(0, openerIndex).split(/[;&|]\s*/).at(-1) ?? "";
   const withoutEnv = lastSegment.replace(/^(?:\w+=\S+\s+)+/, "");
   const command = withoutEnv.match(/^\s*(?:command\s+)?([A-Za-z0-9_./-]+)/)?.[1];
-  return command ? path15.posix.basename(command) : void 0;
+  return command ? path22.posix.basename(command) : void 0;
 }
 function maskHeredocBodies(command) {
   const lines = command.split("\n");
@@ -4320,21 +7024,21 @@ function analyzeBashWriteTargets(command) {
       const words = commandWords(withoutEnv.slice(teeIndex), "tee");
       const paths = words && collectPathOperands(words, 0);
       if (!paths) return { kind: "unresolved", syntax: "tee-args" };
-      for (const path19 of paths) collect2(path19);
+      for (const path26 of paths) collect2(path26);
     }
     const simple = withoutEnv.match(/^(touch|mkdir|rm)\b/);
     if (simple) {
       const words = commandWords(withoutEnv, simple[1]);
       const paths = words && collectPathOperands(words, 0);
       if (!paths) return { kind: "unresolved", syntax: "simple-args" };
-      for (const path19 of paths) collect2(path19);
+      for (const path26 of paths) collect2(path26);
     }
     const moveCopy = withoutEnv.match(/^(mv|cp)\b/);
     if (moveCopy) {
       const words = commandWords(withoutEnv, moveCopy[1]);
       const paths = words && collectPathOperands(words, 0);
       if (!paths || paths.length < 2) return { kind: "unresolved", syntax: "mv-cp-args" };
-      if (moveCopy[1] === "mv") for (const path19 of paths) collect2(path19);
+      if (moveCopy[1] === "mv") for (const path26 of paths) collect2(path26);
       else collect2(paths.at(-1));
     }
     const sed = withoutEnv.match(/^sed\s+(-i\S*)\s+([\s\S]*)$/);
@@ -4342,7 +7046,7 @@ function analyzeBashWriteTargets(command) {
       const words = shellWords(sed[2]);
       const paths = words && collectPathOperands(words, 1);
       if (!paths) return { kind: "unresolved", syntax: "sed-args" };
-      for (const path19 of paths) collect2(path19);
+      for (const path26 of paths) collect2(path26);
     }
     const perl = withoutEnv.match(/^perl\s+(-pi\S*)\s+([\s\S]*)$/);
     if (perl) {
@@ -4350,7 +7054,7 @@ function analyzeBashWriteTargets(command) {
       const firstPath = words?.[0] === "-e" ? 2 : 0;
       const paths = words && collectPathOperands(words, firstPath);
       if (!paths) return { kind: "unresolved", syntax: "perl-args" };
-      for (const path19 of paths) collect2(path19);
+      for (const path26 of paths) collect2(path26);
     }
   }
   if (targets.length === 0) {
@@ -4361,7 +7065,7 @@ function analyzeBashWriteTargets(command) {
 }
 
 // plugins/dev-flow/src/hosts/block-format.ts
-import path16 from "node:path";
+import path23 from "node:path";
 function createPreToolBlock(code, reason, impact, recovery) {
   return { code, reason, impact, recovery };
 }
@@ -4379,7 +7083,7 @@ function formatPreToolBlock(block2) {
 }
 var scratchHint = "\uFF1B\u4E34\u65F6\u9A8C\u8BC1\u6587\u4EF6\u8BF7\u653E\u5165 scratch/ \u76EE\u5F55";
 function artifactKind(relative) {
-  const displayName = path16.posix.basename(relative, ".md");
+  const displayName = path23.posix.basename(relative, ".md");
   return displayName === "\u9700\u6C42\u6587\u6863" ? "requirements" : displayName === "\u5B9E\u65BD\u8BA1\u5212" ? "implementation-plan" : displayName;
 }
 function unreadableBlock(reason) {
@@ -4593,8 +7297,8 @@ async function evaluatePreToolUseInternal(root, event, advisoryOut = {}) {
 }
 
 // plugins/dev-flow/src/hosts/risk-policy.ts
-import { createHash as createHash15 } from "node:crypto";
-import path17 from "node:path";
+import { createHash as createHash19 } from "node:crypto";
+import path24 from "node:path";
 function canonical(value) {
   if (value === null || typeof value !== "object") return JSON.stringify(value);
   if (Array.isArray(value)) return `[${value.map(canonical).join(",")}]`;
@@ -4609,14 +7313,14 @@ function targetScope(command, root) {
   if (/[$`*?{]/.test(command) || /(?:^|\s)~(?:\/|\s|$)/.test(command)) return "unknown";
   const candidates = [...command.matchAll(/(?:^|[\s"'=])((?:\/|(?:\.\.\/)+)[^\s'"`;|&]*)/g)].map((match) => match[1]);
   for (const target of candidates) {
-    const absolute = path17.resolve(root, target);
-    const relative = path17.relative(root, absolute);
-    if (relative.startsWith("..") || path17.isAbsolute(relative)) return "outside";
+    const absolute = path24.resolve(root, target);
+    const relative = path24.relative(root, absolute);
+    if (relative.startsWith("..") || path24.isAbsolute(relative)) return "outside";
   }
   return "inside";
 }
 function fingerprint2(input, riskClass, category, command) {
-  return createHash15("sha256").update(canonical({ riskClass, category, toolName: String(input.toolName ?? ""), command })).digest("hex");
+  return createHash19("sha256").update(canonical({ riskClass, category, toolName: String(input.toolName ?? ""), command })).digest("hex");
 }
 function classifyRisk(input, root) {
   const toolName2 = String(input.toolName ?? "").toLowerCase();
@@ -4648,6 +7352,7 @@ function classifyRisk(input, root) {
 }
 
 // plugins/dev-flow/src/hosts/host-authorization.ts
+init_state_store();
 function eventId(event, assessment, kind) {
   const value = event;
   const supplied = [value.event_id, value.tool_use_id, value.permission_request_id].find((candidate) => typeof candidate === "string" && candidate.length > 0);
@@ -4728,8 +7433,25 @@ async function recordPermissionPostToolUse(root, event, host) {
 }
 
 // plugins/dev-flow/src/core/host-recovery.ts
+init_host_health();
+init_state_store();
+init_evidence_maintenance();
 async function observeHostRecovery(root, signal) {
   const health = await recordHostHealth(root, signal);
+  if (signal.kind === "session-start") {
+    const active2 = await readActive(root);
+    if (active2) {
+      let release;
+      try {
+        release = await lock(root, active2.featureId, "session-evidence-maintenance");
+        const state2 = await readState(root, active2.featureId);
+        await runBoundedEvidenceMaintenance(root, active2.featureId, state2);
+      } catch {
+      } finally {
+        await release?.();
+      }
+    }
+  }
   if (!health.recovered) return;
   const active = await readActive(root);
   if (!active) return;
@@ -4746,7 +7468,11 @@ async function recordAdapterHealth(root, event, host) {
     await observeHostRecovery(root, {
       host,
       kind,
-      eventId: event.event_id ?? `${event.hook_event_name}-${Date.now()}`
+      eventId: event.event_id ?? `${event.hook_event_name}-${Date.now()}`,
+      ...kind === "session-start" ? {
+        adapterVersion: "6.0.0",
+        capabilities: host === "claude" ? ["review-result-envelope-v1"] : []
+      } : {}
     });
   } catch {
   }
@@ -4849,11 +7575,11 @@ function claudeNativeQuestionAnswers(event) {
 
 // plugins/dev-flow/src/hosts/project-root.ts
 import { access as access3 } from "node:fs/promises";
-import path18 from "node:path";
+import path25 from "node:path";
 async function hasDevFlowMarker(directory) {
   for (const marker of ["project.json", "active.json"]) {
     try {
-      await access3(path18.join(directory, ".dev-flow", marker));
+      await access3(path25.join(directory, ".dev-flow", marker));
       return true;
     } catch {
     }
@@ -4861,18 +7587,20 @@ async function hasDevFlowMarker(directory) {
   return false;
 }
 async function resolveDevFlowRoot(cwd) {
-  const original = path18.resolve(cwd);
+  const original = path25.resolve(cwd);
   let current = original;
   for (; ; ) {
     if (await hasDevFlowMarker(current)) return current;
-    const parent = path18.dirname(current);
+    const parent = path25.dirname(current);
     if (parent === current) return original;
     current = parent;
   }
 }
 
 // plugins/dev-flow/src/hosts/review-execution-adapter.ts
-import { readFile as readFile12 } from "node:fs/promises";
+init_state_store();
+init_review_execution2();
+import { readFile as readFile19 } from "node:fs/promises";
 var DECLARATION_MARKER = /dev-flow:isolated-review:([A-Za-z0-9-]+)/u;
 function firstText(value) {
   if (typeof value === "string") return value;
@@ -4890,7 +7618,7 @@ async function transcriptText(event) {
   if (typeof transcriptPath !== "string" || !transcriptPath.trim()) return "";
   let contents;
   try {
-    contents = await readFile12(transcriptPath, "utf8");
+    contents = await readFile19(transcriptPath, "utf8");
   } catch {
     return "";
   }
@@ -4901,7 +7629,7 @@ async function transcriptText(event) {
 async function recordSubagentReviewOutput(root, event, host) {
   const active = await readActive(root);
   if (!active) return { recorded: false, reason: "no-active-feature" };
-  const promptText = firstText(event.prompt) || firstText(event.tool_input) || firstText(event.tool_response) || firstText(event.tool_result) || await transcriptText(event);
+  const promptText = firstText(event.last_assistant_message) || firstText(event.prompt) || firstText(event.tool_input) || firstText(event.tool_response) || firstText(event.tool_result) || await transcriptText(event);
   const marker = promptText.match(DECLARATION_MARKER);
   if (!marker) return { recorded: false, reason: "missing-marker" };
   const declarationId = marker[1];
@@ -4912,28 +7640,21 @@ async function recordSubagentReviewOutput(root, event, host) {
   });
   if (!declaration) return { recorded: false, reason: "unknown-declaration", declarationId };
   const data = declaration.data;
-  if (typeof data.batchId !== "string" || typeof data.jobId !== "string" || typeof data.executionId !== "string") {
+  if (typeof data.batchId !== "string" || typeof data.jobId !== "string" || typeof data.executionId !== "string" && typeof data.executionRequestId !== "string") {
     return { recorded: false, reason: "unknown-declaration", declarationId };
   }
+  const executionId = typeof data.executionId === "string" ? data.executionId : String(data.executionRequestId);
   const input = event.tool_input ?? {};
   const response = event.tool_response && typeof event.tool_response === "object" ? event.tool_response : {};
   const contextId = [
-    input.agent_id,
-    input.subagent_agent_id,
     event.agent_id,
-    response.agent_id,
-    input.subagent_session_id,
-    input.subagent_context_id,
-    response.subagent_session_id,
-    response.session_id
+    input.agent_id,
+    response.agent_id
   ].find((value) => typeof value === "string" && value.trim().length > 0);
   const implementationContextId = [
-    input.parent_agent_id,
-    event.parent_agent_id,
-    response.parent_agent_id,
-    input.parent_session_id,
-    input.parent_context_id,
-    response.parent_session_id
+    event.session_id,
+    input.session_id,
+    response.session_id
   ].find((value) => typeof value === "string" && value.trim().length > 0);
   if (!contextId || !implementationContextId) {
     return { recorded: false, reason: "missing-context-ids", declarationId };
@@ -4942,18 +7663,61 @@ async function recordSubagentReviewOutput(root, event, host) {
     return { recorded: false, reason: "same-context", declarationId };
   }
   const eventId2 = `${declarationId}:complete`;
+  const rawText = typeof event.last_assistant_message === "string" ? event.last_assistant_message : promptText;
+  const rawResult = (() => {
+    const start = rawText.indexOf("{");
+    const end = rawText.lastIndexOf("}");
+    if (start >= 0 && end > start) {
+      const candidate = rawText.slice(start, end + 1);
+      try {
+        JSON.parse(candidate);
+        return candidate;
+      } catch {
+        return rawText;
+      }
+    }
+    return rawText;
+  })();
   await recordReviewExecutionEvent(root, {
     eventId: eventId2,
     type: "review-execution",
     host: typeof data.host === "string" && (data.host === "claude" || data.host === "codex") ? data.host : host,
     batchId: data.batchId,
     jobId: data.jobId,
-    executionId: data.executionId,
+    executionId,
     sourceId: `subagent:${contextId}`,
     contextId,
     implementationContextId,
-    parentContextId: implementationContextId
+    parentContextId: implementationContextId,
+    text: typeof event.last_assistant_message === "string" ? event.last_assistant_message : void 0
   });
+  if (typeof data.executionRequestId === "string" && typeof data.capabilityHash === "string" && typeof data.packageSha256 === "string" && typeof data.role === "string" && typeof data.leaseGeneration === "number" && typeof data.declaredAt === "string") {
+    try {
+      const captured = await captureHostReviewEnvelope(root, {
+        featureId: active.featureId,
+        batchId: data.batchId,
+        jobId: data.jobId,
+        role: data.role,
+        packageSha256: data.packageSha256,
+        capabilityHash: data.capabilityHash,
+        executionRequestId: data.executionRequestId,
+        leaseGeneration: data.leaseGeneration,
+        declarationId,
+        source: "claude-subagent",
+        host: typeof data.host === "string" && (data.host === "claude" || data.host === "codex") ? data.host : host,
+        hostEventId: eventId2,
+        parentContext: implementationContextId,
+        childContext: contextId,
+        agentId: contextId,
+        startedAt: data.declaredAt,
+        completedAt: (/* @__PURE__ */ new Date()).toISOString(),
+        rawResult
+      });
+      await recordCapturedEnvelope(root, active.featureId, data.executionRequestId, captured.ref);
+    } catch {
+      return { recorded: false, reason: "invalid-completion", declarationId, eventId: eventId2 };
+    }
+  }
   return { recorded: true, declarationId, eventId: eventId2 };
 }
 

@@ -28,8 +28,6 @@ export const ALLOWED_TRACE_KINDS = {
   // The implementation plan is the single editable source for the execution
   // graph. Recovery is explicit and never implied by an implementation unit.
   "implementation-plan": ["task", "test", "implementation-unit", "recovery"],
-  "coverage-matrix": ["test"],
-  "rollback-units": ["rollback"],
 } as const;
 
 export interface ApplyTraceDeltaInput {
@@ -50,7 +48,7 @@ export interface TraceGraphValidationOptions {
    * Reserved for a same-source replacement of a legacy snapshot produced
    * before fileScope admission was enforced. Normal readers never set it.
    */
-  allowUnsafeFileScopeSourceArtifact?: "implementation-plan" | "rollback-units";
+  allowUnsafeFileScopeSourceArtifact?: "implementation-plan";
 }
 
 const inputKeys: Record<TraceNodeInput["kind"], readonly string[]> = {
@@ -90,18 +88,8 @@ function isStringArray(value: unknown, allowEmpty = false): value is string[] {
     && value.every((item) => typeof item === "string" && item.length > 0);
 }
 
-function isSafeCommandCwd(value: unknown): value is string {
-  return typeof value === "string" && value.length > 0 && !value.startsWith("/")
-    && !/^[A-Za-z]:[\\/]/.test(value) && !value.split(/[\\/]+/).includes("..");
-}
-
 function isVerificationCommandRef(value: unknown): value is VerificationCommandRef {
-  if (typeof value === "string") return value.length > 0;
-  if (!isRecord(value) || Object.keys(value).some((key) => !["command", "args", "cwd"].includes(key))
-    || typeof value.command !== "string" || !value.command.trim()
-    || (value.args !== undefined && (!Array.isArray(value.args) || value.args.some((arg) => typeof arg !== "string")))
-    || (value.cwd !== undefined && !isSafeCommandCwd(value.cwd))) return false;
-  return true;
+  return typeof value === "string" && value.length > 0;
 }
 
 function isVerificationCommandArray(value: unknown): value is VerificationCommandRef[] {
@@ -154,6 +142,7 @@ function validateVerificationDisposition(value: unknown, id: string): asserts va
 
 function validateNodeInput(value: unknown): asserts value is TraceNodeInput {
   if (!isRecord(value) || typeof value.kind !== "string" || !(value.kind in inputKeys)) invalid("node input has an unknown kind");
+  if (value.kind === "rollback") invalid("rollback nodes are not a v6 Trace kind; use recovery");
   const kind = value.kind as TraceNodeInput["kind"];
   const keys = Object.keys(value);
   if (keys.some((key) => !inputKeys[kind].includes(key))) invalid("node input contains Core-owned or unknown fields", { kind, keys });
@@ -249,12 +238,7 @@ function normalizeTraceDelta(value: TraceDelta): TraceDelta {
 }
 
 function normalizeVerificationCommandRef(value: VerificationCommandRef): VerificationCommandRef {
-  if (typeof value === "string") return value;
-  return {
-    command: value.command,
-    ...(value.args ? { args: [...value.args] } : {}),
-    ...(value.cwd ? { cwd: normalizeProjectPath(value.cwd) } : {}),
-  };
+  return value;
 }
 
 function currentNodes(nodes: Record<string, TraceNode>): TraceNode[] {
@@ -302,7 +286,7 @@ function sourceFor(input: ApplyTraceDeltaInput, node: TraceNodeInput, source: Tr
       covers: [...node.covers],
        forwardVerification: node.forwardVerification.map(normalizeVerificationCommandRef),
        rollbackVerification: node.rollbackVerification.map(normalizeVerificationCommandRef),
-      sourceArtifact: "rollback-units",
+      sourceArtifact: "implementation-plan",
       verificationConfigSha256: input.projectConfigSha256,
     };
     case "implementation-unit": return {
@@ -365,21 +349,16 @@ function assertSourceBlocks(input: ApplyTraceDeltaInput): Map<string, TraceSourc
 
 function assertArtifactDeltaContract(input: ApplyTraceDeltaInput): void {
   const allowed = ALLOWED_TRACE_KINDS[input.artifactKind];
+  if (!allowed) invalid("artifact kind is not a v6 Trace source", { artifactKind: input.artifactKind });
   if (input.delta.nodes.some((node) => !allowed.includes(node.kind as never))) invalid("delta kind is not allowed for its artifact", { artifactKind: input.artifactKind });
   const has = (kind: TraceNodeInput["kind"]) => input.delta.nodes.some((node) => node.kind === kind);
   if (input.artifactKind === "implementation-plan" && input.route !== "xs" && (!has("task") || !has("implementation-unit"))) {
     invalid("启用 Trace 的实施计划必须同时包含 task 和 implementation unit");
   }
-  if (input.artifactKind === "rollback-units" && input.route !== "l") invalid("独立 rollback-units 工件只适用于 L 级路线");
   for (const node of input.delta.nodes) {
-    if (node.kind !== "rollback" && node.kind !== "implementation-unit") continue;
-    if (node.kind === "rollback" && !["rollback-units"].includes(input.artifactKind)) invalid("rollback node has an invalid source artifact");
-    if (node.kind === "implementation-unit" && input.artifactKind !== "implementation-plan") invalid("implementation unit has an invalid source artifact");
-    const verification = node.kind === "rollback"
-      ? [...node.forwardVerification, ...node.rollbackVerification]
-      : node.forwardVerification;
-    if (verification.some((ref) =>
-      typeof ref === "string" && !input.verificationCommandIds.includes(ref))) {
+    if (node.kind !== "implementation-unit") continue;
+    if (input.artifactKind !== "implementation-plan") invalid("implementation unit has an invalid source artifact");
+    if (node.forwardVerification.some((ref) => !input.verificationCommandIds.includes(ref))) {
       invalid("implementation verification references an unknown command ID", { id: node.id });
     }
   }
@@ -467,7 +446,7 @@ function sameSummary(left: TraceSummary, right: TraceSummary): boolean {
 }
 
 const statusValues = new Set(["current", "stale", "tombstoned"]);
-const sourceArtifacts = new Set(["requirements", "implementation-plan", "coverage-matrix", "rollback-units"]);
+const sourceArtifacts = new Set(["requirements", "implementation-plan"]);
 const hex64 = /^[a-f0-9]{64}$/;
 
 function assertPersistedNode(
@@ -514,24 +493,7 @@ function assertPersistedNode(
     if (typeof value.riskRef !== "string" || !value.riskRef.trim()) invalid("persisted recovery riskRef is invalid", { id: recordId });
   }
   if (kind === "rollback") {
-    for (const [field, allowEmpty] of [["tasks", false], ["dependsOn", true], ["fileScope", false], ["covers", false], ["forwardVerification", false], ["rollbackVerification", false]] as const) {
-      if (field === "forwardVerification" || field === "rollbackVerification") {
-        if (!isVerificationCommandArray(value[field])) invalid("persisted rollback verification field is invalid", { id: recordId, field });
-      } else if (!isStringArray(value[field], allowEmpty)) {
-        invalid("persisted rollback field is invalid", { id: recordId, field });
-      }
-    }
-    if (value.sourceArtifact !== "implementation-plan" && value.sourceArtifact !== "rollback-units") {
-      invalid("persisted rollback has an invalid sourceArtifact", { id: recordId });
-    }
-    if (typeof value.verificationConfigSha256 !== "string" || !hex64.test(value.verificationConfigSha256)) {
-      invalid("persisted rollback has an invalid verificationConfigSha256", { id: recordId });
-    }
-    const allowLegacyRepair = value.status !== "tombstoned"
-      && value.sourceArtifact === options.allowUnsafeFileScopeSourceArtifact;
-    if (value.status !== "tombstoned" && !allowLegacyRepair) {
-      assertSafeFileScope(value.fileScope as string[], recordId, true);
-    }
+    invalid("rollback nodes are not a v6 Trace kind; use recovery", { id: recordId });
   }
   if (kind === "implementation-unit") {
     if (!isStringArray(value.tasks) || !isStringArray(value.dependsOn, true) || !isStringArray(value.fileScope) || !isStringArray(value.covers) || !isVerificationCommandArray(value.forwardVerification)) {
@@ -576,7 +538,7 @@ export function validateTraceGraph(
   mode: "partial" | "complete",
   options: TraceGraphValidationOptions = {},
 ): void {
-  if (!isRecord(ledger) || ledger.schemaVersion !== 1 || !isRecord(ledger.nodes) || !Array.isArray(ledger.edges)) invalid("traceability ledger has an invalid shape");
+  if (!isRecord(ledger) || ledger.schemaVersion !== 2 || !isRecord(ledger.nodes) || !Array.isArray(ledger.edges)) invalid("traceability ledger has an invalid shape");
   assertPersistedLedgerShape(ledger as TraceabilityLedger, options);
   const nodes = ledger.nodes as Record<string, TraceNode>;
   for (const node of currentNodes(nodes)) {
@@ -659,7 +621,7 @@ function downstream(
 }
 
 export function emptyTraceabilityLedger(featureId: string, stateRevision: number, projectConfigSha256: string): TraceabilityLedger {
-  return { schemaVersion: 1, featureId, revision: 0, stateRevision, projectConfigSha256, nodes: {}, edges: [], summary: { total: 0, current: 0, stale: 0, tombstoned: 0 } };
+  return { schemaVersion: 2, featureId, revision: 0, stateRevision, projectConfigSha256, nodes: {}, edges: [], summary: { total: 0, current: 0, stale: 0, tombstoned: 0 } };
 }
 
 export function applyTraceDelta(input: ApplyTraceDeltaInput, options: { validateGraph?: boolean } = {}): TraceabilityLedger {
@@ -686,7 +648,7 @@ export function applyTraceDelta(input: ApplyTraceDeltaInput, options: { validate
   // Protect the full replacement set so co-registered unchanged blocks stay current.
   downstream(nodes, changed, inputIds);
   const ledger: TraceabilityLedger = {
-    schemaVersion: 1,
+    schemaVersion: 2,
     featureId: effectiveInput.current.featureId,
     revision: effectiveInput.current.revision + 1,
     stateRevision: effectiveInput.nextStateRevision,

@@ -8,6 +8,7 @@ import { promisify } from "node:util";
 import { loadSource } from "../helpers/load-source.mjs";
 import { registerTraceFixture } from "../helpers/trace-fixtures.mjs";
 import { completeReviewJobs } from "../helpers/route-flow.mjs";
+import { v6ImplementationPlanMarkdown, v6RequirementsMarkdown } from "../helpers/v6-fixtures.mjs";
 
 const run = promisify(execFile);
 const store = await loadSource("plugins/dev-flow/src/core/state-store.ts");
@@ -45,33 +46,14 @@ function classificationFacts() {
   };
 }
 
-function requirementsDelta(dispositionReason) {
-  return {
-    nodes: [
-      { kind: "requirement", id: "REQ-001" },
-      {
-        kind: "acceptance-criterion",
-        id: "AC-001",
-        parentRequirement: "REQ-001",
-        verificationDisposition: { kind: "file-check", reason: dispositionReason, target: "docs/spec.md" },
-      },
-    ],
-  };
+function requirementsMarkdown(dispositionReason) {
+  return v6RequirementsMarkdown().replace(
+    "- parent_requirement: REQ-001\n- verification_kind: behavior-test",
+    `- parent_requirement: REQ-001\n- verification_kind: file-check\n- verification_reason: ${dispositionReason}\n- verification_target: docs/spec.md`,
+  );
 }
 
-const planMarkdown = [
-  "<!-- dev-flow:id=TASK-001 kind=task -->\n### TASK-001\n\n- covers: REQ-001, AC-001\n- implementation_unit: UNIT-001\n- tdd: direct\n",
-  "<!-- dev-flow:id=UNIT-001 kind=implementation-unit -->\n### UNIT-001\n\n- tasks: [TASK-001]\n- depends_on: []\n- file_scope: src\n- covers: REQ-001, AC-001\n- forward_verification: unit\n",
-].join("\n");
-
-function planDelta() {
-  return {
-    nodes: [
-      { kind: "task", id: "TASK-001", covers: ["REQ-001", "AC-001"], implementationUnit: "UNIT-001", tdd: "direct" },
-      { kind: "implementation-unit", id: "UNIT-001", tasks: ["TASK-001"], dependsOn: [], fileScope: ["src"], covers: ["REQ-001", "AC-001"], forwardVerification: ["unit"] },
-    ],
-  };
-}
+const planMarkdown = v6ImplementationPlanMarkdown({ tdd: "direct", includeTest: false });
 
 async function setup(prefix) {
   const root = await mkdtemp(path.join(os.tmpdir(), prefix));
@@ -85,10 +67,10 @@ async function setup(prefix) {
   state = await store.lockClassification(root, "nb", state.revision, classificationFacts(), { scanned, items: [] });
   // M 路线需要先确认路线。
   await store.recordHostEvent(root, { eventId: `route-confirm-${state.revision}`, type: "user-prompt", host: "claude", text: "确认这条路线" });
-  state = (await store.answer({ root, featureId: "nb", expectedRevision: state.revision, host: "claude", credential: { source: "text", userReply: "确认这条路线" } })).state;
-  state = await registerTraceFixture({ root, featureId: "nb", state, kind: "requirements", delta: requirementsDelta("仅核对文档结构，无运行时行为") });
+  state = (await store.answerFromHostEvents({ root, featureId: "nb", expectedRevision: state.revision, host: "claude" })).state;
+  state = await registerTraceFixture({ root, featureId: "nb", state, kind: "requirements", edit: () => requirementsMarkdown("仅核对文档结构，无运行时行为") });
   state = await checks.recordStep(root, "nb", state.revision, "requirements_alignment", {});
-  state = await registerTraceFixture({ root, featureId: "nb", state, kind: "implementation-plan", delta: planDelta(), edit: () => planMarkdown });
+  state = await registerTraceFixture({ root, featureId: "nb", state, kind: "implementation-plan", edit: () => planMarkdown });
   return { root, state };
 }
 
@@ -131,7 +113,8 @@ test("a disposition-list change invalidates exactly the requirements-coverage ro
     state = (await completeReviewJobs(root, "nb", first.state, first.batch)).state;
 
     // 工件字节不变，仅 AC 的非行为处置理由变化（trace 语义变化）。
-    state = await registerTraceFixture({ root, featureId: "nb", state, kind: "requirements", delta: requirementsDelta("核对导出列表是否变化") });
+    state = await registerTraceFixture({ root, featureId: "nb", state, kind: "requirements", edit: () => requirementsMarkdown("核对导出列表是否变化") });
+    state = await registerTraceFixture({ root, featureId: "nb", state, kind: "implementation-plan", edit: () => planMarkdown });
     const second = await jobs.createReviewBatch(root, "nb", state.revision);
     const rc = jobByRole(second.batch, "requirements-coverage");
     assert.equal(rc.status, "pending");

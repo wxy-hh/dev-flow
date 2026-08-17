@@ -54,7 +54,7 @@ test("hook 记录 AskUserQuestion 回答事件时携带问题文本（不再只�
   } finally { await fixture.dispose(); }
 });
 
-test("选中即信任：结构化事件存在时 agent 任意转述均不影响落账", async () => {
+test("选中即信任：结构化事件按事件内容落账，不依赖调用方文本", async () => {
   const fixture = await createTinyApp();
   try {
     const pending = await lockRouteConfirmation(fixture, "struct-mcp");
@@ -62,22 +62,21 @@ test("选中即信任：结构化事件存在时 agent 任意转述均不影响�
       eventId: "answer-struct", type: "user-prompt", host: "claude",
       text: "确认这条路线（推荐）", question: "请确认 Dev Flow 路线",
     });
-    const routed = (await store.answer({ root: fixture.root, featureId: pending.featureId, expectedRevision: pending.revision, host: "claude", credential: { source: "text", userReply: "agent 转述完全无关的内容" } })).state;
+    const routed = (await store.answerFromHostEvents({ root: fixture.root, featureId: pending.featureId, expectedRevision: pending.revision, host: "claude" })).state;
     assert.equal(routed.mode, "routed");
     assert.equal(decisions.pendingDecisionForState(routed), undefined);
   } finally { await fixture.dispose(); }
 });
 
-test("文本凭证（无问题字段）仍需 userReply 与事件语义兼容", async () => {
+test("无问题字段的文本事件仍按事件内容确认（问题文本不是信任前提）", async () => {
   const fixture = await createTinyApp();
   try {
     const pending = await lockRouteConfirmation(fixture, "struct-text");
     await store.recordHostEvent(fixture.root, {
       eventId: "answer-text", type: "user-prompt", host: "claude", text: "确认这条路线",
     });
-    await assert.rejects(
-      () => store.answer({ root: fixture.root, featureId: pending.featureId, expectedRevision: pending.revision, host: "claude", credential: { source: "text", userReply: "完全无关的转述" } }),
-      (error) => error.code === "INTERACTION_PROVENANCE_UNAVAILABLE",
-    );
+    const routed = (await store.answerFromHostEvents({ root: fixture.root, featureId: pending.featureId, expectedRevision: pending.revision, host: "claude" })).state;
+    assert.equal(routed.mode, "routed");
+    assert.equal(decisions.pendingDecisionForState(routed), undefined);
   } finally { await fixture.dispose(); }
 });

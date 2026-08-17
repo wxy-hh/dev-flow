@@ -1,8 +1,8 @@
-import { resolveInteractionPromptEvent } from "./interaction-provenance.js";
 import { createHash } from "node:crypto";
 import { DevFlowError } from "./errors.js";
-import { mutate, mutatePrepared, readFeatureEvents, readProjectConfig, readState, type FeatureState } from "./state-store.js";
-import { fingerprintFeatureOwned, fingerprintGovernedRoots } from "./fingerprint.js";
+import { mutate, mutatePrepared, readProjectConfig, readState, type FeatureState } from "./state-store.js";
+import { captureEvidenceBaseline } from "./evidence-baseline.js";
+import { fingerprintFeatureOwned } from "./fingerprint.js";
 import { EMPTY_GOVERNANCE_LEDGER } from "../policy/governance-records.js";
 import {
   createInteraction,
@@ -103,12 +103,8 @@ export async function resolveQualityExceptionForAnswer(ctx: AnswerResolveContext
   let promptEventId: string | undefined;
   let promptText: string | undefined;
   if (credential.source === "text") {
-    const match = resolveInteractionPromptEvent(await readFeatureEvents(root, featureId), state, interaction, {
-      host,
-      userReply: credential.userReply,
-    });
-    promptEventId = match.eventId;
-    promptText = match.text;
+    promptEventId = credential.promptEventId;
+    promptText = credential.promptText;
   }
   let response: InteractionResponse | undefined;
   const next = await mutatePrepared(root, featureId, expectedRevision, "quality-exception-answered", async (current) => {
@@ -122,22 +118,23 @@ export async function resolveQualityExceptionForAnswer(ctx: AnswerResolveContext
           source: credential.source,
           action: credential.source === "elicitation" ? credential.action : undefined,
           comment: credential.source === "elicitation" ? credential.comment : undefined,
-          userReply: credential.source === "text" ? credential.userReply : undefined,
+          userReply: credential.source === "text" ? (credential.promptText) : undefined,
           promptText,
           promptEventId,
           host,
         });
         const kind = interaction.target.slice("quality-exception:".length) as QualityException["kind"];
         if (response.action === "accept") {
-          // 风险接受绑定接受时刻的实时交付内容（issue 22）：lastWorkspaceFingerprint
-          // 可能滞后于实际写入，旧指纹会让内容变化检测失效。
           const config = await readProjectConfig(root);
+          const baseline = await captureEvidenceBaseline(root, draft, config, {
+            kind: "risk-acceptance",
+            target: kind,
+            recordId: `AUTH-qe-${interaction.id}`,
+            at: response.respondedAt,
+          });
           const fingerprint = await fingerprintFeatureOwned(root, config, draft.workspace.ownership);
-          const fullFingerprint = await fingerprintGovernedRoots(root, config);
-          // 风险接受建立新的内容基线；否则后续 finalize 会把“已接受的旧变化”
-          // 误判成又一次工作区变化。
-          draft.startBusinessFingerprint = fullFingerprint;
           draft.businessFingerprint = fingerprint;
+          draft.evidenceStore = baseline.pointer;
           // 治理账本：风险接受是"授权"记录，追加到不可变 authorizations 账本并
           // 绑定本次交互凭证（spec §202；与 recordDecision 的账本模式一致）。
           const gov = draft.governance ?? EMPTY_GOVERNANCE_LEDGER;
@@ -152,6 +149,7 @@ export async function resolveQualityExceptionForAnswer(ctx: AnswerResolveContext
               target: kind,
               credentialId,
               basis: { kind: "content", sha256: fingerprint },
+              baselineRef: baseline.ref,
               recordedAt: response.respondedAt,
             });
           }

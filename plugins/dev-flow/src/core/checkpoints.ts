@@ -16,12 +16,15 @@ import { fingerprintGovernedRoots, snapshotGovernedRoots, type ProtectedFileSnap
 import { verificationCommandHashesForRefs, verificationCommandIdsForRefs, type ProjectConfig, type VerificationCommand } from "./project-config.js";
 import { canonicalReviewValueJson } from "./review-store.js";
 import { assertHostHealth } from "./host-health.js";
+import { satisfyObligations } from "../policy/obligations.js";
 import { assertWorkspaceOwnershipComplete, mutate, readProjectConfig, readState, type FeatureState } from "./state-store.js";
 import { currentOpenStep } from "./step-order.js";
 import { readProjectConfigSnapshot, readTraceability } from "./traceability-store.js";
 import { runVerificationCommand } from "./verification.js";
 import { readCheckpointManifest } from "./checkpoint-store.js";
 import { invalidateAffectedClaims, workspaceChangedError } from "./change-invalidation.js";
+import { putEvidenceObject } from "./evidence-store.js";
+import type { EvidenceObjectRef } from "../policy/evidence-store.js";
 
 const digest = (value: string | Buffer) => createHash("sha256").update(value).digest("hex");
 const featureDirectory = (root: string, featureId: string) => path.join(root, ".dev-flow", "features", featureId);
@@ -54,6 +57,25 @@ async function writeAtomic(file: string, contents: string | Buffer): Promise<voi
 
 async function pathExists(file: string): Promise<boolean> {
   try { await access(file); return true; } catch { return false; }
+}
+
+
+/** Pack every referenced checkpoint blob into the Evidence Store (v3 manifest). */
+async function packCheckpointBlobRefs(root: string, featureId: string, records: CheckpointFileRecord[]): Promise<Record<string, EvidenceObjectRef>> {
+  const refs: Record<string, EvidenceObjectRef> = {};
+  for (const record of records) {
+    for (const blobSha256 of [record.beforeBlobSha256, record.afterBlobSha256]) {
+      if (blobSha256 === undefined || refs[blobSha256]) continue;
+      const file = path.join(featureDirectory(root, featureId), blobPath(blobSha256));
+      const bytes = await readFile(file);
+      if (digest(bytes) !== blobSha256) {
+        throw new DevFlowError("CHECKPOINT_HASH_MISMATCH", "捕获 checkpoint blob 时 governed 文件发生变化。", { blobSha256 });
+      }
+      const stored = await putEvidenceObject(root, featureId, "checkpoint-pack", bytes);
+      refs[blobSha256] = stored.ref;
+    }
+  }
+  return refs;
 }
 
 /** Writes a content-addressed blob; identical content is stored exactly once. */
@@ -252,15 +274,6 @@ function resolveVerificationCommand(
   reference: VerificationCommandRef,
   index: number,
 ): VerificationCommand {
-  if (typeof reference !== "string") {
-    return {
-      id: `inline:${unitId}:${index}`,
-      command: reference.command,
-      args: [...reference.args ?? []],
-      cwd: reference.cwd ?? ".",
-      provides: ["targeted"],
-    };
-  }
   const command = config.verification.commands.find((candidate) => candidate.id === reference);
   if (!command) {
     throw new DevFlowError("TRACE_VERIFICATION_COMMAND_UNKNOWN", "implementation unit references an unknown verification command", {
@@ -444,6 +457,8 @@ export async function checkpointImplementationUnit(
       }
       current.status = "checkpointed";
       current.checkpointId = orphan.checkpointId;
+      draft.evidenceFreshness.checkpoint = "current";
+      draft.obligations = satisfyObligations(draft.obligations, ["checkpoint"]);
     }, { unitId, checkpointId: orphan.checkpointId, sequence: orphan.sequence });
     return { state: reused, manifest: orphan };
   }
@@ -505,8 +520,9 @@ export async function checkpointImplementationUnit(
 
   const forwardPatch = canonicalReviewValueJson({ direction: "forward", checkpointId, unitId: implementationUnitId, files: records });
   const reversePatch = canonicalReviewValueJson({ direction: "reverse", checkpointId, unitId: implementationUnitId, files: reverseRecords(records) });
+  const blobRefs = await packCheckpointBlobRefs(root, id, records);
   const manifest: CheckpointManifest = {
-    schemaVersion: 2,
+    schemaVersion: 3,
     checkpointId,
     unitId: implementationUnitId,
     sequence,
@@ -527,6 +543,7 @@ export async function checkpointImplementationUnit(
     ...(unit.beginNonce ? { beginNonce: unit.beginNonce } : {}),
     verificationCommands: [...preflightCommands, ...commands].map((command) => ({ commandId: command.id, command: commandSummary(command) })),
     verificationCommandHashes: Object.fromEntries([...preflightCommands, ...commands].map((command) => [command.id, currentCommandHashes[command.id] ?? digest(JSON.stringify(command))])),
+    blobRefs,
   };
   const validated = parseCheckpointManifest(JSON.parse(JSON.stringify(manifest)));
 
@@ -557,6 +574,8 @@ export async function checkpointImplementationUnit(
     }
     current.status = "checkpointed";
     current.checkpointId = checkpointId;
+    draft.evidenceFreshness.checkpoint = "current";
+    draft.obligations = satisfyObligations(draft.obligations, ["checkpoint"]);
   }, { unitId, checkpointId, sequence });
   return { state, manifest: validated };
 }

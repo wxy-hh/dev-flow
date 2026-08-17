@@ -62,19 +62,20 @@ test("inspect and the advance gate read the same unresolved blocking set", async
   }
 });
 
-test("unknown diff records changed fields and the full-re-review decision, visible to inspect", async () => {
-  const { root, state } = await setup("dev-flow-review-unknown-diag-", "unknown-diag");
+test("unchanged role slices reuse every role and leave no unknown-diff diagnostic", async () => {
+  const { root, state } = await setup("dev-flow-review-reuse-diag-", "reuse-diag");
   try {
     const first = await jobs.createReviewBatch(root, state.featureId, state.revision);
     let current = (await completeReviewJobs(root, state.featureId, first.state, first.batch)).state;
-    // governed-root 字节变化不在任何角色切片内
+    // governed-root 字节变化不在任何角色语义切片内
     await writeFile(path.join(root, "src", "extra.js"), "export const extra = 1;\n");
     const second = await jobs.createReviewBatch(root, state.featureId, current.revision);
-    assert.ok(second.batch.unknownDiffInfo, "unknown diff must record a diagnostic");
-    assert.ok(second.batch.unknownDiffInfo.changedFields.length > 0, JSON.stringify(second.batch.unknownDiffInfo));
-    assert.match(second.batch.unknownDiffInfo.reason, /完整重审/);
+    assert.equal(second.batch.unknownDiffInfo, undefined);
+    assert.ok(second.batch.jobs.length > 0);
+    assert.ok(second.batch.jobs.every((job) => job.status === "reused" && job.reusedFrom !== undefined));
+    assert.equal(second.batch.progress, "complete");
     const view = await inspection.inspectFeature(root, state.featureId, "review");
-    assert.deepEqual(view.content.unknownDiff, second.batch.unknownDiffInfo);
+    assert.equal(view.content.unknownDiff, undefined);
   } finally {
     await rm(root, { recursive: true, force: true });
   }

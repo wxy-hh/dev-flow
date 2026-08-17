@@ -44,13 +44,11 @@ function requirementsLedger() {
 
 function populatedLedger() {
   let ledger = requirementsLedger();
-  ledger = trace.applyTraceDelta(deltaInput(ledger, "implementation-plan", [
+  return trace.applyTraceDelta(deltaInput(ledger, "implementation-plan", [
     { kind: "task", id: "TASK-001", covers: ["AC-001"], implementationUnit: "UNIT-001" },
     { kind: "implementation-unit", id: "UNIT-001", tasks: ["TASK-001"], dependsOn: [], fileScope: ["src/one.ts"], covers: ["REQ-001"], forwardVerification: ["unit"] },
     { kind: "task", id: "TASK-002", covers: ["AC-002"], implementationUnit: "UNIT-002" },
     { kind: "implementation-unit", id: "UNIT-002", tasks: ["TASK-002"], dependsOn: [], fileScope: ["src/two.ts"], covers: ["REQ-002"], forwardVerification: ["unit"] },
-  ]));
-  return trace.applyTraceDelta(deltaInput(ledger, "coverage-matrix", [
     { kind: "test", id: "TEST-001", verifies: ["AC-001"] },
     { kind: "test", id: "TEST-002", verifies: ["AC-002"] },
   ]));
@@ -113,15 +111,11 @@ test("re-registering dependents restores current status after an upstream block 
     { kind: "implementation-unit", id: "UNIT-001", tasks: ["TASK-001"], dependsOn: [], fileScope: ["src/one.ts"], covers: ["REQ-001"], forwardVerification: ["unit"] },
     { kind: "task", id: "TASK-002", covers: ["AC-002"], implementationUnit: "UNIT-002" },
     { kind: "implementation-unit", id: "UNIT-002", tasks: ["TASK-002"], dependsOn: [], fileScope: ["src/two.ts"], covers: ["REQ-002"], forwardVerification: ["unit"] },
-  ]));
-  assert.equal(ledger.nodes["TASK-001"].status, "current");
-  assert.equal(ledger.nodes["UNIT-001"].status, "current");
-  assert.equal(ledger.nodes["TEST-001"].status, "stale");
-
-  ledger = trace.applyTraceDelta(deltaInput(ledger, "coverage-matrix", [
     { kind: "test", id: "TEST-001", verifies: ["AC-001"] },
     { kind: "test", id: "TEST-002", verifies: ["AC-002"] },
   ]));
+  assert.equal(ledger.nodes["TASK-001"].status, "current");
+  assert.equal(ledger.nodes["UNIT-001"].status, "current");
   assert.equal(ledger.nodes["TEST-001"].status, "current");
   assert.doesNotThrow(() => trace.assertTraceabilityComplete(ledger, "m", "a".repeat(64)));
 });
@@ -218,9 +212,46 @@ test("graph validation rejects dangling references, orphan tasks, duplicate IDs,
     /TRACE_GRAPH_INVALID/,
   );
   assert.throws(
-    () => trace.applyTraceDelta(deltaInput(requirements, "coverage-matrix", [
+    () => trace.applyTraceDelta(deltaInput(requirements, "implementation-plan", [
+      { kind: "task", id: "TASK-001", covers: ["AC-001"], implementationUnit: "UNIT-001" },
+      { kind: "implementation-unit", id: "UNIT-001", tasks: ["TASK-001"], dependsOn: [], fileScope: ["src/a.ts"], covers: ["REQ-001"], forwardVerification: ["unit"] },
       { kind: "test", id: "TEST-001", verifies: ["AC-999"] },
     ])),
+    /TRACE_GRAPH_INVALID/,
+  );
+  assert.throws(
+    () => trace.applyTraceDelta(deltaInput(requirements, "coverage-matrix", [
+      { kind: "test", id: "TEST-001", verifies: ["AC-001"] },
+    ])),
+    /TRACE_GRAPH_INVALID/,
+  );
+  assert.throws(
+    () => trace.validateTraceDelta({
+      nodes: [{
+        kind: "rollback",
+        id: "RU-001",
+        tasks: ["TASK-001"],
+        dependsOn: [],
+        fileScope: ["src/a.ts"],
+        covers: ["REQ-001"],
+        forwardVerification: ["unit"],
+        rollbackVerification: ["unit"],
+      }],
+    }),
+    /rollback nodes are not a v6 Trace kind/,
+  );
+  assert.throws(
+    () => trace.validateTraceDelta({
+      nodes: [{
+        kind: "implementation-unit",
+        id: "UNIT-001",
+        tasks: ["TASK-001"],
+        dependsOn: [],
+        fileScope: ["src/a.ts"],
+        covers: ["REQ-001"],
+        forwardVerification: [{ command: "node", args: ["--test"] }],
+      }],
+    }),
     /TRACE_GRAPH_INVALID/,
   );
   assert.throws(
@@ -236,12 +267,10 @@ test("graph validation rejects dangling references, orphan tasks, duplicate IDs,
 
 test("historical tombstones do not prevent the remaining current graph from completing", () => {
   let ledger = populatedLedger();
-  ledger = trace.applyTraceDelta(deltaInput(ledger, "coverage-matrix", [
-    { kind: "test", id: "TEST-001", verifies: ["AC-001"] },
-  ]));
   ledger = trace.applyTraceDelta(deltaInput(ledger, "implementation-plan", [
     { kind: "task", id: "TASK-001", covers: ["AC-001"], implementationUnit: "UNIT-001" },
     { kind: "implementation-unit", id: "UNIT-001", tasks: ["TASK-001"], dependsOn: [], fileScope: ["src/one.ts"], covers: ["REQ-001"], forwardVerification: ["unit"] },
+    { kind: "test", id: "TEST-001", verifies: ["AC-001"] },
   ]));
   ledger = trace.applyTraceDelta(deltaInput(ledger, "requirements", [
     { kind: "requirement", id: "REQ-001" },
@@ -269,8 +298,6 @@ test("semantic trace config checks only referenced verification command identiti
     { kind: "implementation-unit", id: "UNIT-001", tasks: ["TASK-001"], dependsOn: [], fileScope: ["src/one.ts"], covers: ["REQ-001"], forwardVerification: ["unit"] },
     { kind: "task", id: "TASK-002", covers: ["AC-002"], implementationUnit: "UNIT-002" },
     { kind: "implementation-unit", id: "UNIT-002", tasks: ["TASK-002"], dependsOn: [], fileScope: ["src/two.ts"], covers: ["REQ-002"], forwardVerification: ["unit"] },
-  ], { verificationCommandHashes: { unit: unitHash, lint: lintHash } }));
-  ledger = trace.applyTraceDelta(deltaInput(ledger, "coverage-matrix", [
     { kind: "test", id: "TEST-001", verifies: ["AC-001"] },
     { kind: "test", id: "TEST-002", verifies: ["AC-002"] },
   ], { verificationCommandHashes: { unit: unitHash, lint: lintHash } }));

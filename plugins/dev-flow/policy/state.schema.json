@@ -3,9 +3,10 @@
   "$id": "dev-flow/state.schema.json",
   "type": "object",
   "additionalProperties": false,
-  "required": ["schemaVersion", "governance", "mode", "featureId", "revision", "lifecycle", "scope", "workspace", "evidenceFreshness", "steps", "humanGates", "artifacts", "verification", "blockingFindings", "logicComplete", "lastUpdatedBy"],
+  "required": ["schemaVersion", "mode", "featureId", "revision", "lifecycle", "scope", "evidenceFreshness", "steps", "humanGates", "artifacts", "verification", "blockingFindings", "logicComplete", "lastUpdatedBy", "archivedCollections"],
   "properties": {
-    "schemaVersion": { "const": 5 },
+    "schemaVersion": { "const": 6 },
+    "archivedCollections": { "$ref": "#/$defs/archivedCollections" },
     "governance": { "$ref": "#/$defs/governanceLedger" },
     "mode": { "enum": ["intake", "routed"] },
     "featureId": { "type": "string", "minLength": 1 },
@@ -126,6 +127,21 @@
     { "if": { "properties": { "mode": { "const": "routed" } } }, "then": { "required": ["route", "classification", "classificationBasis", "obligations"] } }
   ],
   "$defs": {
+    "archivedCollections": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schemaVersion", "featureId", "pointer"],
+      "properties": {
+        "schemaVersion": { "const": 1 },
+        "featureId": { "type": "string", "minLength": 1 },
+        "pointer": { "type": "object" },
+        "workspaceLineage": { "type": "object" },
+        "interactionLedger": { "type": "object" },
+        "governanceLedger": { "type": "object" },
+        "verificationLedger": { "type": "object" },
+        "repairLedger": { "type": "object" }
+      }
+    },
     "classification": {
       "type": "object",
       "additionalProperties": false,

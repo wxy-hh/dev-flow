@@ -5,6 +5,8 @@ import { reviewEnforcementRequired, traceEnforcementRequired } from "../policy/c
 import { effectiveStage } from "../policy/stages.js";
 import { listOrphanTraceSnapshots, readTraceability } from "../core/traceability-store.js";
 import { listOrphanReviewSnapshots, readReviewLedger } from "../core/review-store.js";
+import { inspectEvidenceStoreHealth, type EvidenceStoreHealth } from "../core/evidence-store.js";
+import type { EvidenceObjectRef } from "../policy/evidence-store.js";
 import { readHostHealth } from "../core/host-health.js";
 import { assertActivePointerConsistent, readProjectConfig, readState, readActive, readRecoveryTransaction, readFeatureEvents, stateFileSha256, type FeatureState } from "../core/state-store.js";
 import { readRollbackTransaction, rollbackTransactionFinished, type RollbackTransaction } from "../core/rollback-journal.js";
@@ -365,6 +367,48 @@ export async function collectDoctorReport(root: string, pluginRoot: string, vers
     }
   }
 
+  let evidenceStore: EvidenceStoreHealth | undefined;
+  if (traceState) {
+    try {
+      const rootSet = ["workspaceLineage", "interactionLedger", "governanceLedger", "verificationLedger", "repairLedger"]
+        .flatMap((key) => traceState.archivedCollections?.[key as keyof typeof traceState.archivedCollections] ? [traceState.archivedCollections[key as keyof typeof traceState.archivedCollections] as EvidenceObjectRef] : []);
+      const health = await inspectEvidenceStoreHealth(root, traceState.featureId, { rootSet });
+      evidenceStore = health;
+      if (!health.catalogPresent) {
+        add("EVIDENCE_STORE_EMPTY", "ok", `feature ${traceState.featureId} has no evidence store objects yet`);
+      } else {
+        add(
+          "EVIDENCE_STORE_CATALOG_VALID",
+          "ok",
+          `evidence store ${health.objectCount} objects in ${health.packCount} packs (hot ${health.hotPackCount}/${health.hotRawBytes}B, cold ${health.coldPackCount}/${health.coldRawBytes}B)`,
+        );
+      }
+      if (health.integrityIssues.length > 0) {
+        add(
+          "EVIDENCE_STORE_INTEGRITY_FAILED",
+          "error",
+          `evidence store has ${health.integrityIssues.length} integrity issue(s): ${health.integrityIssues.map((issue) => `${issue.code}:${issue.packSha256 ?? ""} ${issue.message}`).join("; ")}`,
+          "Stop writing to this feature; doctor 只做只读诊断。恢复完整 catalog/pack 或使用 recover_corrupt_feature 隔离损坏 feature，不要手改 .dev-flow",
+        );
+      } else if (health.physicalOrphanFileCount > 0 || health.orphanPackCount > 0) {
+        add(
+          "EVIDENCE_STORE_ORPHAN_BACKLOG",
+          "warning",
+          `evidence store orphan backlog: ${health.orphanPackCount} unreachable packs and ${health.physicalOrphanFileCount} physical leftovers; estimated ${health.backlogRounds} bounded GC round(s)`,
+          "继续正常 mutation 或重新开启会话触发下一轮有界自动维护；doctor 不提供手动 archive/compact",
+        );
+      }
+    } catch (error) {
+      add(
+        "EVIDENCE_STORE_UNREADABLE",
+        "error",
+        error instanceof Error ? error.message : String(error),
+        "停止写入该 feature 的 evidence store，运行 recover_corrupt_feature 前先完整备份 .dev-flow；不要手改 catalog 或 pack 文件",
+      );
+    }
+  }
+
+
   if (traceState && traceState.mode !== "intake" && traceState.workspace) {
     const workspace = traceState.workspace;
     try {
@@ -412,12 +456,12 @@ export async function collectDoctorReport(root: string, pluginRoot: string, vers
     for (const entry of entries.filter((candidate) => candidate.isDirectory())) {
       try {
         const raw = JSON.parse(await readFile(path.join(directory, entry.name, "state.json"), "utf8")) as { schemaVersion?: unknown; lifecycle?: unknown };
-        if ([1, 2, 3].includes(Number(raw.schemaVersion)) && raw.lifecycle !== "finalized" && raw.lifecycle !== "abandoned") legacyFeatures.push(entry.name);
+        if ([1, 2, 3, 4, 5].includes(Number(raw.schemaVersion)) && raw.lifecycle !== "finalized" && raw.lifecycle !== "abandoned") legacyFeatures.push(entry.name);
       } catch { /* corrupt features are already surfaced above */ }
     }
   } catch { /* no feature directory means there is nothing to upgrade */ }
   const v4Ready = legacyFeatures.length === 0;
-  add(v4Ready ? "V4_READY" : "V4_NOT_READY", v4Ready ? "ok" : "warning", v4Ready ? "没有未完成的旧版 feature，可以使用 schema v4" : `仍有未完成的旧版 feature: ${legacyFeatures.join(", ")}`, v4Ready ? undefined : "先使用 4.x 完成或放弃旧 feature，备份 .dev-flow，再使用 5.0 重新初始化；doctor 不自动迁移或终止");
+  add(v4Ready ? "V4_READY" : "V4_NOT_READY", v4Ready ? "ok" : "warning", v4Ready ? "没有未完成的旧版 feature，可以使用 schema v6" : `仍有未完成的旧版 feature: ${legacyFeatures.join(", ")}`, v4Ready ? undefined : "先使用产生该状态的 Dev Flow 版本完成或放弃旧 feature，备份 .dev-flow，再使用 6.0 重新初始化；doctor 不自动迁移或终止");
 
   return {
     version, root, pluginRoot, tools, project, activeFeature, corruptFeature, corruptActivePointer, hookHealth,
@@ -425,6 +469,7 @@ export async function collectDoctorReport(root: string, pluginRoot: string, vers
     rollbackTransactions,
     trace: trace ?? null,
     review: review ?? null,
+    evidenceStore: evidenceStore ?? null,
     mcp: { server: "running", configuration: !invalidJson },
     v4Ready,
     legacyFeatures,

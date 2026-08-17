@@ -6,6 +6,7 @@ import path from "node:path";
 import test from "node:test";
 import { loadSource } from "../helpers/load-source.mjs";
 import { registerTraceFixture, traceDeltaFor } from "../helpers/trace-fixtures.mjs";
+import { v6ImplementationPlanMarkdown, v6RecoveryBlock } from "../helpers/v6-fixtures.mjs";
 
 const store = await loadSource("plugins/dev-flow/src/core/state-store.ts");
 const artifacts = await loadSource("plugins/dev-flow/src/core/artifacts.ts");
@@ -49,22 +50,9 @@ async function setupTraceM(prefix) {
 }
 
 const planMarkdown = [
-  "<!-- dev-flow:id=TASK-001 kind=task -->\n### TASK-001\n\n- covers: REQ-001, AC-001\n- implementation_unit: UNIT-001\n",
-  "<!-- dev-flow:id=TASK-002 kind=task -->\n### TASK-002\n\n- covers: REQ-001, AC-001\n- implementation_unit: UNIT-002\n",
-  "<!-- dev-flow:id=TEST-001 kind=test -->\n### TEST-001\n\n- 验证方法：\n",
-  "<!-- dev-flow:id=UNIT-001 kind=implementation-unit -->\n### UNIT-001\n\n- tasks: [TASK-001]\n- depends_on: []\n- file_scope: src/a.ts\n- covers: REQ-001, AC-001\n- forward_verification: unit\n",
-  "<!-- dev-flow:id=UNIT-002 kind=implementation-unit -->\n### UNIT-002\n\n- tasks: [TASK-002]\n- depends_on: []\n- file_scope: src/b.ts\n- covers: REQ-001, AC-001\n- forward_verification: unit\n",
+  v6ImplementationPlanMarkdown({ fileScope: ["src/a.ts"] }),
+  v6ImplementationPlanMarkdown({ taskId: "TASK-002", testId: "TEST-002", unitId: "UNIT-002", fileScope: ["src/b.ts"], includeTest: false }),
 ].join("\n");
-
-const planDelta = {
-  nodes: [
-    { kind: "task", id: "TASK-001", covers: ["REQ-001", "AC-001"], implementationUnit: "UNIT-001" },
-    { kind: "task", id: "TASK-002", covers: ["REQ-001", "AC-001"], implementationUnit: "UNIT-002" },
-    { kind: "test", id: "TEST-001", verifies: ["AC-001"] },
-    { kind: "implementation-unit", id: "UNIT-001", tasks: ["TASK-001"], dependsOn: [], fileScope: ["src/a.ts"], covers: ["REQ-001", "AC-001"], forwardVerification: ["unit"] },
-    { kind: "implementation-unit", id: "UNIT-002", tasks: ["TASK-002"], dependsOn: [], fileScope: ["src/b.ts"], covers: ["REQ-001", "AC-001"], forwardVerification: ["unit"] },
-  ],
-};
 
 test("revising the plan during implementation pauses the step, shows the impact, and redoes only affected units", async () => {
   const { root, state } = await setupTraceM("dev-flow-plan-revise-");
@@ -72,8 +60,7 @@ test("revising the plan during implementation pauses the step, shows the impact,
     const id = state.featureId;
     const planPath = path.join(root, ".dev-flow", "features", id, state.artifacts["implementation-plan"].path);
     await writeFile(planPath, planMarkdown);
-    let current = await artifacts.recordArtifactWithTrace(root, id, state.revision, "implementation-plan", planDelta);
-    current = current.state;
+    let current = (await artifacts.recordArtifactFromMarkdown(root, id, state.revision, "implementation-plan")).state;
     current = await steps.recordStep(root, id, current.revision, "planning", { reviewType: "plan" });
     // 完成 UNIT-001，UNIT-002 仍 pending
     const begun = await units.beginImplementationUnit(root, id, current.revision, "UNIT-001");
@@ -81,31 +68,22 @@ test("revising the plan during implementation pauses the step, shows the impact,
     assert.equal(cp.state.implementationUnits.find((u) => u.unitId === "UNIT-001").status, "checkpointed");
 
     // 修订：RU-001 的 fileScope 变化 → 受影响
-    const revisedDelta = {
-      nodes: [
-        { kind: "task", id: "TASK-001", covers: ["REQ-001", "AC-001"], implementationUnit: "UNIT-001" },
-        { kind: "task", id: "TASK-002", covers: ["REQ-001", "AC-001"], implementationUnit: "UNIT-002" },
-        { kind: "test", id: "TEST-001", verifies: ["AC-001"] },
-        { kind: "implementation-unit", id: "UNIT-001", tasks: ["TASK-001"], dependsOn: [], fileScope: ["src/a.ts", "src/c.ts"], covers: ["REQ-001", "AC-001"], forwardVerification: ["unit"] },
-        { kind: "implementation-unit", id: "UNIT-002", tasks: ["TASK-002"], dependsOn: [], fileScope: ["src/b.ts"], covers: ["REQ-001", "AC-001"], forwardVerification: ["unit"] },
-      ],
-    };
-    await writeFile(planPath, planMarkdown.replace("file_scope: src/a.ts", "file_scope: src/a.ts, src/c.ts"));
-    const preview = await store.revisePlanDuringImplementation(root, id, cp.state.revision, revisedDelta, "codex");
+    await writeFile(planPath, planMarkdown.replace("file_scope: [src/a.ts]", "file_scope: [src/a.ts, src/c.ts]"));
+    const preview = await store.revisePlanFromMarkdown(root, id, cp.state.revision, "codex");
     assert.equal(decisions.pendingDecisionForState(preview.state).kind, "plan-revision");
     assert.deepEqual(preview.interaction.planRevision.affectedUnits, ["UNIT-001"]);
     assert.deepEqual(preview.interaction.planRevision.redoUnits, ["UNIT-001"]);
 
     // 取消：不改变任何状态
     await store.recordHostEvent(root, { eventId: "cancel", type: "user-prompt", host: "codex", text: "取消" });
-    const cancelled = await store.answer({ root, featureId: id, expectedRevision: preview.state.revision, host: "codex", credential: { source: "text", userReply: "取消" } });
+    const cancelled = await store.answerFromHostEvents({ root, featureId: id, expectedRevision: preview.state.revision, host: "codex" });
     assert.equal(cancelled.state.implementationUnits.find((u) => u.unitId === "UNIT-001").status, "checkpointed");
     assert.deepEqual(cancelled.state.review, cp.state.review);
 
     // 重新发起修订并确认：计划失效（需重新登记），UNIT-001 回 pending（重做），UNIT-002 保留
-    const preview2 = await store.revisePlanDuringImplementation(root, id, cancelled.state.revision, revisedDelta, "codex");
+    const preview2 = await store.revisePlanFromMarkdown(root, id, cancelled.state.revision, "codex");
     await store.recordHostEvent(root, { eventId: "confirm", type: "user-prompt", host: "codex", text: "确认修订" });
-    const revised = await store.answer({ root, featureId: id, expectedRevision: preview2.state.revision, host: "codex", credential: { source: "text", userReply: "确认修订" } });
+    const revised = await store.answerFromHostEvents({ root, featureId: id, expectedRevision: preview2.state.revision, host: "codex" });
     const planContents = await readFile(planPath);
     assert.equal(
       revised.state.artifacts["implementation-plan"].sha256,
@@ -114,19 +92,9 @@ test("revising the plan during implementation pauses the step, shows the impact,
     );
     assert.equal(revised.state.implementationUnits.find((u) => u.unitId === "UNIT-001").status, "pending");
     assert.equal(revised.state.implementationUnits.find((u) => u.unitId === "UNIT-002").status, "pending");
-    assert.equal(stepOrder.currentOpenStep(revised.state), "planning");
-    assert.equal(revised.state.steps.planning, undefined);
-    assert.ok(revised.state.traceability, "trace pointer stays until the revised plan is re-registered");
-    // sha 已同步但 Trace 仍是修订前切片：create_review_batch 必须失败关闭，
-    // 防止复用旧审查 job 后把未解决的 blocking 卡成只能走 risk-acceptance。
-    await assert.rejects(
-      () => reviewJobs.createReviewBatch(root, id, revised.state.revision),
-      (error) => error.code === "TRACE_SLICE_STALE",
-    );
-    // 重新登记修订后的计划并推进，重做受影响单元（implementation 步骤在单元完成后登记）
-    let reRegistered = (await artifacts.recordArtifactWithTrace(root, id, revised.state.revision, "implementation-plan", revisedDelta)).state;
-    reRegistered = await steps.recordStep(root, id, reRegistered.revision, "planning", { reviewType: "plan" });
-    const rebegun = await units.beginImplementationUnit(root, id, reRegistered.revision, "UNIT-001");
+    assert.ok(revised.state.traceability, "atomic confirm writes the compiled Trace pointer");
+    const planned = await steps.recordStep(root, id, revised.state.revision, "planning", { reviewType: "plan" });
+    const rebegun = await units.beginImplementationUnit(root, id, planned.revision, "UNIT-001");
     assert.equal(rebegun.implementationUnits.find((u) => u.unitId === "UNIT-001").status, "active");
   } finally {
     await rm(root, { recursive: true, force: true });
@@ -138,24 +106,21 @@ test("side-effect units are flagged, kept, and only re-run after explicit user c
   try {
     const id = state.featureId;
     const planPath = path.join(root, ".dev-flow", "features", id, state.artifacts["implementation-plan"].path);
-    const withRecovery = planMarkdown + "<!-- dev-flow:id=REC-001 kind=recovery -->\n### REC-001\n\n- step_ref: TASK-001\n- recovery_kind: compensation\n- method: 从备份恢复\n- risk_ref: data\n";
+    const withRecovery = `${planMarkdown}\n${v6RecoveryBlock({ stepRef: "TASK-001" }).replace("重建受影响的交付文件并重新执行该 UNIT 的 forward_verification", "从备份恢复")}`;
     await writeFile(planPath, withRecovery);
-    const deltaWithRecovery = { nodes: [...planDelta.nodes, { kind: "recovery", id: "REC-001", stepRef: "TASK-001", recoveryKind: "compensation", method: "从备份恢复", riskRef: "data" }] };
-    let current = (await artifacts.recordArtifactWithTrace(root, id, state.revision, "implementation-plan", deltaWithRecovery)).state;
+    let current = (await artifacts.recordArtifactFromMarkdown(root, id, state.revision, "implementation-plan")).state;
     current = await steps.recordStep(root, id, current.revision, "planning", { reviewType: "plan" });
     const begun = await units.beginImplementationUnit(root, id, current.revision, "UNIT-001");
     await checkpoints.checkpointImplementationUnit(root, id, begun.revision, "UNIT-001");
 
-    const revisedDelta = { nodes: deltaWithRecovery.nodes.map((node) => node.kind === "implementation-unit" && node.id === "UNIT-001" ? { ...node, fileScope: ["src/a.ts", "src/c.ts"] } : node) };
-    await writeFile(planPath, withRecovery.replace("file_scope: src/a.ts", "file_scope: src/a.ts, src/c.ts"));
+    await writeFile(planPath, withRecovery.replace("file_scope: [src/a.ts]", "file_scope: [src/a.ts, src/c.ts]"));
     const currentState = await store.readState(root, id);
-    const preview = await store.revisePlanDuringImplementation(root, id, currentState.revision, revisedDelta, "codex");
+    const preview = await store.revisePlanFromMarkdown(root, id, currentState.revision, "codex");
     assert.deepEqual(preview.interaction.planRevision.sideEffectUnits, ["UNIT-001"]);
     assert.match(preview.interaction.question, /有副作用的操作/);
 
-    // 确认修订：副作用单元保持 checkpointed，不自动重跑；出现人工决定交互
     await store.recordHostEvent(root, { eventId: "confirm-side", type: "user-prompt", host: "codex", text: "确认修订" });
-    const revised = await store.answer({ root, featureId: id, expectedRevision: preview.state.revision, host: "codex", credential: { source: "text", userReply: "确认修订" } });
+    const revised = await store.answerFromHostEvents({ root, featureId: id, expectedRevision: preview.state.revision, host: "codex" });
     assert.equal(revised.state.implementationUnits.find((u) => u.unitId === "UNIT-001").status, "checkpointed");
     assert.equal(decisions.pendingDecisionForState(revised.state).kind, "side-effect-rerun");
     // answer 返回契约：下一题经 result.pending 给出（dev_flow_answer 消费同一字段，不再自行重推导）。
@@ -166,17 +131,14 @@ test("side-effect units are flagged, kept, and only re-run after explicit user c
     assert.ok(rerun, "side-effect-rerun interaction must be presented");
     assert.match(rerun.question, /有副作用的操作/);
 
-    // 重新登记修订后的计划并推进到 implementation 后，未确认前 begin 仍被阻塞
-    let reRegistered = (await artifacts.recordArtifactWithTrace(root, id, revised.state.revision, "implementation-plan", revisedDelta)).state;
-    reRegistered = await steps.recordStep(root, id, reRegistered.revision, "planning", { reviewType: "plan" });
+    const planned = await steps.recordStep(root, id, revised.state.revision, "planning", { reviewType: "plan" });
     await assert.rejects(
-      () => units.beginImplementationUnit(root, id, reRegistered.revision, "UNIT-001"),
+      () => units.beginImplementationUnit(root, id, planned.revision, "UNIT-001"),
       (error) => error.code === "SIDE_EFFECT_UNIT_PENDING_CONFIRMATION",
     );
 
-    // 拒绝重跑：单元保持 checkpointed（保留原结果），交互解决，不能 begin 已完成单元
     await store.recordHostEvent(root, { eventId: "keep-side", type: "user-prompt", host: "codex", text: "不重跑，保留原结果" });
-    const kept = await store.answer({ root, featureId: id, expectedRevision: reRegistered.revision, host: "codex", credential: { source: "text", userReply: "不重跑，保留原结果" } });
+    const kept = await store.answerFromHostEvents({ root, featureId: id, expectedRevision: planned.revision, host: "codex" });
     assert.equal(kept.state.implementationUnits.find((u) => u.unitId === "UNIT-001").status, "checkpointed");
     assert.equal(decisions.pendingDecisionForState(kept.state), undefined);
     await assert.rejects(
@@ -185,21 +147,19 @@ test("side-effect units are flagged, kept, and only re-run after explicit user c
     );
 
     // 再次修订并确认重跑：单元回 pending，可重新 begin 重做
-    const revisedDelta2 = { nodes: revisedDelta.nodes.map((node) => node.kind === "implementation-unit" && node.id === "UNIT-001" ? { ...node, fileScope: ["src/a.ts", "src/c.ts", "src/d.ts"] } : node) };
-    await writeFile(planPath, withRecovery.replace("file_scope: src/a.ts", "file_scope: src/a.ts, src/c.ts, src/d.ts"));
+    await writeFile(planPath, withRecovery.replace("file_scope: [src/a.ts]", "file_scope: [src/a.ts, src/c.ts, src/d.ts]"));
     const currentState2 = await store.readState(root, id);
-    const preview2 = await store.revisePlanDuringImplementation(root, id, currentState2.revision, revisedDelta2, "codex");
+    const preview2 = await store.revisePlanFromMarkdown(root, id, currentState2.revision, "codex");
     await store.recordHostEvent(root, { eventId: "confirm-side-2", type: "user-prompt", host: "codex", text: "确认修订" });
-    const revised2 = await store.answer({ root, featureId: id, expectedRevision: preview2.state.revision, host: "codex", credential: { source: "text", userReply: "确认修订" } });
+    const revised2 = await store.answerFromHostEvents({ root, featureId: id, expectedRevision: preview2.state.revision, host: "codex" });
     const rerun2 = Object.values(revised2.state.interactions).find((value) => value.kind === "side-effect-rerun" && value.status === "pending");
     assert.ok(rerun2);
-    let reRegistered2 = (await artifacts.recordArtifactWithTrace(root, id, revised2.state.revision, "implementation-plan", revisedDelta2)).state;
-    reRegistered2 = await steps.recordStep(root, id, reRegistered2.revision, "planning", { reviewType: "plan" });
     await store.recordHostEvent(root, { eventId: "rerun-side", type: "user-prompt", host: "codex", text: "确认重跑" });
-    const rerunConfirmed = await store.answer({ root, featureId: id, expectedRevision: reRegistered2.revision, host: "codex", credential: { source: "text", userReply: "确认重跑" } });
+    const rerunConfirmed = await store.answerFromHostEvents({ root, featureId: id, expectedRevision: revised2.state.revision, host: "codex" });
     assert.equal(rerunConfirmed.state.implementationUnits.find((u) => u.unitId === "UNIT-001").status, "pending");
     assert.equal(rerunConfirmed.state.steps.implementation, undefined);
-    const rebegun = await units.beginImplementationUnit(root, id, rerunConfirmed.state.revision, "UNIT-001");
+    const planned2 = await steps.recordStep(root, id, rerunConfirmed.state.revision, "planning", { reviewType: "plan" });
+    const rebegun = await units.beginImplementationUnit(root, id, planned2.revision, "UNIT-001");
     assert.equal(rebegun.implementationUnits.find((u) => u.unitId === "UNIT-001").status, "active");
   } finally {
     await rm(root, { recursive: true, force: true });
@@ -212,16 +172,11 @@ test("plan revision confirmation rejects a preview whose plan file changed witho
     const id = state.featureId;
     const planPath = path.join(root, ".dev-flow", "features", id, state.artifacts["implementation-plan"].path);
     await writeFile(planPath, planMarkdown);
-    let current = (await artifacts.recordArtifactWithTrace(root, id, state.revision, "implementation-plan", planDelta)).state;
+    let current = (await artifacts.recordArtifactFromMarkdown(root, id, state.revision, "implementation-plan")).state;
     current = await steps.recordStep(root, id, current.revision, "planning", { reviewType: "plan" });
 
-    const revisedDelta = {
-      nodes: planDelta.nodes.map((node) => node.kind === "implementation-unit" && node.id === "UNIT-001"
-        ? { ...node, fileScope: ["src/a.ts", "src/c.ts"] }
-        : node),
-    };
-    await writeFile(planPath, planMarkdown.replace("file_scope: src/a.ts", "file_scope: src/a.ts, src/c.ts"));
-    const preview = await store.revisePlanDuringImplementation(root, id, current.revision, revisedDelta, "codex");
+    await writeFile(planPath, planMarkdown.replace("file_scope: [src/a.ts]", "file_scope: [src/a.ts, src/c.ts]"));
+    const preview = await store.revisePlanFromMarkdown(root, id, current.revision, "codex");
 
     // IDE edits do not change feature revision; confirmation must still detect the changed basis.
     await writeFile(planPath, `${planMarkdown.replace("file_scope: src/a.ts", "file_scope: src/a.ts, src/c.ts")}\n<!-- changed after preview -->\n`);

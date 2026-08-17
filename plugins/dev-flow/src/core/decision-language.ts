@@ -68,7 +68,7 @@ export function matchNaturalDecision(
     }
 
     if (option.id !== "confirm" && normalized.startsWith(label) && normalized.length > label.length) {
-      matches.push({ option, comment: raw.slice(option.label.length).trim() });
+      matches.push({ option, comment: raw.slice(option.label.length).replace(/^[:：]\s*/, "").trim() });
     }
 
     // 纯展示后缀（如「（推荐）」）不改变回答指向，对 confirm 同样容忍；

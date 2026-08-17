@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { loadSource } from "../helpers/load-source.mjs";
-import { registerTraceFixture, traceDeltaFor } from "../helpers/trace-fixtures.mjs";
+import { v6ImplementationPlanMarkdown, v6RequirementsMarkdown } from "../helpers/v6-fixtures.mjs";
 
 const stateStore = await loadSource("plugins/dev-flow/src/core/state-store.ts");
 const artifacts = await loadSource("plugins/dev-flow/src/core/artifacts.ts");
@@ -18,18 +18,20 @@ const projectConfig = {
   governedRoots: ["src"],
 };
 
-const ac2Anchor = "\n<!-- dev-flow:id=AC-002 kind=acceptance-criterion -->\n#### AC-002：第二项验收（parent: REQ-001）\n\n- 验收条件：\n";
-
-function requirementsDelta(ac2Disposition) {
-  return {
-    nodes: [
-      { kind: "requirement", id: "REQ-001" },
-      { kind: "acceptance-criterion", id: "AC-001", parentRequirement: "REQ-001" },
-      ...(ac2Disposition
-        ? [{ kind: "acceptance-criterion", id: "AC-002", parentRequirement: "REQ-001", verificationDisposition: ac2Disposition }]
-        : [{ kind: "acceptance-criterion", id: "AC-002", parentRequirement: "REQ-001" }]),
-    ],
-  };
+function requirementsMarkdown(ac2Disposition) {
+  const ac2 = [
+    "<!-- dev-flow:id=AC-002 kind=acceptance-criterion -->",
+    "### AC-002：第二项验收",
+    "",
+    "- parent_requirement: REQ-001",
+  ];
+  if (ac2Disposition) {
+    ac2.push(`- verification_kind: ${ac2Disposition.kind}`);
+    if (ac2Disposition.reason !== undefined) ac2.push(`- verification_reason: ${ac2Disposition.reason}`);
+    if (ac2Disposition.target) ac2.push(`- verification_target: ${ac2Disposition.target}`);
+  }
+  ac2.push("");
+  return `${v6RequirementsMarkdown().replace("- verification_kind: behavior-test\n", "")}\n${ac2.join("\n")}`;
 }
 
 async function setupFormalFeature() {
@@ -55,43 +57,25 @@ async function setupFormalFeature() {
   return { root, state };
 }
 
-async function registerRequirements(root, state, delta) {
-  const markdown = await readFile(path.join(root, ".dev-flow", "features", state.featureId, state.artifacts.requirements.path), "utf8");
-  await writeFile(path.join(root, ".dev-flow", "features", state.featureId, state.artifacts.requirements.path), markdown + ac2Anchor);
-  let current = (await artifacts.recordArtifactWithTrace(root, state.featureId, state.revision, "requirements", delta)).state;
+async function registerRequirements(root, state, ac2Disposition) {
+  await writeFile(path.join(root, ".dev-flow", "features", state.featureId, state.artifacts.requirements.path), requirementsMarkdown(ac2Disposition));
+  let current = (await artifacts.recordArtifactFromMarkdown(root, state.featureId, state.revision, "requirements")).state;
   current = await steps.recordStep(root, state.featureId, current.revision, "requirements_alignment", {});
   current = await artifacts.scaffoldArtifact(root, state.featureId, current.revision, "implementation-plan");
   return current;
 }
 
-async function registerPlan(root, state, markdown, delta) {
-  await writeFile(path.join(root, ".dev-flow", "features", state.featureId, state.artifacts["implementation-plan"].path), markdown);
-  return artifacts.recordArtifactWithTrace(root, state.featureId, state.revision, "implementation-plan", delta);
-}
-
-const taskRuMarkdown = [
-  "<!-- dev-flow:id=TASK-001 kind=task -->\n### TASK-001\n\n- covers: REQ-001, AC-001\n- implementation_unit: UNIT-001\n- tdd: test-first\n",
-  "<!-- dev-flow:id=TEST-001 kind=test -->\n### TEST-001\n\n- 验证方法：\n",
-  "<!-- dev-flow:id=UNIT-001 kind=implementation-unit -->\n### UNIT-001\n\n- tasks: TASK-001\n- depends_on: []\n- file_scope: src\n- covers: REQ-001, AC-001\n- forward_verification: unit\n",
-].join("\n");
-
-const taskRuDelta = {
-  nodes: [
-    { kind: "task", id: "TASK-001", covers: ["REQ-001", "AC-001"], implementationUnit: "UNIT-001", tdd: "test-first" },
-    { kind: "test", id: "TEST-001", verifies: ["AC-001"] },
-    { kind: "implementation-unit", id: "UNIT-001", tasks: ["TASK-001"], dependsOn: [], fileScope: ["src"], covers: ["REQ-001", "AC-001"], forwardVerification: ["unit"] },
-  ],
-};
+const taskRuMarkdown = v6ImplementationPlanMarkdown();
 
 test("an AC with a non-behavior disposition and reason passes plan preflight without its own TEST", async () => {
   const { root, state } = await setupFormalFeature();
   try {
-    const req = await registerRequirements(root, state, requirementsDelta({ kind: "file-check", reason: "核对 docs/api.md 与实现一致", target: "docs/api.md" }));
+    const req = await registerRequirements(root, state, { kind: "file-check", reason: "核对 docs/api.md 与实现一致", target: "docs/api.md" });
     assert.equal(req.mode, "routed");
-    const result = await artifacts.validatePlan(root, state.featureId, "implementation-plan", taskRuDelta);
+    await writeFile(path.join(root, ".dev-flow", "features", state.featureId, req.artifacts["implementation-plan"].path), taskRuMarkdown);
+    const result = await artifacts.validatePlanFromMarkdown(root, state.featureId, "implementation-plan");
     assert.equal(result.ok, true, JSON.stringify(result.diagnostics));
-    // 预检通过后登记；AC-002 由文件核对处置覆盖（无 TEST 也合法）。
-    await assert.doesNotReject(() => artifacts.recordArtifactWithTrace(root, state.featureId, req.revision, "implementation-plan", taskRuDelta));
+    await assert.doesNotReject(() => artifacts.recordArtifactFromMarkdown(root, state.featureId, req.revision, "implementation-plan"));
     const store = await loadSource("plugins/dev-flow/src/core/traceability-store.ts");
     const ledger = await store.readTraceability(root, (await stateStore.readState(root, state.featureId)));
     const ac2 = ledger.nodes["AC-002"];
@@ -108,18 +92,16 @@ test("uncovered AC without disposition, empty reason, and behavior-test without 
   const { root, state } = await setupFormalFeature();
   try {
     // 1) AC-002 无处置且 plan 无 TEST 覆盖 → 预检失败（定位 AC-002）
-    const prepared = await registerRequirements(root, state, requirementsDelta(undefined));
-    const missingMarkdown = taskRuMarkdown.replace("AC-001", "AC-001, AC-002");
-    await writeFile(path.join(root, ".dev-flow", "features", state.featureId, prepared.artifacts["implementation-plan"].path), missingMarkdown);
-    let result = await artifacts.validatePlan(root, state.featureId, "implementation-plan", taskRuDelta);
+    const prepared = await registerRequirements(root, state, undefined);
+    await writeFile(path.join(root, ".dev-flow", "features", state.featureId, prepared.artifacts["implementation-plan"].path), taskRuMarkdown);
+    let result = await artifacts.validatePlanFromMarkdown(root, state.featureId, "implementation-plan");
     assert.equal(result.ok, false);
     assert.ok(result.diagnostics.some((d) => d.position === "AC-002"), JSON.stringify(result.diagnostics));
 
-    // 2) 非行为处置空理由 → requirements 登记时被拒绝（delta 形状校验）
-    const emptyReason = requirementsDelta({ kind: "rule-check", reason: "   " });
     const fresh = await stateStore.readState(root, state.featureId);
+    await writeFile(path.join(root, ".dev-flow", "features", state.featureId, fresh.artifacts.requirements.path), requirementsMarkdown({ kind: "rule-check", reason: "   " }));
     await assert.rejects(
-      () => artifacts.recordArtifactWithTrace(root, state.featureId, fresh.revision, "requirements", emptyReason),
+      () => artifacts.recordArtifactFromMarkdown(root, state.featureId, fresh.revision, "requirements"),
       (error) => error.code === "TRACE_GRAPH_INVALID" || error.code === "PLAN_INVALID",
     );
   } finally {
@@ -130,21 +112,13 @@ test("uncovered AC without disposition, empty reason, and behavior-test without 
 test("one TEST can cover multiple ACs and inspect reports dispositions separately", async () => {
   const { root, state } = await setupFormalFeature();
   try {
-    const req = await registerRequirements(root, state, requirementsDelta({ kind: "file-check", reason: "核对 README 文档" }));
-    const multiDelta = {
-      nodes: [
-        { kind: "task", id: "TASK-001", covers: ["REQ-001", "AC-001", "AC-002"], implementationUnit: "UNIT-001" },
-        { kind: "test", id: "TEST-001", verifies: ["AC-001", "AC-002"] },
-        { kind: "implementation-unit", id: "UNIT-001", tasks: ["TASK-001"], dependsOn: [], fileScope: ["src"], covers: ["REQ-001", "AC-001", "AC-002"], forwardVerification: ["unit"] },
-      ],
-    };
-    const markdown = [
-      "<!-- dev-flow:id=TASK-001 kind=task -->\n### TASK-001\n\n- covers: REQ-001, AC-001, AC-002\n- implementation_unit: UNIT-001\n",
-      "<!-- dev-flow:id=TEST-001 kind=test -->\n### TEST-001\n\n- 验证方法：\n",
-      "<!-- dev-flow:id=UNIT-001 kind=implementation-unit -->\n### UNIT-001\n\n- tasks: TASK-001\n- depends_on: []\n- file_scope: src\n- covers: REQ-001, AC-001, AC-002\n- forward_verification: unit\n",
-    ].join("\n");
+    const req = await registerRequirements(root, state, { kind: "file-check", reason: "核对 README 文档" });
+    const markdown = v6ImplementationPlanMarkdown({
+      covers: ["REQ-001", "AC-001", "AC-002"],
+      verifies: ["AC-001", "AC-002"],
+    });
     await writeFile(path.join(root, ".dev-flow", "features", state.featureId, req.artifacts["implementation-plan"].path), markdown);
-    const registered = await artifacts.recordArtifactWithTrace(root, state.featureId, req.revision, "implementation-plan", multiDelta);
+    const registered = await artifacts.recordArtifactFromMarkdown(root, state.featureId, req.revision, "implementation-plan");
     const view = await inspection.inspectFeature(root, state.featureId, "trace");
     assert.ok(view.content.verificationDispositions);
     assert.equal(view.content.verificationDispositions.coveredByTest, 1);
@@ -158,22 +132,13 @@ test("one TEST can cover multiple ACs and inspect reports dispositions separatel
 test("test-first tasks require a behavior test for the ACs they cover", async () => {
   const { root, state } = await setupFormalFeature();
   try {
-    const req = await registerRequirements(root, state, requirementsDelta(undefined));
-    // TEST-001 不覆盖 TASK-001 声明的 AC-001 → test-first 任务缺行为测试
-    const noTestMarkdown = taskRuMarkdown.replace("<!-- dev-flow:id=TEST-001 kind=test -->\n### TEST-001\n\n- 验证方法：\n", "");
-    await writeFile(path.join(root, ".dev-flow", "features", state.featureId, req.artifacts["implementation-plan"].path), noTestMarkdown);
-    const noTest = { nodes: taskRuDelta.nodes.filter((node) => node.id !== "TEST-001") };
-    let result = await artifacts.validatePlan(root, state.featureId, "implementation-plan", noTest);
+    const req = await registerRequirements(root, state, undefined);
+    await writeFile(path.join(root, ".dev-flow", "features", state.featureId, req.artifacts["implementation-plan"].path), v6ImplementationPlanMarkdown({ includeTest: false }));
+    let result = await artifacts.validatePlanFromMarkdown(root, state.featureId, "implementation-plan");
     assert.equal(result.ok, false);
     assert.ok(result.diagnostics.some((d) => d.code === "TEST_FIRST_REQUIRES_BEHAVIOR_TEST" && d.position === "AC-001"), JSON.stringify(result.diagnostics));
-    // 任务改为 direct（非行为变更）后不再要求行为测试
-    const direct = {
-      nodes: [
-        { kind: "task", id: "TASK-001", covers: ["REQ-001", "AC-001"], implementationUnit: "UNIT-001", tdd: "direct" },
-        { kind: "implementation-unit", id: "UNIT-001", tasks: ["TASK-001"], dependsOn: [], fileScope: ["src"], covers: ["REQ-001", "AC-001"], forwardVerification: ["unit"] },
-      ],
-    };
-    result = await artifacts.validatePlan(root, state.featureId, "implementation-plan", direct);
+    await writeFile(path.join(root, ".dev-flow", "features", state.featureId, req.artifacts["implementation-plan"].path), v6ImplementationPlanMarkdown({ includeTest: false, tdd: "direct" }));
+    result = await artifacts.validatePlanFromMarkdown(root, state.featureId, "implementation-plan");
     assert.equal(result.ok, false, "AC-001 仍无任何验证处置，direct 只解除 test-first 约束");
     assert.ok(!result.diagnostics.some((d) => d.code === "TEST_FIRST_REQUIRES_BEHAVIOR_TEST"));
   } finally {

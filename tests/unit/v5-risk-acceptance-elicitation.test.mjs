@@ -7,6 +7,7 @@ import { loadSource } from "../helpers/load-source.mjs";
 import { claimCapability, prepareReviewReadyFeature, readCurrentReview } from "../helpers/route-flow.mjs";
 
 const jobs = await loadSource("plugins/dev-flow/src/core/review-jobs.ts");
+const interactionAnswer = await loadSource("plugins/dev-flow/src/core/interaction-answer.ts");
 const store = await loadSource("plugins/dev-flow/src/core/state-store.ts");
 
 function riskInteractionId(state) {
@@ -158,6 +159,25 @@ test("repeating the same elicitation accept replays idempotently without advanci
     assert.equal(again.state.revision, restaged.revision, "幂等重放不推进 revision");
     assert.equal(again.state.interactions[interactionId].response.comment, "已了解边界测试风险");
     const { ledger } = await readCurrentReview(root, again.state);
+    const current = ledger.batches.find((batch) => batch.validity === "current");
+    assert.equal(current.dispositions[findingId].kind, "risk-accepted");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("host-event text accept consumes the captured risk reason without caller reply", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "dev-flow-risk-accept-host-event-"));
+  try {
+    const { state, findingId } = await featureWithBlockingFinding(root, "risk");
+    const presented = await jobs.presentReviewRiskAcceptance(root, "risk", state.revision, [findingId]);
+    const interactionId = riskInteractionId(presented.state);
+    await store.recordHostEvent(root, { eventId: "risk-accept-host", type: "user-prompt", host: "claude", text: "接受风险：已了解边界测试风险" });
+    const resolved = await interactionAnswer.answerFromHostEvents({ root, featureId: "risk", expectedRevision: presented.state.revision, host: "claude" });
+    assert.equal(resolved.action, "accept");
+    assert.equal(resolved.comment, "已了解边界测试风险");
+    assert.equal(resolved.state.interactions[interactionId].response.promptEventId, "risk-accept-host");
+    const { ledger } = await readCurrentReview(root, resolved.state);
     const current = ledger.batches.find((batch) => batch.validity === "current");
     assert.equal(current.dispositions[findingId].kind, "risk-accepted");
   } finally {

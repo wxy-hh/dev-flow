@@ -1,11 +1,11 @@
 import { createHash, randomUUID } from "node:crypto";
 import { DevFlowError } from "./errors.js";
 import { matchDecisionReply, pendingDecisionForState } from "./decision-interactions.js";
-import { resolveInteractionPromptEvent } from "./interaction-provenance.js";
 import { resolveResponseForAnswer, createInteraction } from "./user-interactions.js";
 import type { UserInteraction } from "../policy/interaction.js";
 import type { FeatureState } from "./state-store.js";
 import { mutate, mutatePrepared, readActive, readFeatureEvents, readProjectConfig, readState } from "./state-store.js";
+import { invalidateAffectedClaims } from "./change-invalidation.js";
 import { reconcileWorkspaceForFeature } from "./git-reconciliation.js";
 import { reopenObligations } from "../policy/obligations.js";
 import { pathWithinFileScope } from "../policy/rollback.js";
@@ -80,10 +80,8 @@ export async function resolveOwnershipForAnswer(ctx: AnswerResolveContext): Prom
   let promptEventId: string | undefined;
   let promptText: string | undefined;
   if (credential.source === "text") {
-    const events = await readFeatureEvents(root, featureId);
-    const prompt = resolveInteractionPromptEvent(events, state, interaction, { host, userReply: credential.userReply });
-    promptEventId = prompt.eventId;
-    promptText = prompt.text;
+    promptEventId = credential.promptEventId;
+    promptText = credential.promptText;
   }
   const presentedPaths = presentedOwnershipPaths(interaction);
   const currentPaths = unknownOwnershipPaths(state);
@@ -100,7 +98,7 @@ export async function resolveOwnershipForAnswer(ctx: AnswerResolveContext): Prom
   }
   const matchedId = credential.source === "elicitation"
     ? credential.action
-    : matchDecisionReply(decision, promptText ?? credential.userReply).option.id;
+    : matchDecisionReply(decision, promptText ?? credential.promptText).option.id;
   let nextPresentationEventId: string | undefined;
   const next = await mutatePrepared(root, featureId, expectedRevision, "workspace-ownership-answered", async (current) => {
     const draftInteraction = current.interactions?.[interaction.id];
@@ -126,7 +124,7 @@ export async function resolveOwnershipForAnswer(ctx: AnswerResolveContext): Prom
           source: credential.source,
           action: credential.source === "elicitation" ? credential.action : undefined,
           comment: credential.source === "elicitation" ? credential.comment : undefined,
-          userReply: credential.source === "text" ? credential.userReply : undefined,
+          userReply: credential.source === "text" ? (credential.promptText) : undefined,
           promptText,
           promptEventId,
           host,
@@ -198,20 +196,18 @@ export async function resolveTaskSwitchForAnswer(ctx: AnswerResolveContext): Pro
   let promptEventId: string | undefined;
   let promptText: string | undefined;
   if (credential.source === "text") {
-    const events = await readFeatureEvents(root, featureId);
-    const prompt = resolveInteractionPromptEvent(events, state, interaction, { host, userReply: credential.userReply });
-    promptEventId = prompt.eventId;
-    promptText = prompt.text;
+    promptEventId = credential.promptEventId;
+    promptText = credential.promptText;
   }
   const matchedId = credential.source === "elicitation"
     ? credential.action
-    : matchDecisionReply(decision, promptText ?? credential.userReply).option.id;
+    : matchDecisionReply(decision, promptText ?? credential.promptText).option.id;
   const next = await mutate(root, featureId, expectedRevision, "task-switch-answered", (draft) => {
     resolveResponseForAnswer(draft, interaction, {
       source: credential.source,
       action: credential.source === "elicitation" ? credential.action : undefined,
       comment: credential.source === "elicitation" ? credential.comment : undefined,
-      userReply: credential.source === "text" ? credential.userReply : undefined,
+      userReply: credential.source === "text" ? (credential.promptText) : undefined,
       promptText,
       promptEventId,
       host,
@@ -231,6 +227,9 @@ export async function reconcileWorkspace(
   expectedRevision: number,
   host: "claude" | "codex",
 ): Promise<FeatureState> {
+  // 先基于保存的 claims/baselines 计算并传播失效，再运行 workspace lineage
+  // reconcile；不能先删 step evidence 后推断。
+  await invalidateAffectedClaims(root, id, expectedRevision);
   const state = await readState(root, id);
   const config = await readProjectConfig(root);
   const { workspace, contentChanged, changedPaths } = await reconcileWorkspaceForFeature(root, state, config);
@@ -239,7 +238,7 @@ export async function reconcileWorkspace(
   const reopenedLifecycle = state.lifecycle === "finalized" && contentChanged ? (!active || active.featureId === id ? "active" : "paused") : undefined;
   const checkpointAffected = contentChanged ? checkpointAffectedByPaths(state, changedPaths, legalCheckpointPaths) : false;
   let presentationEventId: string | undefined;
-  return mutate(root, id, expectedRevision, "workspace-reconciled", (draft) => {
+  return mutate(root, id, state.revision, "workspace-reconciled", (draft) => {
     draft.workspace = workspace;
     if (contentChanged) markAffectedEvidenceStale(draft, changedPaths, reopenedLifecycle, legalCheckpointPaths);
     presentationEventId = queueNextOwnershipDecision(draft);

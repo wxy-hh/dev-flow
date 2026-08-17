@@ -1,4 +1,4 @@
-# Dev Flow 5.0 动态路线合同
+# Dev Flow 6.0 动态路线合同
 
 `dev_flow_start` 创建 intake；`dev_flow_classify` 纯预览；`dev_flow_lock_classification` 校验 boundaryAudit，并在需要时创建 route-confirmation。Core 确认后返回 level、控制集、逐项理由和完整 `orderedRoute`。
 
@@ -20,10 +20,10 @@
 | --- | --- |
 | requirements | L、新能力/系统性变化、shared-contract 必需；优先冻结已有确认材料 |
 | plan | XS locate；S brief；M/L formal；plan-review、unit-chain、operational recovery 强制 formal |
-| trace | L 必有；M 在 shared-contract、多 RU、正式恢复或 plan-review 时开启 |
-| plan-review | L 默认；M 在共享契约、多 RU、恢复或专项风险时开启；角色按事实派生 |
-| execution-approval | L 必有；M 按共享契约、review、多 RU、恢复或高后果风险开启；XS/S 只由高后果风险追加 |
-| checkpoints | 所有任务 baseline；L、多 RU、可执行回撤或不可逆风险声明 unit-chain |
+| trace | L 必有；M 在 shared-contract、多 UNIT、正式恢复或 plan-review 时开启 |
+| plan-review | L 默认；M 在共享契约、多 UNIT、恢复或专项风险时开启；角色按事实派生 |
+| execution-approval | L 必有；M 按共享契约、review、多 UNIT、恢复或高后果风险开启；XS/S 只由高后果风险追加 |
+| checkpoints | 所有任务 baseline；L、多 UNIT、可执行回撤或不可逆风险声明 unit-chain |
 | recovery | 所有任务 delivery reverse；必要时 operational strategy；真实可逆且有 unit-chain 才 executable rollback |
 | code-review | XS none、S focused、M/L independent；专项风险可提升 full |
 | verification | 始终 targeted，按新能力、共享契约、多组件、风险和系统性变化增加 behavior/integration/full |
@@ -49,4 +49,4 @@ boundaryAudit 必须显式扫描 assumption、free-space、tbd、fallback、scop
 
 ## 机器权威
 
-机器合同位于 `plugins/dev-flow/policy/contract.json`，schema 版本为 4。用户交互只使用当前中文选项和 `dev_flow_answer`；不存在公共 resolve 或 feature-check 工具。
+机器合同位于 `plugins/dev-flow/policy/contract.json`，schema 版本为 6。用户交互只使用当前中文选项和 `dev_flow_answer`；不存在公共 resolve 或 feature-check 工具。

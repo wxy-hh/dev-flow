@@ -171,8 +171,8 @@ test("intake grill token requires a matching host user-prompt event", async () =
     const at = new Date(Date.now() + 1000).toISOString();
     await stateStore.recordHostEvent(root, { eventId: "prompt-wrong-host", type: "user-prompt", host: "claude", text: "确认", at });
     await assert.rejects(
-      () => stateStore.answer({ root, featureId: state.featureId, expectedRevision: requested.state.revision, host: "codex", credential: { source: "text", userReply: "确认" } }),
-      (error) => error.code === "HOST_EVENT_HOST_MISMATCH",
+      () => stateStore.answerFromHostEvents({ root, featureId: state.featureId, expectedRevision: requested.state.revision, host: "codex" }),
+      (error) => error.code === "INTERACTION_EVENT_MISSING",
     );
   } finally {
     await rm(root, { recursive: true, force: true });

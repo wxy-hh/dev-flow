@@ -1,4 +1,5 @@
 import type { ImplementationUnitId, ImplementationUnitNode, RollbackId, RollbackNode, VerificationCommandRef } from "./traceability.js";
+import { parseEvidenceObjectRef, type EvidenceObjectRef } from "./evidence-store.js";
 
 /**
  * Phase-3 checkpoint domain: runtime lifecycle for implementation units plus
@@ -72,7 +73,7 @@ export interface CheckpointVerificationCommand {
 }
 
 export interface CheckpointManifest {
-  schemaVersion: 2;
+  schemaVersion: 2 | 3;
   checkpointId: string;
   unitId: ImplementationUnitId;
   sequence: number;
@@ -95,6 +96,8 @@ export interface CheckpointManifest {
   verificationCommandHashes?: Record<string, string>;
   /** Incarnation of the unit that produced this manifest; absent on pre-4A manifests. */
   beginNonce?: string;
+  /** v3 Evidence Store refs for every checkpoint blob; absent on v2 manifests. */
+  blobRefs?: Record<string, EvidenceObjectRef>;
 }
 
 /**
@@ -369,8 +372,8 @@ export function parseCheckpointManifest(value: unknown): CheckpointManifest {
     invalid("Dev Flow 4.x checkpoint manifest schema v1 is not supported by 5.0", "UNSUPPORTED_CHECKPOINT_SCHEMA");
   }
   if (!isRecord(value)
-    || !hasOnlyKeys(value, ["schemaVersion", "checkpointId", "unitId", "sequence", "basisHash", "startedFingerprint", "completedFingerprint", "startedAt", "completedAt", "files", "forwardPatchSha256", "reversePatchSha256", "verificationAttempts", "requirementsSha256", "planSha256", "traceabilitySha256", "approvalBasisHash", "projectConfigSha256", "verificationCommands", "verificationCommandHashes", "beginNonce"])
-    || value.schemaVersion !== 2
+    || !hasOnlyKeys(value, ["schemaVersion", "checkpointId", "unitId", "sequence", "basisHash", "startedFingerprint", "completedFingerprint", "startedAt", "completedAt", "files", "forwardPatchSha256", "reversePatchSha256", "verificationAttempts", "requirementsSha256", "planSha256", "traceabilitySha256", "approvalBasisHash", "projectConfigSha256", "verificationCommands", "verificationCommandHashes", "beginNonce", "blobRefs"])
+    || (value.schemaVersion !== 2 && value.schemaVersion !== 3)
     || !isNonEmptyString(value.checkpointId)
     || !isImplementationUnitId(value.unitId)
     || typeof value.sequence !== "number" || !Number.isInteger(value.sequence) || value.sequence < 1
@@ -410,8 +413,20 @@ export function parseCheckpointManifest(value: unknown): CheckpointManifest {
       invalid(`checkpoint verification attempt ${attempt.attemptId} references undeclared command ${attempt.commandId}`);
     }
   }
+  let blobRefs: Record<string, EvidenceObjectRef> | undefined;
+  if (value.blobRefs !== undefined) {
+    if (value.schemaVersion !== 3 || !isRecord(value.blobRefs)) invalid("checkpoint blob refs are only valid on schema v3");
+    blobRefs = Object.fromEntries(Object.entries(value.blobRefs).map(([blobSha256, ref]) => {
+      if (!isSha256(blobSha256)) invalid("checkpoint blob ref key is not a sha256");
+      const parsed = parseEvidenceObjectRef(ref);
+      if (parsed.kind !== "checkpoint-pack" || parsed.sha256 !== blobSha256) {
+        invalid("checkpoint blob ref does not match its content sha");
+      }
+      return [blobSha256, parsed];
+    }));
+  }
   return {
-    schemaVersion: 2,
+    schemaVersion: value.schemaVersion as 2 | 3,
     checkpointId: value.checkpointId,
     unitId: value.unitId,
     sequence: value.sequence,
@@ -434,5 +449,6 @@ export function parseCheckpointManifest(value: unknown): CheckpointManifest {
       ? { verificationCommandHashes: Object.fromEntries(Object.entries(value.verificationCommandHashes).map(([id, hash]) => [id, hash as string])) }
       : {}),
     ...(typeof value.beginNonce === "string" ? { beginNonce: value.beginNonce } : {}),
+    ...(blobRefs ? { blobRefs } : {}),
   };
 }

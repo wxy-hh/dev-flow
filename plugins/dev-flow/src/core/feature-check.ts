@@ -24,10 +24,12 @@ import { assertTraceGateCurrent } from "./traceability-gates.js";
 import { readTraceability } from "./traceability-store.js";
 import { requireReviewReady } from "./review-jobs.js";
 import { captureAutomaticCheckpoint } from "./auto-checkpoint.js";
+import { maybeSealFeatureEvents } from "./event-segments.js";
 import { satisfyObligations } from "../policy/obligations.js";
 import { hasCurrentQualityException, qualityExceptionCoversStep } from "./quality-exceptions.js";
 import { fingerprintFeatureOwned, snapshotGovernedRoots } from "./fingerprint.js";
 import { invalidateAffectedClaims, persistThroughSnapshot, workspaceChangedError } from "./change-invalidation.js";
+import { captureEvidenceBaseline } from "./evidence-baseline.js";
 
 function assertRequiredEvidence(step: string, required: RequiredEvidence, evidence: unknown): void {
   const missing = missingRequiredEvidence(required, evidence);
@@ -115,7 +117,7 @@ export async function recordStep(
     const route = routeDefinitionForState(state);
     await assertRequirementsGrillSatisfied(root, id, state);
     await assertTraceGateCurrent(root, state, step);
-    if (step === "implementation" && (Number(state.schemaVersion) === 4 || Number(state.schemaVersion) === 5) && checkpointsEnforcementRequired(state.route, state.classification.controls)) {
+    if (step === "implementation" && (Number(state.schemaVersion) === 6) && checkpointsEnforcementRequired(state.route, state.classification.controls)) {
       await assertImplementationUnitsComplete(root, state);
     }
     const required = requiredEvidenceForStep(
@@ -148,12 +150,19 @@ export async function recordStep(
       const claimId = `CLAIM-${createHash("sha256").update(`review-complete|code_review|${fingerprint}`).digest("hex").slice(0, 16)}`;
       const claims = [...gov.claims];
       if (!claims.some((claim) => claim.recordId === claimId)) {
+        const baselineRef = await captureEvidenceBaseline(root, state, config, {
+          kind: "review-complete",
+          target: "code_review",
+          recordId: claimId,
+          at: new Date().toISOString(),
+        }).then((captured) => captured.ref).catch(() => undefined);
         claims.push({
           recordId: claimId,
           kind: "claim",
           claimType: "review-complete",
           subject: "code_review",
           basis: { kind: "content", sha256: fingerprint },
+          ...(baselineRef ? { baselineRef } : {}),
           recordedAt: new Date().toISOString(),
         });
       }
@@ -162,10 +171,17 @@ export async function recordStep(
     state.steps[step] = { status: "satisfied", evidence: normalizedEvidence };
     satisfyStepObligations(state, route, step);
   });
-  if ((Number(next.schemaVersion) === 4 || Number(next.schemaVersion) === 5) && currentOpenStep(next) === "implementation" && !next.checkpoints?.length) {
+  // Phase 8: a successful step completion is a phase boundary; freeze the hot
+  // event tail as an immutable event-segment before any automatic checkpoint.
+  await maybeSealFeatureEvents(root, id);
+
+  const supportsAutomaticCheckpoint = Number(next.schemaVersion) === 4
+    || Number(next.schemaVersion) === 5
+    || Number(next.schemaVersion) === 6;
+  if (supportsAutomaticCheckpoint && currentOpenStep(next) === "implementation" && !next.checkpoints?.length) {
     return captureAutomaticCheckpoint(root, id, next.revision, "implementation", "implementation-entry");
   }
-  if (step === "implementation" && (Number(next.schemaVersion) === 4 || Number(next.schemaVersion) === 5) && next.checkpoints?.length) {
+  if (step === "implementation" && supportsAutomaticCheckpoint && next.checkpoints?.length) {
     return captureAutomaticCheckpoint(root, id, next.revision, "implementation", "implementation-complete");
   }
   return next;
@@ -215,7 +231,7 @@ export async function finalize(
   const config = await readProjectConfig(root);
   const reconciledWorkspace = await assertWorkspaceOwnershipComplete(root, initial, config, "finalize");
   let snapshot: DeliverySnapshot | undefined;
-  return mutate(root, id, expectedRevision, "finalized", async (state) => {
+  const finalized = await mutate(root, id, expectedRevision, "finalized", async (state) => {
     await assertRequirementsGrillSatisfied(root, id, state);
     assertVerificationWasNotInvalidated(state);
     state.workspace = reconciledWorkspace;
@@ -245,4 +261,7 @@ export async function finalize(
     state.lifecycle = "finalized";
     state.steps.finalize = { status: "satisfied" };
   }, () => snapshot ? { deliverySnapshot: snapshot } : {});
+  // Phase 8: finalize is the terminal lifecycle boundary; seal hot history.
+  await maybeSealFeatureEvents(root, id);
+  return finalized;
 }

@@ -34,6 +34,33 @@ async function trustedEdit(hook, root, file, transform, eventId) {
   assert.equal(await invokeHook(hook, root, { ...event, hook_event_name: "PostToolUse", tool_response: { success: true } }), undefined);
 }
 
+async function completeReviewWithSubagents(server, hook, root, created) {
+  const executionRequestId = `exec-cross-host-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  const started = await mcpCall(server, root, "dev_flow_start_review_execution", {
+    featureId: "handoff",
+    expectedRevision: created.state.revision,
+    batchId: created.batch.batchId,
+    executionRequestId,
+    host: "claude",
+  });
+  for (const job of started.jobs) {
+    const completion = JSON.stringify({ coverageSummary: `${job.role} cross-host review complete`, findings: [] });
+    await invokeHook(hook, root, {
+      hook_event_name: "SubagentStop",
+      event_id: `subagent-${job.jobId}`,
+      session_id: "implementation-session",
+      agent_id: `review-subagent-${job.jobId}`,
+      last_assistant_message: `dev-flow:isolated-review:${job.declarationId}\n${completion}`,
+    });
+  }
+  return mcpCall(server, root, "dev_flow_complete_review_execution", {
+    featureId: "handoff",
+    expectedRevision: started.state.revision,
+    batchId: created.batch.batchId,
+    executionRequestId,
+  });
+}
+
 async function finishS(startServer, startHook, finishServer, finishHook, starter, finisher) {
   const fixture = await createTinyApp();
   try {
@@ -87,19 +114,12 @@ async function finishS(startServer, startHook, finishServer, finishHook, starter
       featureId: "handoff", expectedRevision: state.revision,
     });
     assert.equal(created.batch.phase, "code");
-    let reviewState = created;
-    for (const job of created.batch.jobs) {
-      const claimRequestId = `claim-${job.jobId}`;
-      const claimed = await mcpCall(finishServer, fixture.root, "dev_flow_claim_review_job", {
-        featureId: "handoff", expectedRevision: reviewState.state.revision,
-        batchId: created.batch.batchId, jobId: job.jobId, claimRequestId,
-      });
-      reviewState = await mcpCall(finishServer, fixture.root, "dev_flow_submit_review_job", {
-        featureId: "handoff", expectedRevision: claimed.state.revision,
-        batchId: created.batch.batchId, jobId: job.jobId, capability: claimed.capability,
-        completion: { coverageSummary: `${job.role} cross-host review complete`, findings: [] },
-      });
-    }
+    // v6 合同：start 一次领取全部 job，宿主 SubagentStop 捕获各自 envelope，
+    // complete 一次批量提交。Codex 尚无 trusted sampling，因此两个方向的
+    // review execution 都由 Claude MCP/hook 协调。
+    const reviewServer = starter === "claude" ? startServer : finishServer;
+    const reviewHook = starter === "claude" ? startHook : finishHook;
+    const reviewState = await completeReviewWithSubagents(reviewServer, reviewHook, fixture.root, created);
     state = await mcpCall(finishServer, fixture.root, "dev_flow_record_step", {
       featureId: "handoff", expectedRevision: reviewState.state.revision, step: "code_review",
       evidence: {
@@ -135,7 +155,7 @@ test("source bundles replay two complete public cross-host journeys with real ho
   }
 });
 
-test("marketplace-installed Claude and Codex exchange one v5 feature state in both directions", { skip: !hostE2EEnabled, timeout: 240_000 }, async () => {
+test("marketplace-installed Claude and Codex exchange one v6 feature state in both directions", { skip: !hostE2EEnabled, timeout: 240_000 }, async () => {
   const hosts = await installNativeHosts();
   try {
     const claudeMcp = path.join(hosts.claudeRoot, "dist", "mcp-server.mjs");

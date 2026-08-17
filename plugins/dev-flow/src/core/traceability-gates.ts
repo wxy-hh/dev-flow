@@ -1,3 +1,5 @@
+import { readFile } from "node:fs/promises";
+import path from "node:path";
 import { traceEnforcementRequired } from "../policy/contract.js";
 import type { TraceSummary, TraceabilityLedger } from "../policy/traceability.js";
 import { DevFlowError } from "./errors.js";
@@ -6,6 +8,8 @@ import { currentOpenStep } from "./step-order.js";
 import { readProjectConfigSnapshot, readTraceability } from "./traceability-store.js";
 import { assertTraceSliceCurrent } from "./traceability.js";
 import { verificationCommandHashes } from "./project-config.js";
+import { parseTraceSourceBlocks } from "./traceability-anchors.js";
+import { normalizeUnicode } from "./path-normalization.js";
 
 export interface TraceBlocker {
   code: "TRACE_SLICE_INCOMPLETE" | "TRACE_SLICE_STALE";
@@ -61,7 +65,7 @@ export async function inspectTraceGate(root: string, state: FeatureState, step: 
     ledger = await readTraceability(root, state);
     const { config, sha256 } = await readProjectConfigSnapshot(root);
     assertTraceSliceCurrent(ledger, state.route, traceStep, sha256, verificationCommandHashes(config));
-    if (traceStep === "implementation_plan") assertImplementationPlanTraceCurrent(state, ledger);
+    if (traceStep === "implementation_plan") await assertImplementationPlanTraceCurrent(root, state, ledger);
     return { enforced: true, ledger, effectiveSummary: ledger.summary };
   } catch (error) {
     return {
@@ -72,17 +76,64 @@ export async function inspectTraceGate(root: string, state: FeatureState, step: 
   }
 }
 
-/** 仅检查实施计划 artifact 与 Trace 中 implementation-plan 节点 sha 一致。 */
-export function assertImplementationPlanTraceCurrent(state: FeatureState, ledger: TraceabilityLedger): void {
+/** Full implementation-plan slice invariant: a zero-current plan slice never passes. */
+export async function assertImplementationPlanTraceCurrent(root: string, state: FeatureState, ledger: TraceabilityLedger): Promise<void> {
   const artifact = state.artifacts["implementation-plan"];
   if (!artifact) return;
-  const stalePlanNodes = Object.values(ledger.nodes)
-    .filter((node) => node.status === "current" && node.sourceArtifact === "implementation-plan" && node.sourceSha256 !== artifact.sha256)
+  const planNodes = Object.values(ledger.nodes)
+    .filter((node) => node.sourceArtifact === "implementation-plan" && node.status !== "tombstoned");
+  const currentPlanNodes = planNodes.filter((node) => node.status === "current");
+  if (currentPlanNodes.length === 0) {
+    if (planNodes.some((node) => node.status === "stale")) {
+      throw new DevFlowError("TRACE_SLICE_STALE", "implementation-plan Trace slice has no current nodes and contains stale nodes", {
+        stalePlanNodeIds: planNodes.filter((node) => node.status === "stale").map((node) => node.id).sort(),
+        recoveryHint: "重新登记当前实施计划 Markdown 刷新 Trace 后再继续。",
+      });
+    }
+    throw new DevFlowError("TRACE_SLICE_MISSING", "implementation-plan Trace slice has no current nodes", {
+      recoveryHint: "登记实施计划 Markdown 生成 implementation-plan Trace slice 后再继续。",
+    });
+  }
+  const stalePlanNodes = currentPlanNodes
+    .filter((node) => node.sourceSha256 !== artifact.sha256)
     .map((node) => ({ id: node.id, traceSha256: node.sourceSha256, artifactSha256: artifact.sha256 }));
   if (stalePlanNodes.length) {
     throw new DevFlowError("TRACE_SLICE_STALE", "implementation plan artifact changed without re-registering its Trace slice", {
       stalePlanNodes,
-      recoveryHint: "计划修订确认后，必须用 record_artifact_with_trace 重登记实施计划；仅修订 artifact sha 不能刷新 Trace。",
+      recoveryHint: "重新登记当前实施计划 Markdown；修订确认已原子登记 Trace，不再需要手工 record_artifact_with_trace。",
+    });
+  }
+  const contents = await readFile(path.join(root, ".dev-flow", "features", state.featureId, normalizeUnicode(artifact.path)), "utf8");
+  const blocks = new Map(parseTraceSourceBlocks(contents).map((block) => [`${block.kind}:${block.id}`, block]));
+  for (const node of currentPlanNodes) {
+    const block = blocks.get(`${node.kind}:${node.id}`);
+    if (!block) {
+      throw new DevFlowError("TRACE_SLICE_STALE", "implementation plan Markdown source manifest does not match Trace", {
+        missingBlock: { id: node.id, kind: node.kind },
+        recoveryHint: "重新登记当前实施计划 Markdown。",
+      });
+    }
+    if (block.sourceBlockSha256 !== node.sourceBlockSha256) {
+      throw new DevFlowError("TRACE_SLICE_STALE", "implementation plan block changed without re-registering Trace", {
+        changedBlock: { id: node.id },
+        recoveryHint: "重新登记当前实施计划 Markdown。",
+      });
+    }
+  }
+  const referenced = new Set<string>();
+  for (const node of currentPlanNodes) {
+    if (node.kind === "task") for (const id of node.covers) referenced.add(id);
+    if (node.kind === "test") for (const id of node.verifies) referenced.add(id);
+    if (node.kind === "implementation-unit") {
+      for (const id of [...node.tasks, ...node.dependsOn, ...node.covers]) referenced.add(id);
+    }
+    if (node.kind === "recovery") referenced.add(node.stepRef);
+  }
+  const missingReferences = [...referenced].filter((id) => ledger.nodes[id]?.status !== "current").sort();
+  if (missingReferences.length) {
+    throw new DevFlowError("TRACE_SLICE_STALE", "implementation-plan Trace slice references stale or missing nodes", {
+      missingReferences,
+      recoveryHint: "重新登记上游 requirements 或计划 Markdown，使被引用节点恢复 current。",
     });
   }
 }

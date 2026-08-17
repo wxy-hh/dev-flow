@@ -25,9 +25,11 @@ if (mode !== "host-e2e" && !Object.hasOwn(testDirectories, mode)) {
   throw new Error("usage: node scripts/run-tests-silently.mjs <unit|routes|interop|e2e|host-e2e>");
 }
 
+// 防挂起：--test-timeout 给每个测试设置默认超时（各测试可用自身 timeout 覆盖），
+// 避免宿主交互或 MCP 子进程异常时测试进程无限挂起（曾实测卡死 >4 分钟）。
 const args = mode === "host-e2e"
   ? ["scripts/run-host-e2e.mjs"]
-  : ["--test", ...(await Promise.all(testDirectories[mode].map(collectTests))).flat()];
+  : ["--test", "--test-timeout=300000", ...(await Promise.all(testDirectories[mode].map(collectTests))).flat()];
 if (mode !== "host-e2e" && args.length === 1) throw new Error(`no test files found for ${mode}`);
 
 const exitCode = await new Promise((resolve) => {

@@ -1,5 +1,6 @@
 // 交互合同（CONTEXT.md「交互」）：等待用户决定的单一问题及其选项的持久化形状。
 export type InteractionKind = "approval" | "grill" | "risk-acceptance" | "rollback-confirmation" | "quality-exception" | "workspace-ownership" | "route-confirmation" | "task-switch" | "decision-ratification" | "decision-revision" | "plan-revision" | "side-effect-rerun" | "acceptance-confirmation";
+import type { EvidenceObjectRef } from "./evidence-store.js";
 export type InteractionSource = "elicitation" | "text";
 
 export type GrillAnswerCode = "A" | "B" | "C";
@@ -57,6 +58,8 @@ export interface UserInteraction {
   presentedRevision?: number;
   /** Append-only ledger cursor identifying the event that presented this interaction. */
   presentationEventId?: string;
+  /** Feature-local eventSequence cursor for the event that presented this interaction. */
+  presentationEventSequence?: number;
   /** Immutable workspace paths bound to an ownership question. */
   workspacePaths?: string[];
   /** Full unknown-path set captured when a batch ownership question was shown. */
@@ -72,7 +75,17 @@ export interface UserInteraction {
   /** 实施中计划修订候选（kind === "plan-revision" 时存在）。 */
   planRevision?: { affectedUnits: string[]; redoUnits: string[]; sideEffectUnits: string[]; reviewInvalidated: boolean; fallbackReason?: string };
   /** Internal immutable inputs used to reject a stale plan-revision preview. */
-  planRevisionBasis?: { artifactSha256: string; projectConfigSha256: string; traceabilitySha256: string };
+  planRevisionBasis?: {
+    artifactSha256: string;
+    projectConfigSha256: string;
+    traceabilitySha256: string;
+    semanticSha256?: string;
+    requirementsArtifactSha256?: string;
+    requirementsSemanticSha256?: string;
+    requirementsSliceSha256?: string;
+  };
+  /** Phase 4 content-addressed proposal ref (present on v6 plan-revision previews). */
+  planRevisionProposal?: EvidenceObjectRef;
   /** 副作用单元重跑确认（kind === "side-effect-rerun" 时存在）。 */
   sideEffectRerun?: { units: string[] };
   /** 验收确认只证明用户确认当前 AC 结果，不证明浏览器或代码操作发生。 */

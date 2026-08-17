@@ -42,7 +42,6 @@ import {
   type PublicInteraction,
 } from "./user-interactions.js";
 import type { InteractionResponse } from "../policy/interaction.js";
-import { resolveInteractionPromptEvent } from "./interaction-provenance.js";
 import type { AnswerResolveContext, AnswerResolveResult } from "./interaction-answer.js";
 
 const digest = (value: string | Buffer) => createHash("sha256").update(value).digest("hex");
@@ -301,15 +300,7 @@ export async function previewRollback(root: string, featureId: string, targetChe
   for (const manifest of undoManifests) {
     const node = nodes.find((candidate) => candidate.id === manifest.unitId);
     for (const [index, reference] of (node?.forwardVerification ?? []).entries()) {
-      const command = typeof reference === "string"
-        ? config.verification.commands.find((candidate) => candidate.id === reference)
-        : {
-            id: `inline:${manifest.unitId}:${index}`,
-            command: reference.command,
-            args: [...reference.args ?? []],
-            cwd: reference.cwd ?? ".",
-            provides: ["targeted"] as VerificationCommand["provides"],
-          };
+      const command = config.verification.commands.find((candidate) => candidate.id === reference);
       if (!command) {
         throw new DevFlowError("TRACE_VERIFICATION_COMMAND_UNKNOWN", "rollback verification command is not configured", {
           unitId: manifest.unitId,
@@ -608,11 +599,9 @@ export async function resolveRollbackGateForAnswer(ctx: AnswerResolveContext): P
   let promptEventId: string | undefined;
   let promptText: string | undefined;
   if (credential.source === "text") {
+    promptEventId = credential.promptEventId;
+    promptText = credential.promptText;
     const events = await readFeatureEvents(root, featureId);
-    promptEventId = resolveInteractionPromptEvent(events, state, interaction, {
-      host,
-      userReply: credential.userReply,
-    }).eventId;
     const eventRecord = events.find(
       (item) =>
         item.type === "host-event"
@@ -657,7 +646,7 @@ export async function resolveRollbackGateForAnswer(ctx: AnswerResolveContext): P
 
     // The reply text must be semantically compatible (prevents substituting a
     // different user prompt with the same eventId).
-    if (!textCompatible(event.text ?? "", credential.userReply)) {
+    if (!textCompatible(event.text ?? "", promptText ?? "")) {
       throw new DevFlowError("ROLLBACK_GATE_REPLY_MISMATCH", "userReply must be compatible with the captured prompt text", {
         recoveryHint: "Pass the user prompt text that was captured for this event",
       });
@@ -676,7 +665,7 @@ export async function resolveRollbackGateForAnswer(ctx: AnswerResolveContext): P
           source: credential.source,
           action: credential.source === "elicitation" ? credential.action : undefined,
           comment: credential.source === "elicitation" ? credential.comment : undefined,
-          userReply: credential.source === "text" ? credential.userReply : undefined,
+          userReply: credential.source === "text" ? promptText : undefined,
           promptText,
           promptEventId,
           host,
@@ -1106,16 +1095,8 @@ async function transactionVerificationCommands(
     if (!node) {
       throw new DevFlowError("ROLLBACK_CHAIN_INVALID", "undo unit is not current in the trace graph", { unitId });
     }
-    for (const [index, reference] of node.forwardVerification.entries()) {
-      const command = typeof reference === "string"
-        ? config.verification.commands.find((candidate) => candidate.id === reference)
-        : {
-            id: `inline:${unitId}:${index}`,
-            command: reference.command,
-            args: [...reference.args ?? []],
-            cwd: reference.cwd ?? ".",
-            provides: ["targeted"] as VerificationCommand["provides"],
-          };
+    for (const reference of node.forwardVerification) {
+      const command = config.verification.commands.find((candidate) => candidate.id === reference);
       if (!command) {
         throw new DevFlowError("TRACE_VERIFICATION_COMMAND_UNKNOWN", "rollback verification command is not configured", {
           unitId,

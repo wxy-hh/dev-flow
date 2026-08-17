@@ -11,8 +11,8 @@
 
 ## Schema 与状态
 
-- FeatureState 运行态 schema v5（仅当前 5.0 schema v4 active state 在加载入口转换），project config v2，review ledger v2，checkpoint manifest v2。
-- 旧 schema 返回 `UNSUPPORTED_*_SCHEMA`，没有迁移器。
+- FeatureState 运行态 schema v6（磁盘只保留 pointer/summary，无界集合在 Evidence Store），project config v2，review ledger v3，checkpoint manifest v3，Trace ledger v2。
+- 4.x/5.x 旧 schema 返回 `UNSUPPORTED_*_SCHEMA`，没有迁移器。
 - 所有 mutation 使用进程锁、revision CAS、fsync 和 atomic rename；原始事件与内容寻址 snapshot 是审计事实。
 - `dev_flow_repair_feature` 只能重建派生 pointer/stage/freshness/projection。
 
@@ -34,19 +34,19 @@ BoundaryAudit 是锁定硬门禁。M/L 或风险任务先持久化 route-confirm
 
 ## Freshness 与恢复
 
-Review 以 role basis，approval 以执行授权语义，checkpoint 以 unit scope/dependencies/content，verification 以 governed-root fingerprint 保存 basis。验证命令同时保留稳定 command id 与 hash：只比较 Trace/RU 实际引用的命令，未引用命令变化不会扩大失效范围。Reconcile 只更新 lineage、ownership 与受影响证据；字节未变不 stale，真实变化撤销最早受影响步骤和下游 finalize claim。
+Review 以 role basis，approval 以执行授权语义，checkpoint 以 unit scope/dependencies/content，verification 以 governed-root fingerprint 保存 basis。验证命令同时保留稳定 command id 与 hash：只比较 Trace/UNIT 实际引用的命令，未引用命令变化不会扩大失效范围。Reconcile 只更新 lineage、ownership 与受影响证据；字节未变不 stale，真实变化撤销最早受影响步骤和下游 finalize claim。
 
-实现单元是 unit-chain 的最小交付粒度：begin 快照 baseline 并激活单元，checkpoint 只运行 targeted forward verification 后固化 diff 与证据，rollback 以 checkpoint 为回撤目标。验证命令定义变化会使 Trace/RU 的 `verificationCommandHashes` 失配（`TRACE_SLICE_STALE`），而计划重登记要求单元 quiescent（`PLAN_REVISION_REQUIRES_QUIESCENT_UNIT`）；两者互锁时由 `dev_flow_abandon_implementation_unit` 提供出口：取消 active 单元（工作区改动保留、单元回 pending）→ 重登记计划刷新 Trace 基线 → 重新 begin。取消不还原代码、不伪造 checkpoint 证据，事件以 reason 记录审计。
+实现单元是 unit-chain 的最小交付粒度：begin 快照 baseline 并激活单元，checkpoint 只运行 targeted forward verification 后固化 diff 与证据，rollback 以 checkpoint 为回撤目标。验证命令定义变化会使 Trace/UNIT 的 `verificationCommandHashes` 失配（`TRACE_SLICE_STALE`），而计划修订要求单元 quiescent（`PLAN_REVISION_REQUIRES_QUIESCENT_UNIT`）；两者互锁时由 `dev_flow_abandon_implementation_unit` 提供出口：取消 active 单元（工作区改动保留、单元回 pending）→ `revise_plan` 原子刷新 Trace → 重新 begin。取消不还原代码、不伪造 checkpoint 证据，事件以 reason 记录审计。
 
 所有任务有自动 baseline 与 delivery reverse。Operational strategy 和 executable rollback 独立派生；不可逆变化只声明备份/预览/中止/补偿/full verification。
 
 ## Trace、Review、Verification
 
-正式计划登记即执行完整 Trace 校验。Review v2 的 job 带 `roleBasisHash`，语义 diff 支持角色级 `reused`；未知 diff 全审。Finding target 只接受 governed path 或 frozen Trace ID，evidence 可引用 job 包冻结工件。
+正式计划登记即执行完整 Trace 校验。Review v3 按 plan/code phase 分槽；job 带 `roleBasisHash`，语义相等则 `reused`。没有 unknownDiff 全量重审。Finding target 只接受 governed path 或 frozen Trace ID，evidence 可引用 job 包冻结工件。
 
-RU checkpoint 只运行 targeted forward verification。Final verification 用命令 `provides` 覆盖 guarantee 集并选择最小去重集合；preflight 不计 evidence。Finalize 内部完成所有完整性检查，不暴露 feature-check 工具。
+UNIT checkpoint 只运行 targeted forward verification。Final verification 用命令 `provides` 覆盖 guarantee 集并选择最小去重集合；preflight 不计 evidence。Finalize 内部完成所有完整性检查，不暴露 feature-check 工具。
 
-实现遵循测试先行：每个 RU 内先写该单元测试并看到失败（红灯），再实现至通过（绿灯），最后运行 targeted forward verification 过 checkpoint；计划已声明无法 TDD 的任务（文档、类型导出、机械重构等）直接实现。该约定由 `implement`/`plan` 技能下发，Core 只要求验证命令最终为绿，不感知测试与实现的先后。
+实现遵循测试先行：每个 UNIT 内先写该单元测试并看到失败（红灯），再实现至通过（绿灯），最后运行 targeted forward verification 过 checkpoint；计划已声明无法 TDD 的任务（文档、类型导出、机械重构等）直接实现。该约定由 `implement`/`plan` 技能下发，Core 只要求验证命令最终为绿，不感知测试与实现的先后。
 
 ## MCP 交互
 

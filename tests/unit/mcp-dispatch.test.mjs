@@ -58,8 +58,8 @@ async function setup() {
 
 test("dispatch 可导入：公开工具面由声明派生且数量完整", () => {
   assert.ok(publicTools.length >= 40, `expected the full public tool surface, got ${publicTools.length}`);
-  // 内部接缝（expose:false）在声明里但不在公开面。
-  assert.ok(Object.keys(toolSchemas).length > publicTools.length);
+  // v6 已无 expose:false 内部工具声明；tools/list 与声明一一对应。
+  assert.equal(Object.keys(toolSchemas).length, publicTools.length);
   assert.ok(!publicTools.includes("dev_flow_record_review_execution_event"));
 });
 

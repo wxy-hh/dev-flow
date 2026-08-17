@@ -1,8 +1,7 @@
 import { assertArtifactCurrent } from "./artifacts.js";
 import { DevFlowError } from "./errors.js";
-import { mutate, mutatePrepared, readFeatureEvents, readState, type FeatureState } from "./state-store.js";
+import { mutate, mutatePrepared, readState, type FeatureState } from "./state-store.js";
 import { decisionBasisHash } from "../policy/obligations.js";
-import { resolveInteractionPromptEvent } from "./interaction-provenance.js";
 import { pendingDecisionForState } from "./decision-interactions.js";
 import { EMPTY_GOVERNANCE_LEDGER } from "../policy/governance-records.js";
 import { normalizeUnicode } from "./path-normalization.js";
@@ -148,15 +147,13 @@ export async function resolveGrillForAnswer(ctx: AnswerResolveContext): Promise<
   let promptEventId: string | undefined;
   let promptText: string | undefined;
   if (credential.source === "text") {
-    const events = await readFeatureEvents(root, featureId);
-    const match = resolveInteractionPromptEvent(events, state, interaction, { host, userReply: credential.userReply });
-    promptEventId = match.eventId;
-    promptText = match.text;
+    promptEventId = credential.promptEventId;
+    promptText = credential.promptText;
   }
   let response: InteractionResponse | undefined;
   const next = await mutatePrepared(root, featureId, expectedRevision, "decision-answered", async () => ({
     mutate: (draft) => {
-      response = resolveResponseForAnswer(draft, interaction, { source: credential.source, action: credential.source === "elicitation" ? credential.action : undefined, comment: credential.source === "elicitation" ? credential.comment : undefined, userReply: credential.source === "text" ? credential.userReply : undefined, promptText, promptEventId, host });
+      response = resolveResponseForAnswer(draft, interaction, { source: credential.source, action: credential.source === "elicitation" ? credential.action : undefined, comment: credential.source === "elicitation" ? credential.comment : undefined, userReply: credential.source === "text" ? (credential.promptText) : undefined, promptText, promptEventId, host });
       if (!response) throw new DevFlowError("INTERACTION_NOT_RESOLVED", interaction.id);
       const decisionId = interaction.target.slice("grill:".length);
       const existingGovernance = draft.governance ?? EMPTY_GOVERNANCE_LEDGER;

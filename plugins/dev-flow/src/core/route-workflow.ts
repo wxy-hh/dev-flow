@@ -12,7 +12,6 @@ import { emptyReviewLedger, prepareReviewInvalidation, writeReviewSnapshot } fro
 import { deriveCurrency } from "./basis-state.js";
 import { createInteraction, resolveResponseForAnswer } from "./user-interactions.js";
 import { matchDecisionReply, pendingDecisionForState } from "./decision-interactions.js";
-import { resolveInteractionPromptEvent, resolvePromptEvent } from "./interaction-provenance.js";
 import { mutatePrepared, readFeatureEvents, readProjectConfig, readState, type FeatureState, type PreparedFeatureMutation } from "./state-store.js";
 import type { AnswerResolveContext, AnswerResolveResult } from "./interaction-answer.js";
 
@@ -251,7 +250,7 @@ export function applyLock(
       ? await writeReviewSnapshot(root, emptyReviewLedger(current.featureId, nextRevision)) : undefined;
     return {
       mutate: (draft) => {
-        draft.schemaVersion = 5;
+        draft.schemaVersion = 6;
         draft.mode = "routed";
         draft.route = selected.route;
         draft.classification = selected.classification;
@@ -281,17 +280,13 @@ export async function resolveRouteConfirmationForAnswer(ctx: AnswerResolveContex
   let promptEventId: string | undefined;
   let promptText: string | undefined;
   if (credential.source === "text") {
-    const events = await readFeatureEvents(root, featureId);
-    const prompt = interaction
-      ? resolveInteractionPromptEvent(events, state, interaction, { host, userReply: credential.userReply })
-      : resolvePromptEvent(events, { host, userReply: credential.userReply, presentedAt: pending.presentedAt, presentedRevision: pending.presentedRevision, ...(pending.presentationEventId ? { presentationEventId: pending.presentationEventId } : {}) });
-    promptEventId = prompt.eventId;
-    promptText = prompt.text;
+    promptEventId = credential.promptEventId;
+    promptText = credential.promptText;
   }
   const matched = credential.source === "elicitation"
     ? { optionId: credential.action, comment: credential.comment }
     : (() => {
-      const m = matchDecisionReply(pending, promptText ?? credential.userReply);
+      const m = matchDecisionReply(pending, promptText ?? credential.promptText);
       return { optionId: m.option.id, comment: m.comment };
     })();
   if (matched.optionId !== "confirm") {
@@ -324,7 +319,7 @@ export async function resolveRouteConfirmationForAnswer(ctx: AnswerResolveContex
             source: credential.source,
             action: credential.source === "elicitation" ? credential.action : undefined,
             comment: credential.source === "elicitation" ? credential.comment : undefined,
-            userReply: credential.source === "text" ? credential.userReply : undefined,
+            userReply: credential.source === "text" ? (credential.promptText) : undefined,
             promptText,
             promptEventId,
             host,
@@ -370,7 +365,7 @@ export async function resolveRouteConfirmationForAnswer(ctx: AnswerResolveContex
           source: credential.source,
           action: credential.source === "elicitation" ? credential.action : undefined,
           comment: credential.source === "elicitation" ? credential.comment : undefined,
-          userReply: credential.source === "text" ? credential.userReply : undefined,
+          userReply: credential.source === "text" ? (credential.promptText) : undefined,
           promptText,
           promptEventId,
           host,

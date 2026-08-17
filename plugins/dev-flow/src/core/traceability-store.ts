@@ -48,6 +48,7 @@ export async function writeTraceSnapshot(
   ledger: TraceabilityLedger,
   options: TraceStoreOptions = {},
 ): Promise<TraceabilityPointer> {
+  assertSupportedTraceSchema(ledger);
   const contents = canonicalTraceJson(ledger);
   const sha256 = digest(contents);
   const directory = snapshotDirectory(root, ledger.featureId);
@@ -85,6 +86,20 @@ function integrity(message: string, details: Record<string, unknown> = {}): neve
   throw new DevFlowError("TRACEABILITY_INTEGRITY_FAILED", message, details);
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function assertSupportedTraceSchema(ledger: unknown): asserts ledger is TraceabilityLedger {
+  if (!isRecord(ledger)) integrity("Trace snapshot has an invalid shape");
+  if (ledger.schemaVersion === 1) {
+    throw new DevFlowError("UNSUPPORTED_TRACE_SCHEMA", "检测到旧 Trace ledger schema。", {
+      recoveryHint: "用产生该状态的旧插件收尾，备份 .dev-flow 后用 6.0 重新初始化",
+    });
+  }
+  if (ledger.schemaVersion !== 2) integrity("Trace snapshot has an invalid schemaVersion");
+}
+
 function safeSnapshotPath(pointer: TraceabilityPointer): string {
   if (!/^traceability\/snapshots\/[a-f0-9]{64}\.json$/.test(pointer.path)
     || pointer.path !== `traceability/snapshots/${pointer.sha256}.json`) {
@@ -101,7 +116,7 @@ function sameEdges(left: TraceabilityLedger["edges"], right: TraceabilityLedger[
 }
 
 interface TraceReadOptions {
-  allowUnsafeFileScopeSourceArtifact?: "implementation-plan" | "rollback-units";
+  allowUnsafeFileScopeSourceArtifact?: "implementation-plan";
 }
 
 async function readTraceabilityWithOptions(
@@ -120,6 +135,7 @@ async function readTraceabilityWithOptions(
   let ledger: TraceabilityLedger;
   try { ledger = JSON.parse(contents!) as TraceabilityLedger; }
   catch { integrity("Trace snapshot is not valid JSON", { featureId: state.featureId }); }
+  assertSupportedTraceSchema(ledger!);
   try { validateTraceGraph(ledger!, state.route, "partial", options); }
   catch (error) { integrity("Trace snapshot graph is invalid", { cause: error instanceof Error ? error.message : String(error) }); }
   if (ledger!.featureId !== state.featureId || ledger!.revision !== pointer.revision || ledger!.stateRevision > state.revision) {
@@ -149,7 +165,7 @@ export async function readTraceabilityForArtifactReplacement(
   state: FeatureState,
   artifactKind: TraceArtifactKind,
 ): Promise<TraceabilityLedger> {
-  const allowUnsafeFileScopeSourceArtifact = artifactKind === "implementation-plan" || artifactKind === "rollback-units"
+  const allowUnsafeFileScopeSourceArtifact = artifactKind === "implementation-plan"
     ? artifactKind
     : undefined;
   return readTraceabilityWithOptions(root, state, { allowUnsafeFileScopeSourceArtifact });

@@ -19,7 +19,7 @@ interface ContractShape {
 
 export const contract = contractJson as ContractShape;
 
-if (contract.schemaVersion !== 4) {
+if (contract.schemaVersion !== 6) {
   throw new Error(`unsupported contract schema ${String(contract.schemaVersion)}`);
 }
 

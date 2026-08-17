@@ -141,7 +141,6 @@ test("text grill journey accepts semantic A and substantive other replies withou
     const selected = await mcpCall(server, fixture.root, "dev_flow_answer", {
       featureId: "elicitation",
       expectedRevision: first.control.expectedRevision,
-      userReply: "我选择 A",
       host: "codex",
     });
     assert.deepEqual(selected.response, {
@@ -163,7 +162,6 @@ test("text grill journey accepts semantic A and substantive other replies withou
     const custom = await mcpCall(server, fixture.root, "dev_flow_answer", {
       featureId: "elicitation",
       expectedRevision: second.control.expectedRevision,
-      userReply: otherReply,
       host: "codex",
     });
     assert.deepEqual(custom.response, {
@@ -307,7 +305,7 @@ test("route confirmation uses the same native form and resolves in one MCP call"
     await store.recordHostEvent(fixture.root, { eventId: "ratify-route", type: "user-prompt", host: "codex", text: "确认登记" });
     const ratified = await mcpCall(server, fixture.root, "dev_flow_answer", {
       featureId: "route-form", expectedRevision: recorded.control.expectedRevision,
-      userReply: "确认登记", host: "codex",
+      host: "codex",
     });
     const client = interactiveClient(fixture.root);
     await initialize(client);
@@ -418,7 +416,7 @@ test("elicitation timeout cancels, ignores a late response, and fuses the sessio
     // Resolve through trusted text, then prove the same MCP session no longer
     // emits a second elicitation/create request.
     await store.recordHostEvent(fixture.root, { eventId: "text-answer", type: "user-prompt", host: "codex", text: "A" });
-    client.send({ jsonrpc: "2.0", id: "answer", method: "tools/call", params: { name: "dev_flow_answer", arguments: { featureId: "elicitation", expectedRevision: state.revision, userReply: "A", host: "codex" } } });
+    client.send({ jsonrpc: "2.0", id: "answer", method: "tools/call", params: { name: "dev_flow_answer", arguments: { featureId: "elicitation", expectedRevision: state.revision, host: "codex" } } });
     assert.equal((await nextMatching(client, (message) => message.id === "answer")).id, "answer");
     state = await store.readState(fixture.root, "elicitation");
     client.send({ jsonrpc: "2.0", id: "tool-fused", method: "tools/call", params: { name: "dev_flow_request_grill_decision", arguments: grillArgs(state.revision, "2") } });

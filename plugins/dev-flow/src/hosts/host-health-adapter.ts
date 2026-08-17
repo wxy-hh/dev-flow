@@ -25,6 +25,10 @@ export async function recordAdapterHealth(
       host,
       kind,
       eventId: event.event_id ?? `${event.hook_event_name}-${Date.now()}`,
+      ...(kind === "session-start" ? {
+        adapterVersion: __DEV_FLOW_VERSION__,
+        capabilities: host === "claude" ? ["review-result-envelope-v1"] : [],
+      } : {}),
     });
   } catch {
     // Health diagnostics must not block the host. Core gates remain fail-closed

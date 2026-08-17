@@ -126,12 +126,20 @@ test("a requirements-only semantic diff reuses unaffected architecture and rollb
       kind: "requirements",
       edit: (markdown) => `${markdown}\n补充说明：不改变任务、测试、契约或恢复语义。\n`,
     });
+    // Requirements re-registration stales downstream plan nodes; re-register the
+    // unchanged plan slice so the plan gate can legitimately run again.
+    state = await registerTraceFixture({
+      root,
+      featureId: state.featureId,
+      state,
+      kind: "implementation-plan",
+    });
     const second = await jobs.createReviewBatch(root, state.featureId, state.revision);
     const byRole = Object.fromEntries(second.batch.jobs.map((job) => [job.role, job]));
     assert.equal(byRole["requirements-coverage"].status, "pending");
     assert.equal(byRole["architecture-testability"].status, "reused");
     assert.equal(byRole["rollback-operability"].status, "reused");
-    assert.equal(second.batch.executionMode, "parallel-safe");
+    assert.equal(second.batch.executionMode, "parallel-execution");
     assert.ok(byRole["architecture-testability"].reusedFrom);
   } finally {
     await rm(root, { recursive: true, force: true });

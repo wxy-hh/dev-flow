@@ -22,5 +22,6 @@ test("Trace schema documents all closed caller node variants", async () => {
   assert.equal(task.properties.covers.uniqueItems, true);
   assert.equal(implementationUnit.properties.tasks.items.type, "string");
   assert.equal(implementationUnit.properties.tasks.uniqueItems, true);
-  assert.equal(schema.$defs.traceDelta.additionalProperties, false);
+  assert.equal(schema.$defs.traceDelta, undefined);
+  assert.deepEqual(schema.$defs.verificationCommandRef, { type: "string", minLength: 1 });
 });

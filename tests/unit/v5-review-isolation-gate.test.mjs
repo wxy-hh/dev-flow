@@ -223,10 +223,11 @@ test("SubagentStop hook records review-execution only for a declared job with di
     const recorded = await reviewAdapter.recordSubagentReviewOutput(root, {
       hook_event_name: "SubagentStop",
       prompt: `dev-flow:isolated-review:${declarationId}`,
-      tool_input: {
-        subagent_session_id: "subagent-session",
-        parent_session_id: "parent-session",
-      },
+      session_id: "implementation-session",
+      agent_id: "review-subagent-1",
+      agent_transcript_path: "/nonexistent/transcript.jsonl",
+      last_assistant_message: `dev-flow:isolated-review:${declarationId}`,
+      tool_input: {},
     }, "claude");
     assert.equal(recorded.recorded, true);
     assert.equal(recorded.eventId, `${declarationId}:complete`);
@@ -235,8 +236,9 @@ test("SubagentStop hook records review-execution only for a declared job with di
     const proof = events.find((item) => item.type === "review-execution"
       && (item.data || {}).eventId === `${declarationId}:complete`);
     assert.ok(proof, "host proof event must be persisted");
-    assert.equal(proof.data.contextId, "subagent-session");
-    assert.equal(proof.data.implementationContextId, "parent-session");
+    assert.equal(proof.data.contextId, "review-subagent-1");
+    assert.equal(proof.data.implementationContextId, "implementation-session");
+    assert.equal(proof.data.text, `dev-flow:isolated-review:${declarationId}`);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -244,13 +246,19 @@ test("SubagentStop hook records review-execution only for a declared job with di
 
 test("review-execution events are not exposed as an agent-callable MCP tool (no self-attestation)", async () => {
   // 隔离证明只能来自宿主捕获或受控采样；agent 不得通过公开工具自证隔离。
-  // 这是源码级防回归：公开工具列表与 dispatch 均不得包含该入口（工具面与 dispatch 的家是 dispatch.ts）。
+  // v6 合同已删除全部逐 job 公开 review mutation：start/complete execution 是
+  // 唯二状态变更入口，proof event 只由 host adapter 内部 seam 写入。
   const { readFile } = await import("node:fs/promises");
   const serverSource = await readFile(path.join(process.cwd(), "plugins/dev-flow/src/mcp/dispatch.ts"), "utf8");
-  const toolListLine = serverSource.split("\n").find((line) => line.includes('"dev_flow_release_review_job"'));
-  assert.ok(toolListLine, "review tool list must exist");
-  assert.doesNotMatch(toolListLine, /dev_flow_record_review_execution_event/,
-    "the self-attestation tool must not be in the public tool list");
-  assert.doesNotMatch(serverSource, /case "dev_flow_record_review_execution_event"/,
-    "the self-attestation tool must not have a dispatch handler");
+  for (const name of [
+    "dev_flow_claim_review_job",
+    "dev_flow_release_review_job",
+    "dev_flow_start_isolated_review",
+    "dev_flow_submit_review_job",
+    "dev_flow_sample_review_job",
+    "dev_flow_record_review_execution_event",
+  ]) {
+    assert.doesNotMatch(serverSource, new RegExp(`${name}: \\{`), `${name} must not be a tool declaration`);
+    assert.doesNotMatch(serverSource, new RegExp(`case "${name}"`), `${name} must not have a dispatch handler`);
+  }
 });

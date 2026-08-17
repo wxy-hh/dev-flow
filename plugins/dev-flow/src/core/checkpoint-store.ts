@@ -1,6 +1,7 @@
-import { readFile } from "node:fs/promises";
+import { readFile, readdir } from "node:fs/promises";
 import path from "node:path";
 import { parseCheckpointManifest, RollbackProtocolError, type CheckpointManifest } from "../policy/rollback.js";
+import type { EvidenceObjectRef } from "../policy/evidence-store.js";
 import { DevFlowError } from "./errors.js";
 
 /** Read and validate one immutable checkpoint manifest at its owning I/O seam. */
@@ -29,4 +30,26 @@ export async function readCheckpointManifest(
     }
     throw new DevFlowError("CHECKPOINT_INTEGRITY_FAILED", "checkpoint manifest is unreadable", { checkpointId });
   }
+}
+
+/** Evidence Store roots referenced by all v3 checkpoint manifests of one feature. */
+export async function checkpointManifestRootRefs(root: string, featureId: string): Promise<EvidenceObjectRef[]> {
+  const directory = path.join(root, ".dev-flow", "features", featureId, "checkpoints", "manifests");
+  let files: string[];
+  try {
+    files = (await readdir(directory)).filter((file) => file.endsWith(".json"));
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
+    throw error;
+  }
+  const refs: EvidenceObjectRef[] = [];
+  for (const file of files) {
+    const checkpointId = file.slice(0, -".json".length);
+    const manifest = await readCheckpointManifest(root, featureId, checkpointId);
+    for (const ref of Object.values(manifest.blobRefs ?? {})) {
+      if (refs.some((candidate) => candidate.kind === ref.kind && candidate.sha256 === ref.sha256)) continue;
+      refs.push(ref);
+    }
+  }
+  return refs;
 }

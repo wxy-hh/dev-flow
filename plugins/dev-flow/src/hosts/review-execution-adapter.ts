@@ -1,12 +1,13 @@
 import { readFile } from "node:fs/promises";
 import { readActive, readFeatureEvents, recordReviewExecutionEvent } from "../core/state-store.js";
+import { captureHostReviewEnvelope, recordCapturedEnvelope } from "../core/review-execution.js";
 import type { HookEvent } from "./bash-syntax.js";
 
 const DECLARATION_MARKER = /dev-flow:isolated-review:([A-Za-z0-9-]+)/u;
 
 export interface SubagentReviewRecordResult {
   recorded: boolean;
-  reason?: "no-active-feature" | "missing-marker" | "unknown-declaration" | "missing-context-ids" | "same-context";
+  reason?: "no-active-feature" | "missing-marker" | "unknown-declaration" | "missing-context-ids" | "same-context" | "invalid-completion";
   declarationId?: string;
   eventId?: string;
 }
@@ -54,7 +55,8 @@ export async function recordSubagentReviewOutput(
   const active = await readActive(root);
   if (!active) return { recorded: false, reason: "no-active-feature" };
 
-  const promptText = firstText(event.prompt)
+  const promptText = firstText(event.last_assistant_message)
+    || firstText(event.prompt)
     || firstText(event.tool_input)
     || firstText(event.tool_response)
     || firstText(event.tool_result)
@@ -76,31 +78,34 @@ export async function recordSubagentReviewOutput(
     batchId?: unknown;
     jobId?: unknown;
     executionId?: unknown;
+    executionRequestId?: unknown;
+    capabilityHash?: unknown;
+    packageSha256?: unknown;
+    role?: unknown;
+    leaseGeneration?: unknown;
+    declaredAt?: unknown;
     host?: unknown;
   };
-  if (typeof data.batchId !== "string" || typeof data.jobId !== "string" || typeof data.executionId !== "string") {
+  if (typeof data.batchId !== "string" || typeof data.jobId !== "string"
+    || (typeof data.executionId !== "string" && typeof data.executionRequestId !== "string")) {
     return { recorded: false, reason: "unknown-declaration", declarationId };
   }
+  const executionId = typeof data.executionId === "string" ? data.executionId : String(data.executionRequestId);
 
   const input = event.tool_input ?? {};
   const response = event.tool_response && typeof event.tool_response === "object" ? event.tool_response as Record<string, unknown> : {};
+  // Real Claude SubagentStop shape: session_id identifies the implementation
+  // session and agent_id identifies the isolated subagent context. There is no
+  // parent_session_id; accepting synthetic parent fields was the v5 bug.
   const contextId = [
-    input.agent_id,
-    input.subagent_agent_id,
     event.agent_id,
+    input.agent_id,
     response.agent_id,
-    input.subagent_session_id,
-    input.subagent_context_id,
-    response.subagent_session_id,
-    response.session_id,
   ].find((value): value is string => typeof value === "string" && value.trim().length > 0);
   const implementationContextId = [
-    input.parent_agent_id,
-    event.parent_agent_id,
-    response.parent_agent_id,
-    input.parent_session_id,
-    input.parent_context_id,
-    response.parent_session_id,
+    event.session_id,
+    input.session_id,
+    response.session_id,
   ].find((value): value is string => typeof value === "string" && value.trim().length > 0);
   if (!contextId || !implementationContextId) {
     return { recorded: false, reason: "missing-context-ids", declarationId };
@@ -110,17 +115,70 @@ export async function recordSubagentReviewOutput(
   }
 
   const eventId = `${declarationId}:complete`;
+  const rawText = typeof event.last_assistant_message === "string"
+    ? event.last_assistant_message
+    : promptText;
+  const rawResult = (() => {
+    const start = rawText.indexOf("{");
+    const end = rawText.lastIndexOf("}");
+    if (start >= 0 && end > start) {
+      const candidate = rawText.slice(start, end + 1);
+      try {
+        JSON.parse(candidate);
+        return candidate;
+      } catch {
+        return rawText;
+      }
+    }
+    return rawText;
+  })();
   await recordReviewExecutionEvent(root, {
     eventId,
     type: "review-execution",
     host: typeof data.host === "string" && (data.host === "claude" || data.host === "codex") ? data.host : host,
     batchId: data.batchId,
     jobId: data.jobId,
-    executionId: data.executionId,
+    executionId,
     sourceId: `subagent:${contextId}`,
     contextId,
     implementationContextId,
     parentContextId: implementationContextId,
+    text: typeof event.last_assistant_message === "string" ? event.last_assistant_message : undefined,
   });
+  // Phase 5 envelope: freeze the raw subagent output under the execution
+  // lease. Old declarations without executionRequestId keep the v5 proof-only
+  // behavior until their callers are removed.
+  if (typeof data.executionRequestId === "string"
+    && typeof data.capabilityHash === "string"
+    && typeof data.packageSha256 === "string"
+    && typeof data.role === "string"
+    && typeof data.leaseGeneration === "number"
+    && typeof data.declaredAt === "string") {
+    try {
+      const captured = await captureHostReviewEnvelope(root, {
+        featureId: active.featureId,
+        batchId: data.batchId as string,
+        jobId: data.jobId as string,
+        role: data.role as import("../policy/review.js").ReviewRole,
+        packageSha256: data.packageSha256,
+        capabilityHash: data.capabilityHash,
+        executionRequestId: data.executionRequestId,
+        leaseGeneration: data.leaseGeneration,
+        declarationId,
+        source: "claude-subagent",
+        host: typeof data.host === "string" && (data.host === "claude" || data.host === "codex") ? data.host : host,
+        hostEventId: eventId,
+        parentContext: implementationContextId,
+        childContext: contextId,
+        agentId: contextId,
+        startedAt: data.declaredAt,
+        completedAt: new Date().toISOString(),
+        rawResult,
+      });
+      await recordCapturedEnvelope(root, active.featureId, data.executionRequestId, captured.ref);
+    } catch {
+      return { recorded: false, reason: "invalid-completion", declarationId, eventId };
+    }
+  }
   return { recorded: true, declarationId, eventId };
 }

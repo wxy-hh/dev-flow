@@ -4,7 +4,8 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { loadSource } from "../helpers/load-source.mjs";
-import { appendSecondTraceClosure, registerTraceFixture, traceDeltaFor, twoClosureTraceDeltaFor } from "../helpers/trace-fixtures.mjs";
+import { appendSecondTraceClosure, registerTraceFixture, twoClosureTraceDeltaFor } from "../helpers/trace-fixtures.mjs";
+import { v6ImplementationPlanMarkdown } from "../helpers/v6-fixtures.mjs";
 
 const stateStore = await loadSource("plugins/dev-flow/src/core/state-store.ts");
 const artifacts = await loadSource("plugins/dev-flow/src/core/artifacts.ts");
@@ -54,26 +55,14 @@ test("preflight returns all uncovered acceptance criteria in one call with zero 
     const featureId = state.featureId;
     let current = state;
     // 计划只有 TASK/RU，没有任何 TEST：两个 AC 都缺测试覆盖。
-    const badDelta = {
-      nodes: [
-        { kind: "task", id: "TASK-001", covers: ["REQ-001", "AC-001"], implementationUnit: "UNIT-001" },
-        { kind: "task", id: "TASK-002", covers: ["REQ-002", "AC-002"], implementationUnit: "UNIT-002" },
-        { kind: "implementation-unit", id: "UNIT-001", tasks: ["TASK-001"], dependsOn: [], fileScope: ["src"], covers: ["REQ-001", "AC-001"], forwardVerification: ["unit"] },
-        { kind: "implementation-unit", id: "UNIT-002", tasks: ["TASK-002"], dependsOn: [], fileScope: ["src"], covers: ["REQ-002", "AC-002"], forwardVerification: ["unit"] },
-      ],
-    };
     const planPath = path.join(root, ".dev-flow", "features", featureId, current.artifacts["implementation-plan"].path);
-    // 写入与 delta 一致的锚点（两个 TASK + 两个 RU，无 TEST）
-    const markdown = [
-      "<!-- dev-flow:id=TASK-001 kind=task -->\n### TASK-001\n\n- covers: REQ-001, AC-001\n- implementation_unit: UNIT-001\n",
-      "<!-- dev-flow:id=TASK-002 kind=task -->\n### TASK-002\n\n- covers: REQ-002, AC-002\n- implementation_unit: UNIT-002\n",
-      "<!-- dev-flow:id=UNIT-001 kind=implementation-unit -->\n### UNIT-001\n\n- tasks: TASK-001\n- depends_on: []\n- file_scope: src\n- covers: REQ-001, AC-001\n- forward_verification: unit\n",
-      "<!-- dev-flow:id=UNIT-002 kind=implementation-unit -->\n### UNIT-002\n\n- tasks: TASK-002\n- depends_on: []\n- file_scope: src\n- covers: REQ-002, AC-002\n- forward_verification: unit\n",
-    ].join("\n");
-    await writeFile(planPath, markdown);
+    await writeFile(planPath, [
+      v6ImplementationPlanMarkdown({ includeTest: false, tdd: "direct" }),
+      v6ImplementationPlanMarkdown({ taskId: "TASK-002", testId: "TEST-002", unitId: "UNIT-002", covers: ["REQ-002", "AC-002"], includeTest: false, tdd: "direct" }),
+    ].join("\n"));
 
     const before = await stateStore.readState(root, featureId);
-    const result = await artifacts.validatePlan(root, featureId, "implementation-plan", badDelta);
+    const result = await artifacts.validatePlanFromMarkdown(root, featureId, "implementation-plan");
     assert.equal(result.ok, false);
     const acDiagnostics = result.diagnostics.filter((d) => d.position === "AC-001" || d.position === "AC-002");
     assert.equal(acDiagnostics.length, 2, "both uncovered ACs must be reported in one preflight call");
@@ -97,26 +86,20 @@ test("preflight and formal registration report the same diagnostic set for the s
   try {
     const featureId = state.featureId;
     let current = state;
-    const badDelta = {
-      nodes: [
-        { kind: "task", id: "TASK-001", covers: ["REQ-001", "AC-001"], implementationUnit: "UNIT-999" },
-      ],
-    };
     const planPath = path.join(root, ".dev-flow", "features", featureId, current.artifacts["implementation-plan"].path);
-    await writeFile(planPath, "<!-- dev-flow:id=TASK-001 kind=task -->\n### TASK-001\n\n- covers: REQ-001, AC-001\n- implementation_unit: UNIT-999\n");
-    const preflight = await artifacts.validatePlan(root, featureId, "implementation-plan", badDelta);
+    await writeFile(planPath, v6ImplementationPlanMarkdown({ unitId: "UNIT-999", includeTest: false, tdd: "direct" }));
+    const preflight = await artifacts.validatePlanFromMarkdown(root, featureId, "implementation-plan");
     assert.equal(preflight.ok, false);
     await assert.rejects(
-      () => artifacts.recordArtifactWithTrace(root, featureId, current.revision, "implementation-plan", badDelta),
+      () => artifacts.recordArtifactFromMarkdown(root, featureId, current.revision, "implementation-plan"),
       (error) => {
         assert.equal(error.code, "PLAN_INVALID");
         assert.deepEqual(error.details.diagnostics, preflight.diagnostics, "registration must surface the same diagnostics as preflight");
         return true;
       },
     );
-    // 第三入口：计划修订预检经同一 compileArtifactPlan，同一坏计划必得同一诊断集。
     await assert.rejects(
-      () => planRevision.revisePlanDuringImplementation(root, featureId, current.revision, badDelta, "codex"),
+      () => planRevision.revisePlanFromMarkdown(root, featureId, current.revision, "codex"),
       (error) => {
         assert.equal(error.code, "PLAN_INVALID");
         assert.deepEqual(error.details.diagnostics, preflight.diagnostics, "revision preflight must surface the same diagnostics as preflight");
@@ -133,19 +116,15 @@ test("a valid plan preflights ok and registers atomically", async () => {
   try {
     const featureId = state.featureId;
     let current = state;
-    const validDelta = twoClosureTraceDeltaFor("implementation-plan", "m");
     const planPath = path.join(root, ".dev-flow", "features", featureId, current.artifacts["implementation-plan"].path);
-    const before = await readFile(planPath, "utf8");
-    const markdown = before + [
-      "<!-- dev-flow:id=TASK-002 kind=task -->\n### TASK-002\n\n- covers: REQ-002, AC-002\n- implementation_unit: UNIT-002\n",
-      "<!-- dev-flow:id=TEST-002 kind=test -->\n### TEST-002\n\n- 验证方法：\n",
-      "<!-- dev-flow:id=UNIT-002 kind=implementation-unit -->\n### UNIT-002\n\n- tasks: TASK-002\n- depends_on: []\n- file_scope: src\n- covers: REQ-002, AC-002\n- forward_verification: unit\n",
-    ].join("\n");
-    await writeFile(planPath, markdown);
-    const preflight = await artifacts.validatePlan(root, featureId, "implementation-plan", validDelta);
+    await writeFile(planPath, [
+      v6ImplementationPlanMarkdown({ fileScope: ["src/one.ts"] }),
+      v6ImplementationPlanMarkdown({ taskId: "TASK-002", testId: "TEST-002", unitId: "UNIT-002", fileScope: ["src/two.ts"], covers: ["REQ-002", "AC-002"], verifies: ["AC-002"] }),
+    ].join("\n"));
+    const preflight = await artifacts.validatePlanFromMarkdown(root, featureId, "implementation-plan");
     assert.equal(preflight.ok, true, JSON.stringify(preflight.diagnostics));
     assert.deepEqual(preflight.diagnostics, []);
-    const registered = await artifacts.recordArtifactWithTrace(root, featureId, current.revision, "implementation-plan", validDelta);
+    const registered = await artifacts.recordArtifactFromMarkdown(root, featureId, current.revision, "implementation-plan");
     assert.ok(registered.state.traceability);
   } finally {
     await rm(root, { recursive: true, force: true });
@@ -157,15 +136,13 @@ test("registration after a concurrent revision change requires a fresh preflight
   try {
     const featureId = state.featureId;
     const current = state;
-    const validDelta = traceDeltaFor("implementation-plan", "m");
-    // 预检后另一个写入推进 revision
-    await artifacts.validatePlan(root, featureId, "implementation-plan", validDelta);
+    await artifacts.validatePlanFromMarkdown(root, featureId, "implementation-plan");
     const bumped = await stateStore.mutate(root, featureId, current.revision, "test-bump", (draft) => {
       draft.resumeSummary = "concurrent change";
     });
     void bumped;
     await assert.rejects(
-      () => artifacts.recordArtifactWithTrace(root, featureId, current.revision, "implementation-plan", validDelta),
+      () => artifacts.recordArtifactFromMarkdown(root, featureId, current.revision, "implementation-plan"),
       (error) => error.code === "STATE_REVISION_CONFLICT",
     );
   } finally {

@@ -7,7 +7,7 @@ description: 在 Dev Flow 中用统一 A/B/C 交互澄清现场取舍，并以�
 
 现场取舍只走 `dev_flow_request_grill_decision` → 原生 elicitation / `dev_flow_answer`；不要创建第二份 pending ledger，也不存在 resolve-decision 工具。已有明确用户结论使用 `dev_flow_record_decision`：仅当最新未消费用户消息与 evidence 整句归一相等、且当前无待决问题时，Core 自动登记；否则仍先展示原话与拟登记结论，经用户确认后落账。
 
-待决问题只能由用户真实回复解析，模型不得用转述自答；失败时只呈现一次问题并等待新用户消息。
+待决问题只能由用户真实宿主事件解析。`dev_flow_answer` 只传 featureId/expectedRevision/host，不得提交 `userReply` 或转述用户原话；失败时只呈现一次问题并等待新用户消息。
 
 每次请求必须提交 2–3 个正式选项。每个选项只提供稳定的语义 `id`、不带 A/B/C 的 `label` 和非空 `description`；另传唯一 `recommendation: { optionId, reason }`，推荐理由不能为空。`other` 是 Core 保留的自定义出口，不能用作正式 option id。Core 按选项顺序自动分配 A/B/C，并统一生成以下展示，Skill 不得自行重排或改写：
 

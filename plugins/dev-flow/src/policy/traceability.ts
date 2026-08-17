@@ -17,17 +17,9 @@ export type TraceId =
 
 export type TraceArtifactKind =
   | "requirements"
-  | "implementation-plan"
-  | "coverage-matrix"
-  | "rollback-units";
+  | "implementation-plan";
 
-export interface InlineVerificationCommand {
-  command: string;
-  args?: string[];
-  cwd?: string;
-}
-
-export type VerificationCommandRef = string | InlineVerificationCommand;
+export type VerificationCommandRef = string;
 
 export type VerificationDispositionKind = "behavior-test" | "type-check" | "rule-check" | "file-check" | "human-acceptance";
 
@@ -89,7 +81,7 @@ export interface RollbackNode extends TraceSource {
   covers: Array<RequirementId | AcceptanceCriterionId>;
   forwardVerification: VerificationCommandRef[];
   rollbackVerification: VerificationCommandRef[];
-  sourceArtifact: "implementation-plan" | "rollback-units";
+  sourceArtifact: "implementation-plan";
   verificationConfigSha256: string;
 }
 
@@ -210,7 +202,7 @@ export interface TraceEdge {
 }
 
 export interface TraceabilityLedger {
-  schemaVersion: 1;
+  schemaVersion: 2;
   featureId: string;
   revision: number;
   stateRevision: number;

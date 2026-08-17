@@ -76,7 +76,7 @@ test("dev_flow_init_project returns a well-formed result (P2)", async () => {
   }
 });
 
-test("a real early-5.0 interaction continues through the public answer tool", async () => {
+test("v5 legacy state is rejected fail-closed by the public answer tool", async () => {
   const fixture = await createTinyApp();
   try {
     await mcpCall(server, fixture.root, "dev_flow_init_project", { config: strictProjectConfig });
@@ -92,17 +92,15 @@ test("a real early-5.0 interaction continues through the public answer tool", as
         eventId: "legacy-public-answer", type: "user-prompt", host: "codex", text: "这个算当前任务", at: "2026-08-01T00:00:01.000Z",
       } }),
     ].join("\n") + "\n");
-    // 真实会话必然带有宿主健康信号；fixture 直接落盘状态，需要显式补齐。
+    // dev_flow_answer 在解析凭证前先断言宿主健康（dispatch.ts），fixture 直接落盘状态需补齐信号。
     await store.recordHostHealth(fixture.root, { host: "codex", kind: "session-start", eventId: "legacy-session-start" });
 
-    const answered = await mcpCall(server, fixture.root, "dev_flow_answer", {
-      featureId, expectedRevision: 0, userReply: "这个算当前任务", host: "codex",
-    });
-    assert.equal(answered.control.expectedRevision, 1);
-    const continued = await store.readState(fixture.root, featureId);
-    assert.equal(continued.interactions["interaction-legacy-ownership"].status, "resolved");
-    assert.equal(continued.workspace.ownership["src/counter.js"], "feature");
-    assert.deepEqual(continued.workspace.unownedPaths, []);
+    await assert.rejects(
+      () => mcpCall(server, fixture.root, "dev_flow_answer", {
+        featureId, expectedRevision: 0, host: "codex",
+      }),
+      (error) => error.code === "UNSUPPORTED_FEATURE_SCHEMA",
+    );
   } finally {
     await fixture.dispose();
   }
@@ -172,7 +170,7 @@ test("dev_flow_record_decision exposes a decisionId usable end-to-end (P5)", asy
     await store.recordHostEvent(fixture.root, { eventId: "ratify-known", type: "user-prompt", host: "codex", text: "确认登记" });
     const ratified = await mcpCall(server, fixture.root, "dev_flow_answer", {
       featureId: "decisions", expectedRevision: recorded.control.expectedRevision,
-      userReply: "确认登记", host: "codex",
+      host: "codex",
     });
     const pending = await mcpCall(server, fixture.root, "dev_flow_lock_classification", {
       featureId: "decisions", expectedRevision: ratified.state.revision,
@@ -187,7 +185,7 @@ test("dev_flow_record_decision exposes a decisionId usable end-to-end (P5)", asy
       boundaryAudit: { scanned: ["assumption", "free-space", "tbd", "fallback", "scope", "acceptance"], items: [] },
     });
     await store.recordHostEvent(fixture.root, { eventId: "route-confirm", type: "user-prompt", host: "codex", text: "确认路线" });
-    const locked = await mcpCall(server, fixture.root, "dev_flow_answer", { featureId: "decisions", expectedRevision: pending.control.expectedRevision, userReply: "确认路线", host: "codex" });
+    const locked = await mcpCall(server, fixture.root, "dev_flow_answer", { featureId: "decisions", expectedRevision: pending.control.expectedRevision, host: "codex" });
     assert.equal(locked.control.stage, "requirements_alignment");
   } finally {
     await fixture.dispose();
@@ -219,7 +217,6 @@ test("same-revision host answer resolves a mid-task workspace ownership question
     const answered = await mcpCall(server, fixture.root, "dev_flow_answer", {
       featureId: "same-revision-ownership",
       expectedRevision: pending.control.expectedRevision,
-      userReply: "纳入当前任务",
       host: "codex",
     });
     assert.ok(answered.control.expectedRevision > pending.control.expectedRevision);
@@ -250,7 +247,7 @@ test("workspace ownership presents a batch and supports one-by-one resolution", 
     await store.recordHostEvent(fixture.root, { eventId: "batch-adopt", type: "user-prompt", host: "codex", text: "这些都算当前任务的" });
     const answered = await mcpCall(server, fixture.root, "dev_flow_answer", {
       featureId: "batch-ownership", expectedRevision: before.revision,
-      userReply: "这些都算当前任务的", host: "codex",
+      host: "codex",
     });
     assert.ok(answered.control.expectedRevision > before.revision);
     const adopted = await store.readState(fixture.root, "batch-ownership");
@@ -276,7 +273,7 @@ test("workspace ownership presents a batch and supports one-by-one resolution", 
     await store.recordHostEvent(second.root, { eventId: "one-by-one", type: "user-prompt", host: "codex", text: "逐个确认" });
     const first = await mcpCall(server, second.root, "dev_flow_answer", {
       featureId: "one-by-one-ownership", expectedRevision: pendingStart.control.expectedRevision,
-      userReply: "逐个确认", host: "codex",
+      host: "codex",
     });
     assert.ok(first.control.expectedRevision > pendingStart.control.expectedRevision);
     const pending = await store.readState(second.root, "one-by-one-ownership");
@@ -285,7 +282,7 @@ test("workspace ownership presents a batch and supports one-by-one resolution", 
     await store.recordHostEvent(second.root, { eventId: "one-by-one-adopt", type: "user-prompt", host: "codex", text: "纳入当前任务" });
     const secondAnswer = await mcpCall(server, second.root, "dev_flow_answer", {
       featureId: "one-by-one-ownership", expectedRevision: first.control.expectedRevision,
-      userReply: "纳入当前任务", host: "codex",
+      host: "codex",
     });
     const afterFirst = await store.readState(second.root, "one-by-one-ownership");
     assert.equal(decisions.pendingDecisionForState(afterFirst).kind, "workspace-ownership");
@@ -294,7 +291,7 @@ test("workspace ownership presents a batch and supports one-by-one resolution", 
     await store.recordHostEvent(second.root, { eventId: "one-by-one-exclude", type: "user-prompt", host: "codex", text: "排除并先处理" });
     await mcpCall(server, second.root, "dev_flow_answer", {
       featureId: "one-by-one-ownership", expectedRevision: secondAnswer.control.expectedRevision,
-      userReply: "排除并先处理", host: "codex",
+      host: "codex",
     });
     const resolved = await store.readState(second.root, "one-by-one-ownership");
     assert.equal(decisions.pendingDecisionForState(resolved), undefined);
@@ -325,7 +322,7 @@ test("workspace ownership answer fails closed when reconciliation adds an unknow
     await assert.rejects(
       () => mcpCall(server, fixture.root, "dev_flow_answer", {
         featureId: "stale-ownership", expectedRevision: secondReconcile.control.expectedRevision,
-        userReply: "全部纳入当前任务", host: "codex",
+        host: "codex",
       }),
       (error) => error.code === "WORKSPACE_OWNERSHIP_STALE",
     );

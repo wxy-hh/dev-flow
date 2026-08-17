@@ -2,22 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "dev-flow/traceability.schema.json",
   "$defs": {
-    "inlineVerificationCommand": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["command"],
-      "properties": {
-        "command": { "type": "string", "minLength": 1 },
-        "args": { "type": "array", "items": { "type": "string" } },
-        "cwd": { "type": "string", "minLength": 1, "pattern": "^(?!/)(?![A-Za-z]:)(?!.*(?:^|/)\\.\\.(?:/|$)).*$" }
-      }
-    },
-    "verificationCommandRef": {
-      "oneOf": [
-        { "type": "string", "minLength": 1 },
-        { "$ref": "#/$defs/inlineVerificationCommand" }
-      ]
-    },
+    "verificationCommandRef": { "type": "string", "minLength": 1 },
     "verificationDisposition": {
       "type": "object",
       "additionalProperties": false,
@@ -27,12 +12,6 @@
         "reason": { "type": "string", "minLength": 1 },
         "target": { "type": "string", "minLength": 1 }
       }
-    },
-    "traceDelta": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["nodes"],
-      "properties": { "nodes": { "type": "array", "items": { "$ref": "#/$defs/traceNodeInput" } } }
     },
     "traceNodeInput": {
       "oneOf": [

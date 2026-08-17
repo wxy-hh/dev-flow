@@ -14,7 +14,9 @@ test("distributed skills describe dynamic review and finalize contracts", async 
   const routes = await text("docs/routes.md");
   await assert.rejects(() => text("plugins/dev-flow/skills/feature-check/SKILL.md"), /ENOENT/);
   assert.match(planReview, /role basis|roleBasis|角色/);
-  assert.match(planReview, /parallel-safe/);
+  assert.match(planReview, /parallel-execution/);
+  assert.match(planReview, /start_review_execution/);
+  assert.match(planReview, /complete_review_execution/);
   assert.match(planReview, /reused/);
   assert.match(codeReview, /code_review/);
   assert.match(codeReview, /requiredEvidence/);

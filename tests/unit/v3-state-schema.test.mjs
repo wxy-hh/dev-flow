@@ -12,7 +12,7 @@ test("new features are v5 states with lineage and independently tracked freshnes
   try {
     await store.initProject(fixture.root, strictProjectConfig);
     const state = await store.startFeature(fixture.root, { featureId: "v3", objective: "更新行为", host: "codex" });
-    assert.equal(state.schemaVersion, 5);
+    assert.equal(state.schemaVersion, 6);
     assert.equal(state.workspace.baseHead.length, 40);
     assert.equal(state.workspace.reconciliationStatus, "current");
     assert.deepEqual(state.governance.authorizations, []);

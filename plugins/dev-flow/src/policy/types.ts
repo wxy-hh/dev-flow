@@ -357,7 +357,7 @@ export interface StepSnapshot {
 }
 
 export interface DeriveState {
-  schemaVersion: 5;
+  schemaVersion: 6;
   lifecycle: "active" | "paused" | "finalized" | "abandoned";
   route: RouteId;
   /** Core-compiled operational steps for this feature's dynamic controls. */

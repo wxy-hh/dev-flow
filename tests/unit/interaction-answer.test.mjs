@@ -10,8 +10,10 @@ import { loadSource } from "../helpers/load-source.mjs";
 // 是否出现下一题 pending、失败是否 revision 不变且事件未消费。
 
 const store = await loadSource("plugins/dev-flow/src/core/state-store.ts");
+const answerModule = await loadSource("plugins/dev-flow/src/core/interaction-answer.ts");
 const decisions = await loadSource("plugins/dev-flow/src/core/decision-interactions.ts");
 const grill = await loadSource("plugins/dev-flow/src/core/requirements-grill.ts");
+const quality = await loadSource("plugins/dev-flow/src/core/quality-exceptions.ts");
 
 const config = {
   schemaVersion: 2,
@@ -53,11 +55,10 @@ test("文本凭证绑定失败时不写任何东西：revision 不变、事件�
     const presented = await store.recordDecision(root, "f", state.revision, "是否保留兼容行为？", "历史兼容测试仍存在", "保留兼容行为", [], "codex");
     // 呈现之后没有匹配的宿主事件。
     await assert.rejects(
-      () => store.answer({
+      () => store.answerFromHostEvents({
         root, featureId: "f", expectedRevision: presented.state.revision, host: "codex",
-        credential: { source: "text", userReply: "确认登记" },
       }),
-      (error) => error.code === "INTERACTION_PROVENANCE_UNAVAILABLE",
+      (error) => error.code === "INTERACTION_EVENT_MISSING",
     );
     const unchanged = await store.readState(root, "f");
     assert.equal(unchanged.revision, presented.state.revision, "失败不得推进 revision");
@@ -73,9 +74,8 @@ test("文本凭证经 answer 绑定事件原文落账；凭证 basis 指向事�
   try {
     const presented = await store.recordDecision(root, "f", state.revision, "是否保留兼容行为？", "历史兼容测试仍存在", "保留兼容行为", [], "codex");
     await store.recordHostEvent(root, { eventId: "ratify-ok", type: "user-prompt", host: "codex", text: "确认登记" });
-    const result = await store.answer({
+    const result = await store.answerFromHostEvents({
       root, featureId: "f", expectedRevision: presented.state.revision, host: "codex",
-      credential: { source: "text", userReply: "确认登记" },
     });
     assert.equal(result.state.governance.decisions.length, 1);
     assert.equal(result.state.governance.decisions[0].conclusion, "保留兼容行为");
@@ -90,9 +90,8 @@ test("没有正式交互时 answer 失败关闭，不锁定或改写任何状态
   const { root, state } = await setup("dev-flow-answer-nopending-");
   try {
     await assert.rejects(
-      () => store.answer({
+      () => store.answerFromHostEvents({
         root, featureId: "f", expectedRevision: state.revision, host: "codex",
-        credential: { source: "text", userReply: "确认" },
       }),
       (error) => error.code === "INTERACTION_NOT_PENDING",
     );
@@ -112,9 +111,8 @@ test("CAS 冲突时整笔不写：revision 不变、事件未消费、问题仍 
     const bumped = await store.mutate(root, "f", presented.state.revision, "test-bump", (draft) => { draft.objective = "bumped"; });
     await store.recordHostEvent(root, { eventId: "ratify-cas", type: "user-prompt", host: "codex", text: "确认登记" });
     await assert.rejects(
-      () => store.answer({
+      () => store.answerFromHostEvents({
         root, featureId: "f", expectedRevision: presented.state.revision, host: "codex",
-        credential: { source: "text", userReply: "确认登记" },
       }),
       (error) => error.code === "STATE_REVISION_CONFLICT",
     );
@@ -142,9 +140,8 @@ test("grill 带理由的 other 经 answer 写入决定；缺理由时不写且�
     });
     const reply = "其他：先做一个最小实验，再依据结果决定是否保留。";
     await store.recordHostEvent(root, { eventId: "grill-other", type: "user-prompt", host: "codex", text: reply });
-    const result = await store.answer({
+    const result = await store.answerFromHostEvents({
       root, featureId: "f", expectedRevision: requested.state.revision, host: "codex",
-      credential: { source: "text", userReply: reply },
     });
     assert.equal(result.action, "other");
     assert.equal(result.state.governance.decisions.find((item) => item.recordId === "G-001").conclusion, "other");
@@ -167,9 +164,8 @@ test("grill 带理由的 other 经 answer 写入决定；缺理由时不写且�
       });
       await store.recordHostEvent(root2, { eventId: "grill-empty-other", type: "user-prompt", host: "codex", text: "其他：" });
       await assert.rejects(
-        () => store.answer({
+        () => store.answerFromHostEvents({
           root: root2, featureId: "g", expectedRevision: second.state.revision, host: "codex",
-          credential: { source: "text", userReply: "其他：" },
         }),
         (error) => error.code === "DECISION_REPLY_NOT_RECOGNIZED",
       );
@@ -191,9 +187,8 @@ test("「确认」不能命中归属的 adopt/exclude（多意图问题语义边
     const pending = await store.reconcileWorkspace(root, "f", state.revision, "codex");
     await store.recordHostEvent(root, { eventId: "own-confirm", type: "user-prompt", host: "codex", text: "确认" });
     await assert.rejects(
-      () => store.answer({
+      () => store.answerFromHostEvents({
         root, featureId: "f", expectedRevision: pending.revision, host: "codex",
-        credential: { source: "text", userReply: "确认" },
       }),
       (error) => error.code === "DECISION_REPLY_NOT_RECOGNIZED",
     );
@@ -212,9 +207,8 @@ test("归属逐个确认后 answer 返回下一题 pending；下一次 answer �
     await writeFile(path.join(root, "src/b.js"), "export const b = 2;\n", "utf8");
     const pending = await store.reconcileWorkspace(root, "f", state.revision, "codex");
     await store.recordHostEvent(root, { eventId: "own-1by1", type: "user-prompt", host: "codex", text: "逐个确认" });
-    const first = await store.answer({
+    const first = await store.answerFromHostEvents({
       root, featureId: "f", expectedRevision: pending.revision, host: "codex",
-      credential: { source: "text", userReply: "逐个确认" },
     });
     assert.equal(first.action, "one-by-one");
     assert.ok(first.pending, "apply 呈现下一题时返回 pending");
@@ -223,17 +217,15 @@ test("归属逐个确认后 answer 返回下一题 pending；下一次 answer �
       ? Object.values(first.state.interactions).find((item) => item.status === "pending")?.workspacePaths?.[0]
       : undefined;
     await store.recordHostEvent(root, { eventId: "own-adopt", type: "user-prompt", host: "codex", text: "纳入当前任务" });
-    const second = await store.answer({
+    const second = await store.answerFromHostEvents({
       root, featureId: "f", expectedRevision: first.state.revision, host: "codex",
-      credential: { source: "text", userReply: "纳入当前任务" },
     });
     const afterFirst = second.state;
     const remainingPath = Object.values(afterFirst.interactions).find((item) => item.status === "pending")?.workspacePaths?.[0];
     assert.ok(firstPath && remainingPath && firstPath !== remainingPath, "逐个确认后只问剩余路径");
     await store.recordHostEvent(root, { eventId: "own-exclude", type: "user-prompt", host: "codex", text: "排除并先处理" });
-    const third = await store.answer({
+    const third = await store.answerFromHostEvents({
       root, featureId: "f", expectedRevision: second.state.revision, host: "codex",
-      credential: { source: "text", userReply: "排除并先处理" },
     });
     assert.equal(third.state.workspace.ownership[firstPath], "feature");
     assert.equal(third.state.workspace.ownership[remainingPath], "excluded");
@@ -255,9 +247,8 @@ test("路线确认经 answer 一次锁定；追溯与审查 pointer 落在同一
     const locked = await store.lockClassification(root, "f", state.revision, facts, boundaryAudit);
     assert.equal(decisions.pendingDecisionForState(locked).kind, "route-confirmation");
     await store.recordHostEvent(root, { eventId: "route-ok", type: "user-prompt", host: "codex", text: "确认这条路线" });
-    const result = await store.answer({
+    const result = await store.answerFromHostEvents({
       root, featureId: "f", expectedRevision: locked.revision, host: "codex",
-      credential: { source: "text", userReply: "确认这条路线" },
     });
     assert.equal(result.action, "confirm");
     assert.equal(result.state.mode, "routed");
@@ -304,15 +295,122 @@ test("已接通的 kind 回答无法识别时失败关闭（DECISION_REPLY_NOT_R
     await store.recordHostEvent(root, { eventId: "unsupported-answer", type: "user-prompt", host: "codex", text: "确认" });
     // 接通后的 task-switch 走正常匹配：无法识别的回答失败关闭，状态不变。
     await assert.rejects(
-      () => store.answer({
+      () => store.answerFromHostEvents({
         root, featureId: "f", expectedRevision: staged.revision, host: "codex",
-        credential: { source: "text", userReply: "确认" },
       }),
       (error) => error.code === "DECISION_REPLY_NOT_RECOGNIZED",
     );
     const unchanged = await store.readState(root, "f");
     assert.equal(unchanged.revision, staged.revision);
     assert.equal(decisions.pendingDecisionForState(unchanged).kind, "task-switch");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("public host-event answer path takes the captured same-host event without caller reply text", async () => {
+  const { root, state } = await setup("dev-flow-answer-host-event-");
+  try {
+    const presented = await store.recordDecision(root, "f", state.revision, "是否保留兼容行为？", "历史兼容测试仍存在", "保留兼容行为", [], "codex");
+    await store.recordHostEvent(root, { eventId: "ratify-host-event", type: "user-prompt", host: "codex", text: "确认登记" });
+    const result = await answerModule.answerFromHostEvents({
+      root, featureId: "f", expectedRevision: presented.state.revision, host: "codex",
+    });
+    assert.equal(result.action, "confirm");
+    assert.equal(result.state.governance.decisions[0].basis.eventId, "ratify-host-event");
+    assert.equal(result.state.interactions[presented.interactionId].response.promptEventId, "ratify-host-event");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("public host-event answer path reports INTERACTION_EVENT_MISSING before any mutation", async () => {
+  const { root, state } = await setup("dev-flow-answer-host-missing-");
+  try {
+    const presented = await store.recordDecision(root, "f", state.revision, "是否保留兼容行为？", "历史兼容测试仍存在", "保留兼容行为", [], "codex");
+    await assert.rejects(
+      () => answerModule.answerFromHostEvents({ root, featureId: "f", expectedRevision: presented.state.revision, host: "codex" }),
+      (error) => error.code === "INTERACTION_EVENT_MISSING",
+    );
+    assert.equal((await store.readState(root, "f")).revision, presented.state.revision);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("route-confirmation public answer consumes the real same-host prompt event", async () => {
+  const { root, state } = await setup("dev-flow-answer-route-host-");
+  try {
+    const facts = {
+      level: "M", topology: "shared-contract", requirements: "provided-confirmed",
+      scopeFactRefs: [], topologyFactRefs: [], uncertaintyFactRefs: [], riskFactRefs: {}, decisionRefs: [],
+      signals: { changeSurface: "multi-component", behaviorChange: "new-capability", topology: "shared-contract", unitCount: 2, requirements: "provided-confirmed", operationalRecovery: false, executableRollback: false },
+    };
+    const presented = await store.lockClassification(root, "f", state.revision, facts, {
+      scanned: ["assumption", "free-space", "tbd", "fallback", "scope", "acceptance"], items: [],
+    });
+    assert.equal(decisions.pendingDecisionForState(presented).kind, "route-confirmation");
+    await store.recordHostEvent(root, { eventId: "route-confirm-host", type: "user-prompt", host: "codex", text: "确认路线" });
+    const result = await answerModule.answerFromHostEvents({ root, featureId: "f", expectedRevision: presented.revision, host: "codex" });
+    assert.equal(result.action, "confirm");
+    assert.equal(result.state.mode, "routed");
+    const interaction = Object.values(result.state.interactions).find((item) => item.kind === "route-confirmation");
+    assert.equal(interaction.response.promptEventId, "route-confirm-host");
+    assert.ok(result.state.traceability, "route lock must write the Trace pointer");
+    assert.ok(result.state.review, "route lock must write the Review pointer");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("quality-exception public answer consumes the captured reason without caller text", async () => {
+  const { root, state } = await setup("dev-flow-answer-quality-host-");
+  try {
+    const presented = await quality.presentQualityException(root, "f", state.revision, {
+      kind: "verification",
+      basisHash: "a".repeat(64),
+      fingerprint: "b".repeat(64),
+      riskSummary: "验证证据需要用户明确接受。",
+    });
+    await store.recordHostEvent(root, { eventId: "quality-host", type: "user-prompt", host: "codex", text: "接受风险：我已了解验证风险" });
+    const result = await answerModule.answerFromHostEvents({ root, featureId: "f", expectedRevision: presented.state.revision, host: "codex" });
+    assert.equal(result.action, "accept");
+    assert.equal(result.state.governance.authorizations[0].authorizationType, "risk-acceptance");
+    const interaction = Object.values(result.state.interactions).find((item) => item.kind === "quality-exception");
+    assert.equal(interaction.response.promptEventId, "quality-host");
+    assert.match(interaction.response.userReply, /我已了解验证风险/);
+    assert.equal(interaction.response.comment, "我已了解验证风险");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("approval public answer consumes the real later user prompt without caller text", async () => {
+  const { prepareReviewReadyFeature, driveUntil } = await import("../helpers/route-flow.mjs");
+  const approvals = await loadSource("plugins/dev-flow/src/core/approval-interactions.ts");
+  const root = await mkdtemp(path.join(os.tmpdir(), "dev-flow-answer-approval-host-"));
+  try {
+    const state = await prepareReviewReadyFeature(root, {
+      level: "M",
+      topology: "shared-contract",
+      requirements: "provided-confirmed",
+      scopeFacts: ["共享契约需求"],
+      topologyFacts: ["共享契约"],
+      uncertaintyFacts: [],
+      riskFacts: {},
+      decisionRefs: [],
+    }, { featureId: "approval", host: "claude" });
+    const driven = await driveUntil(root, state.featureId, state, {
+      stopAt: (action) => action.kind === "present-human-gate",
+    });
+    assert.equal(driven.action.kind, "present-human-gate");
+    const presented = await approvals.presentApproval(root, state.featureId, driven.state.revision);
+    const approvalId = presented.approvalId;
+    await store.recordHostEvent(root, { eventId: "approval-host-event", type: "user-prompt", host: "claude", text: "批准实现" });
+    const result = await answerModule.answerFromHostEvents({ root, featureId: state.featureId, expectedRevision: presented.state.revision, host: "claude" });
+    assert.equal(result.action, "confirm");
+    assert.equal(result.state.humanGates[approvalId].status, "confirmed");
+    assert.equal(result.state.interactions[presented.interactionId].response.promptEventId, "approval-host-event");
   } finally {
     await rm(root, { recursive: true, force: true });
   }

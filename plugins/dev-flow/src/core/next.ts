@@ -46,7 +46,7 @@ function toDerivedState(state: FeatureState, verificationStale: boolean) {
  * "what now" goes through nextAction only.
  */
 function deriveRouteAction(state: DeriveState): NextAction {
-  if (Number(state.schemaVersion) !== 4 && Number(state.schemaVersion) !== 5) throw new Error("UNSUPPORTED_STATE_SCHEMA");
+  if (Number(state.schemaVersion) !== 6) throw new Error("UNSUPPORTED_STATE_SCHEMA");
   if (state.lifecycle === "finalized") return { kind: "done" };
   if (state.repair?.status === "waiting-user" || state.repair?.status === "stalled") {
     return {
@@ -113,7 +113,16 @@ function traceStepForAction(action: NextAction): string | undefined {
  */
 async function reviewPlanAction(root: string, state: FeatureState): Promise<NextAction | undefined> {
   const gate = await reviewGate(root, state);
-  if (gate.status === "ready") return undefined;
+  if (gate.status === "ready") {
+    // planning evidence must reference the current plan batch. If an older
+    // plan batch satisfied planning before the current one was created, next
+    // returns the recordable planning step so the agent restamps evidence.
+    const planningEvidence = state.steps.planning?.evidence as { batchId?: string } | undefined;
+    if (state.steps.planning?.status === "satisfied" && planningEvidence?.batchId !== gate.stamp?.batchId) {
+      return { kind: "run-step", step: "planning" };
+    }
+    return undefined;
+  }
   if (gate.status === "need-batch") return { kind: "create-review-batch", step: "planning" };
   if (gate.status === "jobs-open") {
     return { kind: "review-jobs-pending", step: "planning", batchId: gate.batchId, jobs: gate.jobs };
@@ -175,6 +184,14 @@ export async function nextAction(root: string, id: string): Promise<NextAction> 
     if (missing) return { kind: "scaffold-artifact", step: missing };
   }
 
+  // Check trace gate before any review scheduling: a missing/stale plan slice
+  // must return repair-trace and must never create or reuse a review batch.
+  const traceStep = traceStepForAction(action);
+  if (traceStep) {
+    const trace = await inspectTraceGate(root, state, traceStep);
+    if (trace.blocker) return { kind: "repair-trace", ...trace.blocker };
+  }
+
   // A rollback can stale the review batch while planning evidence remains
   // satisfied and implementation becomes the derived route step. Review is
   // still a prerequisite of beginning a replacement unit. Artifact
@@ -188,14 +205,6 @@ export async function nextAction(root: string, id: string): Promise<NextAction> 
       // projection is a registered artifact and must still be readable/current.
       await assertCurrentReviewProjection(root, state);
     }
-  }
-
-  // Check trace gate before unit lifecycle derivation — corrupted or stale
-  // trace must return repair-trace, not crash or suggest stale units.
-  const traceStep = traceStepForAction(action);
-  if (traceStep) {
-    const trace = await inspectTraceGate(root, state, traceStep);
-    if (trace.blocker) return { kind: "repair-trace", ...trace.blocker };
   }
 
   if (action.kind === "run-step" && action.step === "implementation") {

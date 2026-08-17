@@ -33,7 +33,7 @@ test("start creates intake and route confirmation atomically creates routed v4 s
   await mkdir(path.join(root, "src"));
   await state.initProject(root, config);
   const intake = await state.startFeature(root, { featureId: "f", objective: "调整模块行为", scope: { inScope: ["src/需求a\u0301"], outOfScope: [] }, host: "codex" });
-  assert.equal(intake.schemaVersion, 5);
+  assert.equal(intake.schemaVersion, 6);
   assert.equal(intake.mode, "intake");
   assert.equal(intake.route, undefined);
   assert.deepEqual(intake.scope.inScope, ["src/需求á"]);
@@ -43,7 +43,7 @@ test("start creates intake and route confirmation atomically creates routed v4 s
   const routed = (await state.answer({ root, featureId: "f", expectedRevision: pending.revision, host: "codex", credential: { source: "text", userReply: "确认这条路线" } })).state;
   assert.equal(routed.mode, "routed");
   assert.equal(routed.route, "m");
-  assert.equal(routed.schemaVersion, 5);
+  assert.equal(routed.schemaVersion, 6);
   assert.ok(routed.classificationBasis);
 });
 
@@ -54,10 +54,12 @@ test("pre-v4 state is rejected with an actionable hard-cut error", async () => {
   await assert.rejects(() => state.readState(root, "legacy"), /UNSUPPORTED_FEATURE_SCHEMA/);
 });
 
-test("v4 JSON schema closes runtime state and has no feature-check compatibility field", async () => {
+test("v6 JSON schema persists archive pointers and has no feature-check compatibility field", async () => {
   const schema = JSON.parse(await readFile(path.resolve("plugins/dev-flow/policy/state.schema.json"), "utf8"));
+  assert.equal(schema.properties.schemaVersion.const, 6);
   assert.equal(schema.additionalProperties, false);
-  assert.ok(schema.required.includes("governance"));
+  assert.ok(schema.required.includes("archivedCollections"));
+  assert.equal(schema.required.includes("workspace"), false);
   assert.equal(schema.required.includes("qualityExceptions"), false);
   assert.ok(schema.properties.workspace.required.includes("observedPathFingerprints"));
   assert.equal("featureCheck" in schema.properties, false);

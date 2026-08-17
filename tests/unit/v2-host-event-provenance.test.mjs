@@ -7,7 +7,7 @@ import { loadSource } from "../helpers/load-source.mjs";
 
 const stateStore = await loadSource("plugins/dev-flow/src/core/state-store.ts");
 const approvals = await loadSource("plugins/dev-flow/src/core/approval-interactions.ts");
-const { answer } = await loadSource("plugins/dev-flow/src/core/interaction-answer.ts");
+const { answerFromHostEvents } = await loadSource("plugins/dev-flow/src/core/interaction-answer.ts");
 const provenance = await loadSource("plugins/dev-flow/src/core/interaction-provenance.ts");
 
 const config = {
@@ -114,11 +114,9 @@ test("a prompt event captured by another host cannot be consumed by approval", a
     const presentedEvent = (await stateStore.readFeatureEvents(root, state.featureId)).find((event) => event.type === "approval-presented");
     assert.equal(presentedEvent.data.presentationEventId, interaction.presentationEventId);
     await stateStore.recordHostEvent(root, { eventId: "prompt-claude", type: "user-prompt", host: "claude", text: "批准实现" });
-    // 统一回答 seam 下 caller 不钉 event id：跨宿主事件在绑定阶段被 host 过滤，
-    // 表现为凭证不可用而非 HOST_EVENT_HOST_MISMATCH；拒绝同样发生在任何 mutation 之前。
     await assert.rejects(
-      () => answer({ root, featureId: state.featureId, expectedRevision: presentation.state.revision, host: "codex", credential: { source: "text", userReply: "批准实现" } }),
-      (error) => error.code === "APPROVAL_PROVENANCE_UNAVAILABLE",
+      () => answerFromHostEvents({ root, featureId: state.featureId, expectedRevision: presentation.state.revision, host: "codex" }),
+      (error) => error.code === "INTERACTION_EVENT_MISSING",
     );
     const pending = await stateStore.readState(root, state.featureId);
     assert.equal(pending.humanGates[approval.id].status, "pending");

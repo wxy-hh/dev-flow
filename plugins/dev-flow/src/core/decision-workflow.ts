@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { EMPTY_GOVERNANCE_LEDGER } from "../policy/governance-records.js";
 import { createDecision, resolveDecision } from "./decision-ledger.js";
 import { DevFlowError } from "./errors.js";
-import { consumedPromptEventIds, promptFrom, resolveInteractionPromptEvent } from "./interaction-provenance.js";
+import { consumedPromptEventIds, promptFrom } from "./interaction-provenance.js";
 import { matchDecisionReply, pendingDecisionForState } from "./decision-interactions.js";
 import { normalizeReplyText } from "./text-normalization.js";
 import {
@@ -313,20 +313,18 @@ export async function resolveRatificationForAnswer(ctx: AnswerResolveContext): P
   let promptEventId: string | undefined;
   let promptText: string | undefined;
   if (credential.source === "text") {
-    const events = await readFeatureEvents(root, featureId);
-    const match = resolveInteractionPromptEvent(events, state, interaction, { host, userReply: credential.userReply });
-    promptEventId = match.eventId;
-    promptText = match.text;
+    promptEventId = credential.promptEventId;
+    promptText = credential.promptText;
   }
   const pending = pendingDecisionForState(state);
   const matchedId = credential.source === "elicitation"
     ? credential.action
-    : matchDecisionReply(pending!, promptText ?? credential.userReply).option.id;
+    : matchDecisionReply(pending!, promptText ?? credential.promptText).option.id;
   const confirms = matchedId === "confirm";
   let response: InteractionResponse | undefined;
   const next = await mutatePrepared(root, featureId, expectedRevision, confirms ? "decision-ratified" : "decision-ratification-rejected", async () => ({
     mutate: (draft) => {
-      response = resolveResponseForAnswer(draft, interaction, { source: credential.source, action: credential.source === "elicitation" ? credential.action : undefined, comment: credential.source === "elicitation" ? credential.comment : undefined, userReply: credential.source === "text" ? credential.userReply : undefined, promptText, promptEventId, host });
+      response = resolveResponseForAnswer(draft, interaction, { source: credential.source, action: credential.source === "elicitation" ? credential.action : undefined, comment: credential.source === "elicitation" ? credential.comment : undefined, userReply: credential.source === "text" ? (credential.promptText) : undefined, promptText, promptEventId, host });
       if (confirms) ratifyDecision(draft, draft.interactions![interaction.id], response, promptEventId, host);
       draft.lastUpdatedBy = { host, pluginVersion: __DEV_FLOW_VERSION__ };
     },
@@ -345,20 +343,18 @@ export async function resolveRevisionForAnswer(ctx: AnswerResolveContext): Promi
   let promptEventId: string | undefined;
   let promptText: string | undefined;
   if (credential.source === "text") {
-    const events = await readFeatureEvents(root, featureId);
-    const match = resolveInteractionPromptEvent(events, state, interaction, { host, userReply: credential.userReply });
-    promptEventId = match.eventId;
-    promptText = match.text;
+    promptEventId = credential.promptEventId;
+    promptText = credential.promptText;
   }
   const pending = pendingDecisionForState(state);
   const matchedId = credential.source === "elicitation"
     ? credential.action
-    : matchDecisionReply(pending!, promptText ?? credential.userReply).option.id;
+    : matchDecisionReply(pending!, promptText ?? credential.promptText).option.id;
   const confirms = matchedId === "confirm";
   let response: InteractionResponse | undefined;
   const next = await mutatePrepared(root, featureId, expectedRevision, confirms ? "decision-revised" : "decision-revision-cancelled", async () => ({
     mutate: (draft) => {
-      response = resolveResponseForAnswer(draft, interaction, { source: credential.source, action: credential.source === "elicitation" ? credential.action : undefined, comment: credential.source === "elicitation" ? credential.comment : undefined, userReply: credential.source === "text" ? credential.userReply : undefined, promptText, promptEventId, host });
+      response = resolveResponseForAnswer(draft, interaction, { source: credential.source, action: credential.source === "elicitation" ? credential.action : undefined, comment: credential.source === "elicitation" ? credential.comment : undefined, userReply: credential.source === "text" ? (credential.promptText) : undefined, promptText, promptEventId, host });
       if (confirms) applyDecisionRevision(draft, draft.interactions![interaction.id], response, promptEventId, host);
       draft.lastUpdatedBy = { host, pluginVersion: __DEV_FLOW_VERSION__ };
     },

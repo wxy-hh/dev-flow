@@ -18,8 +18,22 @@ function rollback(overrides = {}) {
   };
 }
 
-test("trace delta accepts safe inline verification commands", () => {
-  assert.doesNotThrow(() => trace.validateTraceDelta({ nodes: [rollback()] }));
+test("trace delta rejects rollback nodes and inline verification commands", () => {
+  assert.throws(() => trace.validateTraceDelta({ nodes: [rollback()] }), /rollback nodes are not a v6 Trace kind/);
+  assert.throws(
+    () => trace.validateTraceDelta({
+      nodes: [{
+        kind: "implementation-unit",
+        id: "UNIT-001",
+        tasks: ["TASK-001"],
+        dependsOn: [],
+        fileScope: ["src"],
+        covers: ["REQ-001"],
+        forwardVerification: [{ command: "node", args: ["-e", "process.exit(0)"], cwd: "." }],
+      }],
+    }),
+    /TRACE_GRAPH_INVALID/,
+  );
 });
 
 test("trace delta rejects inline command cwd escaping the project", () => {

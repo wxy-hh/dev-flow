@@ -6,12 +6,16 @@
  * 基准选择：最近一次"通过记录"的全局逐文件快照——验证通过优先，其次代码
  * 审查。两者都不存在时（早期阶段）短路返回，零快照开销。
  */
-import { fingerprintFeatureOwned, fingerprintGovernedRoots, snapshotGovernedRoots, type ProtectedFileSnapshot } from "./fingerprint.js";
+import { fingerprintFeatureOwned, snapshotGovernedRoots, type ProtectedFileSnapshot } from "./fingerprint.js";
 import { DevFlowError } from "./errors.js";
 import { mutate, readProjectConfig, readState, type FeatureState } from "./state-store.js";
 import { routeDefinitionForState } from "./step-order.js";
 import { readCheckpointManifest } from "./checkpoint-store.js";
 import { readEvidenceSnapshot, writeEvidenceSnapshot } from "./evidence-snapshot-store.js";
+import { readEvidenceObject } from "./evidence-store.js";
+import { featureOwnedSnapshotHash } from "./evidence-baseline.js";
+import { parseEvidenceBaselineManifest } from "../policy/evidence-baseline.js";
+import { parseWorkspaceSnapshotManifest } from "../policy/evidence-store.js";
 import { reopenImplementationUnit } from "../policy/rollback.js";
 
 export interface AffectedClaimsInvalidation {
@@ -28,27 +32,104 @@ export interface AffectedClaimsInvalidation {
   reason: string;
 }
 
-type RecordedBaseline = { fingerprint: string; snapshotPath?: string };
+type RecordedBaseline = { recordId: string; kind: "claim" | "authorization" | "legacy"; fingerprint: string; snapshotPath?: string; snapshotFiles?: ProtectedFileSnapshot[] };
 
-/** 最近一次"通过记录"的基准：验证通过优先，其次代码审查，再其次风险接受的绑定内容。 */
-function recordedBaseline(state: FeatureState): RecordedBaseline | undefined {
+/** 一条内容绑定的治理记录 → 其 baseline 快照（baselineRef 缺失时退化为聚合指纹）。 */
+async function baselineForRecord(
+  root: string,
+  state: FeatureState,
+  kind: "claim" | "authorization",
+  recordId: string,
+  baselineRef: unknown,
+  aggregateFingerprint: string | undefined,
+): Promise<RecordedBaseline | undefined> {
+  if (!baselineRef || typeof baselineRef !== "object" || baselineRef === null || Array.isArray(baselineRef)) {
+    return aggregateFingerprint ? { recordId, kind, fingerprint: aggregateFingerprint } : undefined;
+  }
+  const ref = baselineRef as { kind?: unknown; sha256?: unknown; size?: unknown };
+  if (typeof ref.sha256 !== "string") return aggregateFingerprint ? { recordId, kind, fingerprint: aggregateFingerprint } : undefined;
+  try {
+    const manifestBytes = await readEvidenceObject(root, state.featureId, ref as never);
+    const manifest = parseEvidenceBaselineManifest(JSON.parse(manifestBytes.toString("utf8")));
+    const snapshotBytes = await readEvidenceObject(root, state.featureId, manifest.snapshotRef);
+    const snapshot = parseWorkspaceSnapshotManifest(JSON.parse(snapshotBytes.toString("utf8")));
+    return {
+      recordId,
+      kind,
+      fingerprint: manifest.contentFingerprint,
+      snapshotFiles: snapshot.files.map((file) => ({
+        path: file.path,
+        sha256: file.sha256,
+        mode: file.mode,
+        kind: file.kind,
+        ...(file.linkTarget !== undefined ? { linkTarget: file.linkTarget } : {}),
+      })),
+    };
+  } catch {
+    // Baseline corruption must never fail open; keep aggregate fingerprint as
+    // the conservative fallback.
+    return aggregateFingerprint ? { recordId, kind, fingerprint: aggregateFingerprint } : undefined;
+  }
+}
+
+/**
+ * Phase 6（GPT-007）：内容绑定的治理记录各自持有 baseline，失效传播按记录
+ * 独立比较并取并集。review-complete / verification-current claim 与内容绑定
+ * 的 risk-acceptance authorization 都在集合内；没有任何 baselineRef 时回退
+ * 到 5.x 的"最近一次通过记录"选择器（legacy 行为保持不变）。
+ */
+/**
+ * Phase 6（GPT-007）：内容绑定的治理记录各自持有 baseline，失效传播按记录
+ * 独立比较并取并集。只有"活跃"记录参与：非 superseded 且步骤证据仍引用它
+ * （review-complete ↔ steps.code_review 证据、verification-current ↔ verifiedFingerprint、
+ * risk-acceptance ↔ 最近一次失效之后仍未被取代的接受）。重开后的旧记录不再
+ * 参与比较，redo 中途不会再次触发失效（issue 21 的幂等传播）。
+ */
+async function contentBoundBaselines(root: string, state: FeatureState): Promise<RecordedBaseline[]> {
+  const records: RecordedBaseline[] = [];
+  const invalidatedAt = state.lastInvalidation?.at ? Date.parse(state.lastInvalidation.at) : Number.NaN;
+  for (const claim of state.governance?.claims ?? []) {
+    if (claim.supersededBy !== undefined) continue;
+    if (claim.claimType !== "review-complete" && claim.claimType !== "verification-current") continue;
+    const basis = claim.basis?.kind === "content" ? claim.basis.sha256 : undefined;
+    if (basis === undefined) continue;
+    // 步骤证据仍引用该声明时才活跃：失效传播重开后证据被删除，旧声明
+    // 必须立即退出比较，避免 redo 中途被同一份旧 baseline 反复阻断。
+    const live = claim.claimType === "review-complete"
+      ? (state.steps.code_review?.evidence as { fingerprint?: string } | undefined)?.fingerprint === basis
+      : state.verification.verifiedFingerprint === basis;
+    if (!live) continue;
+    const record = await baselineForRecord(root, state, "claim", claim.recordId, claim.baselineRef, basis);
+    if (record) records.push(record);
+  }
+  for (const authorization of state.governance?.authorizations ?? []) {
+    if (authorization.supersededBy !== undefined) continue;
+    if (authorization.authorizationType !== "risk-acceptance") continue;
+    const basis = authorization.basis?.kind === "content" ? authorization.basis.sha256 : undefined;
+    if (basis === undefined) continue;
+    // 与 legacy 选择器一致：失效传播之后才记录的接受才算活跃（接受晚于
+    // 最近一次失效，说明它针对的是当前内容；否则旧接受只作历史保留）。
+    if (Number.isFinite(invalidatedAt) && authorization.recordedAt && Date.parse(authorization.recordedAt) < invalidatedAt) continue;
+    const record = await baselineForRecord(root, state, "authorization", authorization.recordId, authorization.baselineRef, basis);
+    if (record) records.push(record);
+  }
+  if (records.length > 0) return records;
+  // Legacy 5.x 选择器（无任何 baselineRef 的旧 feature）：
   const verificationEvidence = state.steps.verification?.evidence as { snapshotPath?: string } | undefined;
   if (state.verification.verifiedFingerprint) {
-    return { fingerprint: state.verification.verifiedFingerprint, snapshotPath: verificationEvidence?.snapshotPath };
+    return [{ recordId: "", kind: "legacy", fingerprint: state.verification.verifiedFingerprint, snapshotPath: verificationEvidence?.snapshotPath }];
   }
   const reviewEvidence = state.steps.code_review?.evidence as { fingerprint?: string; snapshotPath?: string } | undefined;
   if (typeof reviewEvidence?.fingerprint === "string") {
-    return { fingerprint: reviewEvidence.fingerprint, snapshotPath: reviewEvidence.snapshotPath };
+    return [{ recordId: "", kind: "legacy", fingerprint: reviewEvidence.fingerprint, snapshotPath: reviewEvidence.snapshotPath }];
   }
-  // 风险接受绑定接受时的交付内容（issue 22）：验证失败被接受后没有通过记录，
-  // 内容变化必须仍能被检测到，使旧接受失效并回到验证步骤重新检查。
-  const invalidatedAt = state.lastInvalidation?.at ? Date.parse(state.lastInvalidation.at) : Number.NaN;
   const accepted = (state.governance?.authorizations ?? []).find((authorization) =>
     authorization.authorizationType === "risk-acceptance"
+    && authorization.supersededBy === undefined
     && authorization.basis?.kind === "content"
     && (!Number.isFinite(invalidatedAt) || !authorization.recordedAt || Date.parse(authorization.recordedAt) >= invalidatedAt));
-  if (accepted?.basis?.kind === "content") return { fingerprint: accepted.basis.sha256 };
-  return undefined;
+  if (accepted?.basis?.kind !== "content") return [];
+  return baselineForRecord(root, state, "authorization", accepted.recordId, accepted.baselineRef, accepted.basis.sha256).then((record) => record ? [record] : []);
 }
 
 /** 逐文件 diff 的路径集合（内容/权限/类型任一变化都算）。 */
@@ -80,37 +161,54 @@ export async function invalidateAffectedClaims(
 ): Promise<AffectedClaimsInvalidation | undefined> {
   const state = await readState(root, id);
   if (state.lifecycle !== "active") return undefined;
-  const baseline = recordedBaseline(state);
-  if (!baseline) return undefined;
+  const baselines = await contentBoundBaselines(root, state);
+  if (!baselines.length) return undefined;
   const config = await readProjectConfig(root);
   const current = await fingerprintFeatureOwned(root, config, state.workspace.ownership);
-  const currentFull = await fingerprintGovernedRoots(root, config);
 
-  // 先计算逐文件差异，再决定是否短路。这样即使 feature-owned 指纹没有
-  // 变化，也能发现 governed root 中新增但尚未归属的文件，并走完整回退；
-  // 明确标记 excluded 的文件则不会触发失效。
+  // 先计算逐文件差异，再决定是否短路。每条内容绑定记录独立比较自己的
+  // baseline，变化文件取并集（GPT-007：review/verification/risk 各自持有
+  // baseline，互不覆盖）。
   let changedFiles: string[] | undefined;
-  if (baseline.snapshotPath) {
-    try {
-      const before = (await readEvidenceSnapshot(root, id, baseline.snapshotPath)).filter((file) => state.workspace.ownership[file.path] !== "excluded");
-      const after = (await snapshotGovernedRoots(root, config)).filter((file) => state.workspace.ownership[file.path] !== "excluded");
-      changedFiles = changedPaths(
-        before,
-        after,
+  let afterFiles: ProtectedFileSnapshot[] | undefined;
+  const hasSnapshot = baselines.some((baseline) => Boolean(baseline.snapshotFiles || baseline.snapshotPath));
+  const unionChanged = new Set<string>();
+  let anyPerRecordFingerprintMismatch = false;
+  for (const baseline of baselines) {
+    let recordChanged: string[] | undefined;
+    if (baseline.snapshotFiles) {
+      afterFiles ??= (await snapshotGovernedRoots(root, config)).filter((file) => state.workspace.ownership[file.path] !== "excluded");
+      recordChanged = changedPaths(
+        baseline.snapshotFiles.filter((file) => state.workspace.ownership[file.path] !== "excluded"),
+        afterFiles,
       );
-    } catch {
-      changedFiles = undefined;
+      if (featureOwnedSnapshotHash(afterFiles, state.workspace.ownership) !== baseline.fingerprint) anyPerRecordFingerprintMismatch = true;
+    } else if (baseline.snapshotPath) {
+      try {
+        const before = (await readEvidenceSnapshot(root, id, baseline.snapshotPath)).filter((file) => state.workspace.ownership[file.path] !== "excluded");
+        afterFiles ??= (await snapshotGovernedRoots(root, config)).filter((file) => state.workspace.ownership[file.path] !== "excluded");
+        recordChanged = changedPaths(before, afterFiles);
+      } catch {
+        recordChanged = undefined;
+      }
     }
+    if (recordChanged === undefined) { changedFiles = undefined; break; }
+    for (const file of recordChanged) unionChanged.add(file);
   }
+  changedFiles = unionChanged.size > 0 ? [...unionChanged].sort() : [];
   const unownedDeliveryChange = changedFiles?.some((file) => state.workspace.ownership[file] === undefined) ?? true;
   // The feature-owned baseline is the source for ordinary delivery changes.
   // The initial full-workspace fingerprint is only useful when no per-file
   // snapshot exists; otherwise comparing against it would treat the feature's
   // own implementation writes as an unexplained external change.
-  const fullDrift = baseline.snapshotPath
-    ? unownedDeliveryChange
-    : currentFull !== state.startBusinessFingerprint;
-  if (current === baseline.fingerprint && !fullDrift) return undefined;
+  const invalidatedAt = state.lastInvalidation?.at ? Date.parse(state.lastInvalidation.at) : Number.NaN;
+  const fullDrift = hasSnapshot ? unownedDeliveryChange : true;
+  const firstBaseline = baselines[0]!;
+  const comparableCurrent = firstBaseline.snapshotFiles && afterFiles
+    ? featureOwnedSnapshotHash(afterFiles, state.workspace.ownership)
+    : current;
+  const recordMismatch = anyPerRecordFingerprintMismatch || baselines.some((baseline) => baseline.fingerprint !== comparableCurrent);
+  if (!recordMismatch && !fullDrift) return undefined;
 
   const reviewEvidence = state.steps.code_review?.evidence as { fingerprint?: string } | undefined;
   const reviewReopened = state.steps.code_review !== undefined
@@ -118,25 +216,29 @@ export async function invalidateAffectedClaims(
   const verificationReopened = state.verification.verifiedFingerprint !== undefined
     && (fullDrift || state.verification.verifiedFingerprint !== current);
   // 风险接受绑定接受时的内容指纹（issue 22）：内容变化后旧接受自动失效，
-  // 门禁与 next 不再放行，流程回到验证/审查步骤重新检查。
-  const authorizationBound = (state.governance?.authorizations ?? []).some((authorization) =>
+  // 门禁与 next 不再放行，流程回到验证/审查步骤重新检查。只比较活跃接受：
+  // 非 superseded 且晚于最近一次失效（旧接受只作不可变历史，不参与重开）。
+  const liveAuthorizations = (state.governance?.authorizations ?? []).filter((authorization) =>
     authorization.authorizationType === "risk-acceptance"
+    && authorization.supersededBy === undefined
     && authorization.basis?.kind === "content"
-    && authorization.basis.sha256 !== current);
+    && (!Number.isFinite(invalidatedAt) || !authorization.recordedAt || Date.parse(authorization.recordedAt) >= invalidatedAt));
+  const authorizationBound = liveAuthorizations.some((authorization) => {
+    const basis = authorization.basis;
+    return basis?.kind === "content" && basis.sha256 !== current;
+  });
   let exceptionBound = authorizationBound;
 
+
   // 基准快照缺失/损坏时无法定位 → 完整回退。
-  if (!baseline.snapshotPath && currentFull !== state.startBusinessFingerprint) {
-    // Older risk authorizations have no per-file snapshot. Keep the safe
-    // conservative behavior: report an unlocatable delivery change and reopen
-    // the full evidence chain instead of asking ownership to hide it.
+  if (!hasSnapshot) {
     changedFiles = undefined;
     exceptionBound = true;
   }
   // An unknown newly-added or renamed path is still a delivery change even if
   // the previous owned-only aggregate happens to remain equal. It must stale
   // risk authorization and force reconciliation.
-  if ((changedFiles?.length ?? 0) > 0 && (state.governance?.authorizations ?? []).some((authorization) => authorization.authorizationType === "risk-acceptance")) {
+  if ((changedFiles?.length ?? 0) > 0 && liveAuthorizations.length > 0) {
     exceptionBound = true;
   }
 

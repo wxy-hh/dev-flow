@@ -14,6 +14,7 @@ import { recordRepairAttempt, startRepairLoop, markRepairCompleted } from "./rep
 import { satisfyObligations } from "../policy/obligations.js";
 import { reviewEnforcementRequired } from "../policy/contract.js";
 import { invalidateAffectedClaims, persistThroughSnapshot, workspaceChangedError } from "./change-invalidation.js";
+import { captureEvidenceBaseline } from "./evidence-baseline.js";
 import { runVerificationProcess, writeVerificationOutput } from "./verification-store.js";
 
 type VerificationInvocation = { executable: string; args: string[] };
@@ -344,12 +345,19 @@ export async function runVerification(
       const claimId = `CLAIM-${createHash("sha256").update(`verification-current|${fingerprint}`).digest("hex").slice(0, 16)}`;
       const claims = [...gov.claims];
       if (!claims.some((claim) => claim.recordId === claimId)) {
+        const baselineRef = await captureEvidenceBaseline(root, state, config, {
+          kind: "verification-current",
+          target: id,
+          recordId: claimId,
+          at: finishedAt,
+        }).then((captured) => captured.ref).catch(() => undefined);
         claims.push({
           recordId: claimId,
           kind: "claim",
           claimType: "verification-current",
           subject: id,
           basis: { kind: "content", sha256: fingerprint },
+          ...(baselineRef ? { baselineRef } : {}),
           recordedAt: finishedAt,
         });
       }

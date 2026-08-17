@@ -8,7 +8,7 @@ import { DevFlowError } from "./errors.js";
 import { approvalIds } from "./approval-basis.js";
 import { mutate, mutatePrepared, readState, type FeatureState, type PreparedMutationOptions } from "./state-store.js";
 import { currentOpenStep, routeDefinitionForState } from "./step-order.js";
-import { compileArtifactPlan } from "./plan-compile-context.js";
+import { compileArtifactPlanFromMarkdown } from "./plan-compile-context.js";
 import { type PlanDiagnostic } from "./plan-compiler.js";
 import { type TraceStoreOptions, writeTraceSnapshot } from "./traceability-store.js";
 import { clearInteractionsByKind, clearInteractionsForTarget } from "./user-interactions.js";
@@ -204,15 +204,78 @@ export async function recordArtifactWithTrace(
   id: string,
   expectedRevision: number,
   artifactKind: TraceArtifactKind,
-  traceDelta: TraceDelta,
+  _traceDelta: TraceDelta,
   options: RecordArtifactWithTraceOptions = {},
 ): Promise<RecordArtifactWithTraceResult> {
+  void _traceDelta;
+  if (artifactKind !== "requirements" && artifactKind !== "implementation-plan") {
+    throw new DevFlowError("UNSUPPORTED_TRACE_ARTIFACT_KIND", `${artifactKind} is not a v6 editable Trace artifact`, {
+      recoveryHint: "v6 只保留 requirements 与 implementation-plan；公开 traceDelta 已删除。",
+    });
+  }
+  return recordArtifactFromMarkdown(root, id, expectedRevision, artifactKind, options);
+}
+
+/**
+ * v6 read-only plan preflight from the edited Markdown only. No traceDelta is
+ * accepted, and the function has no side effects: no revision advance, no
+ * snapshot writes, no review batch creation.
+ */
+export async function validatePlanFromMarkdown(
+  root: string,
+  id: string,
+  artifactKind: TraceArtifactKind,
+): Promise<{
+  ok: boolean;
+  diagnostics: PlanDiagnostic[];
+  semanticSha256?: string;
+  implementationUnits?: import("./plan-compiler.js").ImplementationUnitProjection[];
+  recoveryArrangements?: import("./plan-compiler.js").RecoveryArrangementProjection[];
+}> {
+  const state = await readState(root, id);
   if (!traceArtifactKindList.has(artifactKind)) throw new DevFlowError("INVALID_ARTIFACT", artifactKind);
+  if (state.lifecycle !== "active") throw new DevFlowError("INVALID_LIFECYCLE", "only active features can validate plans");
+  if (!traceEnforcementRequired(state.route, state.classification.controls)) {
+    throw new DevFlowError("TRACE_NOT_ENFORCED", `${artifactKind} does not use Trace registration on ${state.route}`, {
+      route: state.route,
+      recoveryHint: "当前路线不强制 Trace；请改用 dev_flow_record_artifact 登记该文档",
+    });
+  }
+  const compilation = await compileArtifactPlanFromMarkdown(root, id, state, {
+    artifactKind,
+    nextStateRevision: state.revision + 1,
+  });
+  return {
+    ok: compilation.result.ok,
+    diagnostics: compilation.result.diagnostics,
+    ...(compilation.semanticSha256 ? { semanticSha256: compilation.semanticSha256 } : {}),
+    ...(compilation.result.implementationUnits ? { implementationUnits: compilation.result.implementationUnits } : {}),
+    ...(compilation.result.recoveryArrangements ? { recoveryArrangements: compilation.result.recoveryArrangements } : {}),
+  };
+}
+
+/**
+ * v6 trace artifact registration from structured Markdown only. The edited
+ * file is the single semantic source; Core parses, compiles and persists the
+ * new Trace pointer in the same state CAS.
+ */
+export async function recordArtifactFromMarkdown(
+  root: string,
+  id: string,
+  expectedRevision: number,
+  artifactKind: TraceArtifactKind,
+  options: RecordArtifactWithTraceOptions = {},
+): Promise<RecordArtifactWithTraceResult> {
+  if (artifactKind !== "requirements" && artifactKind !== "implementation-plan") {
+    throw new DevFlowError("UNSUPPORTED_TRACE_ARTIFACT_KIND", `${artifactKind} is not a v6 editable Trace artifact`, {
+      recoveryHint: "v6 只保留 requirements 与 implementation-plan 两类 Trace artifact",
+    });
+  }
   let eventData: Record<string, unknown> = { kind: artifactKind };
   let warnings: string[] = [];
   const state = await mutatePrepared(root, id, expectedRevision, "artifact-recorded-with-trace", async (current, nextStateRevision) => {
     if (current.lifecycle !== "active") throw new DevFlowError("INVALID_LIFECYCLE", "only active features can register artifacts");
-    if (!traceEnforcementRequired(current.route, current.classification.controls)) {
+    if (traceEnforcementRequired(current.route, current.classification.controls) === false) {
       throw new DevFlowError("TRACE_NOT_ENFORCED", `${artifactKind} does not use Trace registration on ${current.route}`, {
         route: current.route,
         recoveryHint: "当前路线不强制 Trace；请改用 dev_flow_record_artifact 登记该文档",
@@ -220,31 +283,26 @@ export async function recordArtifactWithTrace(
     }
     assertManualRegistrationAllowed(current, artifactKind, true);
     assertPlanRevisionQuiescent(current, artifactKind);
-    // 预检、正式登记与修订经同一 compileArtifactPlan 装载编译：相同输入必得相同诊断。
-    const compilation = await compileArtifactPlan(root, id, current, { artifactKind, traceDelta, nextStateRevision });
+    const compilation = await compileArtifactPlanFromMarkdown(root, id, current, { artifactKind, nextStateRevision });
     const compile = compilation.result;
-    const artifact = compilation.artifact;
-    const artifactSha256 = compilation.input.artifactSha256;
-    const currentLedger = compilation.input.currentLedger;
-    const config = compilation.config;
-    if (!compile.ok || !compile.ledger) {
+    if (compile.ok === false || compile.ledger === undefined || compilation.input === undefined) {
       throw new DevFlowError("PLAN_INVALID", "实施计划编译未通过。", {
         diagnostics: compile.diagnostics,
         userMessage: "实施计划存在需要修正的问题。",
         cause: `计划编译发现 ${compile.diagnostics.length} 处问题。`,
         impact: "计划没有登记，状态与工件均未变化。",
         recoveryKind: "retry",
-        recoveryInstruction: "按诊断逐项修正计划后重新预检并登记。",
+        recoveryInstruction: "按诊断逐项修正 Markdown 后重新预检并登记。",
         retryOriginal: true,
       });
     }
     const ledger = compile.ledger;
+    const artifact = compilation.artifact;
+    const artifactSha256 = compilation.input.artifactSha256;
+    const config = compilation.config;
     const executionNodes = Object.values(ledger.nodes)
       .filter((node) => node.status === "current" && node.kind !== "test")
-      .map((node) => node.kind === "rollback" ? {
-        kind: node.kind, id: node.id, tasks: node.tasks, dependsOn: node.dependsOn, fileScope: node.fileScope,
-        covers: node.covers, forwardVerification: node.forwardVerification, rollbackVerification: node.rollbackVerification,
-      } : node.kind === "implementation-unit" ? {
+      .map((node) => node.kind === "implementation-unit" ? {
         kind: node.kind, id: node.id, tasks: node.tasks, dependsOn: node.dependsOn, fileScope: node.fileScope,
         covers: node.covers, forwardVerification: node.forwardVerification,
       } : node.kind === "recovery" ? {
@@ -253,11 +311,9 @@ export async function recordArtifactWithTrace(
         : { kind: node.kind, id: node.id })
       .sort((left, right) => left.id.localeCompare(right.id));
     const executionVerificationRefs = Object.values(ledger.nodes)
-      .filter((node): node is Extract<typeof node, { kind: "implementation-unit" | "rollback" }> =>
-        node.status === "current" && (node.kind === "implementation-unit" || node.kind === "rollback"))
-      .flatMap((node) => node.kind === "implementation-unit"
-        ? node.forwardVerification
-        : [...node.forwardVerification, ...node.rollbackVerification]);
+      .filter((node): node is Extract<typeof node, { kind: "implementation-unit" }> =>
+        node.status === "current" && node.kind === "implementation-unit")
+      .flatMap((node) => node.forwardVerification);
     const executionSemanticBasisHash = hash(JSON.stringify({
       nodes: executionNodes,
       verificationCommandHashes: verificationCommandHashesForRefs(config, executionVerificationRefs),
@@ -265,8 +321,10 @@ export async function recordArtifactWithTrace(
     warnings = detectRollbackSplitWarning(Object.values(ledger.nodes).filter((node): node is Extract<typeof node, { kind: "implementation-unit" }> => node.kind === "implementation-unit"));
     const pointer = await writeTraceSnapshot(root, ledger, options.snapshot);
     const artifactChanged = artifact.sha256 !== artifactSha256;
-    const traceChanged = JSON.stringify(currentLedger.nodes) !== JSON.stringify(ledger.nodes)
-      || JSON.stringify(currentLedger.edges) !== JSON.stringify(ledger.edges);
+    const traceChanged = compilation.semanticSha256 !== undefined && compilation.input.currentLedger
+      ? JSON.stringify(compilation.input.currentLedger.nodes) !== JSON.stringify(ledger.nodes)
+        || JSON.stringify(compilation.input.currentLedger.edges) !== JSON.stringify(ledger.edges)
+      : true;
     const executionBasisChanged = current.executionSemanticBasisHash !== executionSemanticBasisHash;
     const reviewPointer = artifactChanged || traceChanged
       ? await prepareReviewInvalidation(root, current, nextStateRevision)
@@ -275,6 +333,7 @@ export async function recordArtifactWithTrace(
       kind: artifactKind,
       artifactChanged,
       traceChanged,
+      ...(compilation.semanticSha256 ? { semanticSha256: compilation.semanticSha256 } : {}),
       invalidationReason: artifactChanged ? "artifact-changed" : traceChanged ? "trace-changed" : undefined,
       ...(executionBasisChanged ? { executionBasisChanged: true } : {}),
       ...(warnings.length ? { warnings } : {}),
@@ -301,6 +360,7 @@ export async function recordArtifactWithTrace(
   }, options.mutation);
   return warnings.length ? { state, warnings } : { state };
 }
+
 export async function assertArtifactIntegrity(root: string, id: string): Promise<void> {
   const state = await readState(root, id);
   for (const kind of artifactKinds(effectiveRoute(state))) {
@@ -317,27 +377,13 @@ export async function validatePlan(
   root: string,
   id: string,
   artifactKind: TraceArtifactKind,
-  traceDelta: TraceDelta,
+  _traceDelta?: TraceDelta,
 ): Promise<{
   ok: boolean;
   diagnostics: PlanDiagnostic[];
   implementationUnits?: import("./plan-compiler.js").ImplementationUnitProjection[];
   recoveryArrangements?: import("./plan-compiler.js").RecoveryArrangementProjection[];
 }> {
-  const state = await readState(root, id);
-  if (!traceArtifactKindList.has(artifactKind)) throw new DevFlowError("INVALID_ARTIFACT", artifactKind);
-  if (state.lifecycle !== "active") throw new DevFlowError("INVALID_LIFECYCLE", "only active features can validate plans");
-  if (!traceEnforcementRequired(state.route, state.classification.controls)) {
-    throw new DevFlowError("TRACE_NOT_ENFORCED", `${artifactKind} does not use Trace registration on ${state.route}`, {
-      route: state.route,
-      recoveryHint: "当前路线不强制 Trace；请改用 dev_flow_record_artifact 登记该文档",
-    });
-  }
-  const { result } = await compileArtifactPlan(root, id, state, { artifactKind, traceDelta, nextStateRevision: state.revision + 1 });
-  return {
-    ok: result.ok,
-    diagnostics: result.diagnostics,
-    ...(result.implementationUnits ? { implementationUnits: result.implementationUnits } : {}),
-    ...(result.recoveryArrangements ? { recoveryArrangements: result.recoveryArrangements } : {}),
-  };
+  void _traceDelta;
+  return validatePlanFromMarkdown(root, id, artifactKind);
 }

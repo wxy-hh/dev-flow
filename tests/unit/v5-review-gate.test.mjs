@@ -154,7 +154,10 @@ test("stale basis is a structured need-batch and next/recordStep agree", async (
     assert.equal(gate.status, "need-batch");
     assert.equal(gate.cause, "stale");
     assert.equal(gate.batchId, created.batch.batchId);
-    assert.deepEqual(await next.nextAction(root, state.featureId), { kind: "create-review-batch", step: "planning" });
+    const nextAfter = await next.nextAction(root, state.featureId);
+    assert.equal(nextAfter.kind, "repair-trace");
+    assert.equal(nextAfter.code, "TRACE_SLICE_STALE");
+    assert.equal(nextAfter.step, "implementation_plan");
     // recordStep/begin 内部的 gate 调用听到同一句“依据过期”。
     // （完整 recordStep 会先被 trace 门禁拦截：验证命令变更同时使 trace 切片过期。）
     await assert.rejects(
@@ -458,7 +461,10 @@ test("begin's plan gate agrees with next and the gate at the implementation boun
     const gate = await jobs.reviewGate(root, state);
     assert.equal(gate.status, "need-batch");
     assert.equal(gate.cause, "stale");
-    assert.deepEqual(await next.nextAction(root, "begin"), { kind: "create-review-batch", step: "planning" });
+    const nextAfter = await next.nextAction(root, "begin");
+    assert.equal(nextAfter.kind, "repair-trace");
+    assert.equal(nextAfter.code, "TRACE_SLICE_STALE");
+    assert.equal(nextAfter.step, "implementation");
     await assert.rejects(
       () => jobs.requireReviewReady(root, state, { phase: "plan" }),
       (error) => error.code === "REVIEW_BASIS_STALE",
@@ -499,9 +505,9 @@ test("plan review accepts recovery nodes in the scope manifest", async () => {
     state = await steps.recordStep(root, state.featureId, state.revision, "requirements_alignment", {});
     state = await artifacts.scaffoldArtifact(root, state.featureId, state.revision, "implementation-plan");
     const planMarkdown = [
-      "<!-- dev-flow:id=TASK-001 kind=task -->\n### TASK-001\n\n- covers: REQ-001, AC-001\n- implementation_unit: UNIT-001\n",
-      "<!-- dev-flow:id=TEST-001 kind=test -->\n### TEST-001\n\n- 验证方法：\n",
-      "<!-- dev-flow:id=UNIT-001 kind=implementation-unit -->\n### UNIT-001\n\n- tasks: [TASK-001]\n- depends_on: []\n- file_scope: src\n- covers: REQ-001, AC-001\n- forward_verification: unit\n",
+      "<!-- dev-flow:id=TASK-001 kind=task -->\n### TASK-001\n\n- covers: [REQ-001, AC-001]\n- implementation_unit: UNIT-001\n- tdd: test-first\n",
+      "<!-- dev-flow:id=TEST-001 kind=test -->\n### TEST-001\n\n- verifies: [AC-001]\n",
+      "<!-- dev-flow:id=UNIT-001 kind=implementation-unit -->\n### UNIT-001\n\n- tasks: [TASK-001]\n- depends_on: []\n- file_scope: [src]\n- covers: [REQ-001, AC-001]\n- forward_verification: [unit]\n",
       "<!-- dev-flow:id=REC-001 kind=recovery -->\n### REC-001\n\n- step_ref: UNIT-001\n- recovery_kind: compensation\n- method: 从备份恢复迁移前快照\n- risk_ref: data\n",
     ].join("\n");
     const planDelta = {

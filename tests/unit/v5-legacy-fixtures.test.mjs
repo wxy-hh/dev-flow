@@ -19,55 +19,38 @@ async function fixture(name) {
   return JSON.parse(await readFile(path.join(fixtureRoot, name), "utf8"));
 }
 
-test("real 5.0 state and interaction fixtures project one pending decision and accept a same-revision later event", async () => {
-  const [state, interaction] = await Promise.all([fixture("state.json"), fixture("interaction.json")]);
-  assert.doesNotThrow(() => store.validateFeatureState(state));
-  assert.deepEqual(state.interactions[interaction.id], interaction);
-
-  const first = decisions.pendingDecisionForState(state);
-  const second = decisions.pendingDecisionForState(state);
-  assert.deepEqual(second, first, "legacy projection must be deterministic across repeated reads");
-  assert.equal(decisions.pendingInteractionForDecision(state, first).id, interaction.id);
-
-  const prompt = provenance.resolvePromptEvent([
-    { revision: 0, type: "feature-started", at: "2026-08-01T00:00:00.000Z", data: {} },
-    { revision: 0, type: "host-event", at: "2026-08-01T00:00:01.000Z", data: {
-      eventId: "legacy-answer", type: "user-prompt", host: "codex", text: "纳入当前任务", at: "2026-08-01T00:00:01.000Z",
-    } },
-  ], {
-    host: "codex",
-    userReply: "纳入当前任务",
-    presentedAt: interaction.presentedAt,
-    presentedRevision: interaction.presentedRevision,
-  });
-  assert.equal(prompt.eventId, "legacy-answer");
-  assert.equal(prompt.revision, 0);
+test("real 5.0 state fixtures fail closed on the v6 state parser", async () => {
+  const state = await fixture("state.json");
+  assert.notEqual(state.schemaVersion, 6);
+  assert.throws(
+    () => store.validateFeatureState(state),
+    (error) => error.code === "UNSUPPORTED_FEATURE_SCHEMA",
+  );
 });
 
-test("real 5.0 Trace fixture without command hashes remains content-addressed and idempotent", async () => {
+test("real 5.0 Trace fixture fails closed on the v6 trace ledger parser", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "dev-flow-v5-trace-"));
   try {
     const ledger = await fixture("trace.json");
-    assert.equal(ledger.verificationCommandHashes, undefined);
-    const pointer = await traceStore.writeTraceSnapshot(root, ledger);
-    const state = { featureId: ledger.featureId, route: "m", revision: 0, traceability: pointer };
-    assert.deepEqual(await traceStore.readTraceability(root, state), ledger);
-    assert.deepEqual(await traceStore.readTraceability(root, state), ledger);
+    assert.notEqual(ledger.schemaVersion, 2);
+    await assert.rejects(
+      () => traceStore.writeTraceSnapshot(root, ledger),
+      (error) => error.code === "UNSUPPORTED_TRACE_SCHEMA" || error.code === "TRACEABILITY_INTEGRITY_FAILED",
+    );
   } finally {
     await rm(root, { recursive: true, force: true });
   }
 });
 
-test("real 5.0 review fixture with the full legacy basis hash remains readable", async () => {
+test("real 5.0 review fixture fails closed on the v6 review ledger parser", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "dev-flow-v5-review-"));
   try {
     const ledger = await fixture("review.json");
-    const legacyHash = ledger.batches[0].basisHash;
-    assert.notEqual(reviewStore.semanticReviewBasisHash(ledger.batches[0].basis), legacyHash);
-    const pointer = await reviewStore.writeReviewSnapshot(root, ledger);
-    const state = { featureId: ledger.featureId, revision: ledger.stateRevision, review: pointer };
-    assert.deepEqual(await reviewStore.readReviewLedger(root, state), ledger);
-    assert.deepEqual(await reviewStore.readReviewLedger(root, state), ledger);
+    assert.notEqual(ledger.schemaVersion, 3);
+    await assert.rejects(
+      () => reviewStore.writeReviewSnapshot(root, ledger),
+      (error) => error.code === "UNSUPPORTED_REVIEW_SCHEMA" || error.code === "REVIEW_INTEGRITY_FAILED",
+    );
   } finally {
     await rm(root, { recursive: true, force: true });
   }

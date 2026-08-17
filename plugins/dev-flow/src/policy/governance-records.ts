@@ -1,3 +1,5 @@
+import type { EvidenceObjectRef } from "./evidence-store.js";
+
 // ===== v5 治理记录（Issue 01：类型隔离 + 依据当前性） =====
 //
 // 五类治理记录保持独立领域类型：决策表达用户当前选择，治理声明表达某项
@@ -38,6 +40,8 @@ export interface GovernanceClaim extends GovernanceRecordBase {
   kind: "claim";
   claimType: "review-complete" | "verification-current" | "checkpoint-current" | "approval-current" | "risk-accepted";
   subject: string;
+  /** Phase 6 record-owned baseline ref for content-bound claims (review-complete / verification-current). */
+  baselineRef?: EvidenceObjectRef;
 }
 
 /** 授权：用户允许特定动作或接受特定风险的有界许可。 */
@@ -46,6 +50,8 @@ export interface GovernanceAuthorization extends GovernanceRecordBase {
   authorizationType: "risk-acceptance" | "dangerous-command" | "approval";
   target: string;
   credentialId?: string;
+  /** Phase 6 record-owned baseline ref for content-bound risk acceptance. */
+  baselineRef?: EvidenceObjectRef;
 }
 
 /** 凭证：证明用户确实作出了回答；只来自宿主捕获，不来自智能体转述。 */

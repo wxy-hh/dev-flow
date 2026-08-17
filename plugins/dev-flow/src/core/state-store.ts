@@ -8,11 +8,12 @@ import { SUPPORTED_WORKFLOW_CAPABILITIES, type Classification, type Classificati
 import { EMPTY_GOVERNANCE_LEDGER, type AcceptanceState, type GovernanceLedger } from "../policy/governance-records.js";
 import type { InteractionKind, UserInteraction } from "../policy/interaction.js";
 import type { TraceabilityPointer } from "../policy/traceability.js";
+import { parseEvidenceStorePointer, type EvidenceStorePointer } from "../policy/evidence-store.js";
+import type { FeatureStateArchivePointers } from "../policy/state-archive.js";
 import type { ReviewPointer } from "../policy/review.js";
 import type { ImplementationUnitState } from "../policy/rollback.js";
 import { pathWithinFileScope } from "../policy/rollback.js";
 import { DevFlowError } from "./errors.js";
-import { migrateFeatureState } from "./schema-migration.js";
 import { currentOpenStep } from "./step-order.js";
 const featureDirectory = (root: string, id: string) => path.join(root, ".dev-flow", "features", id);
 import {
@@ -33,6 +34,9 @@ import { emptyTraceabilityLedger } from "./traceability.js";
 import { inspectCurrentTrace } from "./traceability-gates.js";
 import { readTraceability } from "./traceability-store.js";
 import { readReviewLedger } from "./review-store.js";
+import { maybeSealFeatureEvents, nextFeatureEventSequence, readSegmentedFeatureEvents } from "./event-segments.js";
+import { hydrateFeatureState, persistableFeatureState } from "./state-archive.js";
+import { runBoundedEvidenceMaintenance } from "./evidence-maintenance.js";
 import { trustedWriteSummary } from "./workspace-store.js";
 import { prepareReviewProjection } from "./review-projection.js";
 import { createDecision, resolveDecision, supersedeDecision } from "./decision-ledger.js";
@@ -56,16 +60,16 @@ export {
   reviseDecision,
 } from "./decision-workflow.js";
 
-export { revisePlanDuringImplementation } from "./plan-revision.js";
+export { revisePlanDuringImplementation, revisePlanFromMarkdown } from "./plan-revision.js";
 
-export { answer } from "./interaction-answer.js";
+export { answer, answerFromHostEvents } from "./interaction-answer.js";
 
 export { assertHostHealth, readHostHealth, recordHostHealth } from "./host-health.js";
 export type { HostHealthKind, HostHealthSignal } from "./host-health.js";
 
 export type Lifecycle = FeatureLifecycle;
 export interface FeatureState {
-  schemaVersion: 5; mode: "intake" | "routed"; featureId: string; revision: number; lifecycle: Lifecycle; route: RouteId; classification: Classification;
+  schemaVersion: 6; mode: "intake" | "routed"; featureId: string; revision: number; lifecycle: Lifecycle; route: RouteId; classification: Classification;
   objective?: string; investigationSummary?: string; classificationBasis?: ClassificationBasis; obligations?: ClassificationObligation[]; repair?: RepairState;
   /** Core-owned automatic checkpoint summaries for v3 implementation boundaries. */
   checkpoints?: Array<{ checkpointId: string; stage: string; capturedAt: string; fingerprint: string; files: string[]; basisHash: string }>;
@@ -106,6 +110,10 @@ export interface FeatureState {
   executionSemanticBasisHash?: string;
   workspace: WorkspaceLineage;
   evidenceFreshness: EvidenceFreshness;
+  /** Feature-private Evidence Store catalog pointer; absent until the first object write. */
+  evidenceStore?: EvidenceStorePointer;
+  /** v6 persisted pointers for archived unbounded collections; retained after hydration. */
+  archivedCollections?: FeatureStateArchivePointers;
   resumeSummary?: string;
   /** 最近一次变更失效传播的诊断记录（issue 21：审查后变更回到受影响步骤）。 */
   lastInvalidation?: { at: string; changedFiles?: string[]; reopenedUnits: string[]; reviewReopened: boolean; verificationReopened: boolean; fallback: boolean; reason: string };
@@ -186,31 +194,49 @@ function validateInteractionRecords(interactions: Record<string, unknown>): void
       || typeof record.target !== "string"
       || typeof record.basisHash !== "string"
       || !Array.isArray(record.options)
-      || (record.status !== "pending" && record.status !== "resolved")) {
+      || (record.status !== "pending" && record.status !== "resolved")
+      || (record.presentationEventSequence !== undefined && (!Number.isInteger(record.presentationEventSequence) || record.presentationEventSequence < 1))) {
       throw new DevFlowError("INVALID_STATE_SCHEMA", "interaction record is invalid");
     }
   }
 }
 export function validateFeatureState(value: unknown): asserts value is FeatureState {
   const state = value as Partial<FeatureState>;
-  if ([1, 2, 3].includes(Number((state as { schemaVersion?: unknown }).schemaVersion))) throw new DevFlowError("UNSUPPORTED_FEATURE_SCHEMA", "检测到 Dev Flow 4.x 或更早的 active state。", { userMessage: "旧 feature 不能在 Dev Flow 5.0 中继续。", cause: "5.0 不迁移旧 active state。", impact: "系统不会覆盖或猜测旧审计状态。", recoveryKind: "repair", recoveryInstruction: "回到 4.x 完成或放弃该 feature，备份 .dev-flow 后重新初始化。", retryOriginal: false, schemaVersion: (state as { schemaVersion?: unknown }).schemaVersion });
+  if ([1, 2, 3].includes(Number((state as { schemaVersion?: unknown }).schemaVersion))) throw new DevFlowError("UNSUPPORTED_FEATURE_SCHEMA", "检测到 Dev Flow 4.x 或更早的 active state。", { userMessage: "旧 feature 不能在 Dev Flow 6.0 中继续。", cause: "6.0 不迁移旧 active state。", impact: "系统不会覆盖或猜测旧审计状态。", recoveryKind: "repair", recoveryInstruction: "用产生该状态的旧插件完成或放弃该 feature，备份 .dev-flow 后重新初始化。", retryOriginal: false, schemaVersion: (state as { schemaVersion?: unknown }).schemaVersion });
   const schemaVersion = Number((state as { schemaVersion?: unknown }).schemaVersion);
-  if (schemaVersion !== 4 && schemaVersion !== 5) throw new DevFlowError("UNSUPPORTED_FEATURE_SCHEMA", "当前只支持 schema v4/v5 状态。", { recoveryHint: "使用 Dev Flow 5.0 重新初始化 feature" });
-  if (schemaVersion === 5) {
-    // v5 state.json must not persist the removed legacy fields.
+  if (schemaVersion !== 6) throw new DevFlowError("UNSUPPORTED_FEATURE_SCHEMA", "当前只支持 schema v6 状态。", { recoveryHint: "使用 Dev Flow 6.0 重新初始化 feature" });
+  if (schemaVersion === 6) {
+    // v6 state.json must not persist the removed legacy fields.
     if (Object.keys(state).includes("decisionLedger") || Object.keys(state).includes("qualityExceptions")) {
-      throw new DevFlowError("INVALID_STATE_SCHEMA", "v5 运行态不能包含旧 decisionLedger 或 qualityExceptions 字段。", {
-        recoveryHint: "通过加载入口转换为 governance 账本后重新写入 v5 state。",
+      throw new DevFlowError("INVALID_STATE_SCHEMA", "v6 运行态不能包含旧 decisionLedger 或 qualityExceptions 字段。", {
+        recoveryHint: "用产生该状态的旧插件收尾，备份 .dev-flow 后用 6.0 重新初始化。",
       });
     }
     validateGovernanceLedger(state.governance);
     if (state.acceptance !== undefined) validateAcceptanceState(state.acceptance);
   }
   if (state.mode !== "intake" && state.mode !== "routed") throw new DevFlowError("INVALID_STATE_SCHEMA", "state mode must be intake or routed");
-  if (typeof state.featureId !== "string" || !state.featureId || !Number.isInteger(state.revision) || (state.revision ?? -1) < 0 || !lifecycles.has(state.lifecycle as Lifecycle) || !state.scope || !Array.isArray(state.scope.inScope) || !Array.isArray(state.scope.outOfScope) || !state.steps || !state.humanGates || !state.artifacts || !state.verification || !Array.isArray(state.verification.attempts) || (state.interactions !== undefined && (typeof state.interactions !== "object" || state.interactions === null || Array.isArray(state.interactions))) || !Array.isArray(state.blockingFindings) || typeof state.logicComplete !== "boolean" || !state.lastUpdatedBy || !state.workspace || !state.evidenceFreshness) {
-    throw new DevFlowError("INVALID_STATE_SCHEMA", "状态不是合法的 feature state。");
+  const missingCoreFields = [
+    typeof state.featureId === "string" && state.featureId ? undefined : "featureId",
+    Number.isInteger(state.revision) && (state.revision ?? -1) >= 0 ? undefined : "revision",
+    lifecycles.has(state.lifecycle as Lifecycle) ? undefined : "lifecycle",
+    state.scope && Array.isArray(state.scope.inScope) && Array.isArray(state.scope.outOfScope) ? undefined : "scope",
+    state.steps ? undefined : "steps",
+    state.humanGates ? undefined : "humanGates",
+    state.artifacts ? undefined : "artifacts",
+    state.verification && Array.isArray(state.verification.attempts) ? undefined : "verification.attempts",
+    state.interactions === undefined || (typeof state.interactions === "object" && state.interactions !== null && !Array.isArray(state.interactions)) ? undefined : "interactions",
+    Array.isArray(state.blockingFindings) ? undefined : "blockingFindings",
+    typeof state.logicComplete === "boolean" ? undefined : "logicComplete",
+    state.lastUpdatedBy ? undefined : "lastUpdatedBy",
+    state.workspace ? undefined : "workspace",
+    state.evidenceFreshness ? undefined : "evidenceFreshness",
+  ].filter((field): field is string => typeof field === "string");
+  if (missingCoreFields.length > 0) {
+    throw new DevFlowError("INVALID_STATE_SCHEMA", "状态不是合法的 feature state。", { missingCoreFields });
   }
-  if (state.lastUpdatedBy.host !== "claude" && state.lastUpdatedBy.host !== "codex") throw new DevFlowError("INVALID_STATE_SCHEMA", "lastUpdatedBy host is invalid");
+  const lastUpdatedBy = state.lastUpdatedBy as { host?: unknown } | undefined;
+  if (lastUpdatedBy?.host !== "claude" && lastUpdatedBy?.host !== "codex") throw new DevFlowError("INVALID_STATE_SCHEMA", "lastUpdatedBy host is invalid");
   if (state.interactions !== undefined) validateInteractionRecords(state.interactions);
   const pendingInteractions = Object.values(state.interactions ?? {}).filter((item) => item.status === "pending");
   if (pendingInteractions.length > 1) throw new DevFlowError("MULTIPLE_PENDING_DECISIONS", "schema v4 状态包含多个待决问题。", { userMessage: "当前状态同时存在多个待决问题，流程已安全停止。", cause: "决策账本不是单一待决问题。", impact: "系统不会任选一个问题消费。", recoveryKind: "repair", recoveryInstruction: "运行 doctor 检查决策账本，然后通过公开回答接口恢复。", retryOriginal: false });
@@ -265,6 +291,10 @@ export function validateFeatureState(value: unknown): asserts value is FeatureSt
   }
   if (traceEnforcementRequired(state.route as RouteId, state.classification.controls) && !state.traceability) {
     throw new DevFlowError("INVALID_STATE_SCHEMA", "启用 Trace 控制的 feature 必须包含 traceability pointer。");
+  }
+  if (state.evidenceStore !== undefined) {
+    try { parseEvidenceStorePointer(state.evidenceStore); }
+    catch { throw new DevFlowError("INVALID_STATE_SCHEMA", "evidenceStore pointer is invalid"); }
   }
   if (state.review !== undefined) {
     const pointer = state.review;
@@ -572,7 +602,7 @@ export async function updateProjectConfig(
 
 export async function writeAtomic(file: string, value: unknown): Promise<void> {
   const temp = `${file}.${randomUUID()}.tmp`; const handle = await open(temp, "w");
-  const payload = file.endsWith(`${path.sep}state.json`) && value && typeof value === "object" && (value as { schemaVersion?: unknown }).schemaVersion === 5
+  const payload = file.endsWith(`${path.sep}state.json`) && value && typeof value === "object" && (value as { schemaVersion?: unknown }).schemaVersion === 6
     ? (() => {
       const copy = { ...(value as Record<string, unknown>) };
       delete copy.decisionLedger;
@@ -646,10 +676,17 @@ export async function lock(root: string, featureId: string, operation: string): 
 export async function readState(root: string, featureId: string): Promise<FeatureState> {
   try {
     const raw: unknown = JSON.parse(await readFile(statePath(root, featureId), "utf8"));
-    validateFeatureState(raw);
-    // v4 状态在加载边界一次性、确定地转换到 v5；v5 原样返回。转换保持
-    // 幂等：重复读取同一文件得到相同结果，写入只产生 v5 单格式。
-    const state = migrateFeatureState(raw);
+    // v6 state persists unbounded collections as Evidence Store pointers. The
+    // read boundary hydrates them once, deterministically, before full schema
+    // validation; v4/v5 are rejected fail-closed (6.0 hard switch).
+    const state = (raw as { schemaVersion?: unknown } | null)?.schemaVersion === 6
+      ? await hydrateFeatureState(root, raw)
+      : (() => {
+        // v4/v5 fail closed: validateFeatureState only accepts v6 (6.0 hard switch).
+        validateFeatureState(raw);
+        return raw as FeatureState;
+      })();
+    validateFeatureState(state);
     if (state.featureId !== featureId) throw new DevFlowError("INVALID_STATE_SCHEMA", "state feature id does not match its path");
     return state;
   } catch (error) {
@@ -717,8 +754,9 @@ export async function assertActivePointerConsistent(root: string): Promise<void>
   }
 }
 async function appendEvent(root: string, id: string, revision: number, type: string, data: unknown): Promise<void> {
+  const eventSequence = await nextFeatureEventSequence(root, id);
   const handle = await open(eventPath(root, id), "a");
-  try { await handle.writeFile(`${JSON.stringify({ revision, type, at: new Date().toISOString(), data })}\n`); await handle.sync(); }
+  try { await handle.writeFile(`${JSON.stringify({ eventSequence, revision, type, at: new Date().toISOString(), data })}\n`); await handle.sync(); }
   finally { await handle.close(); }
 }
 export async function stateFileSha256(root: string, featureId: string): Promise<string> {
@@ -747,6 +785,7 @@ export interface ReviewExecutionHostEvent {
   contextId: string;
   implementationContextId: string;
   parentContextId?: string;
+  text?: string;
   at?: string;
 }
 
@@ -894,9 +933,15 @@ export async function readHostAuthorizationEvents(root: string, featureId: strin
   });
 }
 
-export async function readFeatureEvents(root: string, id: string): Promise<Array<{ revision: number; type: string; at: string; data: unknown }>> {
-  try { return (await readFile(eventPath(root, id), "utf8")).split("\n").filter(Boolean).map((line) => JSON.parse(line)); }
-  catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return []; throw error; }
+export async function readFeatureEvents(root: string, id: string): Promise<Array<{ eventSequence: number; revision: number; type: string; at: string; data: unknown }>> {
+  const result = await readSegmentedFeatureEvents(root, id);
+  return result.records.map((record) => ({
+    eventSequence: record.eventSequence,
+    revision: record.revision,
+    type: record.type,
+    at: record.at,
+    data: record.data,
+  }));
 }
 export interface StartFeatureOptions {
   /** Test-only fault injection. Production callers omit this. */
@@ -979,7 +1024,7 @@ export async function startFeature(
         startedDirty: capturedWorkspace.startedDirty,
       };
       const state = {
-        schemaVersion: 5, mode: "intake", featureId: id, revision: 0, lifecycle, objective, scope, workspace: capturedWorkspace, evidenceFreshness: { review: "missing", verification: "missing", checkpoint: "missing", implementation: "current" }, steps: {}, humanGates: {}, artifacts: {},
+        schemaVersion: 6, mode: "intake", featureId: id, revision: 0, lifecycle, objective, scope, workspace: capturedWorkspace, evidenceFreshness: { review: "missing", verification: "missing", checkpoint: "missing", implementation: "current" }, steps: {}, humanGates: {}, artifacts: {},
         verification: { attempts: [] }, acceptance: { evidence: [], dispositions: [] }, interactions: {}, workflowCapabilities, checkpoints: [], startBusinessFingerprint, deliveryBaseline, blockingFindings: [], logicComplete: false,
         governance: { decisions: [], claims: [], authorizations: [], credentials: [], repositoryFacts: [] },
         lastUpdatedBy: { host: input.host, pluginVersion: __DEV_FLOW_VERSION__ },
@@ -990,7 +1035,9 @@ export async function startFeature(
       // lock after repository investigation and user-owned decisions converge.
       validateFeatureState(state);
       await options.fault?.("before-state-commit");
-      await writeAtomic(statePath(root, id), state);
+      const persisted = await persistableFeatureState(root, state);
+      await writeAtomic(statePath(root, id), persisted);
+      state.archivedCollections = persisted.archivedCollections;
       stateCommitted = true;
       // After state.json is durable, event/active are projections: failures keep the commit
       // and surface STATE_COMMITTED_PROJECTION_FAILED (same contract as mutatePrepared).
@@ -1089,10 +1136,20 @@ async function mutatePreparedLocked(
   const state = await readState(root, id);
   await assertNoOpenRollbackTransaction(root, { featureId: id, transactionId: options.allowRollbackTransaction });
   if (state.revision !== expectedRevision) throw new DevFlowError("STATE_REVISION_CONFLICT", "state revision changed", { currentRevision: state.revision });
+  const presentedBefore = new Set(Object.values(state.interactions ?? {}).filter((interaction) => interaction.status === "pending").map((interaction) => interaction.id));
   const prepared = await prepare(state, state.revision + 1);
   if (prepared.unchanged) return state;
   await prepared.mutate(state);
   state.revision += 1;
+  // v6 presentation cursor: an interaction created in this mutation is
+  // presented by the event this mutation is about to append. The next event
+  // sequence is that presentation cursor; later user answers must be greater.
+  const nextSequence = await nextFeatureEventSequence(root, id);
+  for (const interaction of Object.values(state.interactions ?? {})) {
+    if (interaction.status === "pending" && !presentedBefore.has(interaction.id) && interaction.presentationEventSequence === undefined) {
+      interaction.presentationEventSequence = nextSequence;
+    }
+  }
   // Review mutations and basis invalidations update the immutable pointer in
   // prepare(). Derive its read-only Markdown before the state CAS so a failed
   // projection cannot leave state pointing at a missing or stale artifact.
@@ -1100,7 +1157,11 @@ async function mutatePreparedLocked(
   validateFeatureState(state);
   const writeStatus = await prepareStatusProjection(root, state, state.revision);
   await options.fault?.("before-state-commit");
-  await writeAtomic(statePath(root, id), state);
+  const persisted = await persistableFeatureState(root, state);
+  await writeAtomic(statePath(root, id), persisted);
+  // Keep the in-memory state pointing at the archive refs just persisted so
+  // the post-commit maintenance root set protects them from immediate GC.
+  state.archivedCollections = (persisted as unknown as FeatureState).archivedCollections;
   const failures: string[] = [];
   try { await options.fault?.("after-state-commit"); } catch { failures.push("after-state-commit"); }
   try { await writeStatus?.(); } catch { failures.push("status"); }
@@ -1116,6 +1177,13 @@ async function mutatePreparedLocked(
       || (!active && ["feature-resumed", "workspace-reconciled", "feature-derived-state-repaired"].includes(operation))
     )) await writeAtomic(activePath(root), { featureId: id, revision: state.revision, updatedAt: new Date().toISOString() });
   } catch { failures.push("active"); }
+  try {
+    // Phase 8 bounded maintenance: each successful mutation runs one small
+    // orphan-GC round over the complete evidence root set. Failure is reported
+    // as a committed projection failure; it never rolls back feature state.
+    await runBoundedEvidenceMaintenance(root, id, state);
+  } catch { failures.push("evidence-maintenance"); }
+
   if (failures.length) {
     throw new DevFlowError("STATE_COMMITTED_PROJECTION_FAILED", "state commit succeeded but one or more projections failed", {
       committed: true, currentRevision: state.revision, failedProjections: failures,
@@ -1133,7 +1201,12 @@ export async function switchActive(root: string, from: string, to: string, reaso
     const source = await readState(root, from), target = await readState(root, to);
     if (target.lifecycle !== "paused") throw new DevFlowError("INVALID_LIFECYCLE", "target must be paused");
     source.lifecycle = "paused"; source.revision++; target.lifecycle = "active"; target.revision++;
-    await writeAtomic(statePath(root, from), source); await writeAtomic(statePath(root, to), target);
+    const persistedSource = await persistableFeatureState(root, source);
+    const persistedTarget = await persistableFeatureState(root, target);
+    await writeAtomic(statePath(root, from), persistedSource);
+    await writeAtomic(statePath(root, to), persistedTarget);
+    source.archivedCollections = persistedSource.archivedCollections;
+    target.archivedCollections = persistedTarget.archivedCollections;
     await appendEvent(root, from, source.revision, "paused", { reason });
     await appendEvent(root, to, target.revision, "activated", { reason });
     await writeAtomic(activePath(root), { featureId: to, revision: target.revision, updatedAt: new Date().toISOString() });
@@ -1149,13 +1222,16 @@ export async function pauseFeature(
   host: "claude" | "codex",
 ): Promise<FeatureState> {
   if (!reason.trim()) throw new DevFlowError("PAUSE_REASON_REQUIRED", "暂停需要说明原因。", { userMessage: "请说明为什么暂停当前任务。", recoveryKind: "ask-user", recoveryInstruction: "补充一句暂停原因后重试。", retryOriginal: true });
-  return mutate(root, id, expectedRevision, "feature-paused", (state) => {
+  const paused = await mutate(root, id, expectedRevision, "feature-paused", (state) => {
     if (state.lifecycle !== "active") throw new DevFlowError("INVALID_LIFECYCLE", "只有进行中的 feature 可以暂停。", { userMessage: "当前 feature 不能暂停。", recoveryKind: "refresh", recoveryInstruction: "刷新状态后从当前阶段继续。", retryOriginal: false });
     state.lifecycle = "paused";
     const openStep = currentOpenStep(state);
     state.resumeSummary = `暂停原因：${reason.trim()}。恢复后先对账工作区，再从${openStep ? `“${openStep}”` : "当前阶段"}继续。`;
     state.lastUpdatedBy = { host, pluginVersion: __DEV_FLOW_VERSION__ };
   }, { reason: reason.trim() });
+  // Phase 8: pause is a lifecycle boundary; freeze the hot event tail.
+  await maybeSealFeatureEvents(root, id);
+  return paused;
 }
 
 export async function resumeFeature(root: string, id: string, host: "claude" | "codex"): Promise<FeatureState> {

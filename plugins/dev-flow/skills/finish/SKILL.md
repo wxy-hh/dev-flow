@@ -9,4 +9,4 @@ description: 在 Dev Flow finalize 中完成完整性检查、精确恢复与交
 
 审查或验证之后交付内容再次变化时，finalize 门禁会拒绝完成并自动重开受影响实现单元、代码审查与验证（issue 21）：先重做受影响步骤，再重新完成。风险接受只绑定当时内容，内容变化后旧接受失效（issue 22）。
 
-完成后报告快照和验证摘要。不要 commit、push 或发布；由用户审核并执行 Git 操作。
+finalize 会把不再修改的历史证据无损 seal/cold store；只报告快照和验证摘要，不承诺删除审计历史。不要 commit、push 或发布；由用户审核并执行 Git 操作。

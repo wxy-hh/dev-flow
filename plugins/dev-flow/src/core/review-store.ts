@@ -19,7 +19,7 @@ const emptySummary = (): ReviewSummary => ({ batches: 0, current: 0, stale: 0, o
 const digest = (contents: string | Buffer): string => createHash("sha256").update(contents).digest("hex");
 
 export function emptyReviewLedger(featureId: string, stateRevision: number): ReviewLedger {
-  return { schemaVersion: 2, featureId, revision: 0, stateRevision, batches: [], summary: emptySummary(), findingEvents: [] };
+  return { schemaVersion: 3, featureId, revision: 0, stateRevision, batches: [], summary: emptySummary(), findingEvents: [] };
 }
 
 export function canonicalReviewJson(ledger: ReviewLedger): string {
@@ -128,9 +128,10 @@ function validateBatch(value: unknown): value is ReviewBatch {
   if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
   const batch = value as Partial<ReviewBatch>;
   if (typeof batch.batchId !== "string" || !batch.batchId || !validHash(batch.basisHash)
+    || (batch.phase !== "plan" && batch.phase !== "code")
     || !batch.basis || batch.validity !== "current" && batch.validity !== "stale"
     || batch.progress !== "open" && batch.progress !== "complete"
-    || batch.executionMode !== "isolated-sequential" && batch.executionMode !== "parallel-safe" && batch.executionMode !== "mcp-sampling" && batch.executionMode !== "native-subagent"
+    || batch.executionMode !== "parallel-execution"
     || batch.assuranceLevel !== "multi-perspective" && batch.assuranceLevel !== "independent-sampling"
       && batch.assuranceLevel !== "multi-agent-verified"
     || !Array.isArray(batch.jobs)) return false;
@@ -170,19 +171,28 @@ function validateBatch(value: unknown): value is ReviewBatch {
 function validateLedger(value: unknown): asserts value is ReviewLedger {
   if (typeof value !== "object" || value === null || Array.isArray(value)) integrity("review snapshot has an invalid shape");
   const ledger = value as Partial<ReviewLedger>;
-  if ((ledger as { schemaVersion?: unknown }).schemaVersion === 1) {
-    throw new DevFlowError("UNSUPPORTED_REVIEW_SCHEMA", "检测到 Dev Flow 4.x review ledger schema v1。", {
-      recoveryHint: "回到 4.x 完成或放弃该 feature，备份 .dev-flow 后用 5.0 重新初始化",
+  if ((ledger as { schemaVersion?: unknown }).schemaVersion === 1 || (ledger as { schemaVersion?: unknown }).schemaVersion === 2) {
+    throw new DevFlowError("UNSUPPORTED_REVIEW_SCHEMA", "检测到旧 review ledger schema。", {
+      recoveryHint: "用产生该状态的旧插件收尾，备份 .dev-flow 后用 6.0 重新初始化",
     });
   }
-  if (ledger.schemaVersion !== 2 || typeof ledger.featureId !== "string" || !ledger.featureId
+  if (ledger.schemaVersion !== 3 || typeof ledger.featureId !== "string" || !ledger.featureId
     || !Number.isInteger(ledger.revision) || (ledger.revision ?? -1) < 0
     || !Number.isInteger(ledger.stateRevision) || (ledger.stateRevision ?? -1) < 0
     || !Array.isArray(ledger.batches) || !ledger.batches.every(validateBatch) || !validateSummary(ledger.summary)) {
     integrity("review snapshot has an invalid shape");
   }
   const batchIds = new Set<string>();
+  const currentByPhase = new Map<"plan" | "code", string>();
   for (const batch of ledger.batches) {
+    if (batch.validity === "current") {
+      const phase: "plan" | "code" = batch.phase ?? "plan";
+      const existing = currentByPhase.get(phase);
+      if (existing !== undefined && existing !== batch.batchId) {
+        integrity("review ledger must keep at most one current batch per phase", { phase, first: existing, second: batch.batchId });
+      }
+      currentByPhase.set(phase, batch.batchId);
+    }
     if (batchIds.has(batch.batchId)
       || batch.basis.featureId !== ledger.featureId
       || !validBasisHash(batch.basis, batch.basisHash)
@@ -192,8 +202,8 @@ function validateLedger(value: unknown): asserts value is ReviewLedger {
     if (batch.assuranceLevel !== assuranceForReviewBatch(batch)) {
       integrity("review batch assurance is not derived from persisted provenance", { batchId: batch.batchId });
     }
-    if (batch.executionMode === "isolated-sequential" && batch.assuranceLevel !== "multi-perspective") {
-      integrity("isolated review batch assurance is not Core-derived", { batchId: batch.batchId });
+    if (batch.executionMode !== "parallel-execution") {
+      integrity("review batch executionMode must be parallel-execution", { batchId: batch.batchId });
     }
     // mcp-sampling may later accept manual host attestation on claim/submit; ladder
     // Host attestation remains diagnostic while executionMode stays explicit.
@@ -349,6 +359,60 @@ export async function prepareReviewInvalidation(
     summary: reviewSummary(batches),
   });
 }
+
+export interface ReviewInvalidationPlan {
+  staleBatchIds: string[];
+  reopenPlanning: boolean;
+  reopenCodeReview: boolean;
+  restampPlanningBatchId?: string;
+  restampCodeReviewBatchId?: string;
+  reason: string;
+}
+
+/**
+ * Pure phase-aware review invalidation contract. It computes which batches
+ * became stale and which step evidence must reopen/restamp when a successor
+ * ledger replaces the current one. Phase 4 consumers apply this plan inside
+ * their state CAS instead of re-implementing review rules.
+ */
+export function prepareReviewInvalidationPlan(before: ReviewLedger, after: ReviewLedger): ReviewInvalidationPlan {
+  const phase = (batch: ReviewBatch): "plan" | "code" => batch.phase ?? "plan";
+  const currentOf = (ledger: ReviewLedger, target: "plan" | "code") =>
+    ledger.batches.find((batch) => batch.validity === "current" && phase(batch) === target);
+
+  const staleBatchIds: string[] = [];
+  for (const batch of before.batches) {
+    if (batch.validity !== "current") continue;
+    const afterBatch = after.batches.find((candidate) => candidate.batchId === batch.batchId);
+    if (!afterBatch || afterBatch.validity !== "current") staleBatchIds.push(batch.batchId);
+  }
+
+  const beforePlan = currentOf(before, "plan");
+  const afterPlan = currentOf(after, "plan");
+  const beforeCode = currentOf(before, "code");
+  const afterCode = currentOf(after, "code");
+  const reopenPlanning = Boolean(beforePlan && beforePlan.batchId !== afterPlan?.batchId);
+  // plan→code 单向级联（GPT-005）：plan 语义 basis 变化时下游 code 批次同步失效，
+  // 代码变化永远不反向失效 plan。
+  const planChanged = reopenPlanning;
+  if (planChanged && beforeCode && !staleBatchIds.includes(beforeCode.batchId)) {
+    // plan 语义 basis 变化时，下游 code 批次即使尚未被替换也要同步失效
+    staleBatchIds.push(beforeCode.batchId);
+  }
+  const reopenCodeReview = Boolean(beforeCode && beforeCode.batchId !== afterCode?.batchId) || (planChanged && Boolean(beforeCode));
+  const plan = { batchId: afterPlan?.batchId, reason: "" };
+  const code = { batchId: afterCode?.batchId, reason: "" };
+  void plan; void code;
+  return {
+    staleBatchIds,
+    reopenPlanning,
+    reopenCodeReview,
+    ...(reopenPlanning && afterPlan ? { restampPlanningBatchId: afterPlan.batchId } : {}),
+    ...(reopenCodeReview && afterCode ? { restampCodeReviewBatchId: afterCode.batchId } : {}),
+    reason: staleBatchIds.length ? "review batches were replaced or staled" : "no review invalidation required",
+  };
+}
+
 
 export async function listOrphanReviewSnapshots(root: string, state: FeatureState): Promise<string[]> {
   let entries: string[];

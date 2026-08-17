@@ -3,6 +3,7 @@ import type { UserInteraction } from "../policy/interaction.js";
 import { DevFlowError } from "./errors.js";
 
 export interface HostEventRecord {
+  eventSequence?: number;
   revision: number;
   type: string;
   at: string;
@@ -15,21 +16,30 @@ export interface ResolvedPromptEvent {
   at: string;
   text: string;
   host: "claude" | "codex";
+  eventSequence?: number;
 }
 
 function presentationEventIndex(
   events: HostEventRecord[],
-  input: { presentationEventId?: string; presentedAt: string; presentedRevision: number },
+  input: { presentationEventId?: string; presentedAt: string; presentedRevision: number; presentationEventSequence?: number },
 ): number | undefined {
-  const index = events.findIndex((record) => {
-    if (record.type === "host-event") return false;
-    if (input.presentationEventId) {
+  if (input.presentationEventId) {
+    const markerIndex = events.findIndex((record) => {
+      if (record.type === "host-event") return false;
       if (!record.data || typeof record.data !== "object" || Array.isArray(record.data)) return false;
       return (record.data as Record<string, unknown>).presentationEventId === input.presentationEventId;
-    }
-    return record.revision >= input.presentedRevision
-      && Date.parse(record.at) >= Date.parse(input.presentedAt);
-  });
+    });
+    if (markerIndex >= 0) return markerIndex;
+  }
+  if (input.presentationEventSequence !== undefined) {
+    const cursor = input.presentationEventSequence;
+    const firstAtOrAfterCursor = events.findIndex((record) => record.eventSequence !== undefined && record.eventSequence >= cursor);
+    if (firstAtOrAfterCursor < 0) return events.length > 0 ? events.length - 1 : undefined;
+    return Math.max(-1, firstAtOrAfterCursor - 1);
+  }
+  const index = events.findIndex((record) =>
+    record.revision >= input.presentedRevision
+    && Date.parse(record.at) >= Date.parse(input.presentedAt));
   return index >= 0 ? index : undefined;
 }
 
@@ -65,6 +75,7 @@ export function resolvePromptEvent(
     presentedAt: string;
     presentedRevision: number;
     presentationEventId?: string;
+    presentationEventSequence?: number;
     consumedEventIds?: Iterable<string>;
     question?: string;
   },
@@ -156,9 +167,57 @@ export function resolveInteractionPromptEvent(
     presentedAt: interaction.presentedAt,
     presentedRevision,
     ...(interaction.presentationEventId ? { presentationEventId: interaction.presentationEventId } : {}),
+    ...(interaction.presentationEventSequence !== undefined ? { presentationEventSequence: interaction.presentationEventSequence } : {}),
     ...(interaction.question ? { question: interaction.question } : {}),
   });
 }
+
+/**
+ * v6 answer path: choose the last unconsumed same-host user-prompt event after
+ * the interaction presentation cursor. No caller-provided reply participates.
+ */
+export function latestUnconsumedPromptEvent(
+  events: HostEventRecord[],
+  state: { revision: number; pendingDecision?: { target?: string; presentedRevision: number } },
+  interaction: UserInteraction,
+  host: "claude" | "codex",
+): ResolvedPromptEvent | undefined {
+  const presentedRevision = Number.isInteger(interaction.presentedRevision)
+    ? interaction.presentedRevision!
+    : state.pendingDecision?.target === interaction.target
+      ? state.pendingDecision.presentedRevision
+      : Math.max(0, state.revision - 1);
+  const presentationIndex = presentationEventIndex(events, {
+    presentedAt: interaction.presentedAt,
+    presentedRevision,
+    ...(interaction.presentationEventId ? { presentationEventId: interaction.presentationEventId } : {}),
+    ...(interaction.presentationEventSequence !== undefined ? { presentationEventSequence: interaction.presentationEventSequence } : {}),
+  });
+  const consumed = consumedPromptEventIds(events);
+  const candidates = events.flatMap((record, index) => {
+    const prompt = promptFrom(record);
+    if (!prompt || prompt.host !== host || consumed.has(prompt.eventId)) return [];
+    if (presentationIndex !== undefined && index <= presentationIndex) return [];
+    if (presentationIndex === undefined
+      && (record.revision <= presentedRevision || Date.parse(prompt.at) < Date.parse(interaction.presentedAt))) return [];
+    return [{ prompt, record }];
+  });
+  if (candidates.length === 0) return undefined;
+  candidates.sort((left, right) => {
+    const byRevision = left.record.revision - right.record.revision;
+    if (byRevision !== 0) return byRevision;
+    return Date.parse(left.prompt.at) - Date.parse(right.prompt.at);
+  });
+  const selected = candidates[candidates.length - 1];
+  return {
+    eventId: selected.prompt.eventId,
+    revision: selected.record.revision,
+    at: selected.prompt.at,
+    text: selected.prompt.text,
+    host: selected.prompt.host,
+  };
+}
+
 
 export function consumedPromptEventIds(events: HostEventRecord[]): Set<string> {
   const ids = new Set<string>();
