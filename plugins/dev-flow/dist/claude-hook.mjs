@@ -1,4 +1,4 @@
-/* dev-flow 6.0.0; built from source, deterministic build */
+/* dev-flow 6.0.1; built from source, deterministic build */
 var __getOwnPropNames = Object.getOwnPropertyNames;
 var __esm = (fn, res) => function __init() {
   return fn && (res = (0, fn[__getOwnPropNames(fn)[0]])(fn = 0)), res;
@@ -1660,6 +1660,28 @@ function evidenceSourcesForReviewBatch(batch) {
   if (batch.jobs.some((job) => job.submission?.attestation)) sources.push("host-attestation");
   return sources;
 }
+function isRecord5(value) {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+function describeReviewJobCompletionIssues(value) {
+  if (!isRecord5(value)) return [{ path: "$", message: "expected object" }];
+  const issues = [];
+  if (typeof value.coverageSummary !== "string" || !value.coverageSummary.trim()) {
+    issues.push({ path: "$.coverageSummary", message: "required non-empty string" });
+  }
+  if (!Array.isArray(value.findings)) {
+    issues.push({ path: "$.findings", message: "required array" });
+  }
+  if (value.resolutions !== void 0 && !Array.isArray(value.resolutions)) {
+    issues.push({ path: "$.resolutions", message: "must be an array when present" });
+  }
+  for (const key of Object.keys(value)) {
+    if (key !== "coverageSummary" && key !== "findings" && key !== "resolutions") {
+      issues.push({ path: `$.${key}`, message: "unknown field" });
+    }
+  }
+  return issues;
+}
 function deriveReviewJobRequirements(route, riskLabels, derivedRoles, phase = "plan") {
   if (phase === "code") {
     const reviewDepth2 = riskLabels.includes("critical_correctness") ? "full" : "standard";
@@ -1729,22 +1751,22 @@ function validateSummary(value) {
   });
 }
 function sameSummary2(left, right) {
-  return left.batches === right.batches && left.current === right.current && left.stale === right.stale && left.open === right.open && left.complete === right.complete;
+  return left.batches === right.batches && left.current === right.current && left.stale === right.stale && left.open === right.open && left.complete === right.complete && (left.superseded ?? 0) === (right.superseded ?? 0) && (left.waived ?? 0) === (right.waived ?? 0);
 }
 function validHash(value) {
   return typeof value === "string" && /^[a-f0-9]{64}$/.test(value);
 }
-function isRecord5(value) {
+function isRecord6(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 function validSamplingAttempt(value) {
-  if (!isRecord5(value) || !validHash(value.requestSha256) || typeof value.issuedAt !== "string" || typeof value.leaseExpiresAt !== "string" || value.status !== "issued" && value.status !== "failed" && value.status !== "submitted") return false;
+  if (!isRecord6(value) || !validHash(value.requestSha256) || typeof value.issuedAt !== "string" || typeof value.leaseExpiresAt !== "string" || value.status !== "issued" && value.status !== "failed" && value.status !== "submitted") return false;
   if (value.status === "issued") {
     return value.completedAt === void 0 && value.payloadSha256 === void 0 && value.failureCode === void 0;
   }
   if (typeof value.completedAt !== "string") return false;
   if (value.status === "failed") {
-    return value.payloadSha256 === void 0 && (value.failureCode === "client-error" || value.failureCode === "timeout" || value.failureCode === "invalid-response" || value.failureCode === "validation-failed");
+    return value.payloadSha256 === void 0 && (value.failureCode === "client-error" || value.failureCode === "timeout" || value.failureCode === "invalid-response" || value.failureCode === "validation-failed" || value.failureCode === "quota");
   }
   return validHash(value.payloadSha256) && value.failureCode === void 0;
 }
@@ -1761,17 +1783,20 @@ function validSamplingAttempts(value, status, submission) {
   return attempts.every((attempt) => attempt.status === "failed" || attempt.status === "submitted") && attempts.filter((attempt) => attempt.status === "submitted").length === 1 && attempts.some((attempt) => attempt.status === "submitted" && attempt.requestSha256 === submission.samplingProvenance.requestSha256 && attempt.issuedAt === submission.samplingProvenance.issuedAt && attempt.completedAt === submission.samplingProvenance.completedAt && attempt.payloadSha256 === submission.payloadSha256);
 }
 function validAttestation(value) {
-  return isRecord5(value) && (value.host === "claude" || value.host === "codex") && typeof value.agentId === "string" && value.agentId.trim().length > 0 && typeof value.issuedAt === "string" && !Number.isNaN(Date.parse(value.issuedAt)) && typeof value.raw === "string" && value.raw.trim().length > 0 && validHash(value.rawSha256) && typeof value.acceptedAt === "string" && digest2(value.raw) === value.rawSha256;
+  return isRecord6(value) && (value.host === "claude" || value.host === "codex") && typeof value.agentId === "string" && value.agentId.trim().length > 0 && typeof value.issuedAt === "string" && !Number.isNaN(Date.parse(value.issuedAt)) && typeof value.raw === "string" && value.raw.trim().length > 0 && validHash(value.rawSha256) && typeof value.acceptedAt === "string" && digest2(value.raw) === value.rawSha256;
 }
 function validateBatch(value) {
   if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
   const batch = value;
-  if (typeof batch.batchId !== "string" || !batch.batchId || !validHash(batch.basisHash) || batch.phase !== "plan" && batch.phase !== "code" || !batch.basis || batch.validity !== "current" && batch.validity !== "stale" || batch.progress !== "open" && batch.progress !== "complete" || batch.executionMode !== "parallel-execution" || batch.assuranceLevel !== "multi-perspective" && batch.assuranceLevel !== "independent-sampling" && batch.assuranceLevel !== "multi-agent-verified" || !Array.isArray(batch.jobs)) return false;
+  if (typeof batch.batchId !== "string" || !batch.batchId || !validHash(batch.basisHash) || batch.phase !== "plan" && batch.phase !== "code" || !batch.basis || batch.validity !== "current" && batch.validity !== "stale" || batch.progress !== "open" && batch.progress !== "complete" && batch.progress !== "superseded" && batch.progress !== "waived" || batch.executionMode !== "parallel-execution" || batch.assuranceLevel !== "multi-perspective" && batch.assuranceLevel !== "independent-sampling" && batch.assuranceLevel !== "multi-agent-verified" || !Array.isArray(batch.jobs)) return false;
   const ids = /* @__PURE__ */ new Set();
   const attestationRaws = /* @__PURE__ */ new Set();
   return batch.jobs.every((job) => {
-    if (!job || typeof job !== "object" || typeof job.jobId !== "string" || !job.jobId || ids.has(job.jobId) || typeof job.role !== "string" || job.reviewDepth !== "standard" && job.reviewDepth !== "full" || !validHash(job.packageSha256) || !validHash(job.roleBasisHash) || job.status !== "pending" && job.status !== "claimed" && job.status !== "sampling" && job.status !== "submitted" && job.status !== "reused") return false;
+    if (!job || typeof job !== "object" || typeof job.jobId !== "string" || !job.jobId || ids.has(job.jobId) || typeof job.role !== "string" || job.reviewDepth !== "standard" && job.reviewDepth !== "full" || !validHash(job.packageSha256) || !validHash(job.roleBasisHash) || job.status !== "pending" && job.status !== "claimed" && job.status !== "sampling" && job.status !== "submitted" && job.status !== "reused" && job.status !== "failed") return false;
     ids.add(job.jobId);
+    if (job.status === "failed") {
+      return !job.submission && (job.samplingAttempts === void 0 || validSamplingAttempts(job.samplingAttempts, "pending", void 0));
+    }
     if (job.status === "reused") return !!job.reusedFrom && validHash(job.reusedFrom.submissionSha256) && !job.claim && !job.submission;
     if (!validSamplingAttempts(job.samplingAttempts, job.status, job.submission)) return false;
     if (job.status === "pending") return !job.claim && !job.submission;
@@ -1815,7 +1840,7 @@ function validateLedger(value) {
       }
       currentByPhase.set(phase, batch.batchId);
     }
-    if (batchIds.has(batch.batchId) || batch.basis.featureId !== ledger.featureId || !validBasisHash(batch.basis, batch.basisHash) || batch.progress === "complete" !== batch.jobs.every((job) => job.status === "submitted" || job.status === "reused")) {
+    if (batchIds.has(batch.batchId) || batch.basis.featureId !== ledger.featureId || !validBasisHash(batch.basis, batch.basisHash) || batch.progress === "complete" && !batch.jobs.every((job) => job.status === "submitted" || job.status === "reused") || batch.progress === "open" && batch.jobs.every((job) => job.status === "submitted" || job.status === "reused")) {
       integrity2("review snapshot batch is inconsistent");
     }
     if (batch.assuranceLevel !== assuranceForReviewBatch(batch)) {
@@ -1860,8 +1885,10 @@ function reviewSummary(batches) {
     batches: batches.length,
     current: batches.filter((batch) => batch.validity === "current").length,
     stale: batches.filter((batch) => batch.validity === "stale").length,
-    open: batches.filter((batch) => batch.progress === "open").length,
-    complete: batches.filter((batch) => batch.progress === "complete").length
+    open: batches.filter((batch) => batch.progress === "open" && batch.validity === "current").length,
+    complete: batches.filter((batch) => batch.progress === "complete").length,
+    superseded: batches.filter((batch) => batch.progress === "superseded").length,
+    waived: batches.filter((batch) => batch.progress === "waived").length
   };
 }
 function safeSnapshotPath2(pointer) {
@@ -1902,15 +1929,15 @@ var init_review_store = __esm({
 });
 
 // plugins/dev-flow/src/policy/event-segment.ts
-function isRecord6(value) {
+function isRecord7(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 function parseFeatureEventSegment(value) {
-  if (!isRecord6(value) || value.schemaVersion !== 1 || typeof value.featureId !== "string" || !value.featureId || !Number.isInteger(value.firstSequence) || value.firstSequence < 0 || !Number.isInteger(value.lastSequence) || value.lastSequence < value.firstSequence || value.previousSegmentSha256 !== void 0 && typeof value.previousSegmentSha256 !== "string" || !Number.isInteger(value.recordCount) || value.recordCount < 0 || value.codec !== "jsonl" || !Array.isArray(value.records)) {
+  if (!isRecord7(value) || value.schemaVersion !== 1 || typeof value.featureId !== "string" || !value.featureId || !Number.isInteger(value.firstSequence) || value.firstSequence < 0 || !Number.isInteger(value.lastSequence) || value.lastSequence < value.firstSequence || value.previousSegmentSha256 !== void 0 && typeof value.previousSegmentSha256 !== "string" || !Number.isInteger(value.recordCount) || value.recordCount < 0 || value.codec !== "jsonl" || !Array.isArray(value.records)) {
     throw new TypeError("invalid feature event segment");
   }
   const records = value.records.map((record) => {
-    if (!isRecord6(record) || !Number.isInteger(record.eventSequence) || !Number.isInteger(record.revision) || typeof record.type !== "string" || !record.type || typeof record.at !== "string" || Number.isNaN(Date.parse(record.at))) {
+    if (!isRecord7(record) || !Number.isInteger(record.eventSequence) || !Number.isInteger(record.revision) || typeof record.type !== "string" || !record.type || typeof record.at !== "string" || Number.isNaN(Date.parse(record.at))) {
       throw new TypeError("invalid feature event segment record");
     }
     return {
@@ -1933,14 +1960,14 @@ function parseFeatureEventSegment(value) {
   };
 }
 function parseFeatureEventSegmentIndex(value) {
-  if (!isRecord6(value) || value.schemaVersion !== 1 || typeof value.featureId !== "string" || !value.featureId || !Array.isArray(value.entries)) {
+  if (!isRecord7(value) || value.schemaVersion !== 1 || typeof value.featureId !== "string" || !value.featureId || !Array.isArray(value.entries)) {
     throw new TypeError("invalid feature event segment index");
   }
   return {
     schemaVersion: 1,
     featureId: String(value.featureId),
     entries: value.entries.map((entry) => {
-      if (!isRecord6(entry) || !Number.isInteger(entry.firstSequence) || !Number.isInteger(entry.lastSequence) || entry.previousSegmentSha256 !== void 0 && typeof entry.previousSegmentSha256 !== "string") {
+      if (!isRecord7(entry) || !Number.isInteger(entry.firstSequence) || !Number.isInteger(entry.lastSequence) || entry.previousSegmentSha256 !== void 0 && typeof entry.previousSegmentSha256 !== "string") {
         throw new TypeError("invalid feature event segment index entry");
       }
       return {
@@ -2469,11 +2496,11 @@ var init_event_segments = __esm({
 });
 
 // plugins/dev-flow/src/policy/state-archive.ts
-function isRecord7(value) {
+function isRecord8(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 function parseFeatureStateArchivePointers(value) {
-  if (!isRecord7(value) || value.schemaVersion !== 1 || typeof value.featureId !== "string" || !value.featureId) {
+  if (!isRecord8(value) || value.schemaVersion !== 1 || typeof value.featureId !== "string" || !value.featureId) {
     throw new TypeError("invalid FeatureState archive pointers");
   }
   const parsed = {
@@ -2488,13 +2515,13 @@ function parseFeatureStateArchivePointers(value) {
   return parsed;
 }
 function parseStringRecord(value, label) {
-  if (!isRecord7(value) || Object.values(value).some((item) => typeof item !== "string")) {
+  if (!isRecord8(value) || Object.values(value).some((item) => typeof item !== "string")) {
     throw new TypeError(`${label} must be a string map`);
   }
   return value;
 }
 function parseWorkspaceLineage(value) {
-  if (!isRecord7(value) || typeof value.baseHead !== "string" || typeof value.baseBranch !== "string" || typeof value.observedHead !== "string" || typeof value.lastWorkspaceFingerprint !== "string" || value.reconciliationStatus !== "current" && value.reconciliationStatus !== "required" && value.reconciliationStatus !== "blocked" || !isRecord7(value.startedDirty) || !isRecord7(value.ownership) || !isRecord7(value.ownershipSource) || !isRecord7(value.observedPathFingerprints) || !Array.isArray(value.observedCommits) || value.unownedPaths !== void 0 && (!Array.isArray(value.unownedPaths) || value.unownedPaths.some((item) => typeof item !== "string"))) {
+  if (!isRecord8(value) || typeof value.baseHead !== "string" || typeof value.baseBranch !== "string" || typeof value.observedHead !== "string" || typeof value.lastWorkspaceFingerprint !== "string" || value.reconciliationStatus !== "current" && value.reconciliationStatus !== "required" && value.reconciliationStatus !== "blocked" || !isRecord8(value.startedDirty) || !isRecord8(value.ownership) || !isRecord8(value.ownershipSource) || !isRecord8(value.observedPathFingerprints) || !Array.isArray(value.observedCommits) || value.unownedPaths !== void 0 && (!Array.isArray(value.unownedPaths) || value.unownedPaths.some((item) => typeof item !== "string"))) {
     throw new TypeError("invalid workspace lineage archive");
   }
   return {
@@ -2512,7 +2539,7 @@ function parseWorkspaceLineage(value) {
   };
 }
 function parseGovernanceLedger(value) {
-  if (!isRecord7(value) || !Array.isArray(value.decisions) || !Array.isArray(value.claims) || !Array.isArray(value.authorizations) || !Array.isArray(value.credentials) || !Array.isArray(value.repositoryFacts)) {
+  if (!isRecord8(value) || !Array.isArray(value.decisions) || !Array.isArray(value.claims) || !Array.isArray(value.authorizations) || !Array.isArray(value.credentials) || !Array.isArray(value.repositoryFacts)) {
     throw new TypeError("invalid governance ledger archive");
   }
   return {
@@ -2524,10 +2551,10 @@ function parseGovernanceLedger(value) {
   };
 }
 function parseInteractionLedger(value) {
-  if (!isRecord7(value)) throw new TypeError("invalid interaction ledger archive");
+  if (!isRecord8(value)) throw new TypeError("invalid interaction ledger archive");
   const parsed = {};
   for (const [id, item] of Object.entries(value)) {
-    if (!isRecord7(item) || typeof item.id !== "string" || typeof item.status !== "string") {
+    if (!isRecord8(item) || typeof item.id !== "string" || typeof item.status !== "string") {
       throw new TypeError("invalid interaction ledger entry");
     }
     parsed[id] = item;
@@ -2695,7 +2722,7 @@ var init_checkpoint_store = __esm({
 });
 
 // plugins/dev-flow/src/policy/review-execution.ts
-function isRecord8(value) {
+function isRecord9(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 function isSha2563(value) {
@@ -2723,7 +2750,7 @@ function validDate(value) {
   return value;
 }
 function parseReviewResultEnvelope(value) {
-  if (!isRecord8(value) || value.schemaVersion !== 1 || typeof value.featureId !== "string" || !value.featureId || typeof value.batchId !== "string" || typeof value.jobId !== "string" || !isSha2563(value.packageSha256) || !isSha2563(value.capabilityHash) || typeof value.executionRequestId !== "string" || !value.executionRequestId || !Number.isInteger(value.leaseGeneration) || value.leaseGeneration < 0 || value.source !== "claude-subagent" && value.source !== "server-sampling" || value.host !== "claude" && value.host !== "codex" || value.declarationId !== void 0 && (typeof value.declarationId !== "string" || !value.declarationId) || value.hostEventId !== void 0 && typeof value.hostEventId !== "string" || value.parentContext !== void 0 && typeof value.parentContext !== "string" || value.childContext !== void 0 && typeof value.childContext !== "string" || value.agentId !== void 0 && typeof value.agentId !== "string" || !isSha2563(value.rawResultSha256) || value.parsedCompletionSha256 !== void 0 && !isSha2563(value.parsedCompletionSha256)) {
+  if (!isRecord9(value) || value.schemaVersion !== 1 || typeof value.featureId !== "string" || !value.featureId || typeof value.batchId !== "string" || typeof value.jobId !== "string" || !isSha2563(value.packageSha256) || !isSha2563(value.capabilityHash) || typeof value.executionRequestId !== "string" || !value.executionRequestId || !Number.isInteger(value.leaseGeneration) || value.leaseGeneration < 0 || value.source !== "claude-subagent" && value.source !== "server-sampling" || value.host !== "claude" && value.host !== "codex" || value.declarationId !== void 0 && (typeof value.declarationId !== "string" || !value.declarationId) || value.hostEventId !== void 0 && typeof value.hostEventId !== "string" || value.parentContext !== void 0 && typeof value.parentContext !== "string" || value.childContext !== void 0 && typeof value.childContext !== "string" || value.agentId !== void 0 && typeof value.agentId !== "string" || !isSha2563(value.rawResultSha256) || value.parsedCompletionSha256 !== void 0 && !isSha2563(value.parsedCompletionSha256)) {
     throw new TypeError("invalid review result envelope");
   }
   const v = value;
@@ -2752,7 +2779,7 @@ function parseReviewResultEnvelope(value) {
   };
 }
 function parseReviewExecutionRecord(value) {
-  if (!isRecord8(value) || value.schemaVersion !== 1 || typeof value.featureId !== "string" || !value.featureId || typeof value.batchId !== "string" || typeof value.executionRequestId !== "string" || value.source !== "claude-subagent" && value.source !== "server-sampling" || value.host !== "claude" && value.host !== "codex" || !Number.isInteger(value.generation) || value.generation < 0 || !Array.isArray(value.leases) || !Array.isArray(value.envelopes)) {
+  if (!isRecord9(value) || value.schemaVersion !== 1 || typeof value.featureId !== "string" || !value.featureId || typeof value.batchId !== "string" || typeof value.executionRequestId !== "string" || value.source !== "claude-subagent" && value.source !== "server-sampling" || value.host !== "claude" && value.host !== "codex" || !Number.isInteger(value.generation) || value.generation < 0 || !Array.isArray(value.leases) || !Array.isArray(value.envelopes)) {
     throw new TypeError("invalid review execution record");
   }
   const v = value;
@@ -3523,18 +3550,18 @@ var init_review_projection = __esm({
 });
 
 // plugins/dev-flow/src/policy/evidence-baseline.ts
-function isRecord9(value) {
+function isRecord10(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 function isSha2564(value) {
   return typeof value === "string" && /^[a-f0-9]{64}$/.test(value);
 }
 function parseEvidenceBaselineManifest(value) {
-  if (!isRecord9(value) || value.schemaVersion !== 1 || typeof value.featureId !== "string" || !value.featureId || typeof value.capturedAt !== "string" || Number.isNaN(Date.parse(value.capturedAt)) || !isSha2564(value.contentFingerprint) || !isSha2564(value.governedScopeHash) || !isSha2564(value.ownershipHash) || !isSha2564(value.planExecutionBasisHash) || !Array.isArray(value.checkpointIds) || value.checkpointIds.some((id) => typeof id !== "string") || !Array.isArray(value.fileToUnits) || !isRecord9(value.snapshotRef) || !isRecord9(value.origin) || value.origin.kind !== "review-complete" && value.origin.kind !== "verification-current" && value.origin.kind !== "risk-acceptance" || typeof value.origin.target !== "string" || typeof value.origin.recordId !== "string" || typeof value.origin.at !== "string") {
+  if (!isRecord10(value) || value.schemaVersion !== 1 || typeof value.featureId !== "string" || !value.featureId || typeof value.capturedAt !== "string" || Number.isNaN(Date.parse(value.capturedAt)) || !isSha2564(value.contentFingerprint) || !isSha2564(value.governedScopeHash) || !isSha2564(value.ownershipHash) || !isSha2564(value.planExecutionBasisHash) || !Array.isArray(value.checkpointIds) || value.checkpointIds.some((id) => typeof id !== "string") || !Array.isArray(value.fileToUnits) || !isRecord10(value.snapshotRef) || !isRecord10(value.origin) || value.origin.kind !== "review-complete" && value.origin.kind !== "verification-current" && value.origin.kind !== "risk-acceptance" || typeof value.origin.target !== "string" || typeof value.origin.recordId !== "string" || typeof value.origin.at !== "string") {
     throw new TypeError("invalid evidence baseline manifest");
   }
   const fileToUnits = value.fileToUnits.map((mapping) => {
-    if (!isRecord9(mapping) || typeof mapping.path !== "string" || !mapping.path || !Array.isArray(mapping.unitIds) || mapping.unitIds.some((id) => typeof id !== "string")) {
+    if (!isRecord10(mapping) || typeof mapping.path !== "string" || !mapping.path || !Array.isArray(mapping.unitIds) || mapping.unitIds.some((id) => typeof id !== "string")) {
       throw new TypeError("invalid evidence baseline file-unit mapping");
     }
     return { path: mapping.path, unitIds: [...new Set(mapping.unitIds)].sort() };
@@ -3644,10 +3671,16 @@ var init_governance_state = __esm({
 });
 
 // plugins/dev-flow/src/core/quality-exceptions.ts
-function hasCurrentQualityException(state, kind) {
+function reviewWaiverSliceKey(batchId, basisHash2) {
+  return `review-waiver:${batchId}:${basisHash2}`;
+}
+function hasCurrentQualityException(state, kind, binding) {
   const invalidatedAt = state.lastInvalidation?.at ? Date.parse(state.lastInvalidation.at) : Number.NaN;
-  const authorization = currentRiskAuthorizations(state, { contentFingerprint: state.businessFingerprint }).some((item) => item.target === kind && (!Number.isFinite(invalidatedAt) || !item.recordedAt || Date.parse(item.recordedAt) >= invalidatedAt));
-  return authorization;
+  const current = { contentFingerprint: state.businessFingerprint };
+  if (kind === "review" && binding && state.businessFingerprint) {
+    current.sliceBases = { [reviewWaiverSliceKey(binding.batchId, binding.basisHash)]: state.businessFingerprint };
+  }
+  return currentRiskAuthorizations(state, current).some((item) => item.target === kind && (!Number.isFinite(invalidatedAt) || !item.recordedAt || Date.parse(item.recordedAt) >= invalidatedAt));
 }
 var init_quality_exceptions = __esm({
   "plugins/dev-flow/src/core/quality-exceptions.ts"() {
@@ -3660,6 +3693,8 @@ var init_quality_exceptions = __esm({
     init_user_interactions();
     init_obligations();
     init_governance_state();
+    init_review_store();
+    init_step_order();
   }
 });
 
@@ -3896,6 +3931,9 @@ async function reviewBasisStale(root, state, batch, phase) {
 function reviewJobsSummary(batch) {
   return batch.jobs.map(({ jobId, role, reviewDepth, status }) => ({ jobId, role, reviewDepth, status }));
 }
+function reviewWaiverCurrent(state, batch) {
+  return hasCurrentQualityException(state, "review", { batchId: batch.batchId, basisHash: batch.basisHash });
+}
 async function reviewGate(root, state, query) {
   const phase = query?.phase ?? (currentOpenStep(state) === "code_review" ? "code" : "plan");
   if (!reviewObligation(state, phase)) return { status: "ready" };
@@ -3906,17 +3944,21 @@ async function reviewGate(root, state, query) {
     return otherPhase ? { status: "need-batch", cause: "phase", batchId: otherPhase.batchId } : { status: "need-batch", cause: "missing" };
   }
   if (await reviewBasisStale(root, state, batch, phase)) return { status: "need-batch", cause: "stale", batchId: batch.batchId };
-  if (batch.progress !== "complete") return { status: "jobs-open", batchId: batch.batchId, jobs: reviewJobsSummary(batch) };
+  if (batch.progress === "waived" && reviewWaiverCurrent(state, batch)) return { status: "waived", batchId: batch.batchId };
+  if (batch.progress !== "complete") {
+    if (reviewWaiverCurrent(state, batch)) return { status: "waived", batchId: batch.batchId };
+    return { status: "jobs-open", batchId: batch.batchId, jobs: reviewJobsSummary(batch) };
+  }
   if (phase === "code") {
     const requiresIsolation = codeReviewIsolationRequired(state);
-    if (requiresIsolation && !hasCurrentQualityException(state, "review")) {
+    if (requiresIsolation && !reviewWaiverCurrent(state, batch) && !hasCurrentQualityException(state, "review")) {
       const requirements = deriveReviewJobRequirements(state.route, state.classification.riskLabels, state.classification.controls.reviewRoles, phase);
       const missingIsolation = requirements.map((requirement) => batch.jobs.find((job) => job.role === requirement.role)).filter((job) => job !== void 0 && !jobHasEffectiveIsolationProof(ledger, job)).map((job) => job.jobId);
       if (missingIsolation.length) return { status: "isolation", batchId: batch.batchId, jobIds: missingIsolation };
     }
   }
   const unresolved = currentUnresolvedBlocking(ledger, batch, state);
-  if (unresolved.length && !hasCurrentQualityException(state, "review")) {
+  if (unresolved.length && !reviewWaiverCurrent(state, batch) && !hasCurrentQualityException(state, "review")) {
     return { status: "blocking", batchId: batch.batchId, findingIds: unresolved.map((finding) => finding.findingId) };
   }
   if (reviewEnforcementRequired(state.route, state.classification.controls)) {
@@ -3955,6 +3997,7 @@ async function requireReviewReady(root, state, query) {
   const phase = query?.phase ?? (currentOpenStep(state) === "code_review" ? "code" : "plan");
   const gate = await reviewGate(root, state, query);
   if (gate.status === "ready") return gate.stamp;
+  if (gate.status === "waived") return { waived: true, batchId: gate.batchId };
   throw reviewGateError(gate, phase);
 }
 var digest5, leaseMilliseconds, samplingLeaseMilliseconds, basisArtifactKinds;
@@ -4085,6 +4128,21 @@ async function readReviewExecutionRecord(root, featureId, executionRequestId) {
   const bytes = await readEvidenceObject(root, featureId, entry.ref);
   return parseReviewExecutionRecord(JSON.parse(bytes.toString("utf8")));
 }
+async function recordReviewCaptureRejection(root, input) {
+  const featureId = input.featureId ?? (await readActive(root))?.featureId;
+  if (!featureId) return;
+  const state = await readState(root, featureId);
+  await appendFeatureEvent(root, featureId, state.revision, "review-capture-rejected", {
+    type: "review-capture-rejected",
+    reason: input.reason,
+    ...input.jobId ? { jobId: input.jobId } : {},
+    ...input.declarationId ? { declarationId: input.declarationId } : {},
+    ...input.executionRequestId ? { executionRequestId: input.executionRequestId } : {},
+    ...input.hostEventId ? { hostEventId: input.hostEventId } : {},
+    ...input.issues ? { issues: input.issues } : {},
+    at: (/* @__PURE__ */ new Date()).toISOString()
+  });
+}
 async function recordCapturedEnvelope(root, featureId, executionRequestId, envelopeRef) {
   const index = await readExecutionIndex(root, featureId);
   const entry = index.entries.find((candidate) => candidate.executionRequestId === executionRequestId);
@@ -4132,7 +4190,7 @@ var init_review_execution2 = __esm({
 });
 
 // plugins/dev-flow/src/policy/plan-revision.ts
-function isRecord10(value) {
+function isRecord11(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 function isSha2565(value) {
@@ -4142,11 +4200,11 @@ function stringArray(value, allowEmpty = false) {
   return Array.isArray(value) && (allowEmpty || value.length > 0) && value.every((item) => typeof item === "string" && item.length > 0);
 }
 function parseImplementationRuntimeProjection(value) {
-  if (!isRecord10(value) || !Array.isArray(value.units) || !Array.isArray(value.recoveryArrangements)) {
+  if (!isRecord11(value) || !Array.isArray(value.units) || !Array.isArray(value.recoveryArrangements)) {
     throw new TypeError("invalid implementation runtime projection");
   }
   const units = value.units.map((unit) => {
-    if (!isRecord10(unit) || typeof unit.unitId !== "string" || !/^UNIT-[0-9]{3,}$/.test(unit.unitId) || !stringArray(unit.tasks) || !stringArray(unit.dependsOn, true) || !stringArray(unit.fileScope) || !stringArray(unit.forwardVerification)) {
+    if (!isRecord11(unit) || typeof unit.unitId !== "string" || !/^UNIT-[0-9]{3,}$/.test(unit.unitId) || !stringArray(unit.tasks) || !stringArray(unit.dependsOn, true) || !stringArray(unit.fileScope) || !stringArray(unit.forwardVerification)) {
       throw new TypeError("invalid implementation runtime projection unit");
     }
     return {
@@ -4158,7 +4216,7 @@ function parseImplementationRuntimeProjection(value) {
     };
   });
   const recoveryArrangements = value.recoveryArrangements.map((recovery) => {
-    if (!isRecord10(recovery) || typeof recovery.arrangementId !== "string" || typeof recovery.stepRef !== "string" || !/^(?:UNIT|TASK)-[0-9]{3,}$/.test(recovery.stepRef) || recovery.recoveryKind !== "rollback" && recovery.recoveryKind !== "compensation" || typeof recovery.method !== "string" || !recovery.method.trim() || typeof recovery.riskRef !== "string" || !recovery.riskRef.trim()) {
+    if (!isRecord11(recovery) || typeof recovery.arrangementId !== "string" || typeof recovery.stepRef !== "string" || !/^(?:UNIT|TASK)-[0-9]{3,}$/.test(recovery.stepRef) || recovery.recoveryKind !== "rollback" && recovery.recoveryKind !== "compensation" || typeof recovery.method !== "string" || !recovery.method.trim() || typeof recovery.riskRef !== "string" || !recovery.riskRef.trim()) {
       throw new TypeError("invalid implementation runtime projection recovery");
     }
     return {
@@ -4172,7 +4230,7 @@ function parseImplementationRuntimeProjection(value) {
   return { units, recoveryArrangements };
 }
 function parsePlanRevisionProposal(value) {
-  if (!isRecord10(value) || value.schemaVersion !== 1 || typeof value.featureId !== "string" || !value.featureId || !isRecord10(value.artifact) || typeof value.artifact.path !== "string" || !value.artifact.path || !isSha2565(value.artifact.rawSha256) || !isSha2565(value.artifact.semanticSha256) || !isRecord10(value.basis) || !Number.isInteger(value.basis.stateRevision) || !isSha2565(value.basis.currentTraceSha256) || !isSha2565(value.basis.requirementsArtifactSha256) || !isSha2565(value.basis.requirementsSemanticSha256) || !isSha2565(value.basis.requirementsSliceSha256) || !isSha2565(value.basis.projectConfigSha256) || value.basis.executionSemanticBasisHash !== void 0 && !isSha2565(value.basis.executionSemanticBasisHash) || !isRecord10(value.compiledTrace) || !isSha2565(value.compiledTrace.sha256) || !Number.isInteger(value.compiledTrace.size) || !isRecord10(value.impact) || !Array.isArray(value.impact.affectedUnits) || !Array.isArray(value.impact.redoUnits) || !Array.isArray(value.impact.sideEffectUnits) || !Array.isArray(value.impact.invalidatedPhases)) {
+  if (!isRecord11(value) || value.schemaVersion !== 1 || typeof value.featureId !== "string" || !value.featureId || !isRecord11(value.artifact) || typeof value.artifact.path !== "string" || !value.artifact.path || !isSha2565(value.artifact.rawSha256) || !isSha2565(value.artifact.semanticSha256) || !isRecord11(value.basis) || !Number.isInteger(value.basis.stateRevision) || !isSha2565(value.basis.currentTraceSha256) || !isSha2565(value.basis.requirementsArtifactSha256) || !isSha2565(value.basis.requirementsSemanticSha256) || !isSha2565(value.basis.requirementsSliceSha256) || !isSha2565(value.basis.projectConfigSha256) || value.basis.executionSemanticBasisHash !== void 0 && !isSha2565(value.basis.executionSemanticBasisHash) || !isRecord11(value.compiledTrace) || !isSha2565(value.compiledTrace.sha256) || !Number.isInteger(value.compiledTrace.size) || !isRecord11(value.impact) || !Array.isArray(value.impact.affectedUnits) || !Array.isArray(value.impact.redoUnits) || !Array.isArray(value.impact.sideEffectUnits) || !Array.isArray(value.impact.invalidatedPhases)) {
     throw new TypeError("invalid plan revision proposal");
   }
   return {
@@ -4947,7 +5005,7 @@ async function invalidateAffectedClaims(root, id, expectedRevision) {
       fallback,
       reason
     };
-    draft.lastUpdatedBy = { host: state.lastUpdatedBy.host, pluginVersion: "6.0.0" };
+    draft.lastUpdatedBy = { host: state.lastUpdatedBy.host, pluginVersion: "6.0.1" };
   }, { changedFiles, reopenedUnits, reviewReopened, verificationReopened, fallback, reason });
   return invalidated;
 }
@@ -5019,7 +5077,7 @@ async function reconcileWorkspace(root, id, expectedRevision, host) {
     draft.workspace = workspace;
     if (contentChanged) markAffectedEvidenceStale(draft, changedPaths2, reopenedLifecycle, legalCheckpointPaths);
     presentationEventId = queueNextOwnershipDecision(draft);
-    draft.lastUpdatedBy = { host, pluginVersion: "6.0.0" };
+    draft.lastUpdatedBy = { host, pluginVersion: "6.0.1" };
   }, () => ({
     observedHead: workspace.observedHead,
     commitCount: workspace.observedCommits.length,
@@ -5756,7 +5814,10 @@ function validateFeatureState(value) {
   }
   if (state.review !== void 0) {
     const pointer = state.review;
-    if (typeof pointer !== "object" || pointer === null || !/^review\/snapshots\/[a-f0-9]{64}\.json$/.test(pointer.path) || !/^[a-f0-9]{64}$/.test(pointer.sha256) || pointer.path !== `review/snapshots/${pointer.sha256}.json` || !Number.isInteger(pointer.revision) || pointer.revision < 0 || !pointer.summary || !["batches", "current", "stale", "open", "complete"].every((key) => Number.isInteger(pointer.summary[key]) && pointer.summary[key] >= 0)) {
+    if (typeof pointer !== "object" || pointer === null || !/^review\/snapshots\/[a-f0-9]{64}\.json$/.test(pointer.path) || !/^[a-f0-9]{64}$/.test(pointer.sha256) || pointer.path !== `review/snapshots/${pointer.sha256}.json` || !Number.isInteger(pointer.revision) || pointer.revision < 0 || !pointer.summary || !["batches", "current", "stale", "open", "complete"].every((key) => {
+      const value2 = pointer.summary?.[key];
+      return Number.isInteger(value2) && value2 >= 0;
+    })) {
       throw new DevFlowError("INVALID_STATE_SCHEMA", "review pointer is invalid");
     }
   }
@@ -5997,7 +6058,12 @@ async function prepareStatusProjection(root, state, revision) {
     "",
     "## Steps",
     "",
-    ...routeDefinitionForFeature(state.route, state.classification.controls).orderedSteps.map((step) => `- ${step}: ${state.steps[step]?.status ?? "pending"}`),
+    ...routeDefinitionForFeature(state.route, state.classification.controls).orderedSteps.map((step) => {
+      const snapshot = state.steps[step];
+      const evidence = snapshot?.evidence;
+      const label = evidence?.reviewStatus === "risk-accepted" ? "\u98CE\u9669\u5DF2\u63A5\u53D7" : snapshot?.status ?? "pending";
+      return `- ${step}: ${label}`;
+    }),
     "",
     ...traceLines,
     ...grillAdvisory ? [`- \u63D0\u793A: \u9700\u6C42\u6587\u6863\u300C\u5F00\u653E\u95EE\u9898\u300D\u8FD8\u6709 ${grillAdvisory.items.length} \u9879\u672A\u6536\u655B\uFF08${grillAdvisory.items.join("\uFF1B")}\uFF09\uFF0C\u5EFA\u8BAE\u5148\u8C03\u7528 dev_flow_request_grill_decision \u6536\u655B\u540E\u518D\u8FDB\u5165 planning\u3002`, ""] : []
@@ -6153,13 +6219,19 @@ async function recordReviewExecutionEvent(root, hostEvent) {
     await release();
   }
 }
+function isDeliveryOwnedPath(file) {
+  return file !== ".dev-flow" && !file.startsWith(".dev-flow/") && file !== "devflow-issues" && !file.startsWith("devflow-issues/");
+}
+function governedWritePaths(paths, governedRoots) {
+  return paths.filter((file) => governedRoots.some((entry) => entry === "." || file === entry || file.startsWith(`${entry}/`)));
+}
 async function recordTrustedWriteIntent(root, paths, host, eventId2) {
   const active = await readActive(root);
   if (!active || paths.length === 0) return;
   const state = await readState(root, active.featureId);
   if (state.mode !== "routed" || state.lifecycle !== "active") return;
   const config = await readProjectConfig(root);
-  const governed = paths.filter((file) => config.governedRoots.some((entry) => entry === "." || file === entry || file.startsWith(`${entry}/`)));
+  const governed = governedWritePaths(paths, config.governedRoots);
   if (!governed.length) return;
   const before = Object.fromEntries(await Promise.all(governed.map(async (file) => [file, await trustedWriteSummary(root, file)])));
   await appendFeatureEvent(root, state.featureId, state.revision, "trusted-write-before", { eventId: eventId2, host, paths: governed, before });
@@ -6170,17 +6242,30 @@ async function recordTrustedWriteOwnership(root, paths, host, eventId2) {
   const state = await readState(root, active.featureId);
   if (state.mode !== "routed" || state.lifecycle !== "active") return;
   const config = await readProjectConfig(root);
-  const governed = paths.filter((file) => config.governedRoots.some((entry) => entry === "." || file === entry || file.startsWith(`${entry}/`)));
+  const governed = governedWritePaths(paths, config.governedRoots);
   if (!governed.length) return;
   const after = Object.fromEntries(await Promise.all(governed.map(async (file) => [file, await trustedWriteSummary(root, file)])));
+  const events = await readFeatureEvents(root, state.featureId);
+  const intent = [...events].reverse().find((event) => {
+    if (event.type !== "trusted-write-before") return false;
+    const data = event.data;
+    return data.eventId === eventId2;
+  });
+  const before = intent?.data?.before ?? {};
+  const operational = governed.filter((file) => !isDeliveryOwnedPath(file));
+  const delivery = governed.filter(isDeliveryOwnedPath).filter((file) => after[file] !== (before[file] ?? "missing"));
+  if (operational.length) {
+    await appendFeatureEvent(root, state.featureId, state.revision, "operational-write", { eventId: eventId2, host, paths: operational, after: Object.fromEntries(operational.map((file) => [file, after[file]])) });
+  }
+  if (!delivery.length) return;
   await mutate(root, state.featureId, state.revision, "trusted-write-owned", (draft) => {
-    for (const file of governed) {
+    for (const file of delivery) {
       draft.workspace.ownership[file] = "feature";
       draft.workspace.ownershipSource[file] = "trusted-hook";
     }
-    draft.workspace.unownedPaths = (draft.workspace.unownedPaths ?? []).filter((file) => !governed.includes(file));
-    draft.lastUpdatedBy = { host, pluginVersion: "6.0.0" };
-  }, { eventId: eventId2, host, paths: governed, after });
+    draft.workspace.unownedPaths = (draft.workspace.unownedPaths ?? []).filter((file) => !delivery.includes(file));
+    draft.lastUpdatedBy = { host, pluginVersion: "6.0.1" };
+  }, { eventId: eventId2, host, paths: delivery, after: Object.fromEntries(delivery.map((file) => [file, after[file]])) });
 }
 async function recordHostAuthorizationEvent(root, type, record) {
   const active = await readActive(root);
@@ -6788,7 +6873,12 @@ function directTargets(event) {
   for (const key of ["patch", "diff", "input"]) targets.push(...patchTargets(input[key]));
   return targets;
 }
+function isTrustedWriteTool(event) {
+  const name = toolName(event);
+  return name === "bash" || directWriteTools.has(name);
+}
 function trustedWriteTargets(root, event) {
+  if (!isTrustedWriteTool(event)) return [];
   const targets = toolName(event) === "bash" ? (() => {
     const analysis = analyzeBashWriteTargets(String(event.tool_input?.command ?? ""));
     return analysis.kind === "resolved" ? analysis.targets : [];
@@ -7470,7 +7560,7 @@ async function recordAdapterHealth(root, event, host) {
       kind,
       eventId: event.event_id ?? `${event.hook_event_name}-${Date.now()}`,
       ...kind === "session-start" ? {
-        adapterVersion: "6.0.0",
+        adapterVersion: "6.0.1",
         capabilities: host === "claude" ? ["review-result-envelope-v1"] : []
       } : {}
     });
@@ -7600,6 +7690,7 @@ async function resolveDevFlowRoot(cwd) {
 // plugins/dev-flow/src/hosts/review-execution-adapter.ts
 init_state_store();
 init_review_execution2();
+init_review();
 import { readFile as readFile19 } from "node:fs/promises";
 var DECLARATION_MARKER = /dev-flow:isolated-review:([A-Za-z0-9-]+)/u;
 function firstText(value) {
@@ -7631,19 +7722,27 @@ async function recordSubagentReviewOutput(root, event, host) {
   if (!active) return { recorded: false, reason: "no-active-feature" };
   const promptText = firstText(event.last_assistant_message) || firstText(event.prompt) || firstText(event.tool_input) || firstText(event.tool_response) || firstText(event.tool_result) || await transcriptText(event);
   const marker = promptText.match(DECLARATION_MARKER);
-  if (!marker) return { recorded: false, reason: "missing-marker" };
+  if (!marker) {
+    await recordReviewCaptureRejection(root, { featureId: active.featureId, reason: "missing-marker" });
+    return { recorded: false, reason: "missing-marker" };
+  }
   const declarationId = marker[1];
   const events = await readFeatureEvents(root, active.featureId);
   const declaration = [...events].reverse().find((item) => {
     const data2 = item.data;
     return item.type === "review-execution-declared" && data2?.type === "review-execution-declared" && data2.declarationId === declarationId;
   });
-  if (!declaration) return { recorded: false, reason: "unknown-declaration", declarationId };
+  if (!declaration) {
+    await recordReviewCaptureRejection(root, { featureId: active.featureId, declarationId, reason: "unknown-declaration" });
+    return { recorded: false, reason: "unknown-declaration", declarationId };
+  }
   const data = declaration.data;
   if (typeof data.batchId !== "string" || typeof data.jobId !== "string" || typeof data.executionId !== "string" && typeof data.executionRequestId !== "string") {
+    await recordReviewCaptureRejection(root, { featureId: active.featureId, declarationId, reason: "unknown-declaration" });
     return { recorded: false, reason: "unknown-declaration", declarationId };
   }
   const executionId = typeof data.executionId === "string" ? data.executionId : String(data.executionRequestId);
+  const executionRequestId = typeof data.executionRequestId === "string" ? data.executionRequestId : void 0;
   const input = event.tool_input ?? {};
   const response = event.tool_response && typeof event.tool_response === "object" ? event.tool_response : {};
   const contextId = [
@@ -7657,9 +7756,23 @@ async function recordSubagentReviewOutput(root, event, host) {
     response.session_id
   ].find((value) => typeof value === "string" && value.trim().length > 0);
   if (!contextId || !implementationContextId) {
+    await recordReviewCaptureRejection(root, {
+      featureId: active.featureId,
+      jobId: data.jobId,
+      declarationId,
+      executionRequestId,
+      reason: "missing-context-ids"
+    });
     return { recorded: false, reason: "missing-context-ids", declarationId };
   }
   if (contextId === implementationContextId) {
+    await recordReviewCaptureRejection(root, {
+      featureId: active.featureId,
+      jobId: data.jobId,
+      declarationId,
+      executionRequestId,
+      reason: "same-context"
+    });
     return { recorded: false, reason: "same-context", declarationId };
   }
   const eventId2 = `${declarationId}:complete`;
@@ -7678,6 +7791,25 @@ async function recordSubagentReviewOutput(root, event, host) {
     }
     return rawText;
   })();
+  let parsedJson;
+  try {
+    parsedJson = JSON.parse(rawResult);
+  } catch {
+    parsedJson = void 0;
+  }
+  const issues = parsedJson === void 0 ? [{ path: "$", message: "completion is not valid JSON" }] : describeReviewJobCompletionIssues(parsedJson);
+  if (issues.length) {
+    await recordReviewCaptureRejection(root, {
+      featureId: active.featureId,
+      jobId: data.jobId,
+      declarationId,
+      executionRequestId,
+      hostEventId: eventId2,
+      reason: "invalid-completion",
+      issues
+    });
+    return { recorded: false, reason: "invalid-completion", declarationId, eventId: eventId2, issues };
+  }
   await recordReviewExecutionEvent(root, {
     eventId: eventId2,
     type: "review-execution",
@@ -7711,11 +7843,21 @@ async function recordSubagentReviewOutput(root, event, host) {
         agentId: contextId,
         startedAt: data.declaredAt,
         completedAt: (/* @__PURE__ */ new Date()).toISOString(),
-        rawResult
+        rawResult,
+        parsedCompletion: rawResult
       });
       await recordCapturedEnvelope(root, active.featureId, data.executionRequestId, captured.ref);
     } catch {
-      return { recorded: false, reason: "invalid-completion", declarationId, eventId: eventId2 };
+      await recordReviewCaptureRejection(root, {
+        featureId: active.featureId,
+        jobId: data.jobId,
+        declarationId,
+        executionRequestId,
+        hostEventId: eventId2,
+        reason: "invalid-completion",
+        issues
+      });
+      return { recorded: false, reason: "invalid-completion", declarationId, eventId: eventId2, issues };
     }
   }
   return { recorded: true, declarationId, eventId: eventId2 };
