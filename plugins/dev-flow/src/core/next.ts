@@ -113,12 +113,13 @@ function traceStepForAction(action: NextAction): string | undefined {
  */
 async function reviewPlanAction(root: string, state: FeatureState): Promise<NextAction | undefined> {
   const gate = await reviewGate(root, state);
-  if (gate.status === "ready") {
+  if (gate.status === "ready" || gate.status === "waived") {
     // planning evidence must reference the current plan batch. If an older
     // plan batch satisfied planning before the current one was created, next
     // returns the recordable planning step so the agent restamps evidence.
     const planningEvidence = state.steps.planning?.evidence as { batchId?: string } | undefined;
-    if (state.steps.planning?.status === "satisfied" && planningEvidence?.batchId !== gate.stamp?.batchId) {
+    const expectedBatchId = gate.status === "ready" ? gate.stamp?.batchId : gate.batchId;
+    if (state.steps.planning?.status === "satisfied" && planningEvidence?.batchId !== expectedBatchId) {
       return { kind: "run-step", step: "planning" };
     }
     return undefined;

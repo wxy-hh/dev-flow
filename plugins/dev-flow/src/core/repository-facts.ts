@@ -172,16 +172,7 @@ export async function normalizeRepositoryFact(
   const observationResult = observation ? await executeRepositoryObservation(root, observation) : undefined;
   const observedFingerprint = observationResult ? observationResult.observedFingerprint : await computeFactFingerprint(root, { ...normalized, location });
   if (observationResult && !observationResult.confirmed) {
-    if (observation?.kind === "text-present") {
-      throw new DevFlowError("INVALID_REPOSITORY_FACT", "text-present occurrence does not match the file contents", {
-        path: observation.path,
-        text: observation.text,
-        expectedOccurrence: observation.occurrence ?? 1,
-        actualOccurrence: observationResult.actualOccurrence,
-        recoveryHint: "occurrence 计文件内全部匹配（含 import 与使用处）；请改为实际匹配次数或修正文本。",
-      });
-    }
-    throw new DevFlowError("BOUNDARY_FACT_UNCONFIRMED", "repository observation is not satisfied", { summary: observationResult.summary, recoveryHint: "修正观察定义或先修正仓库后重试。" });
+    throw observationFailure(observation, observationResult);
   }
   return repositoryFactRecord(normalized, observedFingerprint, new Date().toISOString());
 }
@@ -213,6 +204,39 @@ function applyRepositoryFacts(draft: FeatureState, records: GovernanceRepository
   draft.governance = { ...ledger, repositoryFacts: facts };
   draft.lastUpdatedBy = { host, pluginVersion: __DEV_FLOW_VERSION__ };
   return { created, existing };
+}
+
+function observationFailure(
+  observation: RepositoryObservation | undefined,
+  result: { summary: string; actualOccurrence?: number; requiredOccurrence?: number },
+  index?: number,
+): DevFlowError {
+  const pathValue = observation && "path" in observation ? observation.path : undefined;
+  const text = observation?.kind === "text-present" ? observation.text : observation?.kind === "symbol-present" ? observation.symbol : undefined;
+  const expected = result.requiredOccurrence ?? (observation?.kind === "text-present" ? observation.occurrence ?? 1 : observation?.kind === "symbol-present" ? 1 : undefined);
+  const recoveryHint = observation?.kind === "symbol-present"
+    ? "symbol-present 按符号字面出现次数计数；请改用实际符号名或先修正仓库。"
+    : observation?.kind === "text-present"
+      ? "occurrence 计文件内全部匹配（含 import 与使用处）；请改为实际匹配次数或修正文本。"
+      : "修正观察定义或先修正仓库后重试。";
+  return new DevFlowError(
+    observation?.kind === "text-present" || observation?.kind === "symbol-present" ? "INVALID_REPOSITORY_FACT" : "BOUNDARY_FACT_UNCONFIRMED",
+    observation?.kind === "text-present"
+      ? "text-present occurrence does not match the file contents"
+      : observation?.kind === "symbol-present"
+        ? "symbol-present occurrence does not match the file contents"
+        : "repository observation is not satisfied",
+    {
+      ...(index !== undefined ? { index, path: `observations[${index}]` } : {}),
+      ...(observation ? { kind: observation.kind } : {}),
+      ...(pathValue ? { path: pathValue } : {}),
+      ...(text ? { text } : {}),
+      ...(expected !== undefined ? { expectedOccurrence: expected } : {}),
+      ...(result.actualOccurrence !== undefined ? { actualOccurrence: result.actualOccurrence } : {}),
+      summary: result.summary,
+      recoveryHint,
+    },
+  );
 }
 
 /** 登记一条绑定当前观察指纹的仓库事实，并通过状态模块的 CAS 接缝落账。 */
@@ -248,7 +272,29 @@ export async function registerRepositoryFacts(
   const initial = await readState(root, id);
   if (initial.revision !== expectedRevision) throw new DevFlowError("STATE_REVISION_CONFLICT", "state revision changed", { currentRevision: initial.revision });
   const config = await readProjectConfig(root);
-  const records = await Promise.all(inputs.map((input) => normalizeRepositoryFact(root, input, config)));
+  const settled = await Promise.allSettled(inputs.map((input) => normalizeRepositoryFact(root, input, config)));
+  const failures = settled.flatMap((item, index) => {
+    if (item.status === "fulfilled") return [];
+    const error = item.reason;
+    const details = error instanceof DevFlowError ? error.details : {};
+    return [{
+      index,
+      path: `observations[${index}]`,
+      kind: inputs[index]?.observation?.kind,
+      ...(typeof details.path === "string" ? { pathValue: details.path } : inputs[index]?.observation && "path" in inputs[index].observation! ? { pathValue: inputs[index].observation.path } : {}),
+      ...(typeof details.text === "string" ? { text: details.text } : inputs[index]?.observation?.kind === "text-present" ? { text: inputs[index].observation.text } : inputs[index]?.observation?.kind === "symbol-present" ? { text: inputs[index].observation.symbol } : {}),
+      ...(typeof details.expectedOccurrence === "number" ? { expectedOccurrence: details.expectedOccurrence } : {}),
+      ...(typeof details.actualOccurrence === "number" ? { actualOccurrence: details.actualOccurrence } : {}),
+      message: error instanceof Error ? error.message : String(error),
+    }];
+  });
+  if (failures.length) {
+    throw new DevFlowError("INVALID_REPOSITORY_FACT", "repository fact batch has unconfirmed observations", {
+      observations: failures,
+      recoveryHint: "一次修正全部 observations[i] 后重试；本批未写入。",
+    });
+  }
+  const records = settled.map((item) => (item as PromiseFulfilledResult<GovernanceRepositoryFact>).value);
   let created: string[] = [];
   let existing: string[] = [];
   const state = await mutate(root, id, expectedRevision, "repository-facts-recorded", (draft) => {

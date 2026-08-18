@@ -220,13 +220,14 @@ test("SubagentStop hook records review-execution only for a declared job with di
     assert.equal(missingIds.recorded, false);
     assert.equal(missingIds.reason, "missing-context-ids");
 
+    const completion = JSON.stringify({ coverageSummary: "isolated review complete", findings: [] });
     const recorded = await reviewAdapter.recordSubagentReviewOutput(root, {
       hook_event_name: "SubagentStop",
       prompt: `dev-flow:isolated-review:${declarationId}`,
       session_id: "implementation-session",
       agent_id: "review-subagent-1",
       agent_transcript_path: "/nonexistent/transcript.jsonl",
-      last_assistant_message: `dev-flow:isolated-review:${declarationId}`,
+      last_assistant_message: `dev-flow:isolated-review:${declarationId}\n${completion}`,
       tool_input: {},
     }, "claude");
     assert.equal(recorded.recorded, true);
@@ -238,7 +239,7 @@ test("SubagentStop hook records review-execution only for a declared job with di
     assert.ok(proof, "host proof event must be persisted");
     assert.equal(proof.data.contextId, "review-subagent-1");
     assert.equal(proof.data.implementationContextId, "implementation-session");
-    assert.equal(proof.data.text, `dev-flow:isolated-review:${declarationId}`);
+    assert.equal(proof.data.text, `dev-flow:isolated-review:${declarationId}\n${completion}`);
   } finally {
     await rm(root, { recursive: true, force: true });
   }

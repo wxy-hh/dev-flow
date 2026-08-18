@@ -24,7 +24,7 @@ import { assertTraceGateCurrent } from "./traceability-gates.js";
 import { readTraceability } from "./traceability-store.js";
 import { requireReviewReady } from "./review-jobs.js";
 import { captureAutomaticCheckpoint } from "./auto-checkpoint.js";
-import { maybeSealFeatureEvents } from "./event-segments.js";
+import { sealAfterCommit } from "./event-segments.js";
 import { satisfyObligations } from "../policy/obligations.js";
 import { hasCurrentQualityException, qualityExceptionCoversStep } from "./quality-exceptions.js";
 import { fingerprintFeatureOwned, snapshotGovernedRoots } from "./fingerprint.js";
@@ -129,7 +129,10 @@ export async function recordStep(
     if (required.fields.reviewBatch || step === "code_review") {
       // batch/basis/assurance are Core-owned; callers cannot provide substitutes.
       // 登记 plan 问 plan、登记 code_review 显式问 code，与 status 听到同一句“过/不过”。
-      normalizedEvidence = await requireReviewReady(root, state, { phase: step === "code_review" ? "code" : "plan" });
+      const ready = await requireReviewReady(root, state, { phase: step === "code_review" ? "code" : "plan" });
+      normalizedEvidence = "waived" in ready
+        ? { batchId: ready.batchId, reviewStatus: "risk-accepted" }
+        : ready;
     } else {
       assertRequiredEvidence(step, required, normalizedEvidence);
     }
@@ -173,7 +176,7 @@ export async function recordStep(
   });
   // Phase 8: a successful step completion is a phase boundary; freeze the hot
   // event tail as an immutable event-segment before any automatic checkpoint.
-  await maybeSealFeatureEvents(root, id);
+  const sealed = await sealAfterCommit(root, id, next);
 
   const supportsAutomaticCheckpoint = Number(next.schemaVersion) === 4
     || Number(next.schemaVersion) === 5
@@ -184,7 +187,7 @@ export async function recordStep(
   if (step === "implementation" && supportsAutomaticCheckpoint && next.checkpoints?.length) {
     return captureAutomaticCheckpoint(root, id, next.revision, "implementation", "implementation-complete");
   }
-  return next;
+  return sealed;
 }
 
 async function assertImplementationUnitsComplete(root: string, state: FeatureState): Promise<void> {
@@ -261,7 +264,5 @@ export async function finalize(
     state.lifecycle = "finalized";
     state.steps.finalize = { status: "satisfied" };
   }, () => snapshot ? { deliverySnapshot: snapshot } : {});
-  // Phase 8: finalize is the terminal lifecycle boundary; seal hot history.
-  await maybeSealFeatureEvents(root, id);
-  return finalized;
+  return sealAfterCommit(root, id, finalized);
 }

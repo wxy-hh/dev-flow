@@ -72,8 +72,15 @@ export function directTargets(event: HookEvent): string[] {
   return targets;
 }
 
+/** Only bash and explicit write tools can produce trusted-write targets. */
+export function isTrustedWriteTool(event: HookEvent): boolean {
+  const name = toolName(event);
+  return name === "bash" || directWriteTools.has(name);
+}
+
 /** Normalize statically attributable write targets for trusted hook auditing. */
 export function trustedWriteTargets(root: string, event: HookEvent): string[] {
+  if (!isTrustedWriteTool(event)) return [];
   const targets = toolName(event) === "bash"
     ? (() => {
       const analysis = analyzeBashWriteTargets(String(event.tool_input?.command ?? ""));

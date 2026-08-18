@@ -10,13 +10,13 @@ import {
   type ReviewExecutionSource,
   type ReviewResultEnvelope,
 } from "../policy/review-execution.js";
-import { deriveReviewJobRequirements, parseReviewJobCompletion, type ReviewRole, type ReviewBatch } from "../policy/review.js";
+import { deriveReviewJobRequirements, parseReviewJobCompletion, REVIEW_JOB_COMPLETION_CONTRACT, type ReviewRole, type ReviewBatch, type ReviewJob } from "../policy/review.js";
 import { parseEvidenceObjectRef, type EvidenceObjectRef, type EvidenceStorePointer } from "../policy/evidence-store.js";
 import { putEvidenceObject, readEvidenceObject, evidenceStorePointer } from "./evidence-store.js";
 import { DevFlowError } from "./errors.js";
-import { readReviewLedger, reviewSummary, writeReviewSnapshot } from "./review-store.js";
+import { readReviewLedger, readReviewPackage, reviewSummary, writeReviewSnapshot } from "./review-store.js";
 import { submitParsedReviewJob } from "./review-jobs.js";
-import { appendFeatureEvent, mutatePrepared, readFeatureEvents, readState, type FeatureState } from "./state-store.js";
+import { appendFeatureEvent, mutatePrepared, readActive, readFeatureEvents, readState, type FeatureState } from "./state-store.js";
 import { satisfyObligations } from "../policy/obligations.js";
 
 const sha256 = (bytes: Buffer | string): string => createHash("sha256").update(bytes).digest("hex");
@@ -175,6 +175,105 @@ export interface StartedReviewExecutionJob {
   capability: string;
   declarationId?: string;
   packageSha256: string;
+  dispatchPrompt: string;
+}
+
+export interface ReviewCaptureRejection {
+  reason: string;
+  jobId?: string;
+  declarationId?: string;
+  executionRequestId?: string;
+  hostEventId?: string;
+  at: string;
+  issues?: Array<{ path: string; message: string }>;
+}
+
+export function buildReviewDispatchPrompt(input: {
+  role: ReviewRole;
+  declarationId: string;
+  reviewPackage: unknown;
+}): string {
+  const packed = input.reviewPackage && typeof input.reviewPackage === "object" && !Array.isArray(input.reviewPackage)
+    ? input.reviewPackage as Record<string, unknown>
+    : {};
+  const slice = {
+    role: input.role,
+    reviewDepth: packed.reviewDepth,
+    frozenArtifacts: packed.frozenArtifacts,
+    scopeManifest: packed.scopeManifest,
+    carriedFindings: packed.carriedFindings,
+    ...(packed.nonBehaviorDispositions !== undefined ? { nonBehaviorDispositions: packed.nonBehaviorDispositions } : {}),
+  };
+  const marker = `dev-flow:isolated-review:${input.declarationId}`;
+  return [
+    `角色：${input.role}`,
+    `回收标记：${marker}`,
+    "冻结输入：",
+    JSON.stringify(slice),
+    `完成格式：只输出一个 JSON 对象。必填字段 coverageSummary（字符串）和 findings（数组）；可选 resolutions。合同：${JSON.stringify(REVIEW_JOB_COMPLETION_CONTRACT)}`,
+    "不得写任何文件。不要修改 .dev-flow、项目文件或审查内部状态。",
+    "结束时在输出中原样包含回收标记，并给出完成 JSON。",
+  ].join("\n");
+}
+
+async function startedJobFrom(
+  root: string,
+  featureId: string,
+  job: { jobId: string; role: ReviewRole; capability: string; declarationId?: string; packageSha256: string },
+): Promise<StartedReviewExecutionJob> {
+  const reviewPackage = job.packageSha256 ? await readReviewPackage(root, featureId, job.packageSha256) : {};
+  return {
+    ...job,
+    dispatchPrompt: buildReviewDispatchPrompt({
+      role: job.role,
+      declarationId: job.declarationId ?? "",
+      reviewPackage,
+    }),
+  };
+}
+
+export async function recordReviewCaptureRejection(
+  root: string,
+  input: {
+    featureId?: string;
+    jobId?: string;
+    declarationId?: string;
+    executionRequestId?: string;
+    hostEventId?: string;
+    reason: string;
+    issues?: Array<{ path: string; message: string }>;
+  },
+): Promise<void> {
+  const featureId = input.featureId ?? (await readActive(root))?.featureId;
+  if (!featureId) return;
+  const state = await readState(root, featureId);
+  await appendFeatureEvent(root, featureId, state.revision, "review-capture-rejected", {
+    type: "review-capture-rejected",
+    reason: input.reason,
+    ...(input.jobId ? { jobId: input.jobId } : {}),
+    ...(input.declarationId ? { declarationId: input.declarationId } : {}),
+    ...(input.executionRequestId ? { executionRequestId: input.executionRequestId } : {}),
+    ...(input.hostEventId ? { hostEventId: input.hostEventId } : {}),
+    ...(input.issues ? { issues: input.issues } : {}),
+    at: new Date().toISOString(),
+  });
+}
+
+export function captureRejectionsFromEvents(events: Awaited<ReturnType<typeof readFeatureEvents>>): ReviewCaptureRejection[] {
+  return events.flatMap((event) => {
+    if (event.type !== "review-capture-rejected") return [];
+    const data = event.data as Partial<ReviewCaptureRejection> & { type?: string };
+    if (typeof data.reason !== "string") return [];
+    return [{
+      reason: data.reason,
+      ...(typeof data.jobId === "string" ? { jobId: data.jobId } : {}),
+      ...(typeof data.declarationId === "string" ? { declarationId: data.declarationId } : {}),
+      ...(typeof data.executionRequestId === "string" ? { executionRequestId: data.executionRequestId } : {}),
+      ...(typeof data.hostEventId === "string" ? { hostEventId: data.hostEventId } : {}),
+      at: typeof data.at === "string" ? data.at : event.at,
+      ...(Array.isArray(data.issues) ? { issues: data.issues } : {}),
+    }];
+  });
 }
 
 export interface StartReviewExecutionResult {
@@ -217,6 +316,36 @@ export interface StartReviewExecutionOptions {
   now?: Date;
 }
 
+function samplingFailureCode(error: unknown): "quota" | "timeout" | "invalid-response" | "client-error" {
+  const code = error instanceof DevFlowError
+    ? error.code
+    : error && typeof error === "object" && "code" in error
+      ? String((error as { code?: unknown }).code ?? "")
+      : "";
+  const text = `${code} ${error instanceof Error ? error.message : String(error)}`.toLowerCase();
+  if (code === "REVIEW_SAMPLING_TIMEOUT" || text.includes("timeout")) return "timeout";
+  if (code.includes("QUOTA") || /\b429\b/.test(text) || text.includes("quota") || text.includes("rate limit")) return "quota";
+  if (code === "REVIEW_SAMPLING_RESPONSE_INVALID" || text.includes("invalid")) return "invalid-response";
+  return "client-error";
+}
+
+function withFailedJob(job: ReviewJob, failureCode: "quota" | "timeout" | "invalid-response" | "client-error", now: Date): ReviewJob {
+  const attempt = {
+    requestSha256: sha256(`${job.jobId}:${now.toISOString()}:${failureCode}`),
+    issuedAt: now.toISOString(),
+    leaseExpiresAt: now.toISOString(),
+    status: "failed" as const,
+    completedAt: now.toISOString(),
+    failureCode,
+  };
+  return {
+    ...job,
+    status: "failed",
+    claim: undefined,
+    samplingAttempts: [...job.samplingAttempts ?? [], attempt],
+  };
+}
+
 export async function startReviewExecution(
   root: string,
   featureId: string,
@@ -239,7 +368,7 @@ export async function startReviewExecution(
   const existingIndex = await readExecutionIndex(root, featureId);
   const existingEntry = existingIndex.entries.find((entry) => entry.executionRequestId === executionRequestId);
   let result: Omit<StartReviewExecutionResult, "state"> | undefined;
-  const state = await mutatePrepared(root, featureId, expectedRevision, "review-execution-started", async (current, nextStateRevision) => {
+  let state = await mutatePrepared(root, featureId, expectedRevision, "review-execution-started", async (current, nextStateRevision) => {
     const ledger = await readReviewLedger(root, current);
     const batch = currentReviewBatch(ledger, batchId);
     const phase = batch.phase ?? "plan";
@@ -247,16 +376,16 @@ export async function startReviewExecution(
     if (!requirements.length) throw new DevFlowError("REVIEW_ROUTE_UNSUPPORTED", "current route has no review jobs to execute");
     const pending = batch.jobs.filter((job) => job.status !== "submitted" && job.status !== "reused" && requirements.some((requirement) => requirement.role === job.role));
     if (existingEntry) {
-      const jobs = existingEntry.capabilities.map((capability) => {
+      const jobs = await Promise.all(existingEntry.capabilities.map(async (capability) => {
         const job = batch.jobs.find((candidate) => candidate.jobId === capability.jobId);
-        return {
+        return startedJobFrom(root, featureId, {
           jobId: capability.jobId,
           role: job?.role as ReviewRole,
           capability: capability.capability,
           ...(capability.declarationId ? { declarationId: capability.declarationId } : {}),
           packageSha256: job?.packageSha256 ?? "",
-        };
-      });
+        });
+      }));
       result = { batchId, executionRequestId, jobs, idempotent: true };
       return { mutate: () => undefined, unchanged: true, eventData: { executionRequestId, idempotent: true } };
     }
@@ -349,13 +478,13 @@ export async function startReviewExecution(
     result = {
       batchId,
       executionRequestId,
-      jobs: leases.map((lease) => ({
+      jobs: await Promise.all(leases.map((lease) => startedJobFrom(root, featureId, {
         jobId: lease.job.jobId,
         role: lease.job.role,
         capability: lease.capability,
         declarationId: lease.declarationId,
         packageSha256: lease.job.packageSha256,
-      })),
+      }))),
       idempotent: false,
     };
     return {
@@ -368,35 +497,73 @@ export async function startReviewExecution(
   });
   if (useSampling && resolved.sampleReview && result && !result.idempotent) {
     const { getReviewJob } = await import("./review-jobs.js");
-    const sampledJobs = await Promise.all(result.jobs.map(async (job) => {
-      const packed = await getReviewJob(root, featureId, batchId, job.jobId, job.capability);
-      const sampled = await resolved.sampleReview!({
-        role: job.role,
-        reviewDepth: packed.job.reviewDepth,
-        package: packed.package,
+    const failedJobs: Array<{ jobId: string; failureCode: "quota" | "timeout" | "invalid-response" | "client-error" }> = [];
+    let quotaStopped = false;
+    for (const job of result.jobs) {
+      if (quotaStopped) break;
+      try {
+        const packed = await getReviewJob(root, featureId, batchId, job.jobId, job.capability);
+        const sampled = await resolved.sampleReview!({
+          role: job.role,
+          reviewDepth: packed.job.reviewDepth,
+          package: packed.package,
+        });
+        const rawResult = Buffer.from(`${stableJson(sampled)}\n`, "utf8");
+        const captured = await captureHostReviewEnvelope(root, {
+          featureId,
+          batchId,
+          jobId: job.jobId,
+          role: job.role,
+          packageSha256: job.packageSha256,
+          capabilityHash: sha256(job.capability),
+          executionRequestId,
+          leaseGeneration: 1,
+          ...(job.declarationId ? { declarationId: job.declarationId } : {}),
+          source: "server-sampling",
+          host,
+          startedAt: now.toISOString(),
+          completedAt: new Date().toISOString(),
+          rawResult,
+          parsedCompletion: rawResult,
+        });
+        await recordCapturedEnvelope(root, featureId, executionRequestId, captured.ref);
+      } catch (error) {
+        const failureCode = samplingFailureCode(error);
+        failedJobs.push({ jobId: job.jobId, failureCode });
+        if (failureCode === "quota") quotaStopped = true;
+      }
+    }
+    if (failedJobs.length) {
+      state = await mutatePrepared(root, featureId, state.revision, "review-execution-jobs-failed", async (current, nextStateRevision) => {
+        const ledger = await readReviewLedger(root, current);
+        const batch = currentReviewBatch(ledger, batchId);
+        const failedById = new Map(failedJobs.map((item) => [item.jobId, item.failureCode]));
+        const batches = ledger.batches.map((candidate) => candidate.batchId !== batchId ? candidate : {
+          ...batch,
+          jobs: batch.jobs.map((job) => {
+            const failureCode = failedById.get(job.jobId);
+            return failureCode ? withFailedJob(job, failureCode, now) : job;
+          }),
+        });
+        const pointer = await writeReviewSnapshot(root, {
+          ...ledger,
+          revision: ledger.revision + 1,
+          stateRevision: nextStateRevision,
+          batches,
+          summary: reviewSummary(batches),
+        });
+        return {
+          mutate: (draft) => { draft.review = pointer; },
+          eventData: { batchId, executionRequestId, failedJobs },
+        };
       });
-      return { job, sampled };
-    }));
-    for (const { job, sampled } of sampledJobs) {
-      const rawResult = Buffer.from(`${stableJson(sampled)}\n`, "utf8");
-      const captured = await captureHostReviewEnvelope(root, {
-        featureId,
-        batchId,
-        jobId: job.jobId,
-        role: job.role,
-        packageSha256: job.packageSha256,
-        capabilityHash: sha256(job.capability),
+    }
+    if (quotaStopped) {
+      throw new DevFlowError("REVIEW_EXECUTION_QUOTA", "first explicit quota failure stopped further review dispatch", {
         executionRequestId,
-        leaseGeneration: 1,
-        ...(job.declarationId ? { declarationId: job.declarationId } : {}),
-        source: "server-sampling",
-        host,
-        startedAt: now.toISOString(),
-        completedAt: new Date().toISOString(),
-        rawResult,
-        parsedCompletion: rawResult,
+        failed: failedJobs.length,
+        failureCode: "quota",
       });
-      await recordCapturedEnvelope(root, featureId, executionRequestId, captured.ref);
     }
   }
   return { ...result!, state };
@@ -446,6 +613,10 @@ export interface CompleteReviewExecutionResult {
   state: FeatureState;
   batch: ReviewBatch;
   submittedJobIds: string[];
+  captured: number;
+  submitted: number;
+  pending: number;
+  failed: number;
 }
 
 export async function completeReviewExecution(
@@ -459,6 +630,21 @@ export async function completeReviewExecution(
   const record = await readReviewExecutionRecord(root, featureId, executionRequestId);
   if (record.batchId !== batchId) throw new DevFlowError("REVIEW_EXECUTION_BATCH_MISMATCH", "execution record belongs to another batch", { executionRequestId, batchId });
   const events = await readFeatureEvents(root, featureId);
+  const rejections = captureRejectionsFromEvents(events).filter((item) => item.executionRequestId === executionRequestId
+    || record.leases.some((lease) => lease.declarationId && lease.declarationId === item.declarationId));
+  const leased = record.leases.filter((lease) => lease.state === "leased" || lease.state === "pending");
+  if (record.envelopes.length === 0 && leased.length > 0 && rejections.length === 0) {
+    throw new DevFlowError("REVIEW_EXECUTION_STILL_RUNNING", "review jobs are still leased and no envelope has been captured", {
+      executionRequestId,
+      pending: leased.length,
+    });
+  }
+  if (record.envelopes.length === 0) {
+    throw new DevFlowError("REVIEW_EXECUTION_EMPTY", "review execution has no captured envelopes", {
+      executionRequestId,
+      failed: rejections.length,
+    });
+  }
   let submittedJobIds: string[] = [];
   let completed: ReviewBatch | undefined;
   const state = await mutatePrepared(root, featureId, expectedRevision, "review-execution-completed", async (current, nextStateRevision) => {
@@ -505,6 +691,17 @@ export async function completeReviewExecution(
       findingEvents.push(...submitted.findingEvents);
       submittedJobIds.push(job.jobId);
     }
+    const rejectedJobIds = new Set(rejections.map((item) => item.jobId).filter((jobId): jobId is string => Boolean(jobId)));
+    batch = {
+      ...batch,
+      jobs: batch.jobs.map((job) => {
+        if (job.status === "submitted" || job.status === "reused") return job;
+        if (!rejectedJobIds.has(job.jobId)) return job;
+        const rejection = rejections.find((item) => item.jobId === job.jobId);
+        const failureCode = rejection?.reason === "invalid-completion" ? "invalid-response" as const : "client-error" as const;
+        return withFailedJob(job, failureCode, now);
+      }),
+    };
     const batches = ledger.batches.map((candidate) => candidate.batchId === batchId ? batch : candidate);
     const pointer = await writeReviewSnapshot(root, {
       ...ledger,
@@ -537,6 +734,18 @@ export async function completeReviewExecution(
       eventData: { batchId, executionRequestId, submittedJobIds },
     };
   });
-  return { state, batch: completed!, submittedJobIds };
+  const pending = record.leases.filter((lease) => {
+    const job = completed!.jobs.find((candidate) => candidate.jobId === lease.jobId);
+    return job?.status !== "submitted" && job?.status !== "reused";
+  }).length;
+  return {
+    state,
+    batch: completed!,
+    submittedJobIds,
+    captured: record.envelopes.length,
+    submitted: submittedJobIds.length,
+    pending,
+    failed: completed!.jobs.filter((job) => job.status === "failed").length,
+  };
 }
 

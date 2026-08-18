@@ -251,3 +251,47 @@ test("begin 前置失败时门禁返回带原因码的结构化诊断且状态�
     await rm(root, { recursive: true, force: true });
   }
 });
+
+test("Read and no-op writes never enter delivery ownership", async () => {
+  const syntax = await loadSource("plugins/dev-flow/src/hosts/bash-syntax.ts");
+  const root = await startIntake("trusted-write");
+  try {
+    assert.deepEqual(syntax.trustedWriteTargets(root, { tool_name: "Read", tool_input: { file_path: "src/feature.txt" } }), []);
+    assert.deepEqual(syntax.trustedWriteTargets(root, { tool_name: "Grep", tool_input: { path: "src" } }), []);
+    const writeTargets = syntax.trustedWriteTargets(root, { tool_name: "Write", tool_input: { file_path: "src/feature.txt" } });
+    assert.deepEqual(writeTargets, ["src/feature.txt"]);
+    await rm(root, { recursive: true, force: true });
+  } finally {
+    await rm(root, { recursive: true, force: true }).catch(() => undefined);
+  }
+});
+
+test("only content-changing delivery writes update ownership and revision", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "dev-flow-gate-ownership-"));
+  try {
+    await mkdir(path.join(root, "src"), { recursive: true });
+    await writeFile(path.join(root, "src", "feature.txt"), "same\n");
+    await state.initProject(root, config);
+    let current = await state.startFeature(root, { featureId: "owned", host: "codex", level: "XS", topology: "local" });
+    const beforeRevision = current.revision;
+    await state.recordTrustedWriteIntent(root, [".dev-flow/project.json"], "codex", "op-1");
+    await state.recordTrustedWriteOwnership(root, [".dev-flow/project.json"], "codex", "op-1");
+    current = await state.readState(root, "owned");
+    assert.equal(current.revision, beforeRevision);
+    assert.equal(current.workspace.ownership[".dev-flow/project.json"], undefined);
+    await state.recordTrustedWriteIntent(root, ["src/feature.txt"], "codex", "noop-1");
+    await state.recordTrustedWriteOwnership(root, ["src/feature.txt"], "codex", "noop-1");
+    current = await state.readState(root, "owned");
+    assert.equal(current.revision, beforeRevision);
+    await state.recordTrustedWriteIntent(root, ["src/feature.txt"], "codex", "real-1");
+    await writeFile(path.join(root, "src", "feature.txt"), "changed\n");
+    await state.recordTrustedWriteOwnership(root, ["src/feature.txt"], "codex", "real-1");
+    current = await state.readState(root, "owned");
+    assert.equal(current.revision, beforeRevision + 1);
+    assert.equal(current.workspace.ownership["src/feature.txt"], "feature");
+    const blocked = await gate.writeGate(root, { kind: "file", paths: [".dev-flow/active.json"] });
+    assert.equal(blocked.decision, "block");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});

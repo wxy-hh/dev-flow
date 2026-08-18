@@ -385,7 +385,7 @@ export type NextAction =
       step: "planning";
       batchId: string;
       /** jobs-open: the pending work queue, straight from the review gate. */
-      jobs?: Array<{ jobId: string; role: ReviewRole; reviewDepth: ReviewDepth; status: "pending" | "claimed" | "sampling" | "submitted" | "reused" }>;
+      jobs?: Array<{ jobId: string; role: ReviewRole; reviewDepth: ReviewDepth; status: "pending" | "claimed" | "sampling" | "submitted" | "reused" | "failed" }>;
       /** blocking: unresolved blocking finding ids, straight from the gate result. */
       findingIds?: string[];
       /** isolation: submitted jobs missing an isolation proof, straight from the gate result. */

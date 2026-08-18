@@ -15,7 +15,7 @@ function sortValue(value: unknown): unknown {
   return value;
 }
 
-const emptySummary = (): ReviewSummary => ({ batches: 0, current: 0, stale: 0, open: 0, complete: 0 });
+const emptySummary = (): ReviewSummary => ({ batches: 0, current: 0, stale: 0, open: 0, complete: 0, superseded: 0, waived: 0 });
 const digest = (contents: string | Buffer): string => createHash("sha256").update(contents).digest("hex");
 
 export function emptyReviewLedger(featureId: string, stateRevision: number): ReviewLedger {
@@ -67,7 +67,9 @@ function sameSummary(left: ReviewSummary, right: ReviewSummary): boolean {
     && left.current === right.current
     && left.stale === right.stale
     && left.open === right.open
-    && left.complete === right.complete;
+    && left.complete === right.complete
+    && (left.superseded ?? 0) === (right.superseded ?? 0)
+    && (left.waived ?? 0) === (right.waived ?? 0);
 }
 
 function validHash(value: unknown): value is string {
@@ -89,7 +91,8 @@ function validSamplingAttempt(value: unknown): value is ReviewSamplingAttempt {
   if (value.status === "failed") {
     return value.payloadSha256 === undefined
       && (value.failureCode === "client-error" || value.failureCode === "timeout"
-        || value.failureCode === "invalid-response" || value.failureCode === "validation-failed");
+        || value.failureCode === "invalid-response" || value.failureCode === "validation-failed"
+        || value.failureCode === "quota");
   }
   return validHash(value.payloadSha256) && value.failureCode === undefined;
 }
@@ -130,7 +133,7 @@ function validateBatch(value: unknown): value is ReviewBatch {
   if (typeof batch.batchId !== "string" || !batch.batchId || !validHash(batch.basisHash)
     || (batch.phase !== "plan" && batch.phase !== "code")
     || !batch.basis || batch.validity !== "current" && batch.validity !== "stale"
-    || batch.progress !== "open" && batch.progress !== "complete"
+    || batch.progress !== "open" && batch.progress !== "complete" && batch.progress !== "superseded" && batch.progress !== "waived"
     || batch.executionMode !== "parallel-execution"
     || batch.assuranceLevel !== "multi-perspective" && batch.assuranceLevel !== "independent-sampling"
       && batch.assuranceLevel !== "multi-agent-verified"
@@ -140,8 +143,11 @@ function validateBatch(value: unknown): value is ReviewBatch {
   return batch.jobs.every((job) => {
     if (!job || typeof job !== "object" || typeof job.jobId !== "string" || !job.jobId || ids.has(job.jobId)
       || typeof job.role !== "string" || (job.reviewDepth !== "standard" && job.reviewDepth !== "full")
-      || !validHash(job.packageSha256) || !validHash(job.roleBasisHash) || (job.status !== "pending" && job.status !== "claimed" && job.status !== "sampling" && job.status !== "submitted" && job.status !== "reused")) return false;
+      || !validHash(job.packageSha256) || !validHash(job.roleBasisHash) || (job.status !== "pending" && job.status !== "claimed" && job.status !== "sampling" && job.status !== "submitted" && job.status !== "reused" && job.status !== "failed")) return false;
     ids.add(job.jobId);
+    if (job.status === "failed") {
+      return !job.submission && (job.samplingAttempts === undefined || validSamplingAttempts(job.samplingAttempts, "pending", undefined));
+    }
     if (job.status === "reused") return !!job.reusedFrom && validHash(job.reusedFrom.submissionSha256) && !job.claim && !job.submission;
     if (!validSamplingAttempts(job.samplingAttempts, job.status, job.submission)) return false;
     if (job.status === "pending") return !job.claim && !job.submission;
@@ -196,7 +202,8 @@ function validateLedger(value: unknown): asserts value is ReviewLedger {
     if (batchIds.has(batch.batchId)
       || batch.basis.featureId !== ledger.featureId
       || !validBasisHash(batch.basis, batch.basisHash)
-      || (batch.progress === "complete") !== batch.jobs.every((job) => job.status === "submitted" || job.status === "reused")) {
+      || (batch.progress === "complete" && !batch.jobs.every((job) => job.status === "submitted" || job.status === "reused"))
+      || (batch.progress === "open" && batch.jobs.every((job) => job.status === "submitted" || job.status === "reused"))) {
       integrity("review snapshot batch is inconsistent");
     }
     if (batch.assuranceLevel !== assuranceForReviewBatch(batch)) {
@@ -244,8 +251,10 @@ export function reviewSummary(batches: ReviewBatch[]): ReviewSummary {
     batches: batches.length,
     current: batches.filter((batch) => batch.validity === "current").length,
     stale: batches.filter((batch) => batch.validity === "stale").length,
-    open: batches.filter((batch) => batch.progress === "open").length,
+    open: batches.filter((batch) => batch.progress === "open" && batch.validity === "current").length,
     complete: batches.filter((batch) => batch.progress === "complete").length,
+    superseded: batches.filter((batch) => batch.progress === "superseded").length,
+    waived: batches.filter((batch) => batch.progress === "waived").length,
   };
 }
 

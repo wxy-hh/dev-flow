@@ -541,3 +541,102 @@ test("plan review accepts recovery nodes in the scope manifest", async () => {
     await rm(root, { recursive: true, force: true });
   }
 });
+
+test("accepting review risk waives an incomplete batch in the same answer transaction", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "dev-flow-gate-waive-"));
+  try {
+    const id = "waive";
+    const state = await setupPlanReview(root, id);
+    const created = await jobs.createReviewBatch(root, id, state.revision);
+    assert.equal((await jobs.reviewGate(root, created.state)).status, "jobs-open");
+    const presented = await quality.presentQualityException(root, id, created.state.revision, {
+      kind: "review",
+      basisHash: created.batch.basisHash,
+      fingerprint: created.state.businessFingerprint ?? "b".repeat(64),
+      riskSummary: "接受未完成审查风险继续",
+    });
+    const accepted = await store.answer({
+      root, featureId: id, expectedRevision: presented.state.revision, host: "codex",
+      credential: { source: "elicitation", action: "accept", comment: "已知审查未完成，接受风险" },
+    });
+    const ledger = await reviewStore.readReviewLedger(root, accepted.state);
+    const batch = ledger.batches.find((candidate) => candidate.batchId === created.batch.batchId);
+    assert.equal(batch.progress, "waived");
+    assert.equal(ledger.summary.waived, 1);
+    assert.equal(ledger.summary.open, 0);
+    const gate = await jobs.reviewGate(root, accepted.state);
+    assert.equal(gate.status, "waived");
+    assert.equal(gate.batchId, created.batch.batchId);
+    assert.equal(gate.stamp, undefined);
+    const nextAfter = await next.nextAction(root, id);
+    assert.equal(nextAfter.kind, "run-step");
+    assert.equal(nextAfter.step, "planning");
+    const recorded = await steps.recordStep(root, id, accepted.state.revision, "planning", { reviewType: "plan" });
+    assert.equal(recorded.steps.planning.status, "satisfied");
+    assert.equal(recorded.steps.planning.evidence.reviewStatus, "risk-accepted");
+    assert.equal(recorded.steps.planning.evidence.batchId, created.batch.batchId);
+    const ready = await jobs.reviewGate(root, recorded);
+    assert.equal(ready.status, "waived");
+    assert.equal(quality.hasCurrentQualityException(recorded, "review", {
+      batchId: created.batch.batchId,
+      basisHash: created.batch.basisHash,
+    }), true);
+    assert.equal(quality.hasCurrentQualityException(recorded, "review", {
+      batchId: "other-batch",
+      basisHash: created.batch.basisHash,
+    }), false);
+    assert.equal(
+      quality.hasCurrentQualityException(recorded, "review"),
+      false,
+      "unbound review exception must stay content-bound so a plan waiver cannot skip later isolation",
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("review waiver expires when the batch basis or delivery fingerprint changes", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "dev-flow-gate-waive-stale-"));
+  try {
+    const id = "waivestale";
+    const state = await setupPlanReview(root, id);
+    const created = await jobs.createReviewBatch(root, id, state.revision);
+    const presented = await quality.presentQualityException(root, id, created.state.revision, {
+      kind: "review",
+      basisHash: created.batch.basisHash,
+      fingerprint: created.state.businessFingerprint ?? "b".repeat(64),
+      riskSummary: "接受未完成审查风险继续",
+    });
+    const accepted = await store.answer({
+      root, featureId: id, expectedRevision: presented.state.revision, host: "codex",
+      credential: { source: "elicitation", action: "accept", comment: "接受" },
+    });
+    assert.equal((await jobs.reviewGate(root, accepted.state)).status, "waived");
+    const successor = await jobs.createReviewBatch(root, id, accepted.state.revision);
+    if (successor.created) {
+      const gate = await jobs.reviewGate(root, successor.state);
+      assert.notEqual(gate.status, "waived");
+    } else {
+      const mutated = await store.mutate(root, id, accepted.state.revision, "test-fingerprint", (draft) => {
+        draft.businessFingerprint = "c".repeat(64);
+      });
+      const gate = await jobs.reviewGate(root, mutated);
+      assert.notEqual(gate.status, "waived");
+    }
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("new review basis supersedes the previous open batch and open count is current-only", () => {
+  const previous = { validity: "current", phase: "plan", progress: "open", batchId: "old", basisHash: "a".repeat(64) };
+  const superseded = jobs.staleCurrentBatchesOfPhase([previous], "plan");
+  assert.equal(superseded[0].validity, "stale");
+  assert.equal(superseded[0].progress, "superseded");
+  const current = { validity: "current", phase: "plan", progress: "open", batchId: "new", basisHash: "b".repeat(64) };
+  const summary = reviewStore.reviewSummary([...superseded, current]);
+  assert.equal(summary.open, 1);
+  assert.equal(summary.superseded, 1);
+  assert.equal(summary.current, 1);
+  assert.equal(summary.stale, 1);
+});

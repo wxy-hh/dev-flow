@@ -17,6 +17,8 @@ import type { QualityException } from "../policy/types.js";
 import type { AnswerResolveContext, AnswerResolveResult } from "./interaction-answer.js";
 import { satisfyObligations } from "../policy/obligations.js";
 import { currentRiskAuthorizations } from "./governance-state.js";
+import { readReviewLedger, reviewSummary, writeReviewSnapshot } from "./review-store.js";
+import { currentOpenStep } from "./step-order.js";
 
 export type QualityExceptionPresentation = PresentedInteraction;
 
@@ -32,11 +34,18 @@ function validKind(kind: string): QualityException["kind"] {
   });
 }
 
-export function hasCurrentQualityException(state: FeatureState, kind: QualityException["kind"]): boolean {
+export function reviewWaiverSliceKey(batchId: string, basisHash: string): string {
+  return `review-waiver:${batchId}:${basisHash}`;
+}
+
+export function hasCurrentQualityException(state: FeatureState, kind: QualityException["kind"], binding?: { batchId: string; basisHash: string }): boolean {
   const invalidatedAt = state.lastInvalidation?.at ? Date.parse(state.lastInvalidation.at) : Number.NaN;
-  const authorization = currentRiskAuthorizations(state, { contentFingerprint: state.businessFingerprint }).some((item) => item.target === kind
+  const current: { contentFingerprint?: string; sliceBases?: Record<string, string> } = { contentFingerprint: state.businessFingerprint };
+  if (kind === "review" && binding && state.businessFingerprint) {
+    current.sliceBases = { [reviewWaiverSliceKey(binding.batchId, binding.basisHash)]: state.businessFingerprint };
+  }
+  return currentRiskAuthorizations(state, current).some((item) => item.target === kind
     && (!Number.isFinite(invalidatedAt) || !item.recordedAt || Date.parse(item.recordedAt) >= invalidatedAt));
-  return authorization;
 }
 
 /**
@@ -52,7 +61,14 @@ export function qualityExceptionCoversStep(state: FeatureState, step: string): b
     implementation: "implementation-evidence",
   };
   const kind = kindForStep[step];
-  return kind !== undefined && hasCurrentQualityException(state, kind);
+  if (kind === undefined) return false;
+  if (kind !== "review" || hasCurrentQualityException(state, kind)) return hasCurrentQualityException(state, kind);
+  return (state.governance?.authorizations ?? []).some((authorization) => {
+    const basis = authorization.basis;
+    if (authorization.target !== "review" || basis?.kind !== "slice") return false;
+    const match = /^review-waiver:([^:]+):([0-9a-f]{64})$/u.exec(basis.sliceKey);
+    return Boolean(match && hasCurrentQualityException(state, "review", { batchId: match[1]!, basisHash: match[2]! }));
+  });
 }
 
 export async function presentQualityException(
@@ -107,7 +123,7 @@ export async function resolveQualityExceptionForAnswer(ctx: AnswerResolveContext
     promptText = credential.promptText;
   }
   let response: InteractionResponse | undefined;
-  const next = await mutatePrepared(root, featureId, expectedRevision, "quality-exception-answered", async (current) => {
+  const next = await mutatePrepared(root, featureId, expectedRevision, "quality-exception-answered", async (current, nextStateRevision) => {
     const live = getInteraction(current as FeatureState, interaction.id);
     if (live.kind !== "quality-exception" || live.status !== "pending") {
       throw new DevFlowError("INTERACTION_NOT_PENDING", "当前风险问题已经处理。", { interactionId: interaction.id });
@@ -135,11 +151,29 @@ export async function resolveQualityExceptionForAnswer(ctx: AnswerResolveContext
           const fingerprint = await fingerprintFeatureOwned(root, config, draft.workspace.ownership);
           draft.businessFingerprint = fingerprint;
           draft.evidenceStore = baseline.pointer;
+          let reviewBinding: { batchId: string; basisHash: string } | undefined;
+          if (kind === "review") {
+            const ledger = await readReviewLedger(root, draft);
+            const phase = currentOpenStep(draft) === "code_review" ? "code" : "plan";
+            const batch = ledger.batches.find((candidate) => candidate.validity === "current" && (candidate.phase ?? "plan") === phase);
+            if (batch && batch.progress !== "complete" && batch.progress !== "superseded") {
+              const batches = ledger.batches.map((candidate) => candidate.batchId === batch.batchId ? { ...candidate, progress: "waived" as const } : candidate);
+              const pointer = await writeReviewSnapshot(root, {
+                ...ledger,
+                revision: ledger.revision + 1,
+                stateRevision: nextStateRevision,
+                batches,
+                summary: reviewSummary(batches),
+              });
+              draft.review = pointer;
+              reviewBinding = { batchId: batch.batchId, basisHash: batch.basisHash };
+            }
+          }
           // 治理账本：风险接受是"授权"记录，追加到不可变 authorizations 账本并
           // 绑定本次交互凭证（spec §202；与 recordDecision 的账本模式一致）。
           const gov = draft.governance ?? EMPTY_GOVERNANCE_LEDGER;
           const credentialId = `CRED-qe-${interaction.id}`;
-          const authorizationId = `AUTH-${createHash("sha256").update(`${kind}|${fingerprint}|${response.respondedAt}`).digest("hex").slice(0, 16)}`;
+          const authorizationId = `AUTH-${createHash("sha256").update(`${kind}|${fingerprint}|${response.respondedAt}|${reviewBinding?.batchId ?? ""}`).digest("hex").slice(0, 16)}`;
           const authorizations = [...gov.authorizations];
           if (!authorizations.some((authorization) => authorization.recordId === authorizationId)) {
             authorizations.push({
@@ -148,7 +182,9 @@ export async function resolveQualityExceptionForAnswer(ctx: AnswerResolveContext
               authorizationType: "risk-acceptance",
               target: kind,
               credentialId,
-              basis: { kind: "content", sha256: fingerprint },
+              basis: reviewBinding
+                ? { kind: "slice", sliceKey: reviewWaiverSliceKey(reviewBinding.batchId, reviewBinding.basisHash), sliceHash: fingerprint }
+                : { kind: "content", sha256: fingerprint },
               baselineRef: baseline.ref,
               recordedAt: response.respondedAt,
             });

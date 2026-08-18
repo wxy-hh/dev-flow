@@ -227,26 +227,37 @@ export async function validatePlanFromMarkdown(
   artifactKind: TraceArtifactKind,
 ): Promise<{
   ok: boolean;
+  applicable: boolean;
+  coverageChecked: boolean;
   diagnostics: PlanDiagnostic[];
   semanticSha256?: string;
   implementationUnits?: import("./plan-compiler.js").ImplementationUnitProjection[];
   recoveryArrangements?: import("./plan-compiler.js").RecoveryArrangementProjection[];
+  nextStep?: string;
 }> {
   const state = await readState(root, id);
   if (!traceArtifactKindList.has(artifactKind)) throw new DevFlowError("INVALID_ARTIFACT", artifactKind);
   if (state.lifecycle !== "active") throw new DevFlowError("INVALID_LIFECYCLE", "only active features can validate plans");
-  if (!traceEnforcementRequired(state.route, state.classification.controls)) {
-    throw new DevFlowError("TRACE_NOT_ENFORCED", `${artifactKind} does not use Trace registration on ${state.route}`, {
-      route: state.route,
-      recoveryHint: "当前路线不强制 Trace；请改用 dev_flow_record_artifact 登记该文档",
-    });
-  }
   const compilation = await compileArtifactPlanFromMarkdown(root, id, state, {
     artifactKind,
     nextStateRevision: state.revision + 1,
+    structuralOnly: !traceEnforcementRequired(state.route, state.classification.controls),
   });
+  if (!traceEnforcementRequired(state.route, state.classification.controls)) {
+    const structural = compilation.result.diagnostics.filter((item) => item.code === "TRACE_MARKDOWN_INVALID");
+    return {
+      ok: structural.length === 0,
+      applicable: true,
+      coverageChecked: false,
+      diagnostics: structural,
+      ...(compilation.semanticSha256 ? { semanticSha256: compilation.semanticSha256 } : {}),
+      nextStep: "dev_flow_record_artifact",
+    };
+  }
   return {
     ok: compilation.result.ok,
+    applicable: true,
+    coverageChecked: true,
     diagnostics: compilation.result.diagnostics,
     ...(compilation.semanticSha256 ? { semanticSha256: compilation.semanticSha256 } : {}),
     ...(compilation.result.implementationUnits ? { implementationUnits: compilation.result.implementationUnits } : {}),

@@ -87,7 +87,8 @@ export function deriveGovernanceControls(
   const checkpoints = level === "L" || multi || signals.executableRollback || labels.includes("irreversible_consequence") ? "unit-chain" : "baseline";
   const plan = level === "XS" && !planReview && checkpoints === "baseline" && !signals.operationalRecovery ? "locate"
     : level === "S" && !planReview && checkpoints === "baseline" && !signals.operationalRecovery ? "brief" : "formal";
-  const trace = level === "L" || (level === "M" && (shared || multi || signals.operationalRecovery || planReview));
+  // unit-chain is unenforceable without Trace; keep declared controls executable.
+  const trace = level === "L" || checkpoints === "unit-chain" || (level === "M" && (shared || multi || signals.operationalRecovery || planReview));
   // Trace nodes need a frozen REQ/AC source. When topology/recovery turns Trace
   // on for an otherwise bounded change, promote requirements evidence too.
   const requirements = persistentRequirements || trace;

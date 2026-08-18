@@ -17,7 +17,7 @@ export interface ReviewProjectionJob {
   jobId: string;
   role: string;
   reviewDepth: "standard" | "full";
-  status: "pending" | "claimed" | "sampling" | "submitted" | "reused";
+  status: "pending" | "claimed" | "sampling" | "submitted" | "reused" | "failed";
 }
 
 export interface ReviewProjectionFinding {
@@ -47,7 +47,7 @@ export interface ReviewProjection {
     status: "not-created" | "current" | "stale";
     batchId?: string;
     basisHash?: string;
-    progress?: "open" | "complete";
+    progress?: "open" | "complete" | "superseded" | "waived";
     executionMode?: string;
     requiredRoles: Array<{ role: string; reviewDepth: "standard" | "full" }>;
     jobs: ReviewProjectionJob[];
@@ -64,7 +64,7 @@ export interface ReviewProjection {
       status: "not-created" | "current" | "stale";
       batchId?: string;
       basisHash?: string;
-      progress?: "open" | "complete";
+      progress?: "open" | "complete" | "superseded" | "waived";
       executionMode?: string;
       requiredRoles: Array<{ role: string; reviewDepth: "standard" | "full" }>;
       jobs: ReviewProjectionJob[];
@@ -74,14 +74,14 @@ export interface ReviewProjection {
       status: "not-created" | "current" | "stale";
       batchId?: string;
       basisHash?: string;
-      progress?: "open" | "complete";
+      progress?: "open" | "complete" | "superseded" | "waived";
       executionMode?: string;
       requiredRoles: Array<{ role: string; reviewDepth: "standard" | "full" }>;
       jobs: ReviewProjectionJob[];
       visibility: "coarse" | "complete";
     };
   };
-  staleBatches: Array<{ batchId: string; basisHash: string; progress: "open" | "complete" }>;
+  staleBatches: Array<{ batchId: string; basisHash: string; progress: "open" | "complete" | "superseded" | "waived" }>;
 }
 
 export interface CurrentReviewProjection {

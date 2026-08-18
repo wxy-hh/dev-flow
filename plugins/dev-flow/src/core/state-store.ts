@@ -34,7 +34,7 @@ import { emptyTraceabilityLedger } from "./traceability.js";
 import { inspectCurrentTrace } from "./traceability-gates.js";
 import { readTraceability } from "./traceability-store.js";
 import { readReviewLedger } from "./review-store.js";
-import { maybeSealFeatureEvents, nextFeatureEventSequence, readSegmentedFeatureEvents } from "./event-segments.js";
+import { nextFeatureEventSequence, readSegmentedFeatureEvents, sealAfterCommit } from "./event-segments.js";
 import { hydrateFeatureState, persistableFeatureState } from "./state-archive.js";
 import { runBoundedEvidenceMaintenance } from "./evidence-maintenance.js";
 import { trustedWriteSummary } from "./workspace-store.js";
@@ -303,7 +303,10 @@ export function validateFeatureState(value: unknown): asserts value is FeatureSt
       || !/^[a-f0-9]{64}$/.test(pointer.sha256)
       || pointer.path !== `review/snapshots/${pointer.sha256}.json`
       || !Number.isInteger(pointer.revision) || pointer.revision < 0
-      || !pointer.summary || !["batches", "current", "stale", "open", "complete"].every((key) => Number.isInteger(pointer.summary[key as keyof typeof pointer.summary]) && pointer.summary[key as keyof typeof pointer.summary] >= 0)) {
+      || !pointer.summary || !["batches", "current", "stale", "open", "complete"].every((key) => {
+        const value = pointer.summary?.[key as keyof typeof pointer.summary];
+        return Number.isInteger(value) && (value as number) >= 0;
+      })) {
       throw new DevFlowError("INVALID_STATE_SCHEMA", "review pointer is invalid");
     }
   }
@@ -652,7 +655,12 @@ async function prepareStatusProjection(root: string, state: FeatureState, revisi
   const projection = [
     "---", "dev_flow:", "  schema_version: 1", `  feature_id: ${state.featureId}`, `  route: ${state.route}`, "  kind: status", "  generated: true", "---", "",
     "# Dev Flow Status", "", `- Revision: ${revision}`, `- Lifecycle: ${state.lifecycle}`, `- Route: ${state.route}`, `- Logic complete: ${state.logicComplete}`, "", "## Steps", "",
-    ...routeDefinitionForFeature(state.route, state.classification.controls).orderedSteps.map((step) => `- ${step}: ${state.steps[step]?.status ?? "pending"}`), "",
+    ...routeDefinitionForFeature(state.route, state.classification.controls).orderedSteps.map((step) => {
+      const snapshot = state.steps[step];
+      const evidence = snapshot?.evidence as { reviewStatus?: unknown } | undefined;
+      const label = evidence?.reviewStatus === "risk-accepted" ? "风险已接受" : (snapshot?.status ?? "pending");
+      return `- ${step}: ${label}`;
+    }), "",
     ...traceLines,
     ...(grillAdvisory ? [`- 提示: 需求文档「开放问题」还有 ${grillAdvisory.items.length} 项未收敛（${grillAdvisory.items.join("；")}），建议先调用 dev_flow_request_grill_decision 收敛后再进入 planning。`, ""] : []),
   ].join("\n");
@@ -851,13 +859,22 @@ export async function recordReviewExecutionEvent(root: string, hostEvent: Review
   } finally { await release(); }
 }
 
+function isDeliveryOwnedPath(file: string): boolean {
+  return file !== ".dev-flow" && !file.startsWith(".dev-flow/")
+    && file !== "devflow-issues" && !file.startsWith("devflow-issues/");
+}
+
+function governedWritePaths(paths: string[], governedRoots: string[]): string[] {
+  return paths.filter((file) => governedRoots.some((entry) => entry === "." || file === entry || file.startsWith(`${entry}/`)));
+}
+
 export async function recordTrustedWriteIntent(root: string, paths: string[], host: "claude" | "codex", eventId: string): Promise<void> {
   const active = await readActive(root);
   if (!active || paths.length === 0) return;
   const state = await readState(root, active.featureId);
   if (state.mode !== "routed" || state.lifecycle !== "active") return;
   const config = await readProjectConfig(root);
-  const governed = paths.filter((file) => config.governedRoots.some((entry) => entry === "." || file === entry || file.startsWith(`${entry}/`)));
+  const governed = governedWritePaths(paths, config.governedRoots);
   if (!governed.length) return;
   const before = Object.fromEntries(await Promise.all(governed.map(async (file) => [file, await trustedWriteSummary(root, file)])));
   await appendFeatureEvent(root, state.featureId, state.revision, "trusted-write-before", { eventId, host, paths: governed, before });
@@ -869,17 +886,30 @@ export async function recordTrustedWriteOwnership(root: string, paths: string[],
   const state = await readState(root, active.featureId);
   if (state.mode !== "routed" || state.lifecycle !== "active") return;
   const config = await readProjectConfig(root);
-  const governed = paths.filter((file) => config.governedRoots.some((entry) => entry === "." || file === entry || file.startsWith(`${entry}/`)));
+  const governed = governedWritePaths(paths, config.governedRoots);
   if (!governed.length) return;
   const after = Object.fromEntries(await Promise.all(governed.map(async (file) => [file, await trustedWriteSummary(root, file)])));
+  const events = await readFeatureEvents(root, state.featureId);
+  const intent = [...events].reverse().find((event) => {
+    if (event.type !== "trusted-write-before") return false;
+    const data = event.data as { eventId?: unknown };
+    return data.eventId === eventId;
+  });
+  const before = (intent?.data as { before?: Record<string, string> } | undefined)?.before ?? {};
+  const operational = governed.filter((file) => !isDeliveryOwnedPath(file));
+  const delivery = governed.filter(isDeliveryOwnedPath).filter((file) => after[file] !== (before[file] ?? "missing"));
+  if (operational.length) {
+    await appendFeatureEvent(root, state.featureId, state.revision, "operational-write", { eventId, host, paths: operational, after: Object.fromEntries(operational.map((file) => [file, after[file]])) });
+  }
+  if (!delivery.length) return;
   await mutate(root, state.featureId, state.revision, "trusted-write-owned", (draft) => {
-    for (const file of governed) {
+    for (const file of delivery) {
       draft.workspace.ownership[file] = "feature";
       draft.workspace.ownershipSource[file] = "trusted-hook";
     }
-    draft.workspace.unownedPaths = (draft.workspace.unownedPaths ?? []).filter((file) => !governed.includes(file));
+    draft.workspace.unownedPaths = (draft.workspace.unownedPaths ?? []).filter((file) => !delivery.includes(file));
     draft.lastUpdatedBy = { host, pluginVersion: __DEV_FLOW_VERSION__ };
-  }, { eventId, host, paths: governed, after });
+  }, { eventId, host, paths: delivery, after: Object.fromEntries(delivery.map((file) => [file, after[file]])) });
 }
 
 export type HostAuthorizationEventType = "host-authorization-pending" | "host-authorization-granted";
@@ -1230,8 +1260,7 @@ export async function pauseFeature(
     state.lastUpdatedBy = { host, pluginVersion: __DEV_FLOW_VERSION__ };
   }, { reason: reason.trim() });
   // Phase 8: pause is a lifecycle boundary; freeze the hot event tail.
-  await maybeSealFeatureEvents(root, id);
-  return paused;
+  return sealAfterCommit(root, id, paused);
 }
 
 export async function resumeFeature(root: string, id: string, host: "claude" | "codex"): Promise<FeatureState> {

@@ -33,7 +33,11 @@ function implementationPlanTemplate(context: ArtifactTemplateContext): string {
   const test = formal
     ? "\n<!-- dev-flow:id=TEST-001 kind=test -->\n### TEST-001：验证场景\n\n- verifies: [AC-001]\n"
     : "";
-  return `${frontMatter(context, "implementation-plan")}# 实现计划\n\n<!-- dev-flow:id=TASK-001 kind=task -->\n### TASK-001：实现任务\n\n- covers: [REQ-001, AC-001]\n- implementation_unit: UNIT-001\n- tdd: test-first\n${test}${implementationUnit}`;
+  const needsRecovery = (context.controls?.recovery ?? []).some((kind) => kind === "irreversible-compensation" || kind === "operational-strategy" || kind === "executable-rollback");
+  const recovery = formal && needsRecovery
+    ? "\n<!-- dev-flow:id=REC-001 kind=recovery -->\n### REC-001：恢复安排\n\n- step_ref: UNIT-001\n- recovery_kind: compensation\n- method: 重建受影响文件并重新执行该单元的前向验证\n- risk_ref: irreversible_consequence\n"
+    : "";
+  return `${frontMatter(context, "implementation-plan")}# 实现计划\n\n<!-- dev-flow:id=TASK-001 kind=task -->\n### TASK-001：实现任务\n\n- covers: [REQ-001, AC-001]\n- implementation_unit: UNIT-001\n- tdd: test-first\n${test}${implementationUnit}${recovery}`;
 }
 
 export function renderArtifactTemplate(

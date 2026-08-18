@@ -374,3 +374,18 @@ test("doctor routed 有待决交互时提到该问题，不落到 status 兜底"
     assert.match(report.activeFeature.nextStep, /请确认实施/);
   } finally { await fixture.dispose(); }
 });
+
+test("doctor reseals an unsealed hot event tail", async () => {
+  const fixture = await createTinyApp();
+  try {
+    await store.initProject(fixture.root, strictProjectConfig);
+    await store.startFeature(fixture.root, { featureId: "feature", host: "claude", level: "XS", topology: "local" });
+    const hot = path.join(fixture.root, ".dev-flow", "features", "feature", "events.jsonl");
+    assert.ok((await readFile(hot, "utf8")).trim().length > 0);
+    const report = await collectDoctorReport(fixture.root, pluginRoot, "6.0.0", ["dev_flow_doctor"]);
+    assert.ok(report.diagnostics.some((item) => item.code === "EVENT_SEAL_REPAIRED" && item.status === "ok"));
+    assert.equal((await readFile(hot, "utf8")).trim(), "");
+    const again = await collectDoctorReport(fixture.root, pluginRoot, "6.0.0", ["dev_flow_doctor"]);
+    assert.equal(again.diagnostics.some((item) => item.code === "EVENT_SEAL_REPAIRED"), false);
+  } finally { await fixture.dispose(); }
+});

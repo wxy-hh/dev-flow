@@ -112,3 +112,19 @@ test("pauseFeature seals the hot event tail at a lifecycle boundary", async () =
     assert.ok((await readFile(hotFile, "utf8")).trim().length > 0);
   } finally { await fixture.dispose(); }
 });
+
+test("sealAfterCommit returns a committed-with-warning payload when sealing fails", async () => {
+  const root = await setup();
+  try {
+    const hot = path.join(root, ".dev-flow", "features", "f", "events.jsonl");
+    await writeFile(hot, "{not-json\n");
+    const result = await segments.sealAfterCommit(root, "f", { revision: 4, lifecycle: "paused" });
+    assert.equal(result.revision, 4);
+    assert.equal(result.lifecycle, "paused");
+    assert.equal(result.warning.code, "EVENT_SEAL_FAILED");
+    assert.equal(result.warning.currentRevision, 4);
+    assert.equal(result.warning.failedPostAction, "seal-feature-events");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});

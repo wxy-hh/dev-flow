@@ -149,3 +149,46 @@ test("registration after a concurrent revision change requires a fresh preflight
     await rm(root, { recursive: true, force: true });
   }
 });
+
+test("formal plan without Trace does structural preflight and never throws TRACE_NOT_ENFORCED", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "dev-flow-plan-notrace-"));
+  try {
+    await mkdir(path.join(root, "src"));
+    await stateStore.initProject(root, projectConfig);
+    let state = await stateStore.startFeature(root, {
+      featureId: "notrace",
+      host: "codex",
+      level: "S",
+      topology: "local",
+      classificationBasis: {
+        scopeFacts: ["scope"],
+        topologyFacts: ["topology"],
+        uncertaintyFacts: [],
+        riskFacts: {},
+        decisionRefs: [],
+        signals: {
+          changeSurface: "single-component",
+          behaviorChange: "bounded-rule",
+          topology: "local",
+          unitCount: 1,
+          requirements: "provided-confirmed",
+          operationalRecovery: false,
+          executableRollback: false,
+        },
+        controlEnhancements: { plan: "formal" },
+      },
+    });
+    assert.equal(state.classification.controls.plan, "formal");
+    assert.equal(state.classification.controls.trace, false);
+    state = await artifacts.scaffoldArtifact(root, state.featureId, state.revision, "implementation-plan");
+    const planPath = path.join(root, ".dev-flow", "features", state.featureId, state.artifacts["implementation-plan"].path);
+    await writeFile(planPath, "# 实施计划\n\n没有合法锚点。\n");
+    const result = await artifacts.validatePlanFromMarkdown(root, state.featureId, "implementation-plan");
+    assert.equal(result.applicable, true);
+    assert.equal(result.coverageChecked, false);
+    assert.equal(result.nextStep, "dev_flow_record_artifact");
+    assert.ok(result.diagnostics.every((item) => item.code === "TRACE_MARKDOWN_INVALID"));
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});

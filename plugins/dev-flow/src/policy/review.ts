@@ -66,6 +66,8 @@ export interface ReviewSummary {
   stale: number;
   open: number;
   complete: number;
+  superseded?: number;
+  waived?: number;
 }
 
 export interface ReviewPointer {
@@ -103,7 +105,7 @@ export interface ReviewJob {
   role: ReviewRole;
   reviewDepth: ReviewDepth;
   packageSha256: string;
-  status: "pending" | "claimed" | "sampling" | "submitted" | "reused";
+  status: "pending" | "claimed" | "sampling" | "submitted" | "reused" | "failed";
   roleBasisHash: string;
   reusedFrom?: { batchId: string; jobId: string; submissionSha256: string };
   claim?: { requestSha256: string; claimedAt: string; leaseExpiresAt: string };
@@ -180,7 +182,7 @@ export interface ReviewSamplingAttempt {
   status: "issued" | "failed" | "submitted";
   completedAt?: string;
   payloadSha256?: string;
-  failureCode?: "client-error" | "timeout" | "invalid-response" | "validation-failed";
+  failureCode?: "client-error" | "timeout" | "invalid-response" | "validation-failed" | "quota";
 }
 
 export interface ReviewSamplingProvenance {
@@ -272,7 +274,7 @@ export interface ReviewBatch {
   basis: ReviewBasis;
   basisHash: string;
   validity: "current" | "stale";
-  progress: "open" | "complete";
+  progress: "open" | "complete" | "superseded" | "waived";
   executionMode: ReviewExecutionMode;
   assuranceLevel: ReviewAssurance;
   jobs: ReviewJob[];
@@ -371,6 +373,41 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+/** Single source of truth for host capture, MCP dispatch, and skill docs. */
+export const REVIEW_JOB_COMPLETION_CONTRACT = {
+  required: ["coverageSummary", "findings"],
+  properties: {
+    coverageSummary: { type: "string" },
+    findings: { type: "array" },
+    resolutions: { type: "array" },
+  },
+} as const;
+
+export interface ReviewCompletionIssue {
+  path: string;
+  message: string;
+}
+
+export function describeReviewJobCompletionIssues(value: unknown): ReviewCompletionIssue[] {
+  if (!isRecord(value)) return [{ path: "$", message: "expected object" }];
+  const issues: ReviewCompletionIssue[] = [];
+  if (typeof value.coverageSummary !== "string" || !value.coverageSummary.trim()) {
+    issues.push({ path: "$.coverageSummary", message: "required non-empty string" });
+  }
+  if (!Array.isArray(value.findings)) {
+    issues.push({ path: "$.findings", message: "required array" });
+  }
+  if (value.resolutions !== undefined && !Array.isArray(value.resolutions)) {
+    issues.push({ path: "$.resolutions", message: "must be an array when present" });
+  }
+  for (const key of Object.keys(value)) {
+    if (key !== "coverageSummary" && key !== "findings" && key !== "resolutions") {
+      issues.push({ path: `$.${key}`, message: "unknown field" });
+    }
+  }
+  return issues;
+}
+
 export function isReviewRole(value: unknown): value is ReviewRole {
   return typeof value === "string" && reviewRoles.includes(value as ReviewRole);
 }
@@ -401,11 +438,9 @@ export function parseReviewJobRequirements(value: unknown): ReviewJobRequirement
 
 /** Validate the completion envelope without inventing a finding where none exists. */
 export function parseReviewJobCompletion(value: unknown): ReviewJobCompletion {
-  if (!isRecord(value)
-    || Object.keys(value).some((key) => key !== "coverageSummary" && key !== "findings" && key !== "resolutions")
-    || typeof value.coverageSummary !== "string"
-    || !value.coverageSummary.trim()
-    || !Array.isArray(value.findings)) {
+  const issues = describeReviewJobCompletionIssues(value);
+  if (issues.length) protocolInvalid(issues.map((issue) => `${issue.path}: ${issue.message}`).join("; ") || "review job completion has an invalid shape");
+  if (!isRecord(value) || typeof value.coverageSummary !== "string" || !Array.isArray(value.findings)) {
     protocolInvalid("review job completion has an invalid shape");
   }
   const findings = value.findings.map((finding, index) => parseFinding(finding, index));

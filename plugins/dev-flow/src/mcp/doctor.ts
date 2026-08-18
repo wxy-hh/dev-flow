@@ -12,6 +12,7 @@ import { assertActivePointerConsistent, readProjectConfig, readState, readActive
 import { readRollbackTransaction, rollbackTransactionFinished, type RollbackTransaction } from "../core/rollback-journal.js";
 import { pendingDecisionForState } from "../core/decision-interactions.js";
 import { gitBranchAndHead, isAncestor } from "../core/git-reconciliation.js";
+import { maybeSealFeatureEvents, unsealedHotEventCount } from "../core/event-segments.js";
 
 type Status = "ok" | "error" | "warning";
 type Diagnostic = { code: string; status: Status; message: string; recoveryHint?: string };
@@ -161,6 +162,20 @@ export async function collectDoctorReport(root: string, pluginRoot: string, vers
           "ok",
           `active feature ${state.featureId} 处于 ${projection.mode}${projection.pendingDecision ? "，有待决问题" : ""}；下一步：${projection.nextStep}。日常看 dev_flow_status，doctor 只是附带投影`,
         );
+        const unsealed = await unsealedHotEventCount(root, state.featureId);
+        if (unsealed > 0) {
+          try {
+            await maybeSealFeatureEvents(root, state.featureId);
+            add("EVENT_SEAL_REPAIRED", "ok", `resealed ${unsealed} hot event(s) for ${state.featureId}`);
+          } catch (error) {
+            add(
+              "EVENT_SEAL_PENDING",
+              "warning",
+              `feature ${state.featureId} has ${unsealed} unsealed hot event(s)`,
+              error instanceof Error ? error.message : "retry doctor to reseal the hot event tail",
+            );
+          }
+        }
       } catch (error) {
         let digest: string | undefined;
         try { digest = await stateFileSha256(root, active.featureId); } catch { /* missing */ }

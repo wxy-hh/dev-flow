@@ -5,7 +5,7 @@ description: 执行 Dev Flow 动态角色、parallel-first 且可按 role basis 
 
 角色由 Core 从事实派生；不要在 Skill 复制风险映射。coverage 只看需求/AC/TASK/TEST，architecture 只看组件、任务、测试与契约，rollback 只看 UNIT/REC、scope、dependency 与 recovery commands，专项角色只看对应风险切片。
 
-`parallel-execution` 只描述执行/落账并发合同：先 `dev_flow_create_review_batch` 得到当前 plan phase batch，再用 `dev_flow_start_review_execution` 一次领取全部 job，并行分发后由宿主捕获 envelopes，最后 `dev_flow_complete_review_execution` 一次聚合提交。不要逐 job claim/release/submit。语义 basis 未变化的角色显示 `reused` 并引用旧提交；受影响角色创建新 job。Core 不再有 unknownDiff 全量重审兜底；Assurance 只按真实宿主/采样 envelope 来源计算，不把同一模型多次输出称为多代理。
+`parallel-execution` 只描述执行/落账并发合同：先 `dev_flow_create_review_batch` 得到当前 plan phase batch，再用 `dev_flow_start_review_execution` 一次领取全部 job。每个 job 带一份可原样转发的 `dispatchPrompt`（含回收标记、角色冻结切片、完成 JSON 合同和「不得写文件」）。并行分发时不要改写提示，不要转抄 `capability`。宿主捕获 envelopes 后，用 `dev_flow_complete_review_execution` 一次聚合提交。零 envelope 不是成功。不要逐 job claim/release/submit。语义 basis 未变化的角色显示 `reused` 并引用旧提交；受影响角色创建新 job。Core 不再有 unknownDiff 全量重审兜底；Assurance 只按真实宿主/采样 envelope 来源计算，不把同一模型多次输出称为多代理。
 
 blocking finding 先修计划并增量复审；warning/note 不阻塞。finding 的 target/evidence 必须遵守 frozen Trace/path 合同。禁止编辑只读 review projection、伪造 basis/assurance 或泄露 capability。
 

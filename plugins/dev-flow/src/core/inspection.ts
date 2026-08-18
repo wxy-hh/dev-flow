@@ -5,6 +5,7 @@ import { reviewEnforcementRequired, traceEnforcementRequired } from "../policy/c
 import { routeLabel, stageLabel } from "../policy/presentation.js";
 import { effectiveStage } from "../policy/stages.js";
 import { currentUnresolvedBlocking } from "./review-jobs.js";
+import { captureRejectionsFromEvents } from "./review-execution.js";
 import { DevFlowError } from "./errors.js";
 import type { FeatureState } from "./state-store.js";
 import { pendingDecisionForState } from "./decision-interactions.js";
@@ -106,6 +107,7 @@ async function review(root: string, state: FeatureState) {
     : [];
   // issue 19：来源维度与隔离维度分开展示，互不替代。
   const isolation = current?.jobs.flatMap((job) => job.submission?.isolationProof ? [{ jobId: job.jobId, mode: job.submission.isolationProof.mode }] : []) ?? [];
+  const captureRejections = captureRejectionsFromEvents(await readFeatureEvents(root, state.featureId));
   return {
     enforced: true,
     currentBatch: current ? { progress: current.progress, roles: current.jobs.map((job) => ({ role: job.role, status: job.status })) } : undefined,
@@ -121,6 +123,30 @@ async function review(root: string, state: FeatureState) {
       executionMode: current?.executionMode,
     },
     staleBatchCount: ledger.batches.filter((batch) => batch.validity === "stale").length,
+    current: current ? {
+      progress: current.progress,
+      open: current.progress === "open" && current.validity === "current",
+      jobs: current.jobs.map((job) => ({
+        jobId: job.jobId,
+        role: job.role,
+        status: job.status,
+        failureCode: job.samplingAttempts?.at(-1)?.failureCode,
+      })),
+    } : undefined,
+    historical: {
+      superseded: ledger.summary.superseded ?? ledger.batches.filter((batch) => batch.progress === "superseded").length,
+      waived: ledger.summary.waived ?? ledger.batches.filter((batch) => batch.progress === "waived").length,
+      complete: ledger.summary.complete,
+      stale: ledger.summary.stale,
+    },
+    failureClasses: {
+      protocol: captureRejections.filter((item) => ["missing-marker", "unknown-declaration", "missing-context-ids", "same-context", "invalid-completion"].includes(item.reason)).length,
+      resource: current?.jobs.filter((job) => {
+        const code = job.samplingAttempts?.at(-1)?.failureCode;
+        return code === "quota" || code === "timeout";
+      }).length ?? 0,
+    },
+    ...(captureRejections.length ? { captureRejections } : {}),
   };
 }
 

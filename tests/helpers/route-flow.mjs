@@ -276,10 +276,14 @@ export async function driveUntil(root, featureId, state, options = {}) {
         current = await options.unitWriter(root, current, action.unitId) ?? current;
       } else if (!options.unitFilesWritten) {
         const files = options.implementationFiles ?? { "src/main.js": "export const m = 1;\n" };
+        const paths = Object.keys(files);
+        await store.recordTrustedWriteIntent(root, paths, options.host ?? "claude", `unit-write-${current.revision}`);
         for (const [file, contents] of Object.entries(files)) {
           await mkdir(path.dirname(path.join(root, file)), { recursive: true });
           await writeFile(path.join(root, file), contents);
         }
+        await store.recordTrustedWriteOwnership(root, paths, options.host ?? "claude", `unit-write-${current.revision}`);
+        current = await store.readState(root, featureId);
         options.unitFilesWritten = true;
       }
       continue;

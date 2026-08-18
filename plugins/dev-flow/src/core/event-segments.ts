@@ -85,6 +85,44 @@ export async function maybeSealFeatureEvents(root: string, featureId: string): P
   return sealFeatureEvents(root, featureId);
 }
 
+export interface EventSealWarning {
+  code: "EVENT_SEAL_FAILED";
+  currentRevision: number;
+  lifecycle: string;
+  failedPostAction: "seal-feature-events";
+}
+
+/** Count records still sitting in the hot tail after a committed mutation. */
+export async function unsealedHotEventCount(root: string, featureId: string): Promise<number> {
+  const hot = await readHotRecords(root, featureId, { startSequence: (await readIndex(root, featureId)).entries.at(-1)?.lastSequence ?? 0 });
+  return hot.length;
+}
+
+/**
+ * Post-commit seal. A failed seal must not look like the mutation failed:
+ * the caller already committed Core state and only the archive step broke.
+ */
+export async function sealAfterCommit<T extends { revision: number; lifecycle: string }>(
+  root: string,
+  featureId: string,
+  committed: T,
+): Promise<T & { warning?: EventSealWarning }> {
+  try {
+    await maybeSealFeatureEvents(root, featureId);
+    return committed;
+  } catch {
+    return {
+      ...committed,
+      warning: {
+        code: "EVENT_SEAL_FAILED",
+        currentRevision: committed.revision,
+        lifecycle: committed.lifecycle,
+        failedPostAction: "seal-feature-events",
+      },
+    };
+  }
+}
+
 export async function sealFeatureEvents(root: string, featureId: string): Promise<{ ref: EvidenceObjectRef; segment: FeatureEventSegment; sealed: number }> {
   const index = await readIndex(root, featureId);
   const previous = index.entries.at(-1);

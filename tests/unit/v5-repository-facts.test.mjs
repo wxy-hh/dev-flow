@@ -278,3 +278,35 @@ test("text-present occurrence is exact and reports actual count on mismatch", as
     await rm(root, { recursive: true, force: true });
   }
 });
+
+test("batch observations return every failed index with kind-specific recovery", async () => {
+  const { root, state } = await setup("dev-flow-fact-batch-all-");
+  try {
+    await writeFile(path.join(root, "src", "once.js"), "export const once = 1;\n");
+    await assert.rejects(
+      () => store.registerRepositoryFacts(root, "f", state.revision, [
+        { observation: { kind: "text-present", path: "src/once.js", text: "export const once", occurrence: 2 } },
+        { observation: { kind: "symbol-present", path: "src/once.js", symbol: "doesNotExist" } },
+      ], "codex"),
+      (error) => {
+        assert.equal(error.code, "INVALID_REPOSITORY_FACT");
+        assert.equal(error.details.observations.length, 2);
+        assert.equal(error.details.observations[0].index, 0);
+        assert.equal(error.details.observations[0].path, "observations[0]");
+        assert.equal(error.details.observations[0].kind, "text-present");
+        assert.equal(error.details.observations[0].expectedOccurrence, 2);
+        assert.equal(error.details.observations[0].actualOccurrence, 1);
+        assert.equal(error.details.observations[1].index, 1);
+        assert.equal(error.details.observations[1].path, "observations[1]");
+        assert.equal(error.details.observations[1].kind, "symbol-present");
+        assert.match(error.details.recoveryHint, /observations\[i\]/);
+        return true;
+      },
+    );
+    const unchanged = await store.readState(root, "f");
+    assert.equal(unchanged.revision, state.revision);
+    assert.equal(unchanged.governance.repositoryFacts.length, 0);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});

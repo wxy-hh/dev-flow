@@ -1,6 +1,7 @@
 import { readFile } from "node:fs/promises";
 import { readActive, readFeatureEvents, recordReviewExecutionEvent } from "../core/state-store.js";
-import { captureHostReviewEnvelope, recordCapturedEnvelope } from "../core/review-execution.js";
+import { captureHostReviewEnvelope, recordCapturedEnvelope, recordReviewCaptureRejection } from "../core/review-execution.js";
+import { describeReviewJobCompletionIssues } from "../policy/review.js";
 import type { HookEvent } from "./bash-syntax.js";
 
 const DECLARATION_MARKER = /dev-flow:isolated-review:([A-Za-z0-9-]+)/u;
@@ -10,6 +11,7 @@ export interface SubagentReviewRecordResult {
   reason?: "no-active-feature" | "missing-marker" | "unknown-declaration" | "missing-context-ids" | "same-context" | "invalid-completion";
   declarationId?: string;
   eventId?: string;
+  issues?: Array<{ path: string; message: string }>;
 }
 
 function firstText(value: unknown): string {
@@ -62,7 +64,10 @@ export async function recordSubagentReviewOutput(
     || firstText(event.tool_result)
     || await transcriptText(event);
   const marker = promptText.match(DECLARATION_MARKER);
-  if (!marker) return { recorded: false, reason: "missing-marker" };
+  if (!marker) {
+    await recordReviewCaptureRejection(root, { featureId: active.featureId, reason: "missing-marker" });
+    return { recorded: false, reason: "missing-marker" };
+  }
 
   const declarationId = marker[1]!;
   const events = await readFeatureEvents(root, active.featureId);
@@ -72,7 +77,10 @@ export async function recordSubagentReviewOutput(
       && data?.type === "review-execution-declared"
       && data.declarationId === declarationId;
   });
-  if (!declaration) return { recorded: false, reason: "unknown-declaration", declarationId };
+  if (!declaration) {
+    await recordReviewCaptureRejection(root, { featureId: active.featureId, declarationId, reason: "unknown-declaration" });
+    return { recorded: false, reason: "unknown-declaration", declarationId };
+  }
 
   const data = declaration.data as {
     batchId?: unknown;
@@ -88,9 +96,11 @@ export async function recordSubagentReviewOutput(
   };
   if (typeof data.batchId !== "string" || typeof data.jobId !== "string"
     || (typeof data.executionId !== "string" && typeof data.executionRequestId !== "string")) {
+    await recordReviewCaptureRejection(root, { featureId: active.featureId, declarationId, reason: "unknown-declaration" });
     return { recorded: false, reason: "unknown-declaration", declarationId };
   }
   const executionId = typeof data.executionId === "string" ? data.executionId : String(data.executionRequestId);
+  const executionRequestId = typeof data.executionRequestId === "string" ? data.executionRequestId : undefined;
 
   const input = event.tool_input ?? {};
   const response = event.tool_response && typeof event.tool_response === "object" ? event.tool_response as Record<string, unknown> : {};
@@ -108,9 +118,23 @@ export async function recordSubagentReviewOutput(
     response.session_id,
   ].find((value): value is string => typeof value === "string" && value.trim().length > 0);
   if (!contextId || !implementationContextId) {
+    await recordReviewCaptureRejection(root, {
+      featureId: active.featureId,
+      jobId: data.jobId,
+      declarationId,
+      executionRequestId,
+      reason: "missing-context-ids",
+    });
     return { recorded: false, reason: "missing-context-ids", declarationId };
   }
   if (contextId === implementationContextId) {
+    await recordReviewCaptureRejection(root, {
+      featureId: active.featureId,
+      jobId: data.jobId,
+      declarationId,
+      executionRequestId,
+      reason: "same-context",
+    });
     return { recorded: false, reason: "same-context", declarationId };
   }
 
@@ -132,6 +156,23 @@ export async function recordSubagentReviewOutput(
     }
     return rawText;
   })();
+  let parsedJson: unknown;
+  try { parsedJson = JSON.parse(rawResult); } catch { parsedJson = undefined; }
+  const issues = parsedJson === undefined
+    ? [{ path: "$", message: "completion is not valid JSON" }]
+    : describeReviewJobCompletionIssues(parsedJson);
+  if (issues.length) {
+    await recordReviewCaptureRejection(root, {
+      featureId: active.featureId,
+      jobId: data.jobId,
+      declarationId,
+      executionRequestId,
+      hostEventId: eventId,
+      reason: "invalid-completion",
+      issues,
+    });
+    return { recorded: false, reason: "invalid-completion", declarationId, eventId, issues };
+  }
   await recordReviewExecutionEvent(root, {
     eventId,
     type: "review-execution",
@@ -174,10 +215,20 @@ export async function recordSubagentReviewOutput(
         startedAt: data.declaredAt,
         completedAt: new Date().toISOString(),
         rawResult,
+        parsedCompletion: rawResult,
       });
       await recordCapturedEnvelope(root, active.featureId, data.executionRequestId, captured.ref);
     } catch {
-      return { recorded: false, reason: "invalid-completion", declarationId, eventId };
+      await recordReviewCaptureRejection(root, {
+        featureId: active.featureId,
+        jobId: data.jobId,
+        declarationId,
+        executionRequestId,
+        hostEventId: eventId,
+        reason: "invalid-completion",
+        issues,
+      });
+      return { recorded: false, reason: "invalid-completion", declarationId, eventId, issues };
     }
   }
   return { recorded: true, declarationId, eventId };

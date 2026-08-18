@@ -99,17 +99,15 @@ export async function compileArtifactPlanFromMarkdown(
   root: string,
   id: string,
   state: FeatureState,
-  options: { artifactKind: TraceArtifactKind; nextStateRevision: number },
+  options: { artifactKind: TraceArtifactKind; nextStateRevision: number; structuralOnly?: boolean },
 ): Promise<MarkdownArtifactPlanCompilation> {
   const { artifact, contents } = await readArtifactContents(root, id, state, options.artifactKind);
   const { config, sha256: projectConfigSha256 } = await readProjectConfigSnapshot(root);
   const parsed = parseTraceMarkdown(contents, options.artifactKind);
   const nodes = parsed.nodes;
-  if (!parsed.ok) {
-    // 一次预检聚合：解析失败时仍报告已解析 UNIT 的 targeted/未知命令引用
-    // （GPT-009：不能只给 parser 错误，让 targeted 问题在 checkpoint 才暴露）。
+  if (!parsed.ok || options.structuralOnly) {
     const diagnostics = markdownDiagnostics(parsed);
-    if (options.artifactKind === "implementation-plan") {
+    if (!options.structuralOnly && options.artifactKind === "implementation-plan") {
       for (const node of nodes) {
         if (node.kind !== "implementation-unit") continue;
         for (const reference of node.forwardVerification) {
@@ -134,7 +132,7 @@ export async function compileArtifactPlanFromMarkdown(
         }
       }
     }
-    return { result: { ok: false, diagnostics }, artifact, config, nodes };
+    return { result: { ok: parsed.ok && diagnostics.length === 0, diagnostics }, artifact, config, nodes };
   }
   const semanticSha256 = createHash("sha256").update(stableJson({ nodes })).digest("hex");
   const currentLedger = await readTraceabilityForArtifactReplacement(root, state, options.artifactKind);

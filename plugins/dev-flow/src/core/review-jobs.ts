@@ -141,7 +141,7 @@ export interface StartedReviewSampling {
   package: unknown;
 }
 
-type SamplingFailureCode = "client-error" | "timeout" | "invalid-response" | "validation-failed";
+type SamplingFailureCode = "client-error" | "timeout" | "invalid-response" | "validation-failed" | "quota";
 
 export interface ReviewRiskAcceptancePresentation extends PresentedInteraction {
   idempotent: boolean;
@@ -561,7 +561,7 @@ export async function startIsolatedReview(
 export function staleCurrentBatchesOfPhase(batches: ReviewBatch[], phase: "plan" | "code"): ReviewBatch[] {
   return batches.map((candidate) =>
     candidate.validity === "current" && candidate.phase === phase
-      ? { ...candidate, validity: "stale" as const }
+      ? { ...candidate, validity: "stale" as const, progress: candidate.progress === "complete" ? candidate.progress : "superseded" as const }
       : candidate);
 }
 
@@ -1152,7 +1152,8 @@ export async function failReviewSampling(
     const attempt = samplingAttemptForRequest(job, requestId);
     const failed: ReviewJob = {
       ...job,
-      status: "pending",
+      status: "failed",
+      claim: undefined,
       samplingAttempts: job.samplingAttempts!.map((candidate) => candidate.requestSha256 !== attempt.requestSha256 ? candidate : {
         ...candidate,
         status: "failed" as const,
@@ -1632,8 +1633,9 @@ export interface ReviewStamp {
  */
 export type ReviewGateResult =
   | { status: "ready"; stamp?: ReviewStamp }
+  | { status: "waived"; batchId: string }
   | { status: "need-batch"; cause: "missing" | "stale" | "phase"; batchId?: string }
-  | { status: "jobs-open"; batchId: string; jobs: Array<{ jobId: string; role: ReviewRole; reviewDepth: ReviewDepth; status: "pending" | "claimed" | "sampling" | "submitted" | "reused" }> }
+  | { status: "jobs-open"; batchId: string; jobs: Array<{ jobId: string; role: ReviewRole; reviewDepth: ReviewDepth; status: "pending" | "claimed" | "sampling" | "submitted" | "reused" | "failed" }> }
   | { status: "blocking"; batchId: string; findingIds: string[] }
   | { status: "isolation"; batchId: string; jobIds: string[] };
 
@@ -1661,14 +1663,18 @@ async function reviewBasisStale(root: string, state: FeatureState, batch: Review
   return false;
 }
 
-function reviewJobsSummary(batch: ReviewBatch): Array<{ jobId: string; role: ReviewRole; reviewDepth: ReviewDepth; status: "pending" | "claimed" | "sampling" | "submitted" | "reused" }> {
+function reviewJobsSummary(batch: ReviewBatch): Array<{ jobId: string; role: ReviewRole; reviewDepth: ReviewDepth; status: "pending" | "claimed" | "sampling" | "submitted" | "reused" | "failed" }> {
   return batch.jobs.map(({ jobId, role, reviewDepth, status }) => ({ jobId, role, reviewDepth, status }));
 }
 
+function reviewWaiverCurrent(state: FeatureState, batch: ReviewBatch): boolean {
+  return hasCurrentQualityException(state, "review", { batchId: batch.batchId, basisHash: batch.basisHash });
+}
+
 /**
- * 审查就绪门禁（ADR-0023）。无审查义务时直接就绪且不读 ledger；有义务时
- * 按 need-batch → jobs-open → isolation → blocking → ready 的先到先胜次序
- * 给一种结果。投影不可读在本将就绪时 fail-closed（抛修复错误，不当日常缺口）。
+ * 审查就绪门禁（ADR-0023 / ADR-0026）。无审查义务时直接就绪且不读 ledger；有义务时
+ * 按 need-batch → jobs-open（未完成且未豁免）→ isolation → blocking → waived → ready
+ * 的先到先胜次序给一种结果。投影不可读在本将就绪时 fail-closed。
  */
 export async function reviewGate(
   root: string,
@@ -1686,14 +1692,18 @@ export async function reviewGate(
       : { status: "need-batch", cause: "missing" as const };
   }
   if (await reviewBasisStale(root, state, batch, phase)) return { status: "need-batch", cause: "stale", batchId: batch.batchId };
-  if (batch.progress !== "complete") return { status: "jobs-open", batchId: batch.batchId, jobs: reviewJobsSummary(batch) };
+  if (batch.progress === "waived" && reviewWaiverCurrent(state, batch)) return { status: "waived", batchId: batch.batchId };
+  if (batch.progress !== "complete") {
+    if (reviewWaiverCurrent(state, batch)) return { status: "waived", batchId: batch.batchId };
+    return { status: "jobs-open", batchId: batch.batchId, jobs: reviewJobsSummary(batch) };
+  }
   // 独立代码审查的隔离门禁（ADR-0017 / issue 19）：M/L 路线默认要求
   // codeReview "independent"，高后果标签会提升到 "full"——两者都要求审查在
   // 与实现隔离的新上下文中完成。只有绑定专用 review-execution 事件的 subagent
   // 证明或受控 server sampling 能形成隔离证明；缺失时审查保持未完成并阻塞。
   if (phase === "code") {
     const requiresIsolation = codeReviewIsolationRequired(state);
-    if (requiresIsolation && !hasCurrentQualityException(state, "review")) {
+    if (requiresIsolation && !reviewWaiverCurrent(state, batch) && !hasCurrentQualityException(state, "review")) {
       const requirements = deriveReviewJobRequirements(state.route, state.classification.riskLabels, state.classification.controls.reviewRoles, phase);
       const missingIsolation = requirements
         .map((requirement) => batch.jobs.find((job) => job.role === requirement.role))
@@ -1703,7 +1713,7 @@ export async function reviewGate(
     }
   }
   const unresolved = currentUnresolvedBlocking(ledger, batch, state);
-  if (unresolved.length && !hasCurrentQualityException(state, "review")) {
+  if (unresolved.length && !reviewWaiverCurrent(state, batch) && !hasCurrentQualityException(state, "review")) {
     return { status: "blocking", batchId: batch.batchId, findingIds: unresolved.map((finding) => finding.findingId) };
   }
   // 账本是权威，但 plan-review 仍是必选生成的工件：就绪前不得绕过缺失/损坏的视图。
@@ -1714,7 +1724,7 @@ export async function reviewGate(
 }
 
 /** 把非就绪的 gate 结果译回现有错误码（REQUIRED / STALE / INCOMPLETE / BLOCKING / ISOLATION）。 */
-function reviewGateError(gate: Exclude<ReviewGateResult, { status: "ready" }>, phase: "plan" | "code"): DevFlowError {
+function reviewGateError(gate: Exclude<ReviewGateResult, { status: "ready" | "waived" }>, phase: "plan" | "code"): DevFlowError {
   switch (gate.status) {
     case "need-batch": {
       if (gate.cause === "stale") {
@@ -1747,9 +1757,10 @@ export async function requireReviewReady(
   root: string,
   state: FeatureState,
   query?: ReviewGateQuery,
-): Promise<ReviewStamp> {
+): Promise<ReviewStamp | { waived: true; batchId: string }> {
   const phase = query?.phase ?? (currentOpenStep(state) === "code_review" ? "code" : "plan");
   const gate = await reviewGate(root, state, query);
   if (gate.status === "ready") return gate.stamp!;
+  if (gate.status === "waived") return { waived: true, batchId: gate.batchId };
   throw reviewGateError(gate, phase);
 }

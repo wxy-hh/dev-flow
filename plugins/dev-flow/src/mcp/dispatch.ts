@@ -306,7 +306,7 @@ export const toolSchemas = {
     description: "Present one workflow-quality risk for an explicit user decision; integrity failures cannot use this path.",
     inputSchema: featureMutation({ kind: { enum: ["review", "verification", "checkpoint", "implementation-evidence"] }, basisHash: string, fingerprint: string, riskSummary: string, host: { enum: ["claude", "codex"] } }, ["kind", "basisHash", "fingerprint", "riskSummary", "host"]),
   },
-  dev_flow_record_step: { description: "Record the current non-gate route step.", inputSchema: featureMutation({ step: string, evidence: {} }, ["step", "evidence"]) },
+  dev_flow_record_step: { description: "Record the current non-gate route step. evidence 必须是对象，不要传序列化 JSON 字符串。planning 证据的 reviewType 放在对象顶层。", inputSchema: featureMutation({ step: string, evidence: { type: "object" } }, ["step", "evidence"]) },
   dev_flow_pause: { description: "Pause an active feature without requiring commit, verification, or finalize.", inputSchema: featureMutation({ reason: string, host: { enum: ["claude", "codex"] } }, ["reason", "host"]) },
   dev_flow_resume: { description: "Resume a paused feature after automatic workspace reconciliation.", inputSchema: object(["featureId", "host"], { featureId: string, host: { enum: ["claude", "codex"] } }) },
   dev_flow_reconcile_workspace: { description: "Reconcile manual commits and workspace changes without asking for already-authorized commit permission.", inputSchema: featureMutation({ host: { enum: ["claude", "codex"] } }, ["host"]) },

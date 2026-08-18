@@ -11,6 +11,10 @@ export interface InputValidationIssue {
   message: string;
   unknownField?: string;
   allowedFields?: string[];
+  actualType?: string;
+  receivedShape?: string;
+  expectedPath?: string;
+  example?: unknown;
 }
 
 function typeOf(value: unknown): string {
@@ -56,7 +60,11 @@ function validate(value: unknown, schema: JsonSchema, path: string): InputValida
   const issues: InputValidationIssue[] = [];
   const expectedType = schema.type;
   if (typeof expectedType === "string" && !matchesType(value, expectedType)) {
-    return [issue(path, "type", `expected ${expectedType}, got ${typeOf(value)}`)];
+    return [issue(path, "type", `expected ${expectedType}, got ${typeOf(value)}`, {
+      actualType: typeOf(value),
+      receivedShape: typeOf(value) === "string" ? "json-string" : typeOf(value),
+      expectedPath: path,
+    })];
   }
   if (Array.isArray(expectedType) && !expectedType.some((candidate) => typeof candidate === "string" && matchesType(value, candidate))) {
     return [issue(path, "type", `expected one of ${expectedType.join(", ")}, got ${typeOf(value)}`)];
@@ -152,9 +160,18 @@ export function validateToolInput(
   if (!schema) throw new DevFlowError("UNKNOWN_TOOL", toolName, { mutationApplied: false });
   const issues = normalizeIssues(toolName, validate(args, schema!, "$"));
   if (issues.length) {
+    const enriched = toolName === "dev_flow_record_step"
+      ? issues.map((candidate) => candidate.path === "$.evidence" && candidate.keyword === "type"
+        ? {
+          ...candidate,
+          example: { reviewType: "plan" },
+          expectedPath: "$.evidence",
+        }
+        : candidate)
+      : issues;
     throw new DevFlowError("INVALID_TOOL_INPUT", `${toolName} input does not match its schema`, {
       tool: toolName,
-      issues,
+      issues: enriched,
       mutationApplied: false,
     });
   }

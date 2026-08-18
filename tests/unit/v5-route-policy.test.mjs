@@ -69,6 +69,18 @@ test("users can strengthen individual controls without inventing a risk or raisi
   assert.deepEqual(preview.classification.controls.verification, ["targeted", "integration"]);
 });
 
+test("S plus executable rollback cannot lock unit-chain without Trace", () => {
+  const preview = route.recommendClassification(basis({
+    changeSurface: "single-component",
+    behaviorChange: "bounded-rule",
+    executableRollback: true,
+  }));
+  assert.equal(preview.classification.level, "S");
+  assert.equal(preview.classification.controls.checkpoints, "unit-chain");
+  assert.equal(preview.classification.controls.trace, true);
+  assert.ok(preview.classification.controls.recovery.includes("executable-rollback"));
+});
+
 test("executable rollback enhancement still requires reversible facts", () => {
   assert.throws(() => route.recommendClassification({
     ...basis(),

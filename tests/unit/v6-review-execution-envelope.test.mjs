@@ -10,7 +10,10 @@ import { loadSource } from "../helpers/load-source.mjs";
 const execution = await loadSource("plugins/dev-flow/src/core/review-execution.ts");
 const evidenceStore = await loadSource("plugins/dev-flow/src/core/evidence-store.ts");
 const policy = await loadSource("plugins/dev-flow/src/policy/review-execution.ts");
+const reviewPolicy = await loadSource("plugins/dev-flow/src/policy/review.ts");
 const reviewAdapter = await loadSource("plugins/dev-flow/src/hosts/review-execution-adapter.ts");
+const inspection = await loadSource("plugins/dev-flow/src/core/inspection.ts");
+const store = await loadSource("plugins/dev-flow/src/core/state-store.ts");
 
 test("captureHostReviewEnvelope freezes raw result and a strict v1 envelope that binds identity/job/execution", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "dev-flow-v6-envelope-"));
@@ -196,10 +199,12 @@ test("a stale execution's envelopes can never leak into a newer executionRequest
     const requestB = "exec-stale-b-1234567890abcdef";
     const startedB = await execution.startReviewExecution(root, state.featureId, startedA.state.revision, created.batch.batchId, "claude", requestB);
     assert.ok(startedB.jobs.length > 0);
-    // Complete B with no envelopes: nothing may be submitted from execution A.
-    const completedB = await execution.completeReviewExecution(root, state.featureId, startedB.state.revision, created.batch.batchId, requestB);
-    assert.deepEqual(completedB.submittedJobIds, []);
-    // Execution A's envelope still exists under A's record, not B's.
+    // Complete B with no envelopes: A's envelopes must not leak, and B is still running.
+    await assert.rejects(
+      execution.completeReviewExecution(root, state.featureId, startedB.state.revision, created.batch.batchId, requestB),
+      (error) => error.code === "REVIEW_EXECUTION_STILL_RUNNING",
+    );
+    assert.equal(startedB.state.revision, (await store.readState(root, state.featureId)).revision);
     // Execution A's envelope remains a GC root under A's execution record.
     const rootsA = await execution.reviewExecutionEvidenceRoots(root, state.featureId);
     assert.ok(rootsA.length > 0, "execution A envelopes stay rooted");
@@ -378,6 +383,228 @@ test("plan phase and code phase share the execution module but only code phase r
     // code phase requires isolation proof: without a matching review-execution event,
     // the envelope carries no isolation proof and the gate refuses it.
     assert.equal(reviewJobs.codeReviewIsolationRequired({ ...state, classification: { ...state.classification, controls: { ...state.classification.controls, codeReview: "independent" } } }), true);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+const sharedContractFacts = {
+  level: "M",
+  topology: "shared-contract",
+  requirements: "provided-confirmed",
+  scopeFacts: ["共享契约需求"],
+  topologyFacts: ["共享契约"],
+  uncertaintyFacts: [],
+  riskFacts: {},
+  decisionRefs: [],
+};
+
+test("startReviewExecution returns a forwardable dispatchPrompt that SubagentStop can capture as-is", async () => {
+  const { prepareReviewReadyFeature } = await import("../helpers/route-flow.mjs");
+  const reviewJobs = await loadSource("plugins/dev-flow/src/core/review-jobs.ts");
+  const root = await mkdtemp(path.join(os.tmpdir(), "dev-flow-v6-dispatch-prompt-"));
+  try {
+    const state = await prepareReviewReadyFeature(root, sharedContractFacts, { featureId: "dispatch" });
+    const created = await reviewJobs.createReviewBatch(root, state.featureId, state.revision);
+    const started = await execution.startReviewExecution(
+      root, state.featureId, created.state.revision, created.batch.batchId, "claude", "exec-dispatch-1234567890abcdef",
+    );
+    assert.ok(started.jobs.length > 0);
+    for (const job of started.jobs) {
+      assert.equal(typeof job.dispatchPrompt, "string");
+      assert.match(job.dispatchPrompt, new RegExp(`dev-flow:isolated-review:${job.declarationId}`));
+      assert.match(job.dispatchPrompt, new RegExp(job.role));
+      assert.match(job.dispatchPrompt, /coverageSummary/);
+      assert.match(job.dispatchPrompt, /不得写/);
+      assert.equal(job.dispatchPrompt.includes(job.capability), false);
+      const marker = `dev-flow:isolated-review:${job.declarationId}`;
+      const completion = JSON.stringify({ coverageSummary: `${job.role} complete`, findings: [] });
+      const captured = await reviewAdapter.recordSubagentReviewOutput(root, {
+        hook_event_name: "SubagentStop",
+        session_id: "implementation-session",
+        agent_id: `review-agent-${job.jobId}`,
+        agent_transcript_path: "/nonexistent/transcript.jsonl",
+        last_assistant_message: `${marker}\n${completion}`,
+        prompt: job.dispatchPrompt,
+        tool_input: {},
+      }, "claude");
+      assert.equal(captured.recorded, true);
+    }
+    const completed = await execution.completeReviewExecution(
+      root, state.featureId, started.state.revision, created.batch.batchId, "exec-dispatch-1234567890abcdef",
+    );
+    assert.equal(completed.captured, started.jobs.length);
+    assert.equal(completed.submitted, started.jobs.length);
+    assert.equal(completed.pending, 0);
+    assert.equal(completed.failed, 0);
+    assert.equal(completed.batch.progress, "complete");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("zero-envelope complete is empty or still-running and never advances revision", async () => {
+  const { prepareReviewReadyFeature } = await import("../helpers/route-flow.mjs");
+  const reviewJobs = await loadSource("plugins/dev-flow/src/core/review-jobs.ts");
+  const root = await mkdtemp(path.join(os.tmpdir(), "dev-flow-v6-empty-complete-"));
+  try {
+    const state = await prepareReviewReadyFeature(root, sharedContractFacts, { featureId: "emptycomplete" });
+    const created = await reviewJobs.createReviewBatch(root, state.featureId, state.revision);
+    const requestId = "exec-empty-1234567890abcdef";
+    const started = await execution.startReviewExecution(
+      root, state.featureId, created.state.revision, created.batch.batchId, "claude", requestId,
+    );
+    await assert.rejects(
+      execution.completeReviewExecution(root, state.featureId, started.state.revision, created.batch.batchId, requestId),
+      (error) => error.code === "REVIEW_EXECUTION_STILL_RUNNING",
+    );
+    assert.equal((await store.readState(root, state.featureId)).revision, started.state.revision);
+
+    const job = started.jobs[0];
+    const marker = `dev-flow:isolated-review:${job.declarationId}`;
+    const rejected = await reviewAdapter.recordSubagentReviewOutput(root, {
+      hook_event_name: "SubagentStop",
+      session_id: "same-context-id",
+      agent_id: "same-context-id",
+      agent_transcript_path: "/nonexistent/transcript.jsonl",
+      last_assistant_message: `${marker}\n${JSON.stringify({ coverageSummary: "x", findings: [] })}`,
+      prompt: job.dispatchPrompt,
+      tool_input: {},
+    }, "claude");
+    assert.equal(rejected.recorded, false);
+    assert.equal(rejected.reason, "same-context");
+
+    const inspected = await inspection.inspectFeature(root, state.featureId, "review");
+    const rejections = inspected.content.captureRejections;
+    assert.ok(Array.isArray(rejections) && rejections.length >= 1);
+    assert.equal(rejections.at(-1).reason, "same-context");
+    assert.equal(rejections.at(-1).declarationId, job.declarationId);
+
+    await assert.rejects(
+      execution.completeReviewExecution(root, state.featureId, started.state.revision, created.batch.batchId, requestId),
+      (error) => error.code === "REVIEW_EXECUTION_EMPTY",
+    );
+    assert.equal((await store.readState(root, state.featureId)).revision, started.state.revision);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("invalid completion capture is persisted with field-level schema differences", async () => {
+  const { prepareReviewReadyFeature } = await import("../helpers/route-flow.mjs");
+  const reviewJobs = await loadSource("plugins/dev-flow/src/core/review-jobs.ts");
+  const root = await mkdtemp(path.join(os.tmpdir(), "dev-flow-v6-invalid-completion-"));
+  try {
+    const state = await prepareReviewReadyFeature(root, sharedContractFacts, { featureId: "invalidjson" });
+    const created = await reviewJobs.createReviewBatch(root, state.featureId, state.revision);
+    const started = await execution.startReviewExecution(
+      root, state.featureId, created.state.revision, created.batch.batchId, "claude", "exec-invalid-1234567890abcdef",
+    );
+    const job = started.jobs[0];
+    const marker = `dev-flow:isolated-review:${job.declarationId}`;
+    const rejected = await reviewAdapter.recordSubagentReviewOutput(root, {
+      hook_event_name: "SubagentStop",
+      session_id: "implementation-session",
+      agent_id: `review-agent-${job.jobId}`,
+      agent_transcript_path: "/nonexistent/transcript.jsonl",
+      last_assistant_message: `${marker}\n${JSON.stringify({ summary: "wrong field", issues: [] })}`,
+      prompt: job.dispatchPrompt,
+      tool_input: {},
+    }, "claude");
+    assert.equal(rejected.recorded, false);
+    assert.equal(rejected.reason, "invalid-completion");
+    assert.ok(Array.isArray(rejected.issues) && rejected.issues.length > 0);
+    assert.ok(rejected.issues.some((issue) => String(issue.path).includes("coverageSummary")));
+
+    const inspected = await inspection.inspectFeature(root, state.featureId, "review");
+    const last = inspected.content.captureRejections.at(-1);
+    assert.equal(last.reason, "invalid-completion");
+    assert.ok(last.issues.some((issue) => String(issue.path).includes("coverageSummary")));
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("review completion contract is defined once and describes the required object shape", () => {
+  const contract = reviewPolicy.REVIEW_JOB_COMPLETION_CONTRACT;
+  assert.deepEqual(contract.required, ["coverageSummary", "findings"]);
+  assert.equal(contract.properties.coverageSummary.type, "string");
+  assert.equal(contract.properties.findings.type, "array");
+  const issues = reviewPolicy.describeReviewJobCompletionIssues({ summary: "nope" });
+  assert.ok(issues.some((issue) => issue.path === "$.coverageSummary"));
+});
+
+test("first explicit quota failure stops further sampling and marks only started jobs failed", async () => {
+  const { prepareReviewReadyFeature } = await import("../helpers/route-flow.mjs");
+  const reviewJobs = await loadSource("plugins/dev-flow/src/core/review-jobs.ts");
+  const reviewStore = await loadSource("plugins/dev-flow/src/core/review-store.ts");
+  const root = await mkdtemp(path.join(os.tmpdir(), "dev-flow-v6-quota-"));
+  try {
+    const state = await prepareReviewReadyFeature(root, sharedContractFacts, { featureId: "quota" });
+    const created = await reviewJobs.createReviewBatch(root, state.featureId, state.revision);
+    let sampled = 0;
+    await assert.rejects(
+      execution.startReviewExecution(
+        root, state.featureId, created.state.revision, created.batch.batchId, "codex", "codex-quota-1234567890abcdef",
+        {
+          sampleReview: async () => {
+            sampled += 1;
+            const error = new Error("429 quota exceeded");
+            error.code = "REVIEW_EXECUTION_QUOTA";
+            throw error;
+          },
+        },
+      ),
+      (error) => error.code === "REVIEW_EXECUTION_QUOTA",
+    );
+    assert.equal(sampled, 1);
+    const after = await store.readState(root, state.featureId);
+    const ledger = await reviewStore.readReviewLedger(root, after);
+    const batch = ledger.batches.find((candidate) => candidate.batchId === created.batch.batchId);
+    const failed = batch.jobs.filter((job) => job.status === "failed");
+    assert.equal(failed.length, 1);
+    assert.equal(failed[0].samplingAttempts.at(-1).failureCode, "quota");
+    assert.ok(batch.jobs.some((job) => job.status === "claimed" || job.status === "pending"));
+    const inspected = await inspection.inspectFeature(root, state.featureId, "review");
+    assert.ok(inspected.content.failureClasses.resource >= 1);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("timeout sampling fails the job and does not auto-complete the batch", async () => {
+  const { prepareReviewReadyFeature } = await import("../helpers/route-flow.mjs");
+  const reviewJobs = await loadSource("plugins/dev-flow/src/core/review-jobs.ts");
+  const reviewStore = await loadSource("plugins/dev-flow/src/core/review-store.ts");
+  const root = await mkdtemp(path.join(os.tmpdir(), "dev-flow-v6-timeout-"));
+  try {
+    const state = await prepareReviewReadyFeature(root, sharedContractFacts, { featureId: "timeout" });
+    const created = await reviewJobs.createReviewBatch(root, state.featureId, state.revision);
+    const started = await execution.startReviewExecution(
+      root, state.featureId, created.state.revision, created.batch.batchId, "codex", "codex-timeout-1234567890abcdef",
+      {
+        sampleReview: async () => {
+          const error = new Error("MCP client request timed out");
+          error.code = "REVIEW_SAMPLING_TIMEOUT";
+          throw error;
+        },
+      },
+    );
+    const ledger = await reviewStore.readReviewLedger(root, started.state);
+    const batch = ledger.batches.find((candidate) => candidate.batchId === created.batch.batchId);
+    assert.equal(batch.progress, "open");
+    assert.ok(batch.jobs.every((job) => job.status === "failed"));
+    assert.ok(batch.jobs.every((job) => job.samplingAttempts.at(-1).failureCode === "timeout"));
+    const retried = await execution.startReviewExecution(
+      root, state.featureId, started.state.revision, created.batch.batchId, "codex", "codex-retry-1234567890abcdef",
+      { sampleReview: async (job) => ({ coverageSummary: `${job.role} retried`, findings: [] }) },
+    );
+    const completed = await execution.completeReviewExecution(
+      root, state.featureId, retried.state.revision, created.batch.batchId, "codex-retry-1234567890abcdef",
+    );
+    assert.equal(completed.batch.progress, "complete");
+    const retriedJob = completed.batch.jobs[0];
+    assert.ok(retriedJob.samplingAttempts.some((attempt) => attempt.failureCode === "timeout"));
   } finally {
     await rm(root, { recursive: true, force: true });
   }

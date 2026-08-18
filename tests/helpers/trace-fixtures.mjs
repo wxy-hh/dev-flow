@@ -78,6 +78,7 @@ export function twoClosureTraceDeltaFor(kind, route) {
           kind: "implementation-unit", id: "UNIT-002", tasks: ["TASK-002"], dependsOn: [], fileScope: ["src/two.ts"], covers: ["REQ-002", "AC-002"],
           forwardVerification: ["unit"],
         },
+        { kind: "recovery", id: "REC-001", stepRef: "UNIT-001", recoveryKind: "compensation", method: "重建受影响文件并重新执行该单元的前向验证", riskRef: "irreversible_consequence" },
       ],
     };
   }
@@ -120,10 +121,12 @@ export async function registerTraceFixture({ root, featureId, state, kind, delta
   const after = edit(before);
   if (after !== before) await writeFile(target, after);
   if (delta) {
-    assert.deepEqual(
-      anchors.parseTraceSourceBlocks(after).map(({ id }) => id).sort(),
-      delta.nodes.map(({ id }) => id).sort(),
-    );
+    const actual = anchors.parseTraceSourceBlocks(after).map(({ id }) => id).sort();
+    const expected = [...new Set([
+      ...delta.nodes.map(({ id }) => id),
+      ...actual.filter((id) => String(id).startsWith("REC-")),
+    ])].sort();
+    assert.deepEqual(actual, expected);
   }
   const result = await artifacts.recordArtifactFromMarkdown(root, featureId, current.revision, kind);
   return result.state;
