@@ -1,4 +1,0 @@
-{
-  "hook_event_name": "SessionStart",
-  "cwd": "/tmp/dev-flow-fixture"
-}

@@ -1,25 +1,13 @@
 {
   "name": "dev-flow",
-  "version": "6.0.1",
+  "version": "0.0.1",
   "private": true,
-  "description": "Dynamic governance workflow plugin for Claude Code and Codex CLI.",
+  "description": "Event-driven invisible governance workflow plugin for Claude Code.",
   "type": "module",
   "engines": {
     "node": ">=20"
   },
-  "scripts": {
-    "build": "node scripts/build.mjs",
-    "build:check": "npm run version:check && node scripts/check-build.mjs && npm run version:check",
-    "version:sync": "node scripts/sync-version.mjs --write",
-    "version:check": "node scripts/sync-version.mjs --check",
-    "typecheck": "tsc --noEmit",
-    "test:unit": "node scripts/run-tests-silently.mjs unit",
-    "test:routes": "node scripts/run-tests-silently.mjs routes",
-    "test:interop": "node scripts/run-tests-silently.mjs interop",
-    "test:e2e": "node scripts/run-tests-silently.mjs e2e",
-    "test:host-e2e": "node scripts/run-tests-silently.mjs host-e2e",
-    "test": "npm run version:check && npm run build && npm run typecheck && npm run test:unit && npm run test:routes && npm run test:interop && npm run test:e2e && npm run build:check"
-  },
+  "scripts": {},
   "devDependencies": {
     "@types/node": "^24.10.1",
     "esbuild": "^0.25.10",
