@@ -7,7 +7,12 @@
   "engines": {
     "node": ">=20"
   },
-  "scripts": {},
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "test": "node scripts/build.mjs --test && node --test 'build/test/*.test.cjs'",
+    "verify": "bash scripts/verify.sh",
+    "sandbox:reset": "bash scripts/sandbox-reset.sh"
+  },
   "devDependencies": {
     "@types/node": "^24.10.1",
     "esbuild": "^0.25.10",

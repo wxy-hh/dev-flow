@@ -8,14 +8,23 @@
 .env
 .env.*
 !.env.example
+# sandbox 种子里的假 .env 敏感样本需要入库（T4 拦截测试目标物）
+!sandbox/seed/.env
 
 # Dependencies and build output
 node_modules/
 dist/
-!plugins/dev-flow/dist/
-!plugins/dev-flow/dist/*.mjs
 build/
 coverage/
+
+# 插件构建产物（esbuild 输出，只入库 TS 源码）
+plugins/dev-flow/dist/
+
+# 固定验证仓产物：sandbox/work 由 scripts/sandbox-reset.sh 从 seed 一键重建
+sandbox/work/
+
+# 调试日志目录（hook 触发证据，不入库）
+.dev-flow-debug/
 
 # Temporary files
 *.log
@@ -24,3 +33,6 @@ coverage/
 .agent*
 .claude*
 .scratch*
+# Spike throwaway (T0)：spike 代码不入库，只留结论文档
+
+spike/

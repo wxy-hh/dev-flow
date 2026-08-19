@@ -1,0 +1,161 @@
+/**
+ * 验收事件记账模块（计划 §3.1/§3.3，T6）
+ *
+ * PostToolUse hook 的纯函数面（本文件无 IO）：
+ * 1. 命令归一化与声明匹配（宁严勿宽，§A：空白/参数序的宽容匹配别过头——
+ *    归一化 = 去首尾空白 + 空白折叠 + 按空白分词；匹配 = 命令 token 序列
+ *    以声明 token 序列为前缀；匹配不上就不记）；
+ * 2. 退出原因三分支（坑 N-4/8-12-10b，硬要求）：
+ *    - PostToolUse（成功路径）→ verify.passed；但 tool_response.interrupted=true
+ *      （用户中断/被杀）→ verify.failed + exitReason=killed（绝不被归一为通过）；
+ *    - PostToolUseFailure（失败路径）→ verify.failed，exitReason 判定优先级：
+ *      is_interrupt=true → killed；error 含 "Command timed out after" → timeout
+ *      （宿主超时杀掉，挂死/长跑最终归宿）；error 首行 "Exit code N" → nonzero；
+ *      其余 → unknown（如宿主无法启动 shell）。
+ *
+ * 宿主能力边界（实证结论，见 verify-t6.sh 报告）：非零退出码 / 超时 / 中断在
+ * PostToolUse 系列事件载荷里可区分；"挂死 vs 长跑"在宿主层面不可区分（都表现为
+ * duration_ms 长 + 未超时），挂死最终以超时分支收口——这是本模块能记到的最细粒度。
+ */
+
+import type { DevFlowEvent } from './events.js'
+
+/** verify:none 显式声明的归一化判定值（§3.3：宽容的是内容，不是动作——只认 none） */
+export const VERIFY_NONE = 'none'
+
+/** 命令归一化（宁严勿宽）：去首尾空白 + 空白序列折叠为单空格 + 按空白分词 */
+export function normalizeCommand(cmd: string): string[] {
+  return cmd.trim().split(/\s+/).filter((t) => t !== '')
+}
+
+/**
+ * 命令匹配声明（纯函数）：声明 token 序列是命令 token 序列的前缀。
+ * 带参数跑同一命令（`node check.js --verbose`）算匹配；改命令（`node check`）、
+ * 换位置（`check.js node`）、声明不是命令开头 → 不匹配（宁严勿宽，匹配不上就不记）。
+ * 空声明 / 空命令 → false。
+ */
+export function commandMatchesDeclaration(command: string, declaration: string): boolean {
+  const cmdTokens = normalizeCommand(command)
+  const decTokens = normalizeCommand(declaration)
+  if (cmdTokens.length === 0 || decTokens.length === 0) return false
+  if (decTokens.length > cmdTokens.length) return false
+  for (let i = 0; i < decTokens.length; i++) {
+    if (cmdTokens[i] !== decTokens[i]) return false
+  }
+  return true
+}
+
+/** verify:none 判定（纯函数）：归一化后 === 'none'（大小写不敏感；内容宽容边界） */
+export function isVerifyNone(declaration: string): boolean {
+  return declaration.trim().toLowerCase() === VERIFY_NONE
+}
+
+/** 退出原因枚举（事件字段值；additive 白名单在 events.ts sanitize 侧） */
+export type ExitReason = 'timeout' | 'killed' | 'nonzero' | 'unknown'
+
+/** 宿主超时标记（实证：Bash 超时被杀时 error 含该行，官方文档同源） */
+const TIMEOUT_MARKER = /Command timed out after/
+
+/** 退出码首行解析（实证：Bash 失败 error 首行为 "Exit code N"） */
+const EXIT_CODE_RE = /^Exit code (\d+)/m
+
+/** 从宿主失败文本提取退出码；解析不到 → null（unknown 分支） */
+export function parseExitCode(error: string | null): number | null {
+  if (!error) return null
+  const m = EXIT_CODE_RE.exec(error)
+  if (!m) return null
+  const n = Number(m[1])
+  return Number.isInteger(n) ? n : null
+}
+
+/**
+ * 退出原因判定（纯函数，优先级实证确定）：
+ * 1. is_interrupt=true → killed（失败以 abort 形式到达宿主）；
+ * 2. error 含 "Command timed out after" → timeout（超时先于退出码判定——
+ *    实证超时载荷 error 首行仍是 "Exit code 143"，不能把超时误判为普通失败）；
+ * 3. error 首行 "Exit code N" → nonzero（普通失败）；
+ * 4. 其余 → unknown（宿主没给退出码也没给超时标记）。
+ */
+export function classifyExitReason(
+  error: string | null,
+  isInterrupt: boolean | null,
+): ExitReason {
+  if (isInterrupt === true) return 'killed'
+  if (error !== null && TIMEOUT_MARKER.test(error)) return 'timeout'
+  if (error !== null && EXIT_CODE_RE.test(error)) return 'nonzero'
+  return 'unknown'
+}
+
+export interface VerifyEventInput {
+  /** 宿主事件名（PostToolUse=成功路径；PostToolUseFailure=失败路径） */
+  hookEventName: string
+  command: string
+  mainlineId: string
+  now: string
+  /** PostToolUse.tool_response（成功路径；Bash 形状 {stdout,stderr,interrupted,...}） */
+  toolResponse: Record<string, unknown> | null
+  /** PostToolUseFailure.error（失败路径；Bash 为 "Exit code N\n<输出>" 或 "Command timed out"） */
+  error: string | null
+  /** PostToolUseFailure.is_interrupt */
+  isInterrupt: boolean | null
+  /** PostToolUse.duration_ms / PostToolUseFailure.duration_ms */
+  durationMs: number | null
+}
+
+/**
+ * 构造验收事件（纯函数）：宿主事件载荷 → verify.passed / verify.failed。
+ * 退出原因三分支在此收口；命令输出只留尾部 ≤20 行交给 sanitizeEvent（output 字段
+ * 传整段，红线执行点在 sanitize——本函数不自行截断，保持单点）。
+ */
+export function buildVerifyEvent(input: VerifyEventInput): DevFlowEvent {
+  const { hookEventName, command, mainlineId, now, toolResponse, error, isInterrupt, durationMs } = input
+  // 成功路径（PostToolUse）：interrupted=true 是"被杀"（用户中断），绝不为通过
+  if (hookEventName === 'PostToolUse') {
+    const interrupted = toolResponse?.interrupted === true
+    if (interrupted) {
+      return {
+        type: 'verify.failed',
+        t: now,
+        mainlineId,
+        requirementId: null,
+        exitCode: null,
+        command,
+        durationMs,
+        outputTail: outputTailFromToolResponse(toolResponse),
+        exitReason: 'killed',
+      }
+    }
+    return {
+      type: 'verify.passed',
+      t: now,
+      mainlineId,
+      requirementId: null,
+      exitCode: 0,
+      command,
+      durationMs,
+    }
+  }
+  // 失败路径（PostToolUseFailure）：超时/被杀/非零退出码分开记账
+  return {
+    type: 'verify.failed',
+    t: now,
+    mainlineId,
+    requirementId: null,
+    exitCode: parseExitCode(error),
+    command,
+    durationMs,
+    outputTail: error !== null ? error.split('\n') : [],
+    exitReason: classifyExitReason(error, isInterrupt),
+  }
+}
+
+/** 成功路径被杀时尽量留输出尾部（stdout/stderr 合并；红线截断在 sanitize） */
+function outputTailFromToolResponse(toolResponse: Record<string, unknown> | null): string[] {
+  if (toolResponse === null) return []
+  const parts: string[] = []
+  for (const k of ['stdout', 'stderr']) {
+    if (typeof toolResponse[k] === 'string' && toolResponse[k] !== '') parts.push(toolResponse[k])
+  }
+  if (parts.length === 0) return []
+  return parts.join('\n').split('\n')
+}
