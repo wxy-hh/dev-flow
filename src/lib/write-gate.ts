@@ -28,6 +28,7 @@ import {
   type SensitiveRule,
 } from './sensitive-paths.js'
 import { analyzeBashCommand } from './bash-gate.js'
+import { isAbsolute, join, relative } from 'node:path'
 import type { DevFlowConfig } from './config.js'
 import type { DevFlowEvent } from './events.js'
 import type { DevFlowState } from './state.js'
@@ -323,6 +324,37 @@ export function decideBashWrite(args: BashGateArgs): GateResult {
     })
   }
   return { decision: 'allow', reason: null, events: outEvents }
+}
+
+/**
+ * Write/Edit/MultiEdit 的 file.changed 事件构造（纯函数，PostToolUse 记账用——
+ * 计划 §3.1 PostToolUse「文件改动」行；Bash 的 file.changed 由 decideBashWrite
+ * 启发式补，两路共一条证据链，都是自动 commit 的清单来源 §3.6）：
+ * 路径归一为项目相对（绝对/相对 → 相对 cwd + NFC，坑 N-5 同源）。不做 symlink
+ * 目标解析（那是敏感匹配的职责；提交路径按用户实际写入的相对形态走，git add
+ * 对该形态直接可用——若用 realpath 归一，项目根本身是 symlink 时（如 macOS
+ * /var、/tmp）relative 会产出 `../…` 被误丢）。越界路径（相对化出 `..`）与
+ * 空路径/空主线 → null：未知归属的写入绝不进自动 commit（宁漏勿误收，与
+ * planAutoCommit.normalizePath 同语义）。
+ */
+export function buildFileChangedEvent(opts: {
+  tool: string
+  filePath: string
+  cwd: string
+  mainlineId: string
+  now: string
+}): DevFlowEvent | null {
+  if (opts.filePath.trim() === '' || opts.mainlineId.trim() === '') return null
+  const abs = isAbsolute(opts.filePath) ? opts.filePath : join(opts.cwd, opts.filePath)
+  const rel = relative(opts.cwd, abs).normalize('NFC')
+  if (rel === '' || rel.startsWith('..')) return null
+  return {
+    type: 'file.changed',
+    t: opts.now,
+    mainlineId: opts.mainlineId,
+    tool: opts.tool,
+    path: rel,
+  }
 }
 
 export interface ToolGateArgs {

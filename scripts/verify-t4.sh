@@ -51,8 +51,11 @@ reset_work() {
 }
 
 # 取本场景会话的 transcript（目录内最新 jsonl）
+# 不用管道取首行：macOS BSD ls 输出多时 head 提前关读端 → ls 收 SIGPIPE → 命令替换退出码 141 → 脚本静默死（实测）
 latest_transcript() {
-  ls -t "$TRANSCRIPT_DIR"/*.jsonl 2>/dev/null | head -1
+  local out
+  out="$(ls -t "$TRANSCRIPT_DIR"/*.jsonl 2>/dev/null)" || out=""
+  printf '%s' "${out%%$'\n'*}"
 }
 
 # 断言模型可见性（结构感知：transcript 为嵌套 JSON，type 字段在 message 内部）：

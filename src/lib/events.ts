@@ -95,12 +95,17 @@ export type DevFlowEvent =
       outputTail: string[]
       /**
        * 退出原因（T6，坑 N-4/8-12-10b）：超时/被杀/非零退出码分开记账，
-       * 超时挂死绝不被归一为普通失败。timeout=宿主超时杀掉（error 含
-       * "Command timed out"）；killed=用户中断/abort（is_interrupt 或
-       * tool_response.interrupted）；nonzero=命令正常退出但退出码非 0；
-       * unknown=宿主没给退出码也没给超时标记（如无法启动 shell）。
+       * 超时挂死绝不被归一为普通失败。timeout=宿主超时（error 含
+       * "Command timed out"；或 2026-08-20 实证：2.1.234 sdk-cli 下超时
+       * 转后台，tool_response.timedOutAfterMs 是 number）；killed=用户中断
+       * /abort（is_interrupt 或 tool_response.interrupted）；nonzero=命令
+       * 正常退出但退出码非 0；unknown=宿主没给退出码也没给超时标记（如无法
+       * 启动 shell，或模型主动 run_in_background 转后台——无退出码实证，
+       * 绝不可记通过）。
        */
       exitReason: 'timeout' | 'killed' | 'nonzero' | 'unknown' | null
+      /** 宿主后台任务 id（超时/主动转后台时宿主给出；事实字段，additive，缺失 → null） */
+      backgroundTaskId: string | null
     })
   | (EventBase & {
       type: 'done.claimed'
@@ -322,8 +327,10 @@ export function sanitizeEvent(raw: unknown, now: string): SanitizeResult {
           exitCode: typeof o.exitCode === 'number' ? o.exitCode : null,
           command: str(o.command) ?? '',
           durationMs: typeof o.durationMs === 'number' ? o.durationMs : null,
-          outputTail: outputTail(o.output),
+          // 产出方（buildVerifyEvent）已整理成 outputTail 数组；o.output 兼容旧调用形
+          outputTail: outputTail(o.outputTail ?? o.output),
           exitReason: exitReasonOf(o.exitReason),
+          backgroundTaskId: strCut(o.backgroundTaskId, MAX_QUOTE_LEN),
         },
       }
     case 'done.claimed':

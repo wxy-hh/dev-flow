@@ -1,8 +1,9 @@
 /**
  * 自动 git commit 模块（计划 §3.6，T7：done 时选择性自动 commit）
  *
- * 职责边界：本模块只提供「纯函数 plan + 薄 exec 壳」，不负责调用时机（done 成功
- * 时由接线方调用）与审计落账（调用方按返回结果写 audit.warning / 提示用户）。
+ * 职责边界：本模块只提供「纯函数 plan + 薄 exec 壳」+「接线裁决（autoCommitOutcome：
+ * plan + exec 结果 → 审计文案与响应尾注，判断逻辑不进壳）」；不负责调用时机（done
+ * 成功时由接线方调用）与审计落账（接线方按 autoCommitOutcome.audit 写 audit.warning）。
  * push 永不出现（防线③）——本模块没有任何 push 相关代码。
  *
  * == 选择性提交（红线）==
@@ -357,4 +358,63 @@ export function execAutoCommit(
     staged: addPaths,
     dropped,
   }
+}
+
+/** 原因中文标签（审计文案用；SkipReason/FailReason 共用，枚举面完整） */
+function reasonLabel(reason: SkipReason | FailReason): string {
+  switch (reason) {
+    case 'disabled':
+      return '配置已关闭'
+    case 'no-files':
+      return '无本主线触碰文件'
+    case 'not-ready':
+      return '计划未就绪'
+    case 'git-missing':
+      return 'git 未安装'
+    case 'not-a-repo':
+      return '不在 git 仓内'
+    case 'detached-head':
+      return 'HEAD 游离（detached）'
+    case 'merge-conflict':
+      return 'merge 冲突中'
+    case 'no-addable-files':
+      return '清单全部不可提交'
+    case 'nothing-staged':
+      return '空提交（无变更）'
+    case 'git-add-failed':
+      return 'git add 失败'
+    case 'git-commit-failed':
+      return 'git commit 失败'
+  }
+}
+
+/** 自动提交接线裁决（纯函数，T7）：plan + exec 结果 → 审计文案 + 响应尾注 */
+export interface AutoCommitOutcome {
+  /** 需写 audit.warning 的文案（null=无需审计：提交成功或无事可做） */
+  audit: string | null
+  /** 追加到 done 响应的尾注（null=不追加；committed 时给短 sha 供回溯） */
+  note: string | null
+}
+
+/**
+ * 接线裁决（纯函数，判断逻辑不进壳）：把 plan/result 翻译成「写什么审计、响应加
+ * 什么尾注」。fail-open 语义落点：skipped/failed 只影响审计与提示，done 的成功
+ * 由调用方照常返回（本函数永不抛错、永不表达"应回卷"）。disabled（配置关闭）是
+ * 用户意图，仍写审计（证据链可见）；no-files（无事可做）不算故障，不审计。
+ */
+export function autoCommitOutcome(plan: AutoCommitPlan, result: AutoCommitResult | null): AutoCommitOutcome {
+  if (plan.status === 'disabled') {
+    return { audit: '自动提交已关闭（config.json autoCommit=false），本次 done 未产生提交', note: null }
+  }
+  if (plan.status === 'no-files') return { audit: null, note: null }
+  // plan.status === 'ready'；result 为 null 属调用方违约（防御：不审计不提示）
+  if (result === null) return { audit: null, note: null }
+  if (result.status === 'committed') {
+    return { audit: null, note: result.sha !== null ? `；自动提交 ${result.sha}` : '；自动提交已完成' }
+  }
+  if (result.status === 'skipped') {
+    const detail = result.detail !== null ? `：${result.detail}` : ''
+    return { audit: `自动提交跳过（${reasonLabel(result.reason)}）${detail}`, note: null }
+  }
+  return { audit: `自动提交失败（${reasonLabel(result.reason)}）：${result.detail}`, note: null }
 }

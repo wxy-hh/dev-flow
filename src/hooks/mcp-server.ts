@@ -1,11 +1,14 @@
 /**
- * MCP stdio server（计划 §2.2 工具面：server 名压最短 `df`，T6 只挂 done；
- * T8 的只读 status 加进 TOOLS 表即可——server 骨架与协议层在此一次建好）
+ * MCP stdio server（计划 §2.2 工具面：server 名压最短 `df`，工具面 = done + status）
+ *
+ * T6 挂 done（完成宣称咽喉）；T7 在 done 成功分支接线选择性自动提交（计划 §3.6）；
+ * T8 挂只读 status（状态摘要查询）。server 骨架与协议层在此一次建好，新增工具只
+ * 加 TOOLS 表 + tools/call 路由。
  *
  * 链路实证（2026-08-19，sandbox/mcp-probe）：插件 .mcp.json（mcpServers 标准
  * 配置，command/args 支持 ${CLAUDE_PLUGIN_ROOT} 替换）→ 会话启动自动连接
- * （stdio，27ms）→ 工具渲染名 mcp__plugin_dev-flow_df__done（宿主定形
- * mcp__plugin_<plugin>_<server>__<tool>，§2.2 命名预判实证成立）→ -p 模式
+ * （stdio，27ms）→ 工具渲染名 mcp__plugin_dev-flow_df__done / __status（宿主
+ * 定形 mcp__plugin_<plugin>_<server>__<tool>，§2.2 命名预判实证成立）→ -p 模式
  * --allowedTools 'mcp__plugin_dev-flow_df__*'（通配只能放工具位）即可调用。
  *
  * 协议：newline-delimited JSON-RPC（MCP 2024-11-05），仅实现 initialize /
@@ -18,9 +21,16 @@
  * - 缺省无声明 = 驳回（fail-visible 给声明模板）；驳回记 done.rejected + 连败+1，
  *   通过记 done.claimed + 连败清零（§9：连败=连续驳回次数，一次宣称通过即破）；
  * - done 不自己执行命令（MCP 超时 + 重复跑测试成本）；
- * - 响应面收敛：只返回一句话结论（成败 + 理由），不返回全量状态（§4 token 面）；
+ * - 自动提交（T7）只挂在通过分支：done.rejected 路径绝不触发 commit；fail-open
+ *   （merge 冲突/detached HEAD/空提交/autoCommit=false → done 照成，写审计）；
+ * - 响应面收敛：只返回一句话结论（成败 + 理由 + 自动提交尾注），不返回全量状态
+ *   （§4 token 面）；
  * - fail-closed（唯一允许）：内部异常 → 驳回 + 理由（咽喉故障宁可驳回不可假
  *   通过——驳回成本=用户再问一句，假通过成本=证据链造假）。
+ *
+ * status 语义（T8）：只读查询工具，loadStatusSummary 渲染 ≤500 字符摘要；
+ * fail-open（损坏/缺失 → "无状态"文本而非报错）；不写审计不改证据链（只读工具
+ * 不污染证据链，报警面 = 输出文本自身）。
  */
 
 import { createInterface } from 'node:readline'
@@ -29,6 +39,9 @@ import { loadState, writeState } from '../lib/state.js'
 import { applyEvents } from '../lib/rebuild.js'
 import { auditWarning, appendEvent, emptyFacts, readEvents, scanMainlineFacts } from '../lib/events.js'
 import { doneSuccessMessage, evaluateDone } from '../lib/done.js'
+import { autoCommitOutcome, execAutoCommit, planAutoCommit } from '../lib/auto-commit.js'
+import { loadConfig } from '../lib/config.js'
+import { loadStatusSummary } from '../lib/status.js'
 import type { DevFlowEvent } from '../lib/events.js'
 
 declare const DEV_FLOW_VERSION: string
@@ -42,12 +55,18 @@ interface JsonRpcRequest {
   params?: Record<string, unknown>
 }
 
-/** 工具定义表（第一批 1 个：done；T8 status 追加此处，协议层零改动） */
+/** 工具定义表（第一批 2 个：done + status；新增工具必答三问 §4.3，协议层零改动） */
 const TOOLS = [
   {
     name: 'done',
     description:
       '完成宣称（状态翻转唯一咽喉）：验收通过（verify 命令退出码 0 且晚于最后写入）后调用；无验收项需意图块显式声明 verify: none。返回一句话成败结论。',
+    inputSchema: { type: 'object', properties: {} },
+  },
+  {
+    name: 'status',
+    description:
+      '只读查询：当前流程状态摘要（活跃/挂起主线、连败、治理强度、最近验收、完成宣称、最近事件），输出 ≤500 字符；只读不改任何状态。',
     inputSchema: { type: 'object', properties: {} },
   },
 ]
@@ -72,6 +91,31 @@ function errorResult(id: JsonRpcRequest['id'], text: string): void {
 /** 状态根（MCP server 进程继承 CLAUDE_PROJECT_DIR，实证：插件 MCP 子进程同样注入） */
 function stateRoot(): string {
   return join(process.env.CLAUDE_PROJECT_DIR ?? process.cwd(), '.dev-flow')
+}
+
+/** 项目根（git 操作 cwd；与 stateRoot 同源，dirname(stateRoot())） */
+function projectRoot(): string {
+  return process.env.CLAUDE_PROJECT_DIR ?? process.cwd()
+}
+
+/**
+ * 自动提交接线（T7 薄 IO 壳，判断逻辑在 lib/auto-commit.ts 的纯函数面）：
+ * readEvents 已由调用方读出 → planAutoCommit → （ready 时）execAutoCommit →
+ * 按 autoCommitOutcome 写审计、返回响应尾注。fail-open 铁律：本函数永不 throw、
+ * 永不回卷 done 成功——内部异常捕获后写审计、尾注为空（done 照成）。
+ */
+function wireAutoCommit(projectDir: string, root: string, events: DevFlowEvent[], mainlineId: string): string {
+  try {
+    const cfg = loadConfig(root)
+    const plan = planAutoCommit(events, mainlineId, cfg)
+    const result = plan.status === 'ready' ? execAutoCommit(plan, projectDir) : null
+    const outcome = autoCommitOutcome(plan, result)
+    if (outcome.audit !== null) auditWarning(root, outcome.audit, 'mcp-done')
+    return outcome.note ?? ''
+  } catch (err) {
+    auditWarning(root, `自动提交异常（done 已成功，未提交）：${String(err).slice(0, 160)}`, 'mcp-done')
+    return ''
+  }
 }
 
 /**
@@ -111,7 +155,11 @@ function handleDone(): string {
     }
     appendEvent(root, ev, now)
     writeState(root, applyEvents(state, [ev]))
-    return doneSuccessMessage(state, facts)
+    // 自动提交接线（T7，§3.6）：只在此成功分支触发——done.rejected 路径绝不 commit
+    // （状态未翻转即无提交资格）。fail-open：merge 冲突/detached HEAD/空提交/
+    // autoCommit=false → done 照成，警告写 audit.warning（wireAutoCommit 内部处理）。
+    const note = wireAutoCommit(projectRoot(), root, events, mainlineId!)
+    return doneSuccessMessage(state, facts) + note
   } catch (err) {
     // fail-closed（唯一允许）：咽喉故障宁可驳回不可假通过
     try {
@@ -121,6 +169,15 @@ function handleDone(): string {
     }
     return `done 驳回：内部故障（${String(err).slice(0, 160)}）。请稍后重试。`
   }
+}
+
+/**
+ * status 工具执行（T8，只读薄壳）：loadStatusSummary 渲染 ≤500 字符摘要。
+ * fail-open（§4.6）：state/events 损坏或缺失 → "无状态"文本而非报错；只读工具
+ * 不写审计不改证据链（报警面 = 输出文本的 ok/failure/text），重建只走 doctor。
+ */
+function handleStatus(): string {
+  return loadStatusSummary(projectRoot()).text
 }
 
 const rl = createInterface({ input: process.stdin, crlfDelay: Infinity })
@@ -158,6 +215,11 @@ rl.on('line', (line) => {
     const name = msg.params?.name
     if (name === 'done') {
       const text = handleDone()
+      send({ jsonrpc: '2.0', id: msg.id, result: { content: [{ type: 'text', text }], isError: false } })
+      return
+    }
+    if (name === 'status') {
+      const text = handleStatus()
       send({ jsonrpc: '2.0', id: msg.id, result: { content: [{ type: 'text', text }], isError: false } })
       return
     }

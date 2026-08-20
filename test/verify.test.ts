@@ -3,9 +3,10 @@
  *
  * 覆盖：命令归一化与声明匹配（精确/带参/改命令/换序/空声明）；verify:none
  * 判定；退出原因分类（is_interrupt→killed、超时标记→timeout 优先于退出码、
- * Exit code N→nonzero、其余→unknown）；退出码解析；buildVerifyEvent 三分支
- * 事件构造（PostToolUse 成功=passed、interrupted=失败 killed、PostToolUseFailure
- * 非零/超时/中断）；sanitize 白名单对 exitReason 的宽容与拒绝。
+ * Exit code N→nonzero、其余→unknown）；退出码解析；buildVerifyEvent 事件构造
+ * （PostToolUse 成功=passed、interrupted=失败 killed、超时转后台 timedOutAfterMs
+ * =timeout、主动转后台 backgroundTaskId=unknown、PostToolUseFailure 非零/超时/
+ * 中断）；sanitize 白名单对 exitReason 的宽容与拒绝。
  */
 
 import { test } from 'node:test'
@@ -121,6 +122,85 @@ test('buildVerifyEvent：PostToolUse 但 interrupted=true（被杀）→ verify.
     assert.equal(ev.exitReason, 'killed')
     assert.equal(ev.exitCode, null)
   }
+})
+
+test('buildVerifyEvent：PostToolUse 超时转后台（timedOutAfterMs）→ failed timeout，backgroundTaskId 落账', () => {
+  // 2026-08-20 真机实证载荷：2.1.234 sdk-cli 下 Bash 超时转后台，走 PostToolUse 成功路径
+  const ev = buildVerifyEvent({
+    hookEventName: 'PostToolUse',
+    command: 'node hang.js',
+    mainlineId: 'm1',
+    now: 'T0',
+    toolResponse: {
+      stdout: '',
+      stderr: '',
+      interrupted: false,
+      isImage: false,
+      noOutputExpected: false,
+      backgroundTaskId: 'bmbru41ng',
+      timedOutAfterMs: 3,
+    },
+    error: null,
+    isInterrupt: null,
+    durationMs: 2042,
+  })
+  assert.equal(ev.type, 'verify.failed')
+  if (ev.type === 'verify.failed') {
+    assert.equal(ev.exitReason, 'timeout') // 超时转后台绝不被归一为通过
+    assert.equal(ev.exitCode, null)
+    assert.equal(ev.backgroundTaskId, 'bmbru41ng')
+    assert.equal(ev.durationMs, 2042)
+  }
+})
+
+test('buildVerifyEvent：PostToolUse 仅 backgroundTaskId（模型主动转后台）→ failed unknown（无退出码实证）', () => {
+  const ev = buildVerifyEvent({
+    hookEventName: 'PostToolUse',
+    command: 'node check.js',
+    mainlineId: 'm1',
+    now: 'T0',
+    toolResponse: { stdout: '', stderr: '', interrupted: false, backgroundTaskId: 'b-task-1' },
+    error: null,
+    isInterrupt: null,
+    durationMs: 120,
+  })
+  assert.equal(ev.type, 'verify.failed')
+  if (ev.type === 'verify.failed') {
+    assert.equal(ev.exitReason, 'unknown')
+    assert.equal(ev.exitCode, null)
+    assert.equal(ev.backgroundTaskId, 'b-task-1')
+  }
+})
+
+test('buildVerifyEvent：转后台判定边界——timedOutAfterMs 无 backgroundTaskId → timeout；空串 id 视为缺失 → passed', () => {
+  // timedOutAfterMs 是 number 即可判 timeout；backgroundTaskId 缺失 → null
+  const timeout = buildVerifyEvent({
+    hookEventName: 'PostToolUse',
+    command: 'node hang.js',
+    mainlineId: 'm1',
+    now: 'T0',
+    toolResponse: { stdout: '', stderr: '', interrupted: false, timedOutAfterMs: 3000 },
+    error: null,
+    isInterrupt: null,
+    durationMs: 3000,
+  })
+  assert.equal(timeout.type, 'verify.failed')
+  if (timeout.type === 'verify.failed') {
+    assert.equal(timeout.exitReason, 'timeout')
+    assert.equal(timeout.backgroundTaskId, null)
+  }
+  // backgroundTaskId 空串 = 缺失（只认非空 string），无两字段语义 → 仍记通过
+  const empty = buildVerifyEvent({
+    hookEventName: 'PostToolUse',
+    command: 'node check.js',
+    mainlineId: 'm1',
+    now: 'T0',
+    toolResponse: { stdout: 'ok', stderr: '', interrupted: false, backgroundTaskId: '' },
+    error: null,
+    isInterrupt: null,
+    durationMs: 26,
+  })
+  assert.equal(empty.type, 'verify.passed')
 })
 
 test('buildVerifyEvent：PostToolUseFailure 非零退出码 → failed nonzero（含输出尾部）', () => {

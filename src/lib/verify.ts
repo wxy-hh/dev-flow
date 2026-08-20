@@ -5,9 +5,15 @@
  * 1. 命令归一化与声明匹配（宁严勿宽，§A：空白/参数序的宽容匹配别过头——
  *    归一化 = 去首尾空白 + 空白折叠 + 按空白分词；匹配 = 命令 token 序列
  *    以声明 token 序列为前缀；匹配不上就不记）；
- * 2. 退出原因三分支（坑 N-4/8-12-10b，硬要求）：
- *    - PostToolUse（成功路径）→ verify.passed；但 tool_response.interrupted=true
- *      （用户中断/被杀）→ verify.failed + exitReason=killed（绝不被归一为通过）；
+ * 2. 退出原因判定（坑 N-4/8-12-10b，硬要求）：
+ *    - PostToolUse（成功路径）→ verify.passed（有退出码 0 实证才可记通过）；
+ *      但 tool_response.interrupted=true（用户中断/被杀）→ verify.failed
+ *      + exitReason=killed（绝不被归一为通过）；
+ *      tool_response.timedOutAfterMs 是 number（宿主超时转后台，2026-08-20
+ *      实证）→ verify.failed + exitReason=timeout，exitCode=null，带
+ *      backgroundTaskId；无 timedOutAfterMs 但 backgroundTaskId 非空（模型
+ *      主动 run_in_background 转后台，命令无退出码实证）→ verify.failed
+ *      + exitReason=unknown——转后台的命令没有完成证据，绝不可记通过；
  *    - PostToolUseFailure（失败路径）→ verify.failed，exitReason 判定优先级：
  *      is_interrupt=true → killed；error 含 "Command timed out after" → timeout
  *      （宿主超时杀掉，挂死/长跑最终归宿）；error 首行 "Exit code N" → nonzero；
@@ -16,6 +22,10 @@
  * 宿主能力边界（实证结论，见 verify-t6.sh 报告）：非零退出码 / 超时 / 中断在
  * PostToolUse 系列事件载荷里可区分；"挂死 vs 长跑"在宿主层面不可区分（都表现为
  * duration_ms 长 + 未超时），挂死最终以超时分支收口——这是本模块能记到的最细粒度。
+ * 2026-08-20 实证：Claude Code 2.1.234（sdk-cli）下 Bash 超时不再走
+ * PostToolUseFailure，而是把命令转入后台走 PostToolUse 成功路径，tool_response
+ * 带 timedOutAfterMs/backgroundTaskId；旧 PostToolUseFailure "Command timed
+ * out after" 分支保留兜底（别的模式/版本可能仍出现）。
  */
 
 import type { DevFlowEvent } from './events.js'
@@ -104,8 +114,9 @@ export interface VerifyEventInput {
 
 /**
  * 构造验收事件（纯函数）：宿主事件载荷 → verify.passed / verify.failed。
- * 退出原因三分支在此收口；命令输出只留尾部 ≤20 行交给 sanitizeEvent（output 字段
- * 传整段，红线执行点在 sanitize——本函数不自行截断，保持单点）。
+ * 退出原因判定在此收口（含转后台判定：timedOutAfterMs/backgroundTaskId）；
+ * 命令输出只留尾部 ≤20 行交给 sanitizeEvent（output 字段传整段，红线执行点
+ * 在 sanitize——本函数不自行截断，保持单点）。
  */
 export function buildVerifyEvent(input: VerifyEventInput): DevFlowEvent {
   const { hookEventName, command, mainlineId, now, toolResponse, error, isInterrupt, durationMs } = input
@@ -123,6 +134,42 @@ export function buildVerifyEvent(input: VerifyEventInput): DevFlowEvent {
         durationMs,
         outputTail: outputTailFromToolResponse(toolResponse),
         exitReason: 'killed',
+        backgroundTaskId: null,
+      }
+    }
+    // 转后台判定（2026-08-20 实证）：转后台的命令没有退出码实证，绝不记 verify.passed
+    const backgroundTaskId =
+      typeof toolResponse?.backgroundTaskId === 'string' && toolResponse.backgroundTaskId !== ''
+        ? toolResponse.backgroundTaskId
+        : null
+    // timedOutAfterMs 是 number = 宿主超时转后台（2.1.234 sdk-cli 实测载荷形状）
+    if (typeof toolResponse?.timedOutAfterMs === 'number') {
+      return {
+        type: 'verify.failed',
+        t: now,
+        mainlineId,
+        requirementId: null,
+        exitCode: null,
+        command,
+        durationMs,
+        outputTail: outputTailFromToolResponse(toolResponse),
+        exitReason: 'timeout',
+        backgroundTaskId,
+      }
+    }
+    // 仅 backgroundTaskId 非空 = 模型主动 run_in_background，无完成证据
+    if (backgroundTaskId !== null) {
+      return {
+        type: 'verify.failed',
+        t: now,
+        mainlineId,
+        requirementId: null,
+        exitCode: null,
+        command,
+        durationMs,
+        outputTail: outputTailFromToolResponse(toolResponse),
+        exitReason: 'unknown',
+        backgroundTaskId,
       }
     }
     return {
@@ -146,6 +193,7 @@ export function buildVerifyEvent(input: VerifyEventInput): DevFlowEvent {
     durationMs,
     outputTail: error !== null ? error.split('\n') : [],
     exitReason: classifyExitReason(error, isInterrupt),
+    backgroundTaskId: null,
   }
 }
 

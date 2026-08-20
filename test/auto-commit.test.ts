@@ -23,6 +23,7 @@ import { tmpdir } from 'node:os'
 import {
   AUTO_COMMIT_PREFIX,
   AUTO_COMMIT_TAG,
+  autoCommitOutcome,
   buildCommitMessage,
   execAutoCommit,
   planAutoCommit,
@@ -367,5 +368,95 @@ test('exec 成功时返回短 sha 与 message（审计落账素材）', (t) => {
   if (r.status === 'committed') {
     assert.match(r.sha ?? '', /^[0-9a-f]{7,}$/)
     assert.ok(r.message.startsWith(`${AUTO_COMMIT_PREFIX}[m1]`))
+  }
+})
+
+// —— T7 接线裁决（autoCommitOutcome：plan/result → 审计文案 + 响应尾注）——
+// 判断逻辑在 lib 的纯函数面（接线壳只做 IO：写审计、拼尾注），语义契约落测：
+// disabled（配置关闭）→ 审计；no-files（无事可做）→ 不审计；committed → 尾注
+// 带短 sha；skipped/failed → 审计含原因中文标签、无尾注（fail-open：done 照成）。
+
+test('autoCommitOutcome：disabled（autoCommit=false）→ 审计"已关闭"，无响应尾注', () => {
+  const plan = planAutoCommit([fc('m1', 'a.ts')], 'm1', { ...defaultConfig(), autoCommit: false })
+  assert.equal(plan.status, 'disabled')
+  if (plan.status === 'disabled') {
+    const o = autoCommitOutcome(plan, null)
+    assert.ok(o.audit !== null && o.audit.includes('已关闭'))
+    assert.equal(o.note, null)
+  }
+})
+
+test('autoCommitOutcome：no-files → 无审计无尾注（无事可做，非故障）', () => {
+  const plan = planAutoCommit([], 'm1', defaultConfig())
+  assert.equal(plan.status, 'no-files')
+  if (plan.status === 'no-files') {
+    assert.deepEqual(autoCommitOutcome(plan, null), { audit: null, note: null })
+  }
+})
+
+test('autoCommitOutcome：committed → 无审计 + 尾注带短 sha（取不到给兜底）', () => {
+  const plan = planAutoCommit([fc('m1', 'a.ts')], 'm1', defaultConfig())
+  assert.equal(plan.status, 'ready')
+  if (plan.status === 'ready') {
+    const committed: AutoCommitResult = {
+      status: 'committed',
+      sha: 'abc1234',
+      message: plan.message,
+      staged: ['a.ts'],
+      dropped: [],
+    }
+    const o = autoCommitOutcome(plan, committed)
+    assert.equal(o.audit, null)
+    assert.equal(o.note, '；自动提交 abc1234')
+    // 短 sha 获取失败（尽力而为）→ 兜底尾注，仍无审计
+    const o2 = autoCommitOutcome(plan, { ...committed, sha: null })
+    assert.equal(o2.audit, null)
+    assert.equal(o2.note, '；自动提交已完成')
+  }
+})
+
+test('autoCommitOutcome：skipped（merge 冲突/detached/空提交等）→ 审计含原因，无尾注', () => {
+  const plan = planAutoCommit([fc('m1', 'a.ts')], 'm1', defaultConfig())
+  assert.equal(plan.status, 'ready')
+  if (plan.status === 'ready') {
+    const cases: Array<['merge-conflict' | 'detached-head' | 'nothing-staged' | 'git-missing' | 'not-a-repo', string]> = [
+      ['merge-conflict', 'merge 冲突中'],
+      ['detached-head', 'HEAD 游离'],
+      ['nothing-staged', '空提交'],
+      ['git-missing', 'git 未安装'],
+      ['not-a-repo', '不在 git 仓内'],
+    ]
+    for (const [reason, label] of cases) {
+      const o = autoCommitOutcome(plan, { status: 'skipped', reason, detail: null })
+      assert.ok(o.audit !== null && o.audit.includes(label), `${reason} 审计应含「${label}」，实际：${o.audit}`)
+      assert.ok(o.audit!.startsWith('自动提交跳过'), '审计文案应以「自动提交跳过」开头')
+      assert.equal(o.note, null)
+    }
+    // detail 存在时并入审计（剔除路径明细）
+    const o2 = autoCommitOutcome(plan, {
+      status: 'skipped',
+      reason: 'no-addable-files',
+      detail: '2 条路径被剔除：x.ts(missing-untracked)',
+    })
+    assert.ok(o2.audit!.includes('2 条路径被剔除'))
+  }
+})
+
+test('autoCommitOutcome：failed → 审计含失败原因（git add / commit 失败）', () => {
+  const plan = planAutoCommit([fc('m1', 'a.ts')], 'm1', defaultConfig())
+  assert.equal(plan.status, 'ready')
+  if (plan.status === 'ready') {
+    const o = autoCommitOutcome(plan, {
+      status: 'failed',
+      reason: 'git-commit-failed',
+      detail: 'git commit 失败：xxx',
+      staged: ['a.ts'],
+      dropped: [],
+    })
+    assert.ok(o.audit !== null && o.audit.includes('git commit 失败'))
+    assert.ok(o.audit!.startsWith('自动提交失败'))
+    assert.equal(o.note, null)
+    // 调用方违约（ready 计划却无 exec 结果）：防御性不审计不提示
+    assert.deepEqual(autoCommitOutcome(plan, null), { audit: null, note: null })
   }
 })

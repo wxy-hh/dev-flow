@@ -5,7 +5,9 @@
 # 场景 ② 跑 verify 失败（非零退出码）→ done 驳回（验收记账 exitReason=nonzero）
 # 场景 ③ 跑 verify 成功 → done 成功 + done.claimed 落账 + 连败清零
 # 场景 ④ 验收通过后改代码 → done 驳回（时序双检查：代码变则验收失效）
-# 场景 ⑤ verify 命令超时（挂死被宿主杀掉）→ 记账 exitReason=timeout（绝不被归一为普通失败）
+# 场景 ⑤ verify 命令超时 → 记账 exitReason=timeout（绝不被归一为通过/普通失败；
+#   2026-08-20 实证：2.1.234 sdk-cli 下超时由宿主转后台，载荷为 PostToolUse +
+#   timedOutAfterMs/backgroundTaskId，不再走 PostToolUseFailure）
 #
 # 主线建立：软单主线（§5.7）——全新状态首写不建主线（mainlineId 为空串），
 # done 需要活跃主线。每场景先用一个独立 claude -p 调用发切换短语（"先弄那个
@@ -270,12 +272,12 @@ assert_events '"type":"verify.passed"' "场景 ④ 此前验收通过已落账"
 echo "[t6] 场景 ④ 通过：代码变更后验收失效、done 驳回"
 
 # —— 场景 ⑤：verify 命令挂死/超时 → 记账 exitReason=timeout ——
-echo "[t6] 6/7 场景 ⑤：verify 超时（挂死被宿主杀掉）→ 记账可区分"
+echo "[t6] 6/7 场景 ⑤：verify 超时（超时被宿主转入后台）→ 记账可区分"
 scene5() {
   reset_work
   open_mainline
   set +e
-  OUT="$(claude -p '请完成：① 输出意图块，其中 verify 行只写 node hang.js（不要加括号备注或说明，不要带路径前缀）；② 用 Write 创建 hang.js（放仓库根目录），内容恰好为 setTimeout(() => {}, 60000)（挂死脚本）；③ 在仓库根目录运行 Bash 命令 node hang.js（命令必须就是 node hang.js），并且必须把 Bash 工具的 timeout 参数显式设为 3（秒）——注意这是 Bash 工具的 timeout 参数（数字 3），不是 shell 的 timeout 命令。命令会被超时杀掉；④ 然后调用 MCP 工具 done（完整工具名 mcp__plugin_dev-flow_df__done，参数为空；如果工具列表里没看到它，请用工具搜索 ToolSearch 查找后再调用）。必须真实调用工具。' \
+  OUT="$(claude -p '请完成：① 输出意图块，其中 verify 行只写 node hang.js（不要加括号备注或说明，不要带路径前缀）；② 用 Write 创建 hang.js（放仓库根目录），内容恰好为 setTimeout(() => {}, 60000)（挂死脚本）；③ 在仓库根目录运行 Bash 命令 node hang.js（命令必须就是 node hang.js），并且必须把 Bash 工具的 timeout 参数显式设为 3（秒）——注意这是 Bash 工具的 timeout 参数（数字 3），不是 shell 的 timeout 命令。命令会被超时杀掉；④ 然后调用 MCP 工具 done（完整工具名 mcp__plugin_dev-flow_df__done，参数为空；如果工具列表里没看到它，请用工具搜索 ToolSearch 查找后再调用）。必须真实调用工具。注意：如果 done 被驳回，这正是本任务的预期终点——被驳回后不要再运行任何命令、不要再调用任何工具，直接结束并汇报驳回理由。' \
     --plugin-dir "$PLUGIN" \
     --allowedTools "$ALLOWED" \
     --settings "$SETTINGS" \
@@ -294,9 +296,10 @@ cat /tmp/t6-out-5.txt
 echo "----- 场景 ⑤ 输出结束 -----"
 # 验收记账：verify.failed + exitReason=timeout（超时挂死绝不被归一为普通失败）
 assert_events '"exitReason":"timeout"' "场景 ⑤ verify.failed 记账 exitReason=timeout"
-# 宿主超时文本在记账的输出尾部可见（记事实：Command timed out）
-grep -q 'Command timed out' "$WORK/.dev-flow/events.jsonl" || {
-  echo "[t6] 失败：场景 ⑤ 验收记账缺宿主超时文本（Command timed out）" >&2
+# 2026-08-20 实证：本宿主超时转后台（非 PostToolUseFailure），记账事件必须带
+# backgroundTaskId（旧断言 "Command timed out" 基于已不成立的假设，已替换）
+grep -q '"backgroundTaskId":"' "$WORK/.dev-flow/events.jsonl" || {
+  echo "[t6] 失败：场景 ⑤ 验收记账缺 backgroundTaskId（超时转后台未落账）" >&2
   exit 1
 }
 # hook 判定证据：timeout

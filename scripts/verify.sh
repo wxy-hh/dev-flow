@@ -34,11 +34,13 @@ echo "[verify] 3/4 claude -p 端到端（sandbox/work 内起会话）"
 WORK="$ROOT/sandbox/work"
 cd "$WORK"
 # 坑（spike 坑 5）：--allowedTools/--settings 是变参 flag，位置参数 prompt 必须放其前
+# 会话 settings 可被 DEV_FLOW_TEST_SETTINGS 覆盖（直连兜底：代理指向失效 provider 时，见 scripts/make-test-settings.sh）
+SETTINGS="${DEV_FLOW_TEST_SETTINGS:-$ROOT/scripts/empty-settings.toml}"
 PROMPT='请读取 README.md，并一字不差报告第一行内容。'
 OUTPUT="$(claude -p "$PROMPT" \
   --plugin-dir "$ROOT/plugins/dev-flow" \
   --allowedTools "Read,Glob,Grep" \
-  --settings "$ROOT/scripts/empty-settings.toml" 2>&1)"
+  --settings "$SETTINGS" 2>&1)"
 echo "$OUTPUT"
 
 echo "[verify] 4/4 断言"

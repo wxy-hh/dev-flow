@@ -11,7 +11,11 @@
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
+import { mkdtempSync, rmSync, symlinkSync } from 'node:fs'
+import { join } from 'node:path'
+import { tmpdir } from 'node:os'
 import {
+  buildFileChangedEvent,
   decideBashWrite,
   decidePathWrite,
   decideToolWrite,
@@ -285,4 +289,56 @@ test('Bash 重试放行：intent.blocked 重试标注只标一次（多目标）
   assert.equal(r.decision, 'allow')
   const blockedMarks = r.events.filter((e) => e.type === 'intent.blocked')
   assert.equal(blockedMarks.length, 1, '重试标注只一次')
+})
+
+// —— buildFileChangedEvent（T7：Write/Edit/MultiEdit 的 file.changed 构造，PostToolUse 记账用）——
+// 路径归一为项目相对（绝对/相对 → 相对 cwd）；越界/空路径/空主线 → null（宁漏勿误收，
+// 与 planAutoCommit.normalizePath 同语义——绝对路径与 `..` 段不参与自动提交）。
+
+/** 返回类型收窄（DevFlowEvent 是判别联合，测试只需 path/tool 面） */
+function fce(opts: Parameters<typeof buildFileChangedEvent>[0]): { path: string; tool: string } | null {
+  return buildFileChangedEvent(opts) as { path: string; tool: string } | null
+}
+
+test('buildFileChangedEvent：相对路径原样相对化', () => {
+  const e = fce({ tool: 'Write', filePath: 'src/a.ts', cwd: '/proj', mainlineId: 'm1', now: 'T' })
+  assert.equal(e!.path, 'src/a.ts')
+  assert.equal(e!.tool, 'Write')
+})
+
+test('buildFileChangedEvent：项目内绝对路径 → 剥成项目相对', () => {
+  // T7 真机实证：模型常传绝对 file_path（/proj/src/app.js），必须归一为 src/app.js 才能进自动提交
+  const e = fce({ tool: 'Edit', filePath: '/proj/src/app.js', cwd: '/proj', mainlineId: 'm1', now: 'T' })
+  assert.equal(e!.path, 'src/app.js')
+  assert.equal(e!.tool, 'Edit')
+})
+
+test('buildFileChangedEvent：越界路径（/etc/x）/ 空路径 / 空主线 → null（不参与提交）', () => {
+  assert.equal(fce({ tool: 'Write', filePath: '/etc/x', cwd: '/proj', mainlineId: 'm1', now: 'T' }), null)
+  assert.equal(fce({ tool: 'Write', filePath: '   ', cwd: '/proj', mainlineId: 'm1', now: 'T' }), null)
+  assert.equal(fce({ tool: 'Write', filePath: 'src/a.ts', cwd: '/proj', mainlineId: ' ', now: 'T' }), null)
+  // 写入目标即项目根（cwd 本身）→ null（目录形态，exec 层也会剔除目录）
+  assert.equal(fce({ tool: 'Write', filePath: '/proj', cwd: '/proj', mainlineId: 'm1', now: 'T' }), null)
+})
+
+test('buildFileChangedEvent：NFC 归一化（NFD 输入 → NFC 输出，坑 N-5 同源）', () => {
+  // macOS 常存 NFD；输入 NFD 的 'é'（e + U+0301），输出应为 NFC 单码点
+  const e = fce({ tool: 'Write', filePath: 'src/caf\u0065\u0301.js', cwd: '/proj', mainlineId: 'm1', now: 'T' })
+  assert.equal(e!.path, 'src/caf\u00e9.js')
+})
+
+test('buildFileChangedEvent：项目根是 symlink 时不误丢（提交路径不做 realpath 归一）', (t) => {
+  // macOS /var、/tmp 是 symlink；若按 realpath 归一，relative 会产出 ../… 被误丢。
+  // 回归锁：cwd 传 symlink 路径，相对化必须基于 cwd 原样，产出项目相对路径。
+  const real = mkdtempSync(join(tmpdir(), 'dev-flow-fce-real-'))
+  t.after(() => rmSync(real, { recursive: true, force: true }))
+  const link = join(tmpdir(), `dev-flow-fce-link-${process.pid}`)
+  rmSync(link, { recursive: true, force: true })
+  t.after(() => rmSync(link, { recursive: true, force: true }))
+  symlinkSync(real, link, 'dir')
+  const e = fce({ tool: 'Write', filePath: 'src/a.ts', cwd: link, mainlineId: 'm1', now: 'T' })
+  assert.equal(e!.path, 'src/a.ts')
+  // 绝对路径（经 symlink 项目根）同样剥成项目相对
+  const e2 = fce({ tool: 'Write', filePath: join(link, 'src/a.ts'), cwd: link, mainlineId: 'm1', now: 'T' })
+  assert.equal(e2!.path, 'src/a.ts')
 })

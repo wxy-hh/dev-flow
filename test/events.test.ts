@@ -114,6 +114,27 @@ test('sanitizeEvent：mainline.switch 带 name（T5 新主线名，additive 字�
   assert.equal(e3.name, null)
 })
 
+test('sanitizeEvent：verify.failed 的 backgroundTaskId 透传、非字符串回退 null（additive 字段）', () => {
+  // 字符串 → 透传（宿主后台任务 id，事实字段）
+  const r = sanitizeEvent(
+    { type: 'verify.failed', mainlineId: 'm1', command: 'node hang.js', exitReason: 'timeout', output: 'x', backgroundTaskId: 'bmbru41ng' },
+    'NOW',
+  )
+  const e = expectEvent(r, 'verify.failed')
+  assert.equal(e.backgroundTaskId, 'bmbru41ng')
+  // 非字符串 → null（类型校验，不崩溃）
+  const r2 = sanitizeEvent(
+    { type: 'verify.failed', mainlineId: 'm1', command: 'node hang.js', output: 'x', backgroundTaskId: 42 },
+    'NOW',
+  )
+  const e2 = expectEvent(r2, 'verify.failed')
+  assert.equal(e2.backgroundTaskId, null)
+  // 缺失 → null（旧事件兼容，additive-only）
+  const r3 = sanitizeEvent({ type: 'verify.failed', mainlineId: 'm1', command: 'node check.js', output: 'x' }, 'NOW')
+  const e3 = expectEvent(r3, 'verify.failed')
+  assert.equal(e3.backgroundTaskId, null)
+})
+
 test('sanitizeEvent：命令输出只留尾部 20 行、行内截断（红线）', () => {
   const lines = Array.from({ length: 30 }, (_, i) => `line-${i}`)
   const longLine = 'x'.repeat(500)
@@ -125,6 +146,19 @@ test('sanitizeEvent：命令输出只留尾部 20 行、行内截断（红线）
   assert.equal(e.outputTail.length, 20)
   assert.equal(e.outputTail[0], 'line-10') // 尾部 20 行 = line-10..line-28, 长行
   assert.equal(e.outputTail[19], 'x'.repeat(200)) // 行内截到 200 字符
+})
+
+// 回归（2026-08-20 修）：产出方 buildVerifyEvent 的字段名是 outputTail（数组），
+// sanitize 曾误读 o.output 导致落账永远为空
+test('sanitizeEvent：verify.failed 的 outputTail 数组（产出方形状）透传并截尾', () => {
+  const lines = Array.from({ length: 25 }, (_, i) => `tail-${i}`)
+  const r = sanitizeEvent(
+    { type: 'verify.failed', mainlineId: 'm1', command: 'npm test', outputTail: lines },
+    'NOW',
+  )
+  const e = expectEvent(r, 'verify.failed')
+  assert.equal(e.outputTail.length, 20)
+  assert.equal(e.outputTail[0], 'tail-5')
 })
 
 test('sanitizeEvent：命令输出接收整段字符串（按行切分后取尾部）', () => {
