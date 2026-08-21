@@ -2,15 +2,18 @@
  * 状态模块：state.json 的 schema、默认值、解析与读写（纯函数 + 薄 IO 壳）。
  *
  * 计划 §2.3：
- * - state.json 写者仅同步 hook，写原语 tmp+rename 原子替换（不上锁，
- *   写权限分工消竞态：同步 hook 由宿主串行触发，无并发写者）；
+ * - state.json 写者 6 处（gate-runner / UPS / post-tool-use×2 / MCP×2），真实
+ *   并发：宿主并行派发工具调用（每个 hook 独立进程）+ MCP server 常驻进程。
+ *   写原语 = 唯一 tmp 名 + rename 原子替换（不上锁：唯一名隔离写-写冲突，
+ *   rename 有界重试吸收瞬时干扰；读-写时序的丢失更新不自愈——events 是事实源，
+ *   缓存可重建，见 writeState 注释与 docs 并发说明）；
  * - 读 fail-open：非法 JSON/文件损坏 = 系统故障 → 警告 + 审计 + 空状态放行，
  *   绝不阻塞、绝不自修复（重建只走 doctor 手动触发）；
  * - additive-only 自律（§2.3）：字段只增、带默认值；读端对缺失字段给默认、
  *   对未知字段容忍保留（存 extra，写回时原样带回，不丢数据）。
  */
 
-import { readFileSync, renameSync, writeFileSync } from 'node:fs'
+import { readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { auditWarning, ensureStateRoot } from './events.js'
 
@@ -254,17 +257,91 @@ function serializeState(state: DevFlowState): string {
   return JSON.stringify({ ...extra, ...known }, null, 2) + '\n'
 }
 
+/** 残留 tmp 匹配：旧版固定名（state.json.tmp）+ 本版唯一名（state.json.<pid>.<n>.<rand>.tmp） */
+const STALE_TMP_RE = /^state\.json(\..*)?\.tmp$/
+
+/** 残留 tmp 视为崩溃遗留的 mtime 年龄阈值：write→rename 窗口是微秒级，超过该阈值
+ * 不可能是并发写者的在途 tmp，只可能是崩溃/中断留下的孤儿 */
+const STALE_TMP_AGE_MS = 10_000
+
 /**
- * 原子写 state.json（tmp + rename；同目录 rename 为原子操作）。
- * 崩溃窗口只剩两种：写完 tmp 未 rename（下次写覆盖同名 tmp）、
- * rename 已完成（状态为新值）——正常路径不残留 tmp，残留由下次写覆盖。
+ * 每次写清理一次历史残留（崩溃遗留/旧版固定名）。只清「老的」：mtime 超过
+ * STALE_TMP_AGE_MS 才算残留；并发写者刚 writeFileSync、还没 rename 的在途 tmp
+ * mtime 是新的，绝不误删——返修：先前清光全部匹配 tmp，会把并发进程的在途 tmp
+ * 删掉，重新制造本修复要消灭的 rename ENOENT。best-effort：失败静默，绝不抛错。
+ */
+function sweepStaleTmp(root: string): void {
+  let names: string[]
+  try {
+    names = readdirSync(root)
+  } catch {
+    return
+  }
+  const now = Date.now()
+  for (const name of names) {
+    if (!STALE_TMP_RE.test(name)) continue
+    try {
+      const st = statSync(join(root, name))
+      if (now - st.mtimeMs <= STALE_TMP_AGE_MS) continue // 在途/刚写完：不动
+      rmSync(join(root, name), { force: true })
+    } catch {
+      // 尽力清理：并发写者可能已自己清掉/正在 rename，失败不抛新错
+    }
+  }
+}
+
+/** 进程内 tmp 名计数（配合 pid/随机数，同进程多次写与重试也互不重名） */
+let tmpCounter = 0
+
+/** 唯一 tmp 名：pid 隔离跨进程写者，进程内计数 + 随机数隔离同进程多次写 */
+function uniqueTmpPath(root: string): string {
+  tmpCounter += 1
+  const rand = Math.random().toString(36).slice(2, 10)
+  return join(root, `state.json.${process.pid}.${tmpCounter}.${rand}.tmp`)
+}
+
+/** 写原语重试上限：初始 1 次 + 最多 2 次重建重试（有界，失败仍抛错由调用方 fail-open 兜底） */
+const MAX_RENAME_ATTEMPTS = 3
+
+/**
+ * 原子写 state.json（唯一 tmp 名 + rename；同目录 rename 为原子操作）。
+ *
+ * 并发写者现实（P0 实证：24 条 rename ENOENT，与并行 Bash 工具调用簇重叠）：
+ * - 旧版固定 tmp 名在并发下互踩：P1 rename 吃掉 tmp 后，P2 rename 同名即 ENOENT。
+ *   本版 tmp 名带进程唯一后缀（pid + 计数 + 随机），并发写者互不干扰；
+ * - rename 失败有界重试（重建 tmp 再 rename，上限 MAX_RENAME_ATTEMPTS）；
+ * - 写前 best-effort 清理历史残留 tmp（旧版固定名 + 本版唯一名，失败不抛错）；
+ * - 重试耗尽 → 尽力清理自己的 tmp（失败不抛新错）后抛错——语义不变：同步、
+ *   抛错给上层 catch（fail-open 由调用方兜底，如 gate-runner/mcp-server）。
+ *
+ * 崩溃窗口只剩两种：写完 tmp 未 rename（残留由下次写清理）、rename 已完成
+ * （状态为新值）。注：读-写时序的丢失更新（P2 基于旧 state 折叠覆盖 P1）在本版
+ * 不修——events 是事实源、state 是缓存，折叠丢失可由 doctor 以 events 重建兜底。
  */
 export function writeState(root: string, state: DevFlowState): void {
   ensureStateRoot(root)
-  const tmpPath = join(root, 'state.json.tmp')
+  sweepStaleTmp(root)
   const targetPath = join(root, 'state.json')
-  writeFileSync(tmpPath, serializeState(state), 'utf8')
-  renameSync(tmpPath, targetPath)
+  const payload = serializeState(state)
+  let tmpPath = uniqueTmpPath(root)
+  let lastErr: unknown = null
+  for (let attempt = 1; attempt <= MAX_RENAME_ATTEMPTS; attempt++) {
+    try {
+      writeFileSync(tmpPath, payload, 'utf8')
+      renameSync(tmpPath, targetPath)
+      return
+    } catch (err) {
+      lastErr = err
+      // 本轮失败：清掉自己的 tmp（尽力），重建后重试（rename 失败多为并发瞬时干扰）
+      try {
+        rmSync(tmpPath, { force: true })
+      } catch {
+        // 尽力清理，失败不抛新错
+      }
+      if (attempt < MAX_RENAME_ATTEMPTS) tmpPath = uniqueTmpPath(root)
+    }
+  }
+  throw lastErr
 }
 
 export interface LoadStateResult {

@@ -7,6 +7,8 @@
  * 3. 调决策纯函数（write-gate）；
  * 4. 落账：事件 append events.jsonl（sanitize 关卡），增量折叠进 state 并原子写回
  *    （state 是缓存、events 是事实源——折叠规则与 rebuildState 单一来源）；
+ *    落账前过 assignImplicitMainline：无活跃主线时首条 intent.declared 自动建
+ *    隐式主线（P0 修复"无主线自锁死链"，id 随事件入链，rebuild 可确定性重放）；
  * 5. 任何异常 → audit.warning + 放行，绝不 deny。
  *
  * 注意：transcript 读取（IO）也在壳层做——决策纯函数只收 TranscriptIntent | null。
@@ -20,7 +22,7 @@ import { loadConfig } from './config.js'
 import type { DevFlowState } from './state.js'
 import type { DevFlowEvent } from './events.js'
 import type { DevFlowConfig } from './config.js'
-import type { GateResult } from './write-gate.js'
+import { assignImplicitMainline, implicitMainlineSuffix, type GateResult } from './write-gate.js'
 
 /** 门禁运行时上下文（决策回调的入参；cwd/pluginRoot 由各入口壳按载荷注入） */
 export interface GateRunContext {
@@ -70,9 +72,15 @@ export function runGate(run: (ctx: GateRunContext) => GateResult): GateRunOutcom
       now,
     })
     if (result.events.length > 0) {
-      for (const ev of result.events) appendEvent(root, ev, now)
-      // state 是缓存：事件落账后增量折叠（写者=同步 hook，tmp+rename 原子替换）
-      writeState(root, applyEvents(state, result.events))
+      // 首条 intent.declared 自动建隐式主线（P0）：无活跃主线时把本批空主线
+      // 事件归入生成的主线 id（时间戳 + 进程唯一后缀：同毫秒并发进程 id 必不同，
+      // 否则两条意图会撞进同一主线互相覆盖），落账后 events 即事实源、rebuild 可重放
+      const events = assignImplicitMainline(result.events, state.activeMainlineId, now, implicitMainlineSuffix())
+      for (const ev of events) appendEvent(root, ev, now)
+      // state 是缓存：事件落账后增量折叠（写者真实并发，6 处：gate-runner / UPS /
+      // post-tool-use×2 / MCP×2，含 MCP 常驻进程；写原语=唯一 tmp 名 + rename 有界
+      // 重试兜底，写前只清 mtime 超龄的残留 tmp——口径见 state.ts 文件头与 sweepStaleTmp）
+      writeState(root, applyEvents(state, events))
     }
     return { decision: result.decision, reason: result.reason }
   } catch (err) {

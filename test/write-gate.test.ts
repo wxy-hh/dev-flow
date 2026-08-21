@@ -1,12 +1,15 @@
 /**
  * 写门禁主决策单测（node:test，零新增依赖——计划 §4 T4 判据）
  *
- * 覆盖：一拦二放状态机（首拦 deny+模板 / 重试放行 / 已声明不拦）；敏感路径
- * 升级语义（未声明 deny 带规则名 / 已声明放行带规则名 + 治理升级）；unlock/
- * escape.used 消费端（未消费放行、已消费回到正常门禁）；transcript 声明放行
- * 加分项（intent.declared 落账 + verify 声明）；Bash 逐目标判定（任一 deny
- * 整命令 deny、多目标声明只落账一次、file.changed 补记）；applyEvents 折叠
- * （治理强度只升不降、verifyDeclarations 后者覆盖前者）。
+ * 覆盖：一拦二放状态机（首拦 deny+模板 / 重试放行 / 已声明不拦）；重试通行证
+ * 一次性语义（P1：写入落账即消费、session.start 会话边界作废、声明主线不误伤）；
+ * 隐式主线指派（P0：无活跃主线时首条 intent.declared 自动建唯一主线 id，同毫秒
+ * 并发进程 id 必不同；rebuild 确定性靠 id 烘焙进事件，不靠同 now 同 id）；
+ * 敏感路径升级语义（未声明 deny 带规则名 / 已声明放行带规则名 + 治理升级）；
+ * unlock/escape.used 消费端（未消费放行、已消费回到正常门禁）；transcript 声明
+ * 放行加分项（intent.declared 落账 + verify 声明）；Bash 逐目标判定（任一 deny
+ * 整命令 deny、多目标声明只落账一次、批前预计算通行证、file.changed 补记）；
+ * applyEvents 折叠（治理强度只升不降、verifyDeclarations 后者覆盖前者）。
  */
 
 import { test } from 'node:test'
@@ -15,11 +18,13 @@ import { mkdtempSync, rmSync, symlinkSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import {
+  assignImplicitMainline,
   buildFileChangedEvent,
   decideBashWrite,
   decidePathWrite,
   decideToolWrite,
   hasUnconsumedUnlock,
+  IMPLICIT_MAINLINE_PREFIX,
   INTENT_GATE_TEMPLATE,
   type GateContext,
 } from '../src/lib/write-gate.js'
@@ -103,6 +108,63 @@ test('一拦二放⑤：主线隔离——他主线已声明不影响本主线�
   const other = intentDeclaredEv()
   const r = decidePathWrite(mkCtx({ mainlineId: 'm1', events: [ev('intent.declared', { mainlineId: 'm2', requirementId: null, summary: 's', verifyCommand: null, risk: null, files: [] })] }))
   assert.equal(r.decision, 'deny', '他主线声明不算本主线声明')
+})
+
+// —— 重试通行证一次性语义（P1 修复"一次拦截终身放行"漂移）——
+
+const sessionStartEv = (source = 'compact'): DevFlowEvent =>
+  ev('session.start', { sessionId: 's1', source })
+
+test('通行证一次性①：被拦后紧接着的重试仍放行（语义不回归）', () => {
+  const r = decidePathWrite(mkCtx({ events: [intentBlockedEv()] }))
+  assert.equal(r.decision, 'allow')
+  assert.deepEqual(r.events.map((e) => e.type), ['intent.blocked', 'write.allowed'])
+})
+
+test('通行证一次性②：重试已放行（write.allowed 落账）→ 后续写入重新拦截', () => {
+  // 漂移场景：一次 intent.blocked 后所有写入都走重试放行 → 现在第二张写入被拦
+  const r = decidePathWrite(mkCtx({ events: [intentBlockedEv(), writeAllowedEv()] }))
+  assert.equal(r.decision, 'deny')
+  assert.equal(r.reason, INTENT_GATE_TEMPLATE)
+  assert.equal(r.events[0].type, 'intent.blocked')
+})
+
+test('通行证一次性③：file.changed 落账同样消费通行证 → 重新拦截', () => {
+  const r = decidePathWrite(mkCtx({ events: [intentBlockedEv(), writeAllowedEv(), ev('file.changed', { tool: 'Write', path: 'src/foo.js' })] }))
+  assert.equal(r.decision, 'deny')
+})
+
+test('会话边界①：compact/新会话（session.start）后通行证作废 → 重新要求意图块', () => {
+  const r = decidePathWrite(mkCtx({ events: [intentBlockedEv(), sessionStartEv()] }))
+  assert.equal(r.decision, 'deny', 'session.start 后的首次写入重新拦截')
+})
+
+test('会话边界②：session.start 早于被拦 → 通行证有效（边界只往前作废）', () => {
+  const r = decidePathWrite(mkCtx({ events: [sessionStartEv('startup'), intentBlockedEv()] }))
+  assert.equal(r.decision, 'allow')
+})
+
+test('会话边界③：已声明主线不受 session.start 影响（设计本意，不误伤）', () => {
+  const r = decidePathWrite(mkCtx({ events: [intentDeclaredEv(), sessionStartEv()] }))
+  assert.equal(r.decision, 'allow')
+  assert.deepEqual(r.events.map((e) => e.type), ['write.allowed'])
+})
+
+test('会话边界④：session.start 跨主线生效（他主线的通行证同样作废）', () => {
+  // session.start 记账时 mainlineId 恒为 ''；m1 上被拦后跨会话，m1 的通行证也作废
+  const r = decidePathWrite(mkCtx({ mainlineId: 'm1', events: [ev('intent.blocked', { mainlineId: 'm1', requirementId: null, reason: 'x', rule: 'first-write-gate' }), sessionStartEv()] }))
+  assert.equal(r.decision, 'deny')
+})
+
+test('声明晚于被拦：旧 blocked 痕迹不复活通行证（走声明放行分支）', () => {
+  const r = decidePathWrite(mkCtx({ events: [intentBlockedEv(), intentDeclaredEv()] }))
+  assert.equal(r.decision, 'allow')
+  assert.deepEqual(r.events.map((e) => e.type), ['write.allowed'], '声明分支放行，不记重试标注')
+})
+
+test('首拦模板口径：verify 命令须可原样执行（单条命令、无反引号、非自然语言）', () => {
+  assert.match(INTENT_GATE_TEMPLATE, /可原样执行的单条命令/)
+  assert.match(INTENT_GATE_TEMPLATE, /不要反引号、不要自然语言描述/)
 })
 
 // —— 敏感路径升级语义 ——
@@ -289,6 +351,68 @@ test('Bash 重试放行：intent.blocked 重试标注只标一次（多目标）
   assert.equal(r.decision, 'allow')
   const blockedMarks = r.events.filter((e) => e.type === 'intent.blocked')
   assert.equal(blockedMarks.length, 1, '重试标注只一次')
+})
+
+test('Bash 重试放行：多目标共用批前通行证（批内 write.allowed 不误消费）', () => {
+  // P1 回归锁：通行证一次性语义下，若逐目标现场扫描，第一个目标的
+  // write.allowed 会把通行证消费掉，第二个目标被误拦——必须整批放行
+  const r = decideBashWrite(
+    bashArgs('echo x > src/a.js && echo y > src/b.js', { events: [intentBlockedEv()] }),
+  )
+  assert.equal(r.decision, 'allow')
+  assert.equal(r.events.filter((e) => e.type === 'write.allowed').length, 2, '两个目标都放行')
+  assert.equal(r.events.filter((e) => e.type === 'file.changed').length, 2)
+})
+
+test('Bash 重试放行后：下一命令无声明 → 重新拦截（通行证不跨工具调用）', () => {
+  const r = decideBashWrite(
+    bashArgs('echo x > src/a.js', { events: [intentBlockedEv(), writeAllowedEv(), ev('file.changed', { tool: 'Bash', path: 'src/a.js' })] }),
+  )
+  assert.equal(r.decision, 'deny')
+})
+
+// —— assignImplicitMainline（P0：首条 intent.declared 自动建隐式主线）——
+
+test('隐式主线①：无活跃主线 + 批内含空主线 intent.declared → 同批归入新主线', () => {
+  const batch: DevFlowEvent[] = [
+    ev('intent.declared', { requirementId: null, summary: 's', verifyCommand: 'npm test', risk: null, files: ['src/'] }),
+    writeAllowedEv(),
+  ]
+  const out = assignImplicitMainline(batch, null, '2026-08-21T03:42:49.058Z', '4242abc1')
+  const id = `${IMPLICIT_MAINLINE_PREFIX}20260821034249058-4242abc1`
+  assert.ok(out.every((e) => e.mainlineId === id), '同批空主线事件全部归入新线')
+  assert.equal(out[0].type, 'intent.declared', '事件其余字段不动')
+  // 确定性（id 烘焙进事件，rebuild 重放靠它，不靠同 now 同 id）：同输入同输出
+  assert.deepEqual(assignImplicitMainline(batch, null, '2026-08-21T03:42:49.058Z', '4242abc1'), out)
+  // 不改输入（纯函数纪律）
+  assert.equal(batch[0].mainlineId, '')
+})
+
+test('隐式主线①b：同毫秒两个进程（唯一性后缀不同）→ id 必不同（防并发撞线合并）', () => {
+  const batch: DevFlowEvent[] = [
+    ev('intent.declared', { requirementId: null, summary: 's', verifyCommand: 'npm test', risk: null, files: ['src/'] }),
+    writeAllowedEv(),
+  ]
+  // 两个无主线 hook 进程同毫秒各自落账首条 intent.declared：now 相同、suffix 不同
+  const a = assignImplicitMainline(batch, null, '2026-08-21T03:42:49.058Z', '4242abc1')
+  const b = assignImplicitMainline(batch, null, '2026-08-21T03:42:49.058Z', '7777xyz9')
+  assert.notEqual(a[0].mainlineId, b[0].mainlineId, '同毫秒两进程 id 不同，两条意图不合并')
+  assert.equal(a[0].mainlineId, `${IMPLICIT_MAINLINE_PREFIX}20260821034249058-4242abc1`)
+  assert.equal(b[0].mainlineId, `${IMPLICIT_MAINLINE_PREFIX}20260821034249058-7777xyz9`)
+})
+
+test('隐式主线②：已有活跃主线 → 原样返回（不另建线）', () => {
+  const batch: DevFlowEvent[] = [
+    ev('intent.declared', { requirementId: null, summary: 's', verifyCommand: null, risk: null, files: [] }),
+  ]
+  const out = assignImplicitMainline(batch, 'ml-existing', 'T', '4242abc1')
+  assert.equal(out[0].mainlineId, '', '事件原样（调用方传入的 mainlineId 保持）')
+})
+
+test('隐式主线③：批内无 intent.declared（如首拦 deny 批次）→ 不建线', () => {
+  const batch: DevFlowEvent[] = [intentBlockedEv()]
+  const out = assignImplicitMainline(batch, null, 'T', '4242abc1')
+  assert.equal(out[0].mainlineId, '', '被拦痕迹仍归空主线，等声明时才建线')
 })
 
 // —— buildFileChangedEvent（T7：Write/Edit/MultiEdit 的 file.changed 构造，PostToolUse 记账用）——

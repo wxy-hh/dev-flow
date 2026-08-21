@@ -3,8 +3,10 @@
  *
  * PostToolUse hook 的纯函数面（本文件无 IO）：
  * 1. 命令归一化与声明匹配（宁严勿宽，§A：空白/参数序的宽容匹配别过头——
- *    归一化 = 去首尾空白 + 空白折叠 + 按空白分词；匹配 = 命令 token 序列
- *    以声明 token 序列为前缀；匹配不上就不记）；
+ *    归一化 = 剥首尾包裹外壳（反引号/单双引号，Markdown 惯用写法；只剥
+ *    「整串首尾同一字符包裹」与「整 token 首尾同一字符包裹」两层，命令中间
+ *    的引号语义不动）+ 去首尾空白 + 空白折叠 + 按空白分词；匹配 = 命令 token
+ *    序列以声明 token 序列为前缀；匹配不上就不记）；
  * 2. 退出原因判定（坑 N-4/8-12-10b，硬要求）：
  *    - PostToolUse（成功路径）→ verify.passed（有退出码 0 实证才可记通过）；
  *      但 tool_response.interrupted=true（用户中断/被杀）→ verify.failed
@@ -33,9 +35,40 @@ import type { DevFlowEvent } from './events.js'
 /** verify:none 显式声明的归一化判定值（§3.3：宽容的是内容，不是动作——只认 none） */
 export const VERIFY_NONE = 'none'
 
-/** 命令归一化（宁严勿宽）：去首尾空白 + 空白序列折叠为单空格 + 按空白分词 */
+/** 包裹字符：反引号/单引号/双引号（Markdown 代码惯用；只对首尾同一字符成对包裹剥壳） */
+const WRAP_CHARS = new Set(['`', '"', "'"])
+
+/** 整条命令被同一包裹字符首尾包裹（如 `` `pnpm test` ``）→ 剥外壳；否则原样 */
+function stripOuterWrapper(cmd: string): string {
+  if (cmd.length < 2) return cmd
+  const first = cmd[0]
+  const last = cmd[cmd.length - 1]
+  if (first === last && WRAP_CHARS.has(first)) return cmd.slice(1, -1)
+  return cmd
+}
+
+/** 单个 token 被同一包裹字符首尾包裹（如 `"msg"`）→ 剥壳；否则原样（中间引号不动） */
+function stripTokenWrapper(token: string): string {
+  if (token.length < 2) return token
+  const first = token[0]
+  const last = token[token.length - 1]
+  if (first === last && WRAP_CHARS.has(first)) return token.slice(1, -1)
+  return token
+}
+
+/**
+ * 命令归一化（宁严勿宽）：剥首尾包裹外壳（先整条命令级、再逐 token 级，只剥
+ * 「同一字符成对包裹」）→ 去首尾空白 + 空白序列折叠为单空格 + 按空白分词。
+ * 实证：模型常按 Markdown 习惯把 verify 命令写成 `` `pnpm test` ``（反引号包裹），
+ * 不剥外壳则 token 变成 `` `pnpm ``，前缀匹配对真实命令 `pnpm test` 永远 false
+ * （最自然的书写方式恰好永不匹配，机制静默失效）。
+ */
 export function normalizeCommand(cmd: string): string[] {
-  return cmd.trim().split(/\s+/).filter((t) => t !== '')
+  const stripped = stripOuterWrapper(cmd.trim())
+  return stripped
+    .split(/\s+/)
+    .map((t) => stripTokenWrapper(t))
+    .filter((t) => t !== '')
 }
 
 /**

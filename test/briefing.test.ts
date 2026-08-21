@@ -1,7 +1,8 @@
 /**
  * SessionStart 播报模块单测（node:test，零新增依赖——计划 §6 T3 判据）
  *
- * 覆盖：意图块规则文本 ≤5 行断言；恢复播报生成（空状态 → null、有主线 →
+ * 覆盖：意图块规则文本 ≤5 行断言（含 done 工具全名、verify 命令书写要求）；
+ * 恢复播报生成（空状态 → null、有主线 →
  * 含主线名/阶段/还差什么、已宣称不播报、时间桶）；done 兜底四条件判定
  * （四条件各缺一条的排列、时间序严格比较、done.claimed 抑制、无写入视为恒晚）；
  * scanMainlineFacts 反向扫语义（最新值、他主线隔离）；scanEventsTail IO
@@ -97,6 +98,17 @@ test('意图块规则文本 ≤5 行且含「#意图块」标记（常驻注入�
   const lines = INTENT_RULE_TEXT.split('\n').filter((l) => l.trim() !== '')
   assert.ok(lines.length <= 5, `规则应为 ≤5 行，实际 ${lines.length} 行`)
   assert.match(INTENT_RULE_TEXT, /#意图块/)
+})
+
+test('意图块规则告知 done 工具全名与 verify 命令书写要求（P1：模型从不调用 done 的根因修复）', () => {
+  // done 工具全名（plugin dev-flow + MCP server df + 工具 done）必须出现在常驻注入里
+  assert.ok(INTENT_RULE_TEXT.includes('mcp__plugin_dev-flow_df__done'))
+  // verify 命令书写要求：可原样执行的单条命令
+  assert.ok(INTENT_RULE_TEXT.includes('可原样执行的单条命令'))
+  // 文案自身不违反书写要求：不出现反引号（避免示范错误写法）
+  assert.ok(!INTENT_RULE_TEXT.includes('`'), '注入文案不应含反引号')
+  // 未过验收会被驳回的后果告知
+  assert.ok(INTENT_RULE_TEXT.includes('未过验收会被驳回'))
 })
 
 test('空状态：播报 null、兜底 null、注入仅常驻规则（零仪式，§4.1）', () => {

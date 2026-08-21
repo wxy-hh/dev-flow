@@ -1,7 +1,8 @@
 /**
  * 验收事件记账单测（node:test，T6 判据：退出原因三分支、命令匹配边界）
  *
- * 覆盖：命令归一化与声明匹配（精确/带参/改命令/换序/空声明）；verify:none
+ * 覆盖：命令归一化与声明匹配（精确/带参/改命令/换序/空声明/反引号引号包裹
+ * 剥壳/复合 && 声明）；verify:none
  * 判定；退出原因分类（is_interrupt→killed、超时标记→timeout 优先于退出码、
  * Exit code N→nonzero、其余→unknown）；退出码解析；buildVerifyEvent 事件构造
  * （PostToolUse 成功=passed、interrupted=失败 killed、超时转后台 timedOutAfterMs
@@ -26,6 +27,56 @@ test('normalizeCommand：去首尾空白、折叠连续空白、按空白分词'
   assert.deepEqual(normalizeCommand(''), [])
   assert.deepEqual(normalizeCommand('   '), [])
   assert.deepEqual(normalizeCommand('npm test --run'), ['npm', 'test', '--run'])
+})
+
+test('normalizeCommand：剥离整条命令被反引号/引号首尾包裹的外壳（Markdown 惯用写法）', () => {
+  // 真实项目实证：模型按 Markdown 习惯写 `pnpm test`，外壳不剥则 token 变 `pnpm，永不匹配
+  assert.deepEqual(normalizeCommand('`pnpm test`'), ['pnpm', 'test'])
+  assert.deepEqual(normalizeCommand('"pnpm test"'), ['pnpm', 'test'])
+  assert.deepEqual(normalizeCommand("'pnpm test'"), ['pnpm', 'test'])
+  // 外壳外还有空白 → 先 trim 再剥壳
+  assert.deepEqual(normalizeCommand('  `pnpm test`  '), ['pnpm', 'test'])
+  // 剥壳后内部仍走空白折叠与分词
+  assert.deepEqual(normalizeCommand('`pnpm   test`'), ['pnpm', 'test'])
+})
+
+test('normalizeCommand：只剥「同一字符成对包裹」；命令中间引号/不成对场景不动', () => {
+  // 命令中间的引号不跨 token 成对包裹 → 原样保留（引号语义不被误剥）
+  assert.deepEqual(normalizeCommand('echo "hello world"'), ['echo', '"hello', 'world"'])
+  // 首尾不是同一包裹字符 → 不剥
+  assert.deepEqual(normalizeCommand('"echo hello'), ['"echo', 'hello'])
+  assert.deepEqual(normalizeCommand('`echo hello"'), ['`echo', 'hello"'])
+  // 单个 token 被同一字符成对包裹（如 -m "msg"）→ 剥壳；两侧对称归一，匹配语义不受影响
+  assert.deepEqual(normalizeCommand('git commit -m "msg"'), ['git', 'commit', '-m', 'msg'])
+  // 长度 < 2 不成对 → 原样
+  assert.deepEqual(normalizeCommand("'"), ["'"])
+})
+
+test('commandMatchesDeclaration：声明用反引号/引号包裹命令（Markdown 惯用）→ 匹配', () => {
+  assert.equal(commandMatchesDeclaration('pnpm test', '`pnpm test`'), true)
+  assert.equal(commandMatchesDeclaration('pnpm test', '"pnpm test"'), true)
+  assert.equal(commandMatchesDeclaration('pnpm test', "'pnpm test'"), true)
+  // 命令带额外参数（前缀匹配）在剥壳后仍成立
+  assert.equal(commandMatchesDeclaration('pnpm test --run', '`pnpm test`'), true)
+  // 命令侧包裹、声明侧裸写（对称归一）→ 匹配
+  assert.equal(commandMatchesDeclaration('`pnpm test`', 'pnpm test'), true)
+})
+
+test('commandMatchesDeclaration：中间引号语义不被剥壳抹平——引号内有空白 ≠ 无引号分词', () => {
+  // echo "hello world" 与 echo hello world 在 shell 中输出等价，但 token 形状不同，
+  // 宁严勿宽：不因剥壳把两种写法误判为相同
+  assert.equal(commandMatchesDeclaration('echo hello world', 'echo "hello world"'), false)
+  // 两侧写法一致（引号保留对称归一）→ 匹配
+  assert.equal(commandMatchesDeclaration('echo "hello world"', 'echo "hello world"'), true)
+})
+
+test('commandMatchesDeclaration：复合 && 声明语义不变——整串匹配、分开跑不匹配', () => {
+  // 声明与命令完全一致（含 && 链）→ 匹配
+  assert.equal(commandMatchesDeclaration('pnpm build && pnpm test', 'pnpm build && pnpm test'), true)
+  // 只跑了 && 前半 → 声明比命令长 → 不匹配
+  assert.equal(commandMatchesDeclaration('pnpm build', 'pnpm build && pnpm test'), false)
+  // 只跑了 && 后半 → 声明不是命令前缀 → 不匹配
+  assert.equal(commandMatchesDeclaration('pnpm test', 'pnpm build && pnpm test'), false)
 })
 
 test('commandMatchesDeclaration：精确匹配与带参前缀匹配（宽容边界）', () => {

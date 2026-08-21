@@ -19,12 +19,17 @@ import { type MainlineFacts } from './events.js'
 
 /**
  * 意图块规则全文（常驻注入，≤5 行）。措辞短：它是每会话固定的 token 成本。
- * 四要素：做什么 / 预计动哪些文件 / 敏感路径与风险标签 / verify 命令（怎么算完成）。
+ * 四要素：做什么 / 预计动哪些文件 / 敏感路径与风险标签 / verify 命令。
+ * 附两条必答：verify 命令须可原样执行（单条命令，无反引号/自然语言）；完成宣称
+ * 走 MCP done 工具（P1 实证根因：模型从不调用 done——注入从没告知它的存在，
+ * 而 done.claimed/rejected 全仓库唯一产出点是 mcp-server.ts 的 done 工具）。
  * 注意：文本含「#意图块」字样是设计使然（§3.2 注入点①），T4 检测须限定
  * assistant 消息 text 块防自注入污染（spike L3 坑）。
  */
 export const INTENT_RULE_TEXT = `第一次写文件前先输出意图块（以「#意图块」开头，2-3 行）：
-做什么 / 预计动哪些文件 / 敏感路径与风险标签 / verify 命令（怎么算完成）。`
+做什么 / 预计动哪些文件 / 敏感路径与风险标签 / verify 命令。
+verify 命令写可原样执行的单条命令（如 pnpm test），不要反引号、不要自然语言描述。
+verify 通过后调用 mcp__plugin_dev-flow_df__done 完成宣称；未过验收会被驳回。`
 
 /** 活跃主线（软单主线 §5.7）：state 无活跃主线或主线缺失（损坏数据）→ null */
 export function activeMainline(state: DevFlowState): Mainline | null {

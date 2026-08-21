@@ -2,11 +2,12 @@
 
 给 AI 编码代理的仓库指南。阅读顺序建议：本节（现状）→「架构总览」→「硬约束」→「开发与验证」。
 
-## 项目现状（2026-08-20）
+## 项目现状（2026-08-21）
 
 - **Dev Flow** 是 Claude Code 插件：**宿主事件驱动的工作流治理**（设计名"隐形治理"）。流程状态在事件流上自动推进，门禁在事件边界自动拦截——模型不需要"记得走流程"，用户也几乎感觉不到流程存在。
 - 版本 `0.0.1`，处于契约冷冻点之前（0.x 契约自由演进）。当前分支 `next`，**所有代码未提交**（用户手动提交制，agent 不做任何 git mutation）。
-- T0~T9 已全部完成并验收闭环：单测 218/218 全绿，`npm run verify` + verify-t3~t8 串行回归全绿，Bash 门禁 P95=17.9ms ≤30ms。**唯一剩余任务 T10 第一批总验收**（判据见 `docs/2026-08-19-MVP-实施计划.md` §7）。
+- T0~T9 已全部完成并验收闭环：单测 247/247 全绿，`npm run verify` + verify-t3~t8 串行回归全绿，Bash 门禁 P95=17.3ms ≤30ms。**唯一剩余任务 T10 第一批总验收**（判据见 `docs/2026-08-19-MVP-实施计划.md` §7）。
+- 2026-08-21 真实项目实证后修复四件：① 首条 `intent.declared` 自动建**隐式主线**（无活跃主线时生成 `ml-<时间戳>-<pid随机后缀>` 入事件，解开"无主线自锁"：verify 记账/done/恢复播报全链路此前因此静默失效）；② 重试通行证**一次性**语义（写入落账即消费、跨 `session.start` 作废，纠"一次拦截终身放行"）；③ `writeState` 并发竞态（唯一 tmp 名 + rename 有界重试 + 按 mtime 清残留，旧假设"宿主串行触发"被实证推翻）；④ verify 声明归一化剥反引号/引号 + 常驻注入告知 done 工具（此前模型 3 任务零 done 调用，注入从没提过它存在）。
 - 第一批 MVP 四件核心机制：① 首写入门禁（第一次写文件前要求输出意图块：做什么/动哪些文件/风险标签/verify 命令）；② 完成宣称咽喉（done：验收未过必驳回且说清缺什么）；③ 证据链（会话/意图/写入/验收/完成宣称全部自动记入事件流）；④ 敏感路径硬门禁（四类内置 + 项目追加，含 Bash 写入启发式检出）。
 
 ## 技术栈与构建
@@ -41,7 +42,7 @@ build/                单测产物 + 性能留痕（bash-fastpath-p95.txt）
 | --- | --- | --- |
 | `SessionStart`（matcher: startup/resume/clear/compact/fork） | `session-start.cjs` | 记 `session.start`；意图块规则常驻注入；恢复播报（"你昨天在做X，做到Y，还差Z"）；done 兜底四条件检测 |
 | `UserPromptSubmit` | `user-prompt-submit.cjs` | 四通道识别：逃生门 / 主线切换 / 完成确认两跳 / 终裁解锁（窄模式表，精确短语匹配才写事件） |
-| `PreToolUse`（Write/Edit/MultiEdit） | `pre-tool-use-write.cjs` | 首写入门禁（一拦二放）+ 敏感路径硬门禁 + 用户一句话放行消费端 |
+| `PreToolUse`（Write/Edit/MultiEdit） | `pre-tool-use-write.cjs` | 首写入门禁（一拦二放：重试通行证一次性、跨 `session.start` 作废）+ 敏感路径硬门禁 + 用户一句话放行消费端 |
 | `PreToolUse`（Bash） | `pre-tool-use-bash.cjs` | 不可逆操作拦截（push/DROP/publish/rm -rf 高危）+ 启发式写入目标检出（`>`/`>>`/`tee`/`sed -i`/`cp`/`mv`）+ 快路径正则 |
 | `PostToolUse` / `PostToolUseFailure`（Bash/Write/Edit/MultiEdit） | `post-tool-use.cjs` | 验收事件记账（verify.passed/failed，退出原因区分 timeout/killed/nonzero/unknown）+ `file.changed` 记账 |
 | MCP server（.mcp.json，server 名 `df`） | `mcp-server.cjs` | 两个工具：`done`（完成宣称咽喉，唯一状态翻转点）、`status`（只读状态摘要 ≤500 字符） |
@@ -62,7 +63,7 @@ build/                单测产物 + 性能留痕（bash-fastpath-p95.txt）
 | 文件 | 内容 | 说明 |
 | --- | --- | --- |
 | `events.jsonl` | 证据链原始记录（append-only） | **事实源**；state 可从它重建 |
-| `state.json` | 活跃/挂起主线、需求、连败计数、最近验收等 | 缓存；tmp+rename 原子替换，只由同步 hook 写 |
+| `state.json` | 活跃/挂起主线、需求、连败计数、最近验收等 | 缓存；唯一 tmp 名 + rename 原子替换（写者 6 处真实并发：各 hook 进程 + MCP 常驻；rename 有界重试，按 mtime 清残留——口径见 state.ts 文件头） |
 | `config.json` | 项目配置（可选） | `sensitivePaths`（只追加不覆盖）、`autoCommit` |
 | `.gitignore` | 内容 `*` | 首次运行自创建，自包含隔离，**不碰业务仓的 .gitignore** |
 
@@ -70,14 +71,14 @@ build/                单测产物 + 性能留痕（bash-fastpath-p95.txt）
 - **记事实不记内容（红线）**：事件载荷只记路径/工具名/退出码/时间戳/主线 id/规则名/用户原话（截断 500 字符）；永不记文件内容；命令输出只留尾部 ≤20 行、行内防御截断；单行 ≤1KiB（超长逐级降级）。红线执行点在 `sanitizeEvent` 单点。
 - 时序事实（最后写入/最近验收/宣称痕迹）一律以 events 反向扫为准（`scanMainlineFacts`，早退），**不读 state 缓存字段**。
 - 状态演进 **additive-only**：字段只增、带默认值；未知顶层字段进 `extra` 保留（写回不丢）；旧状态缺字段给默认。
-- 单主线语义（软单主线）：同一时间一条活跃（`activeMainlineId`），切换即挂起旧的（`mainline.switch`），同名重激活。
+- 单主线语义（软单主线）：同一时间一条活跃（`activeMainlineId`），切换即挂起旧的（`mainline.switch`），同名重激活；无活跃主线时首条 `intent.declared` 自动建**隐式主线**（`assignImplicitMainline`，id 烘焙进事件、rebuild 可确定性重放）。
 
 ## 开发与验证
 
 ```bash
 npm install          # 一次性
 npm run build        # TS → plugins/dev-flow/dist/*.cjs（毫秒级，先 build 后验证）
-npm test             # 单测：node --test build/test/*.test.cjs（当前 218 个，~1s）
+npm test             # 单测：node --test build/test/*.test.cjs（当前 247 个，~1s）
 npm run verify       # T1 真机冒烟（node/claude 检查 → build → 重置 sandbox → claude -p 端到端 → 断言）
 bash scripts/verify-t3.sh   # T3~T8 各是真机验证脚本，按任务逐个跑
 bash scripts/verify-t8.sh
@@ -103,7 +104,7 @@ node scripts/perf-fastpath.mjs   # Bash 快路径 P95 抽测（判据：≤30ms�
 - 敏感路径内置四类：密钥凭据（`.env` 族豁免 `.env.example/.env.sample/.env.template`、`*.pem`、`*.key`、`secrets/`、`.ssh/`、`.aws/`、`.npmrc`）、CI 与发布（`.github/workflows/`、`Dockerfile`、`deploy/`、`k8s/`、`*.tf`）、数据（`migrations/`、`schema.prisma`）、元敏感（`.dev-flow/`、`.claude/`、插件根）。匹配前 **NFC 归一化 + symlink 目标解析**（坑 N-5：macOS 常存 NFD 路径）。
 - 不可逆操作人工门禁：`git push`、`DROP TABLE/DATABASE`、publish（`--dry-run` 除外）、高危 `rm -rf` → 需用户亲自执行或一句话授权（"我授权"→ `escape.used`/`unlock` 记账放行，信任但记账）。
 - 自动提交（done 时）只 `git add -A -- <主线触碰清单>`，绝不卷用户未提交改动；merge 冲突/detached HEAD/空提交/非仓内 → 跳过（fail-open）；剥离 `GIT_DIR`/`GIT_WORK_TREE`/`GIT_INDEX_FILE` 防操作到别的仓。
-- **已知盲区/边界**：解释器任意写入（`python -c "open(...)"` 等）从命令文本判不出，按设计承认防不住；模型行为只在 Kimi（kimi-for-coding）实证，Anthropic 官方模型未验证；交互模式长期会话 hook 热加载未实证；状态损坏没有自动修复工具（doctor 尚未实现，需要时手工以 events 重建 state——`rebuildFromFile` 是数据基础）。
+- **已知盲区/边界**：解释器任意写入（`python -c "open(...)"` 等）从命令文本判不出，按设计承认防不住；模型行为只在 Kimi（kimi-for-coding）实证，Anthropic 官方模型未验证；交互模式长期会话 hook 热加载未实证；状态损坏没有自动修复工具（doctor 尚未实现，需要时手工以 events 重建 state——`rebuildFromFile` 是数据基础）；并发读-写的**丢失更新**不自愈（2026-08-21 修复只消了写-写 tmp 冲突：事件不丢、state 缓存可能缺折叠，低概率，doctor/rebuild 兜底，暂接受）。
 - 第一批不做：连败锁定、finalize 审计渲染、评审（均第二批）。
 
 ## 文档地图（规格与结论都在这里，改代码前先读）
@@ -114,7 +115,6 @@ node scripts/perf-fastpath.mjs   # Bash 快路径 P95 抽测（判据：≤30ms�
 | `docs/2026-08-19-MVP-实施计划.md` | 实施计划：§0 spike 硬约束（宿主事实基线）、§2~§3 机制规格、§6 任务分解、§7 验收判据 |
 | `docs/2026-08-19-spike-结论.md` | T0 spike 实测：hookSpecificOutput 格式、.cjs、fs.writeSync、P95 基线、坑 |
 | `docs/2026-08-19-坑清单核对表.md` | 旧版 95+5 条坑的闭环核对（每条：覆盖/机制已砍失效/未吸收） |
-| `docs/2026-08-20-重构交接.md` | 交接记录：当前状态与下一步（T10 总验收）、工作规则、环境事实 |
 | `docs/2026-08-15-仪式减法优化路线图.md` | 旧版路线图（历史背景） |
 
 ## 工作规则（用户定的）

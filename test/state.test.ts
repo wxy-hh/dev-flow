@@ -15,6 +15,7 @@ import {
   readFileSync,
   readdirSync,
   rmSync,
+  utimesSync,
   writeFileSync,
   existsSync,
 } from 'node:fs'
@@ -178,9 +179,12 @@ test('writeState 原子写：state.json 就位、不残留 tmp（覆盖写亦然
   assert.equal(loaded.state.activeMainlineId, null)
 })
 
-test('writeState 覆盖残留 tmp（上次崩溃遗留）后不残留', (t) => {
+test('writeState 覆盖残留 tmp（上次崩溃遗留）后不残留（只清 mtime 超龄的，在途 tmp 不误删）', (t) => {
   const dir = tempRoot(t)
-  writeFileSync(join(dir, 'state.json.tmp'), '旧残留', 'utf8')
+  const stale = join(dir, 'state.json.tmp')
+  writeFileSync(stale, '旧残留', 'utf8')
+  const past = new Date(Date.now() - 60_000)
+  utimesSync(stale, past, past) // 拨老 mtime：模拟崩溃遗留（mtime 新的在途 tmp 不清，见并发测试）
   writeState(dir, defaultState())
   assert.equal(existsSync(join(dir, 'state.json')), true)
   assert.deepEqual(readdirSync(dir).filter((f) => f.includes('.tmp')), [])
